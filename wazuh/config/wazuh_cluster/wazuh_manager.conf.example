@@ -297,6 +297,22 @@
     <disabled>yes</disabled>
   </cluster>
 
+  <!-- VirusTotal : vérifie les hash des fichiers détectés par syscheck (FIM) -->
+  <integration>
+    <name>virustotal</name>
+    <api_key>CHANGEME_VT_API_KEY</api_key>
+    <group>syscheck</group>
+    <alert_format>json</alert_format>
+  </integration>
+
+  <!-- AbuseIPDB : réputation IP source sur alertes SSH/auth/attaques (script custom-abuseipdb) -->
+  <integration>
+    <name>custom-abuseipdb</name>
+    <api_key>CHANGEME_ABUSEIPDB_API_KEY</api_key>
+    <group>sshd,attacks,authentication_failed,invalid_login</group>
+    <alert_format>json</alert_format>
+  </integration>
+
 </ossec_config>
 
 <ossec_config>

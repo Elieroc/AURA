@@ -1,24 +1,54 @@
-# Deploy Wazuh Docker in single node configuration
+# Wazuh — Docker single-node
 
-This deployment is defined in the `docker-compose.yml` file with one Wazuh manager containers, one Wazuh indexer containers, and one Wazuh dashboard container. It can be deployed by following these steps: 
+Déploiement officiel wazuh-docker single-node (manager + indexer + dashboard), adapté a minima :
+secrets sortis vers `.env`, intégrations threat intel VirusTotal + AbuseIPDB.
 
-1) Increase max_map_count on your host (Linux). This command must be run with root permissions:
-```
-$ sysctl -w vm.max_map_count=262144
-```
-2) Run the certificate creation script:
-```
-$ docker-compose -f generate-indexer-certs.yml run --rm generator
-```
-3) Start the environment with docker-compose:
+## Setup initial
 
-- In the foregroud:
+1. `sysctl -w vm.max_map_count=262144` (root, requis par l'indexer)
+2. Copier les fichiers de config avec secrets :
+   ```
+   cp .env.example .env                                                          # remplir
+   cp config/wazuh_cluster/wazuh_manager.conf.example config/wazuh_cluster/wazuh_manager.conf
+   cp config/wazuh_dashboard/wazuh.yml.example config/wazuh_dashboard/wazuh.yml
+   ```
+   - `.env` : `INDEXER_PASSWORD`, `API_PASSWORD`, clés VT/AbuseIPDB
+   - `wazuh_manager.conf` : remplacer `CHANGEME_VT_API_KEY` / `CHANGEME_ABUSEIPDB_API_KEY` (valeurs du `.env`)
+   - `wazuh.yml` dashboard : remplacer `CHANGEME_API_PASSWORD` (= `API_PASSWORD`)
+   - `config/wazuh_indexer/internal_users.yml` : hash bcrypt de `INDEXER_PASSWORD` pour `admin`
+     (générer : `docker compose exec wazuh.indexer bash -c 'export JAVA_HOME=/usr/share/wazuh-indexer/jdk; bash /usr/share/wazuh-indexer/plugins/opensearch-security/tools/hash.sh -p MOT_DE_PASSE'`)
+3. Générer les certificats SSL : `docker compose -f generate-indexer-certs.yml run --rm generator`
+4. `docker compose up -d`
+5. Dashboard : https://localhost — `admin` / `INDEXER_PASSWORD`
+
+## Intégrations threat intel
+
+### VirusTotal (natif)
+- Déclencheur : alertes syscheck (FIM) — hash des fichiers ajoutés/modifiés envoyés à l'API VT.
+- Config : bloc `<integration>` dans `wazuh_manager.conf`.
+- Alertes : règles built-in 87103–87105 (87105 = fichier détecté malveillant, niveau 12).
+
+### AbuseIPDB (custom)
+- Script : `integrations/custom-abuseipdb.py` (+ wrapper `custom-abuseipdb`), monté dans
+  `/var/ossec/integrations/` du manager.
+- Déclencheur : alertes des groupes `sshd,attacks,authentication_failed,invalid_login` avec `data.srcip`
+  publique. IP privées ignorées.
+- Réinjection du résultat dans l'analyseur → règles locales (`config/wazuh_cluster/local_rules.xml`) :
+  - 100621 (niv. 3) : enrichissement reçu
+  - 100622 (niv. 12) : score ≥ 80 — IP malveillante
+  - 100623 (niv. 7) : score 20–79 — IP suspecte
+  - 100624 (niv. 5) : erreur API
+
+### Test manuel
 ```
-$ docker-compose up
-```
-- In the background:
-```
-$ docker-compose up -d
+# AbuseIPDB — injecter une alerte factice avec srcip Tor puis chercher règle 100622 :
+docker compose exec wazuh.manager /var/ossec/integrations/custom-abuseipdb <alert.json> <api_key>
+# VirusTotal — alerte syscheck factice avec md5 EICAR (44d88612fea8a8f36de82e1278abb02f) :
+docker compose exec wazuh.manager /var/ossec/integrations/virustotal <alert.json> <api_key> ""
+grep -E "abuseipdb|virustotal" /var/ossec/logs/alerts/alerts.json
 ```
 
-The environment takes about 1 minute to get up (depending on your Docker host) for the first time since Wazuh Indexer must be started for the first time and the indexes and index patterns must be generated.
+## Fichiers gitignorés (secrets)
+
+- `.env`, `config/wazuh_cluster/wazuh_manager.conf` (clés API), `config/wazuh_dashboard/wazuh.yml`
+  (mdp API), `config/wazuh_indexer_ssl_certs/*` (certificats). Versions `.example` versionnées.
