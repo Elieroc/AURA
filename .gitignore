@@ -5,6 +5,7 @@
 *.key
 *.pem
 secrets/
+wazuh/config/wazuh_cluster/wazuh_manager.conf
 wazuh/config/wazuh_dashboard/wazuh.yml
 wazuh/config/wazuh_indexer_ssl_certs/*
 !wazuh/config/wazuh_indexer_ssl_certs/.gitkeep

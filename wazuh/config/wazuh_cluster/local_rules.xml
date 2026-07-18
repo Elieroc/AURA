@@ -1,0 +1,35 @@
+<!-- Règles locales SOC-AI -->
+
+<group name="abuseipdb,threat_intel,">
+
+  <!-- Enrichissement AbuseIPDB reçu (toute réponse) -->
+  <rule id="100621" level="3">
+    <decoded_as>json</decoded_as>
+    <field name="integration">custom-abuseipdb</field>
+    <description>AbuseIPDB - IP $(abuseipdb.srcip) : score de confiance d'abus $(abuseipdb.abuse_confidence_score)/100 ($(abuseipdb.total_reports) signalements)</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <!-- IP malveillante : score >= 80 -->
+  <rule id="100622" level="12">
+    <if_sid>100621</if_sid>
+    <field name="abuseipdb.abuse_confidence_score" type="pcre2">^(100|[89][0-9])$</field>
+    <description>AbuseIPDB - IP malveillante détectée : $(abuseipdb.srcip) (score $(abuseipdb.abuse_confidence_score)/100, ISP $(abuseipdb.isp), pays $(abuseipdb.country_code))</description>
+  </rule>
+
+  <!-- IP suspecte : score 20-79 -->
+  <rule id="100623" level="7">
+    <if_sid>100621</if_sid>
+    <field name="abuseipdb.abuse_confidence_score" type="pcre2">^[2-7][0-9]$</field>
+    <description>AbuseIPDB - IP suspecte : $(abuseipdb.srcip) (score $(abuseipdb.abuse_confidence_score)/100)</description>
+  </rule>
+
+  <!-- Erreur d'interrogation API -->
+  <rule id="100624" level="5">
+    <decoded_as>json</decoded_as>
+    <field name="integration">custom-abuseipdb</field>
+    <field name="abuseipdb.error" type="pcre2">.+</field>
+    <description>AbuseIPDB - erreur d'interrogation API pour $(abuseipdb.srcip)</description>
+  </rule>
+
+</group>
