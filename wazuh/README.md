@@ -56,6 +56,26 @@ docker compose exec wazuh.manager /var/ossec/integrations/virustotal <alert.json
 grep -E "abuseipdb|virustotal" /var/ossec/logs/alerts/alerts.json
 ```
 
+## Routage des alertes par type (index dédiés)
+
+Les alertes des **agents** (pas celles du manager, agent 000) sont routées vers des index dédiés
+par un processor `script` ajouté en fin de pipeline ingest
+(`config/wazuh_cluster/alerts-pipeline.json`, bind-mounté sur le module filebeat du manager) :
+
+| Index | Critère |
+|-------|---------|
+| `wazuh-web-*` | `rule.groups` contient web/apache/nginx/iis |
+| `wazuh-windows-*` | `rule.groups` contient windows, ou champ `data.win` présent |
+| `wazuh-linux-*` | groupes syslog/sshd/pam/systemd/audit/auth, ou `location` = journald ou /var/log/* |
+| `wazuh-alerts-*` (défaut) | tout le reste + alertes du manager |
+
+- Template d'index `soc-ai-routing` (clone du template wazuh, mêmes mappings) appliqué aux 3 patterns.
+- Index patterns dashboard : `wazuh-linux-*`, `wazuh-windows-*`, `wazuh-web-*`, plus le pattern
+  combiné `soc-ai-all-alerts` (= les 4) utilisé par l'app Wazuh (`pattern:` dans
+  `wazuh_dashboard/wazuh.yml`) et le dashboard custom, pour garder une vue globale.
+- Modif du routage : éditer le script dans `alerts-pipeline.json` puis recréer le manager
+  (`docker compose up -d --force-recreate wazuh.manager`).
+
 ## Dashboards custom
 
 - `dashboards/soc-ai-threat-intel.ndjson` : dashboard "SOC-AI - Threat Intel" — carte GeoIP des
