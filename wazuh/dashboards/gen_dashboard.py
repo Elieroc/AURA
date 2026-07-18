@@ -2,7 +2,7 @@
 """Génère le ndjson du dashboard SOC-AI Threat Intel pour Wazuh dashboard (OSD 2.x)."""
 import json
 
-IDX = "wazuh-alerts-*"
+IDX = "soc-ai-all-alerts"
 OUT = "/home/elie/Nextcloud/Documents/IT/Projets/SOC-AI/wazuh/dashboards/soc-ai-threat-intel.ndjson"
 
 def ref(name="kibanaSavedObjectMeta.searchSourceJSON.index"):
