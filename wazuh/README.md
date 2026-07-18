@@ -39,6 +39,14 @@ secrets sortis vers `.env`, intégrations threat intel VirusTotal + AbuseIPDB.
   - 100623 (niv. 7) : score 20–79 — IP suspecte
   - 100624 (niv. 5) : erreur API
 
+### GeoIP (par défaut)
+- Enrichissement fait côté indexer : le pipeline ingest `filebeat-7.10.2-wazuh-alerts-pipeline`
+  applique un processor `geoip` (GeoLite2 embarquée dans OpenSearch) sur `data.srcip`
+  (+ `data.win.eventdata.ipAddress`, `data.aws.sourceIPAddress`) → champ `GeoLocation`
+  (pays, ville, lat/lon). Rien à installer.
+- Les événements custom-abuseipdb émettent `srcip` à la racine pour bénéficier du même
+  enrichissement.
+
 ### Test manuel
 ```
 # AbuseIPDB — injecter une alerte factice avec srcip Tor puis chercher règle 100622 :

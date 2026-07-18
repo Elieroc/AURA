@@ -35,7 +35,7 @@ SOC piloté par une IA locale. Détection avec Wazuh, enrichissement threat inte
 | [`wazuh/`](wazuh/) | Stack Wazuh 4.9.2 single-node (Docker Compose) | ✅ Fonctionnel |
 | VirusTotal | Hash des fichiers FIM vérifiés à l'API VT (règles 87103–87105) | ✅ Testé E2E |
 | AbuseIPDB | Réputation IP source des alertes SSH/auth/attaques (règles 100621–100624) | ✅ Testé E2E |
-| GeoIP | Géolocalisation des IP sources | 🔜 À venir |
+| GeoIP | Géolocalisation des IP sources (pipeline ingest indexer, GeoLite2 embarquée) | ✅ Actif par défaut |
 | Agents | Déploiement d'agents Wazuh sur les endpoints | 🔜 À venir |
 | IA — Rules creator | Génération de règles/decoders Wazuh à partir des alertes | 🔜 À venir |
 | IA — Whitelist | Gestion des faux positifs récurrents | 🔜 À venir |

@@ -63,6 +63,9 @@ def main() -> None:
 
     send_event({
         "integration": "custom-abuseipdb",
+        # srcip à la racine -> data.srcip après décodage JSON -> enrichi en
+        # GeoLocation par le pipeline geoip de l'indexer
+        "srcip": srcip,
         "abuseipdb": {
             "srcip": srcip,
             "abuse_confidence_score": data.get("abuseConfidenceScore"),
