@@ -78,16 +78,17 @@ par un processor `script` ajouté en fin de pipeline ingest
 
 ## Dashboards custom
 
-- `dashboards/soc-ai-threat-intel.ndjson` : dashboard "SOC-AI - Threat Intel" — carte GeoIP des
-  alertes, timeline par niveau, réputation IP AbuseIPDB, détections VirusTotal, top règles,
-  échecs d'authentification. Généré par `dashboards/gen_dashboard.py`.
+- `dashboards/soc-ai-dashboards.ndjson` (généré par `dashboards/gen_dashboard.py`), 3 dashboards :
+  - **Threat Intel** : carte GeoIP des IP sources, réputation AbuseIPDB, détections VirusTotal
+  - **Global** : compteur d'événements global + timeline des alertes par niveau
+  - **Linux** : top règles, top alertes, échecs d'authentification (index `wazuh-linux-*`)
 - Import (API saved objects, idempotent) :
   ```
   curl -sk -u admin:$INDEXER_PASSWORD -X POST \
     "https://localhost/api/saved_objects/_import?overwrite=true" \
-    -H 'osd-xsrf: true' --form file=@dashboards/soc-ai-threat-intel.ndjson
+    -H 'osd-xsrf: true' --form file=@dashboards/soc-ai-dashboards.ndjson
   ```
-- Accès : Dashboard → "SOC-AI - Threat Intel" (time range 24h, refresh 60s).
+- Accès : menu Dashboards (time range 24h, refresh 60s).
 - Les modules built-in du dashboard Wazuh couvrent déjà Threat Hunting, MITRE ATT&CK, FIM,
   vulnérabilités — pas dupliqués ici.
 
