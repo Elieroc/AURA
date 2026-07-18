@@ -56,6 +56,21 @@ docker compose exec wazuh.manager /var/ossec/integrations/virustotal <alert.json
 grep -E "abuseipdb|virustotal" /var/ossec/logs/alerts/alerts.json
 ```
 
+## Dashboards custom
+
+- `dashboards/soc-ai-threat-intel.ndjson` : dashboard "SOC-AI - Threat Intel" — carte GeoIP des
+  alertes, timeline par niveau, réputation IP AbuseIPDB, détections VirusTotal, top règles,
+  échecs d'authentification. Généré par `dashboards/gen_dashboard.py`.
+- Import (API saved objects, idempotent) :
+  ```
+  curl -sk -u admin:$INDEXER_PASSWORD -X POST \
+    "https://localhost/api/saved_objects/_import?overwrite=true" \
+    -H 'osd-xsrf: true' --form file=@dashboards/soc-ai-threat-intel.ndjson
+  ```
+- Accès : Dashboard → "SOC-AI - Threat Intel" (time range 24h, refresh 60s).
+- Les modules built-in du dashboard Wazuh couvrent déjà Threat Hunting, MITRE ATT&CK, FIM,
+  vulnérabilités — pas dupliqués ici.
+
 ## Fichiers gitignorés (secrets)
 
 - `.env`, `config/wazuh_cluster/wazuh_manager.conf` (clés API), `config/wazuh_dashboard/wazuh.yml`
