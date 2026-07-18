@@ -1,4 +1,3 @@
-pattern: "wazuh-alerts-*,wazuh-linux-*,wazuh-windows-*,wazuh-web-*"
 
 hosts:
   - 1513629884013:
