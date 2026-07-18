@@ -39,6 +39,9 @@ def main() -> None:
     if not srcip:
         sys.exit(0)
 
+    # IP destination : dstip de l'alerte si présente, sinon IP de l'agent attaqué
+    dstip = alert.get("data", {}).get("dstip") or alert.get("agent", {}).get("ip")
+
     # IP privées/locales : pas de sens de requêter AbuseIPDB
     if srcip.startswith(("10.", "192.168.", "127.", "172.16.", "172.17.",
                          "172.18.", "172.19.", "172.2", "172.30.", "172.31.",
@@ -68,6 +71,7 @@ def main() -> None:
         "srcip": srcip,
         "abuseipdb": {
             "srcip": srcip,
+            "dstip": dstip,
             "abuse_confidence_score": data.get("abuseConfidenceScore"),
             "total_reports": data.get("totalReports"),
             "country_code": data.get("countryCode"),

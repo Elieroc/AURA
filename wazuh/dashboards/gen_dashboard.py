@@ -115,8 +115,11 @@ objs.append(vis("soc-ai-abuseipdb-table", "Réputation IP (AbuseIPDB)", {
          "params": {**TERMS, "field": "data.abuseipdb.abuse_confidence_score", "orderBy": "_key",
                      "size": 5, "customLabel": "Score abus"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "data.abuseipdb.country_code", "size": 5, "customLabel": "Pays"}},
+         "params": {**TERMS, "field": "data.abuseipdb.dstip", "size": 5,
+                     "missingBucket": True, "missingBucketLabel": "-", "customLabel": "IP destination"}},
         {"id": "5", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "data.abuseipdb.country_code", "size": 5, "customLabel": "Pays"}},
+        {"id": "6", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "data.abuseipdb.isp", "size": 5, "customLabel": "ISP"}},
     ],
     "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
@@ -134,11 +137,57 @@ objs.append(vis("soc-ai-virustotal-table", "Détections VirusTotal", {
          "params": {**TERMS, "field": "data.virustotal.positives", "orderBy": "_key",
                      "size": 5, "customLabel": "Moteurs positifs"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "agent.name", "size": 5, "customLabel": "Agent"}},
+         "params": {**TERMS, "field": "agent.name", "size": 5, "customLabel": "Machine"}},
     ],
     "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_ALL, query="data.virustotal.positives:*"))
+
+objs.append(vis("soc-ai-vt-total", "Détections VirusTotal (total)", {
+    "title": "Détections VirusTotal (total)",
+    "type": "metric",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Détections VT"}},
+    ],
+    "params": {"addTooltip": True, "addLegend": False, "type": "metric",
+               "metric": {"percentageMode": False, "useRanges": False,
+                          "colorSchema": "Green to Red", "metricColorMode": "None",
+                          "colorsRange": [{"from": 0, "to": 10000}],
+                          "labels": {"show": True},
+                          "invertColors": False,
+                          "style": {"bgFill": "#000", "bgColor": False, "labelColor": False,
+                                     "subText": "", "fontSize": 60}}},
+}, IDX_ALL, query="data.virustotal.positives:*"))
+
+objs.append(vis("soc-ai-abuseipdb-countries", "Top pays (AbuseIPDB)", {
+    "title": "Top pays (AbuseIPDB)",
+    "type": "horizontal_bar",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Détections"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "data.abuseipdb.country_code", "size": 10, "customLabel": "Pays"}},
+    ],
+    "params": {"type": "histogram", "grid": {"categoryLines": False},
+               "categoryAxes": [{"id": "CategoryAxis-1", "type": "category", "position": "left",
+                                  "show": True, "style": {}, "scale": {"type": "linear"},
+                                  "labels": {"show": True, "rotate": 0, "filter": False, "truncate": 200},
+                                  "title": {}}],
+               "valueAxes": [{"id": "ValueAxis-1", "name": "BottomAxis-1", "type": "value",
+                               "position": "bottom", "show": True, "style": {},
+                               "scale": {"type": "linear", "mode": "normal"},
+                               "labels": {"show": True, "rotate": 75, "filter": True, "truncate": 100},
+                               "title": {"text": "Détections"}}],
+               "seriesParams": [{"show": True, "type": "histogram", "mode": "normal",
+                                  "data": {"label": "Détections", "id": "1"},
+                                  "valueAxis": "ValueAxis-1", "drawLinesBetweenPoints": True,
+                                  "lineWidth": 2, "showCircles": True}],
+               "addTooltip": True, "addLegend": False, "legendPosition": "right",
+               "times": [], "addTimeMarker": False, "labels": {},
+               "thresholdLine": {"show": False, "value": 10, "width": 1, "style": "full",
+                                  "color": "#E7664C"}},
+}, IDX_ALL, query="data.abuseipdb.srcip:*"))
 
 # ---------- Visualisations : Global ----------
 
@@ -226,9 +275,11 @@ objs.append(vis("soc-ai-linux-top-alerts", "Top alertes", {
 objs.append(dashboard("soc-ai-threat-intel", "Threat Intel",
     "Threat intel : carte GeoIP des IP sources, réputation AbuseIPDB, détections VirusTotal.",
     [
-        ("soc-ai-geoip-map",        0,  0, 48, 18),
-        ("soc-ai-abuseipdb-table",  0, 18, 24, 14),
-        ("soc-ai-virustotal-table",24, 18, 24, 14),
+        ("soc-ai-geoip-map",             0,  0, 48, 16),
+        ("soc-ai-abuseipdb-table",       0, 16, 24, 14),
+        ("soc-ai-virustotal-table",     24, 16, 24, 14),
+        ("soc-ai-vt-total",              0, 30, 12, 12),
+        ("soc-ai-abuseipdb-countries",  12, 30, 36, 12),
     ]))
 
 objs.append(dashboard("soc-ai-global", "Global",
