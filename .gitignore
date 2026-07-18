@@ -1,8 +1,15 @@
 .env
 .env.*
+!.env.example
+!*/.env.example
 *.key
 *.pem
 secrets/
+docker/config/wazuh_cluster/wazuh_manager.conf
+docker/config/wazuh_indexer_ssl_certs/*
+!docker/config/wazuh_indexer_ssl_certs/.gitkeep
+docker/volumes/
+docker/geoip/*.mmdb
 __pycache__/
 *.pyc
 .venv/

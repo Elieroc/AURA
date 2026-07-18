@@ -1,0 +1,75 @@
+<ossec_config>
+  <vulnerability-detector>
+    <enabled>yes</enabled>
+    <index-status>yes</index-status>
+    <feed-update-interval>60m</feed-update-interval>
+  </vulnerability-detector>
+
+  <indexer>
+    <enabled>yes</enabled>
+    <hosts>
+      <host>https://wazuh.indexer:9200</host>
+    </hosts>
+    <ssl>
+      <certificate_authorities>
+        <ca>/etc/ssl/root-ca.pem</ca>
+      </certificate_authorities>
+      <certificate>/etc/ssl/filebeat.pem</certificate>
+      <key>/etc/ssl/filebeat.key</key>
+    </ssl>
+  </indexer>
+
+  <remote>
+    <connection>secure</connection>
+    <port>1514</port>
+    <protocol>tcp</protocol>
+  </remote>
+
+  <global>
+    <jsonout_output>yes</jsonout_output>
+    <alerts_log>yes</alerts_log>
+    <logall>no</logall>
+    <logall_json>no</logall_json>
+    <email_notification>no</email_notification>
+  </global>
+
+  <alerts>
+    <log_alert_level>3</log_alert_level>
+    <email_alert_level>12</email_alert_level>
+  </alerts>
+
+  <!-- GeoIP: résolution géoloc IP source des alertes -->
+  <geoip>
+    <db-source>/var/ossec/etc/GeoLite2-City.mmdb</db-source>
+  </geoip>
+
+  <!-- Enrichissement VirusTotal : clé API via env WAZUH_VT_API_KEY (voir .env) -->
+  <integration>
+    <name>virustotal</name>
+    <api_key>WAZUH_VT_API_KEY_PLACEHOLDER</api_key>
+    <group>vulnerability-detector</group>
+    <alert_format>json</alert_format>
+  </integration>
+
+  <!-- Enrichissement AbuseIPDB : clé API via env WAZUH_ABUSEIPDB_API_KEY (voir .env) -->
+  <integration>
+    <name>abuseipdb</name>
+    <api_key>WAZUH_ABUSEIPDB_API_KEY_PLACEHOLDER</api_key>
+    <group>syslog,sshd,web</group>
+    <alert_format>json</alert_format>
+  </integration>
+
+  <auth>
+    <disabled>no</disabled>
+    <port>1515</port>
+    <use_source_ip>no</use_source_ip>
+    <purge>yes</purge>
+    <use_password>no</use_password>
+    <ciphers>HIGH:!ADH:!EXP:!MD5:!RC4:!3DES:!CAMELLIA:@STRENGTH</ciphers>
+    <ssl_agent_ca></ssl_agent_ca>
+    <ssl_verify_host>no</ssl_verify_host>
+    <ssl_manager_cert>etc/sslmanager.cert</ssl_manager_cert>
+    <ssl_manager_key>etc/sslmanager.key</ssl_manager_key>
+    <ssl_auto_negotiate>no</ssl_auto_negotiate>
+  </auth>
+</ossec_config>
