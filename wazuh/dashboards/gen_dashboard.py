@@ -70,7 +70,7 @@ def dashboard(did, title, description, layout):
             "description": description,
             "hits": 0,
             "timeRestore": True,
-            "timeFrom": "now-24h",
+            "timeFrom": "now-30d",
             "timeTo": "now",
             "refreshInterval": {"pause": False, "value": 60000},
             "panelsJSON": json.dumps(panels),
@@ -197,7 +197,7 @@ objs.append(vis("soc-ai-alerts-timeline", "Alertes par niveau (timeline)", {
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
         {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
-         "params": {"field": "timestamp", "timeRange": {"from": "now-24h", "to": "now"},
+         "params": {"field": "timestamp", "timeRange": {"from": "now-30d", "to": "now"},
                      "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
                      "interval": "auto", "drop_partials": False, "min_doc_count": 1, "extended_bounds": {}}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "group",
@@ -244,7 +244,7 @@ objs.append(vis("soc-ai-auth-failures", "Échecs d'authentification", {
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
         {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
-         "params": {"field": "timestamp", "timeRange": {"from": "now-24h", "to": "now"},
+         "params": {"field": "timestamp", "timeRange": {"from": "now-30d", "to": "now"},
                      "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
                      "interval": "auto", "drop_partials": False, "min_doc_count": 1, "extended_bounds": {}}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "group",

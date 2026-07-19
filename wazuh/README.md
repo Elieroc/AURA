@@ -88,7 +88,7 @@ par un processor `script` ajouté en fin de pipeline ingest
     "https://localhost/api/saved_objects/_import?overwrite=true" \
     -H 'osd-xsrf: true' --form file=@dashboards/soc-ai-dashboards.ndjson
   ```
-- Accès : menu Dashboards (time range 24h, refresh 60s).
+- Accès : menu Dashboards (time range 30 jours, refresh 60s).
 - Les modules built-in du dashboard Wazuh couvrent déjà Threat Hunting, MITRE ATT&CK, FIM,
   vulnérabilités — pas dupliqués ici.
 
