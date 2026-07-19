@@ -38,12 +38,26 @@ TERMS = {"orderBy": "1", "order": "desc", "otherBucket": False, "otherBucketLabe
 # Alertes actionnables : sévérité >= Medium (rule.level >= 7)
 SEV_ACTIONABLE = 'rule.severity:("Medium" or "High" or "Critical")'
 
+# Couleurs par sévérité (palette Elastic/OSD)
+SEV_COLORS = {"vis": {"colors": {
+    "Critical": "#BD271E",   # rouge
+    "High": "#E7664C",       # orange
+    "Medium": "#D6BF57",     # jaune
+    "Low": "#54B399",        # vert
+    "Info": "#6092C0",       # bleu
+}}}
 
-def vis(vid, title, vis_state, idx, query=""):
+# Tri des buckets sévérité par rule.severity_order (Critical=5 ... Info=1)
+SEV_TERMS = {**TERMS, "field": "rule.severity", "size": 5, "orderBy": "custom", "order": "desc",
+             "orderAgg": {"id": "orderAgg", "enabled": True, "type": "max", "schema": "orderAgg",
+                          "params": {"field": "rule.severity_order"}}}
+
+
+def vis(vid, title, vis_state, idx, query="", ui_state=None):
     return {
         "attributes": {
             "title": title,
-            "uiStateJSON": "{}",
+            "uiStateJSON": json.dumps(ui_state) if ui_state else "{}",
             "visState": json.dumps(vis_state),
             "kibanaSavedObjectMeta": {"searchSourceJSON": json.dumps({
                 "query": {"query": query, "language": "kuery"},
@@ -205,10 +219,10 @@ objs.append(vis("soc-ai-alerts-timeline", "Alertes par sévérité (timeline)", 
                      "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
                      "interval": "auto", "drop_partials": False, "min_doc_count": 1, "extended_bounds": {}}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "group",
-         "params": {**TERMS, "field": "rule.severity", "orderBy": "_key", "size": 5}},
+         "params": SEV_TERMS},
     ],
     "params": HIST_PARAMS,
-}, IDX_ALL))
+}, IDX_ALL, ui_state=SEV_COLORS))
 
 objs.append(vis("soc-ai-total-events", "Nombre d'événements global", {
     "title": "Nombre d'événements global",
@@ -266,7 +280,7 @@ objs.append(vis("soc-ai-linux-top-alerts", "Top alertes", {
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alerte"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "rule.severity", "orderBy": "_key", "size": 5, "customLabel": "Sévérité"}},
+         "params": {**SEV_TERMS, "customLabel": "Sévérité"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "agent.name", "size": 3, "customLabel": "Agent"}},
     ],
@@ -334,7 +348,7 @@ objs.append(vis("soc-ai-web-top-alerts", "Top alertes web", {
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alerte"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "rule.severity", "orderBy": "_key", "size": 5, "customLabel": "Sévérité"}},
+         "params": {**SEV_TERMS, "customLabel": "Sévérité"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "agent.name", "size": 3, "customLabel": "Agent"}},
     ],

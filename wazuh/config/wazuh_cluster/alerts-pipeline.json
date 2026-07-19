@@ -263,10 +263,10 @@
     },
     {
       "script": {
-        "description": "SOC-AI: rule.severity depuis rule.level — Info (<5), Low (5-6), Medium (7-10), High (11-14), Critical (15-16)",
+        "description": "SOC-AI: rule.severity + rule.severity_order depuis rule.level — Info (<5), Low (5-6), Medium (7-10), High (11-14), Critical (15-16)",
         "lang": "painless",
         "ignore_failure": true,
-        "source": "def l = ctx.rule?.level;\nif (l == null) { return; }\nint lv;\nif (l instanceof Integer) { lv = l; } else { lv = Integer.parseInt(l.toString()); }\nString s;\nif (lv >= 15) { s = 'Critical'; }\nelse if (lv >= 11) { s = 'High'; }\nelse if (lv >= 7) { s = 'Medium'; }\nelse if (lv >= 5) { s = 'Low'; }\nelse { s = 'Info'; }\nctx.rule.severity = s;"
+        "source": "def l = ctx.rule?.level;\nif (l == null) { return; }\nint lv;\nif (l instanceof Integer) { lv = l; } else { lv = Integer.parseInt(l.toString()); }\nString s;\nint o;\nif (lv >= 15) { s = 'Critical'; o = 5; }\nelse if (lv >= 11) { s = 'High'; o = 4; }\nelse if (lv >= 7) { s = 'Medium'; o = 3; }\nelse if (lv >= 5) { s = 'Low'; o = 2; }\nelse { s = 'Info'; o = 1; }\nctx.rule.severity = s;\nctx.rule.severity_order = o;"
       }
     },
     {
