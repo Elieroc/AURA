@@ -8,6 +8,7 @@ SOC piloté par IA locale. Détection Wazuh + enrichissement threat intel + auto
   - **GeoIP** — enrichissement géoloc des IP sources (module Wazuh GeoIP / MaxMind GeoLite2).
   - **VirusTotal (VT)** — enrichissement réputation fichiers/hash/IP via API VT.
   - **AbuseIPDB** — enrichissement réputation IP (score abus, historique reports).
+- **Shuffle** — SOAR pour l'orchestration des remédiations (`shuffle/`). Workflow "Wazuh - Host Isolation" : webhook → API Wazuh → active response `host-isolate.sh`/`host-unisolate.sh` (nftables) sur l'agent. Déclenchement manuel uniquement.
 - **IA locale** (runtime pas encore choisi — candidats : Ollama, vLLM) :
   - **Rules creator** — génère/propose règles Wazuh (decoders/rules XML) à partir d'alertes ou de patterns observés.
   - **Whitelist** — propose/gère exceptions (faux positifs récurrents, IP/hosts de confiance).
