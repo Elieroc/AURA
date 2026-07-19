@@ -81,7 +81,8 @@ par un processor `script` ajouté en fin de pipeline ingest
 - `dashboards/soc-ai-dashboards.ndjson` (généré par `dashboards/gen_dashboard.py`), 3 dashboards :
   - **Threat Intel** : carte GeoIP des IP sources, réputation AbuseIPDB, détections VirusTotal
   - **Global** : compteur d'événements global + timeline des alertes par niveau
-  - **Linux** : top règles, top alertes, échecs d'authentification (index `wazuh-linux-*`)
+  - **Linux** : top règles, top alertes, échecs d'authentification, top agents (index `wazuh-linux-*`)
+  - **Web** : top règles/alertes d'attaque, timeline, top URLs ciblées, top IP sources, codes HTTP (index `wazuh-web-*`)
 - Import (API saved objects, idempotent) :
   ```
   curl -sk -u admin:$INDEXER_PASSWORD -X POST \

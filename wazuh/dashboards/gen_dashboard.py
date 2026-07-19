@@ -10,6 +10,7 @@ import json
 
 IDX_ALL = "soc-ai-all-alerts"    # pattern combiné wazuh-alerts-*,wazuh-linux-*,wazuh-windows-*,wazuh-web-*
 IDX_LINUX = "wazuh-linux-*"
+IDX_WEB = "wazuh-web-*"
 OUT = "/home/elie/Nextcloud/Documents/IT/Projets/SOC-AI/wazuh/dashboards/soc-ai-dashboards.ndjson"
 
 HIST_PARAMS = {
@@ -306,6 +307,108 @@ objs.append(hbar_agents("soc-ai-linux-agents-alerts", "Top agents par alertes (n
 objs.append(hbar_agents("soc-ai-linux-agents-logs", "Top agents par volume de logs",
                         "Événements"))
 
+# ---------- Visualisations : Web (index wazuh-web-*) ----------
+# Niveaux des règles web bas (attaques = 6) : le filtre pertinent est le groupe "attack".
+
+objs.append(vis("soc-ai-web-top-rules", "Top règles web (attaques)", {
+    "title": "Top règles web (attaques)",
+    "type": "pie",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "rule.description", "size": 10,
+                     "otherBucket": True, "otherBucketLabel": "Autres"}},
+    ],
+    "params": {"type": "pie", "addTooltip": True, "addLegend": True, "legendPosition": "right",
+               "isDonut": True, "labels": {"show": False, "values": True, "last_level": True, "truncate": 100}},
+}, IDX_WEB, query='rule.groups:"attack"'))
+
+objs.append(vis("soc-ai-web-top-alerts", "Top alertes web", {
+    "title": "Top alertes web",
+    "type": "table",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {"customLabel": "Occurrences"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alerte"}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "rule.level", "orderBy": "_key", "size": 3, "customLabel": "Niveau"}},
+        {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "agent.name", "size": 3, "customLabel": "Agent"}},
+    ],
+    "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
+               "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
+}, IDX_WEB, query='rule.groups:"attack"'))
+
+objs.append(vis("soc-ai-web-timeline", "Alertes web (timeline)", {
+    "title": "Alertes web (timeline)",
+    "type": "histogram",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
+        {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
+         "params": {"field": "timestamp", "timeRange": {"from": "now-30d", "to": "now"},
+                     "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
+                     "interval": "auto", "drop_partials": False, "min_doc_count": 1, "extended_bounds": {}}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "group",
+         "params": {**TERMS, "field": "agent.name", "size": 10}},
+    ],
+    "params": HIST_PARAMS,
+}, IDX_WEB))
+
+objs.append(vis("soc-ai-web-top-urls", "Top URLs ciblées", {
+    "title": "Top URLs ciblées",
+    "type": "table",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {"customLabel": "Hits"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "data.url", "size": 15, "customLabel": "URL"}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "data.id", "size": 3, "customLabel": "Code HTTP"}},
+    ],
+    "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
+               "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
+}, IDX_WEB, query='rule.groups:"attack"'))
+
+objs.append(vis("soc-ai-web-top-srcips", "Top IP sources web", {
+    "title": "Top IP sources web",
+    "type": "horizontal_bar",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Requêtes"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "data.srcip", "size": 10, "customLabel": "IP source"}},
+    ],
+    "params": {"type": "histogram", "grid": {"categoryLines": False},
+               "categoryAxes": [{"id": "CategoryAxis-1", "type": "category", "position": "left",
+                                  "show": True, "style": {}, "scale": {"type": "linear"},
+                                  "labels": {"show": True, "rotate": 0, "filter": False, "truncate": 200},
+                                  "title": {}}],
+               "valueAxes": [{"id": "ValueAxis-1", "name": "BottomAxis-1", "type": "value",
+                               "position": "bottom", "show": True, "style": {},
+                               "scale": {"type": "linear", "mode": "normal"},
+                               "labels": {"show": True, "rotate": 75, "filter": True, "truncate": 100},
+                               "title": {"text": "Requêtes"}}],
+               "seriesParams": [{"show": True, "type": "histogram", "mode": "normal",
+                                  "data": {"label": "Requêtes", "id": "1"},
+                                  "valueAxis": "ValueAxis-1", "drawLinesBetweenPoints": True,
+                                  "lineWidth": 2, "showCircles": True}],
+               "addTooltip": True, "addLegend": False, "legendPosition": "right",
+               "times": [], "addTimeMarker": False, "labels": {},
+               "thresholdLine": {"show": False, "value": 10, "width": 1, "style": "full",
+                                  "color": "#E7664C"}},
+}, IDX_WEB))
+
+objs.append(vis("soc-ai-web-http-codes", "Codes HTTP", {
+    "title": "Codes HTTP",
+    "type": "pie",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "data.id", "size": 10, "customLabel": "Code HTTP"}},
+    ],
+    "params": {"type": "pie", "addTooltip": True, "addLegend": True, "legendPosition": "right",
+               "isDonut": True, "labels": {"show": False, "values": True, "last_level": True, "truncate": 100}},
+}, IDX_WEB))
+
 # ---------- Dashboards ----------
 
 objs.append(dashboard("soc-ai-threat-intel", "Threat Intel",
@@ -333,6 +436,17 @@ objs.append(dashboard("soc-ai-linux", "Linux",
         ("soc-ai-auth-failures",    0, 15, 48, 14),
         ("soc-ai-linux-agents-alerts", 0, 29, 24, 12),
         ("soc-ai-linux-agents-logs",  24, 29, 24, 12),
+    ]))
+
+objs.append(dashboard("soc-ai-web", "Web",
+    "Alertes web (index wazuh-web-*) : attaques, URLs ciblées, IP sources, codes HTTP.",
+    [
+        ("soc-ai-web-top-rules",   0,  0, 24, 15),
+        ("soc-ai-web-top-alerts", 24,  0, 24, 15),
+        ("soc-ai-web-timeline",    0, 15, 48, 12),
+        ("soc-ai-web-top-urls",    0, 27, 24, 13),
+        ("soc-ai-web-top-srcips", 24, 27, 12, 13),
+        ("soc-ai-web-http-codes", 36, 27, 12, 13),
     ]))
 
 with open(OUT, "w") as f:
