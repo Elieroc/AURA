@@ -1,0 +1,101 @@
+# Shuffle SOAR — orchestration des remédiations (active response Wazuh).
+# UI : http://localhost:3001 — API : http://localhost:5001
+# Bootstrap admin via SHUFFLE_DEFAULT_* (voir .env, cf. .env.example).
+services:
+  frontend:
+    image: ghcr.io/shuffle/shuffle-frontend:latest
+    container_name: shuffle-frontend
+    hostname: shuffle-frontend
+    restart: unless-stopped
+    ports:
+      - "3001:80"
+    environment:
+      - BACKEND_HOSTNAME=shuffle-backend
+    depends_on:
+      - backend
+    networks:
+      - shuffle
+
+  backend:
+    image: ghcr.io/shuffle/shuffle-backend:latest
+    container_name: shuffle-backend
+    hostname: shuffle-backend
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    volumes:
+      # Requis : le backend/orborus pilote Docker pour exécuter les apps
+      - /var/run/docker.sock:/var/run/docker.sock
+      - shuffle-apps:/shuffle-apps
+      - shuffle-files:/shuffle-files
+    environment:
+      - SHUFFLE_APP_HOTLOAD_FOLDER=/shuffle-apps
+      - SHUFFLE_FILE_LOCATION=/shuffle-files
+      - SHUFFLE_OPENSEARCH_URL=http://shuffle-opensearch:9200
+      - SHUFFLE_ELASTIC=true
+      - ORG_ID=Shuffle
+      - ENVIRONMENT_NAME=Shuffle
+      - SHUFFLE_DEFAULT_USERNAME=${SHUFFLE_DEFAULT_USERNAME}
+      - SHUFFLE_DEFAULT_PASSWORD=${SHUFFLE_DEFAULT_PASSWORD}
+      - SHUFFLE_DEFAULT_APIKEY=${SHUFFLE_DEFAULT_APIKEY}
+    depends_on:
+      - opensearch
+    networks:
+      - shuffle
+
+  orborus:
+    image: ghcr.io/shuffle/shuffle-orborus:latest
+    container_name: shuffle-orborus
+    hostname: shuffle-orborus
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - ENVIRONMENT_NAME=Shuffle
+      - BASE_URL=http://shuffle-backend:5001
+      - DOCKER_API_VERSION=1.40
+      - SHUFFLE_ORBORUS_EXECUTION_CONCURRENCY=5
+      - SHUFFLE_LOGS_DISABLED=true
+      - SHUFFLE_WORKER_IMAGE=ghcr.io/shuffle/shuffle-worker:latest
+      - SHUFFLE_BASE_IMAGE_REGISTRY=ghcr.io
+      - CLEANUP=true
+    depends_on:
+      - backend
+    networks:
+      - shuffle
+
+  opensearch:
+    image: opensearchproject/opensearch:2.14.0
+    container_name: shuffle-opensearch
+    hostname: shuffle-opensearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - cluster.name=shuffle-cluster
+      - node.name=shuffle-opensearch
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - DISABLE_SECURITY_PLUGIN=true
+      - cluster.routing.allocation.disk.threshold_enabled=false
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - shuffle-opensearch-data:/usr/share/opensearch/data
+    networks:
+      - shuffle
+
+networks:
+  shuffle:
+    name: shuffle
+    driver: bridge
+
+volumes:
+  shuffle-apps:
+  shuffle-files:
+  shuffle-opensearch-data:

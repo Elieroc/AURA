@@ -221,6 +221,19 @@
     <timeout_allowed>yes</timeout_allowed>
   </command>
 
+  <!-- Isolation réseau d'un hôte (déclenchée via API / Shuffle, jamais automatique) -->
+  <command>
+    <name>host-isolate</name>
+    <executable>host-isolate.sh</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+
+  <command>
+    <name>host-unisolate</name>
+    <executable>host-unisolate.sh</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+
   <!--
   <active-response>
     active-response options here
