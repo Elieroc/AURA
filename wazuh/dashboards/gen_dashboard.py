@@ -35,6 +35,9 @@ HIST_PARAMS = {
 TERMS = {"orderBy": "1", "order": "desc", "otherBucket": False, "otherBucketLabel": "Other",
          "missingBucket": False, "missingBucketLabel": "Missing"}
 
+# Alertes actionnables : sévérité >= Medium (rule.level >= 7)
+SEV_ACTIONABLE = 'rule.severity:("Medium" or "High" or "Critical")'
+
 
 def vis(vid, title, vis_state, idx, query=""):
     return {
@@ -192,8 +195,8 @@ objs.append(vis("soc-ai-abuseipdb-countries", "Top pays (AbuseIPDB)", {
 
 # ---------- Visualisations : Global ----------
 
-objs.append(vis("soc-ai-alerts-timeline", "Alertes par niveau (timeline)", {
-    "title": "Alertes par niveau (timeline)",
+objs.append(vis("soc-ai-alerts-timeline", "Alertes par sévérité (timeline)", {
+    "title": "Alertes par sévérité (timeline)",
     "type": "histogram",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
@@ -202,7 +205,7 @@ objs.append(vis("soc-ai-alerts-timeline", "Alertes par niveau (timeline)", {
                      "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
                      "interval": "auto", "drop_partials": False, "min_doc_count": 1, "extended_bounds": {}}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "group",
-         "params": {**TERMS, "field": "rule.level", "orderBy": "_key", "size": 15}},
+         "params": {**TERMS, "field": "rule.severity", "orderBy": "_key", "size": 5}},
     ],
     "params": HIST_PARAMS,
 }, IDX_ALL))
@@ -237,7 +240,7 @@ objs.append(vis("soc-ai-top-rules", "Top règles déclenchées", {
     ],
     "params": {"type": "pie", "addTooltip": True, "addLegend": True, "legendPosition": "right",
                "isDonut": True, "labels": {"show": False, "values": True, "last_level": True, "truncate": 100}},
-}, IDX_LINUX, query="rule.level >= 7"))
+}, IDX_LINUX, query=SEV_ACTIONABLE))
 
 objs.append(vis("soc-ai-auth-failures", "Échecs d'authentification", {
     "title": "Échecs d'authentification",
@@ -263,13 +266,13 @@ objs.append(vis("soc-ai-linux-top-alerts", "Top alertes", {
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alerte"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "rule.level", "orderBy": "_key", "size": 3, "customLabel": "Niveau"}},
+         "params": {**TERMS, "field": "rule.severity", "orderBy": "_key", "size": 5, "customLabel": "Sévérité"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "agent.name", "size": 3, "customLabel": "Agent"}},
     ],
     "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
-}, IDX_LINUX, query="rule.level >= 7"))
+}, IDX_LINUX, query=SEV_ACTIONABLE))
 
 def hbar_agents(vid, title, metric_label, query=""):
     return vis(vid, title, {
@@ -302,8 +305,8 @@ def hbar_agents(vid, title, metric_label, query=""):
     }, IDX_LINUX, query=query)
 
 
-objs.append(hbar_agents("soc-ai-linux-agents-alerts", "Top agents par alertes (niveau ≥ 7)",
-                        "Alertes", query="rule.level >= 7"))
+objs.append(hbar_agents("soc-ai-linux-agents-alerts", "Top agents par alertes (sévérité ≥ Medium)",
+                        "Alertes", query=SEV_ACTIONABLE))
 objs.append(hbar_agents("soc-ai-linux-agents-logs", "Top agents par volume de logs",
                         "Événements"))
 
@@ -331,7 +334,7 @@ objs.append(vis("soc-ai-web-top-alerts", "Top alertes web", {
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alerte"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "rule.level", "orderBy": "_key", "size": 3, "customLabel": "Niveau"}},
+         "params": {**TERMS, "field": "rule.severity", "orderBy": "_key", "size": 5, "customLabel": "Sévérité"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "agent.name", "size": 3, "customLabel": "Agent"}},
     ],
@@ -422,7 +425,7 @@ objs.append(dashboard("soc-ai-threat-intel", "Threat Intel",
     ]))
 
 objs.append(dashboard("soc-ai-global", "Global",
-    "Vue globale : volume d'événements et répartition des alertes par niveau.",
+    "Vue globale : volume d'événements et répartition des alertes par sévérité.",
     [
         ("soc-ai-total-events",     0,  0, 12, 15),
         ("soc-ai-alerts-timeline", 12,  0, 36, 15),
