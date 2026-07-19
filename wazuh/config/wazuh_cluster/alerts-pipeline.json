@@ -263,6 +263,14 @@
     },
     {
       "script": {
+        "description": "SOC-AI: rule.severity depuis rule.level — Info (<5), Low (5-6), Medium (7-10), High (11-14), Critical (15-16)",
+        "lang": "painless",
+        "ignore_failure": true,
+        "source": "def l = ctx.rule?.level;\nif (l == null) { return; }\nint lv;\nif (l instanceof Integer) { lv = l; } else { lv = Integer.parseInt(l.toString()); }\nString s;\nif (lv >= 15) { s = 'Critical'; }\nelse if (lv >= 11) { s = 'High'; }\nelse if (lv >= 7) { s = 'Medium'; }\nelse if (lv >= 5) { s = 'Low'; }\nelse { s = 'Info'; }\nctx.rule.severity = s;"
+      }
+    },
+    {
+      "script": {
         "description": "SOC-AI: route les alertes des agents (hors manager 000) vers wazuh-linux-*/wazuh-windows-*/wazuh-web-* selon le type de log",
         "lang": "painless",
         "ignore_failure": true,
