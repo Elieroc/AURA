@@ -270,6 +270,42 @@ objs.append(vis("soc-ai-linux-top-alerts", "Top alertes", {
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_LINUX))
 
+def hbar_agents(vid, title, metric_label, query=""):
+    return vis(vid, title, {
+        "title": title,
+        "type": "horizontal_bar",
+        "aggs": [
+            {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+             "params": {"customLabel": metric_label}},
+            {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+             "params": {**TERMS, "field": "agent.name", "size": 10, "customLabel": "Agent"}},
+        ],
+        "params": {"type": "histogram", "grid": {"categoryLines": False},
+                   "categoryAxes": [{"id": "CategoryAxis-1", "type": "category", "position": "left",
+                                      "show": True, "style": {}, "scale": {"type": "linear"},
+                                      "labels": {"show": True, "rotate": 0, "filter": False, "truncate": 200},
+                                      "title": {}}],
+                   "valueAxes": [{"id": "ValueAxis-1", "name": "BottomAxis-1", "type": "value",
+                                   "position": "bottom", "show": True, "style": {},
+                                   "scale": {"type": "linear", "mode": "normal"},
+                                   "labels": {"show": True, "rotate": 75, "filter": True, "truncate": 100},
+                                   "title": {"text": metric_label}}],
+                   "seriesParams": [{"show": True, "type": "histogram", "mode": "normal",
+                                      "data": {"label": metric_label, "id": "1"},
+                                      "valueAxis": "ValueAxis-1", "drawLinesBetweenPoints": True,
+                                      "lineWidth": 2, "showCircles": True}],
+                   "addTooltip": True, "addLegend": False, "legendPosition": "right",
+                   "times": [], "addTimeMarker": False, "labels": {},
+                   "thresholdLine": {"show": False, "value": 10, "width": 1, "style": "full",
+                                      "color": "#E7664C"}},
+    }, IDX_LINUX, query=query)
+
+
+objs.append(hbar_agents("soc-ai-linux-agents-alerts", "Top agents par alertes (niveau ≥ 7)",
+                        "Alertes", query="rule.level >= 7"))
+objs.append(hbar_agents("soc-ai-linux-agents-logs", "Top agents par volume de logs",
+                        "Événements"))
+
 # ---------- Dashboards ----------
 
 objs.append(dashboard("soc-ai-threat-intel", "Threat Intel",
@@ -295,6 +331,8 @@ objs.append(dashboard("soc-ai-linux", "Linux",
         ("soc-ai-top-rules",        0,  0, 24, 15),
         ("soc-ai-linux-top-alerts",24,  0, 24, 15),
         ("soc-ai-auth-failures",    0, 15, 48, 14),
+        ("soc-ai-linux-agents-alerts", 0, 29, 24, 12),
+        ("soc-ai-linux-agents-logs",  24, 29, 24, 12),
     ]))
 
 with open(OUT, "w") as f:
