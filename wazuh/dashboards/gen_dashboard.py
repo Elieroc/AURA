@@ -141,7 +141,7 @@ objs.append(vis("soc-ai-virustotal-table", "Détections VirusTotal", {
     ],
     "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
-}, IDX_ALL, query="data.virustotal.positives:*"))
+}, IDX_ALL, query="data.virustotal.positives:* and not data.virustotal.positives:0"))
 
 objs.append(vis("soc-ai-vt-total", "Détections VirusTotal (total)", {
     "title": "Détections VirusTotal (total)",
@@ -158,7 +158,7 @@ objs.append(vis("soc-ai-vt-total", "Détections VirusTotal (total)", {
                           "invertColors": False,
                           "style": {"bgFill": "#000", "bgColor": False, "labelColor": False,
                                      "subText": "", "fontSize": 60}}},
-}, IDX_ALL, query="data.virustotal.positives:*"))
+}, IDX_ALL, query="data.virustotal.positives:* and not data.virustotal.positives:0"))
 
 objs.append(vis("soc-ai-abuseipdb-countries", "Top pays (AbuseIPDB)", {
     "title": "Top pays (AbuseIPDB)",
