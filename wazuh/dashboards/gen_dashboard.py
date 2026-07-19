@@ -236,7 +236,7 @@ objs.append(vis("soc-ai-top-rules", "Top règles déclenchées", {
     ],
     "params": {"type": "pie", "addTooltip": True, "addLegend": True, "legendPosition": "right",
                "isDonut": True, "labels": {"show": False, "values": True, "last_level": True, "truncate": 100}},
-}, IDX_LINUX))
+}, IDX_LINUX, query="rule.level >= 7"))
 
 objs.append(vis("soc-ai-auth-failures", "Échecs d'authentification", {
     "title": "Échecs d'authentification",
@@ -268,7 +268,7 @@ objs.append(vis("soc-ai-linux-top-alerts", "Top alertes", {
     ],
     "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
-}, IDX_LINUX))
+}, IDX_LINUX, query="rule.level >= 7"))
 
 def hbar_agents(vid, title, metric_label, query=""):
     return vis(vid, title, {
