@@ -78,6 +78,21 @@ Calculée depuis `rule.level` par un processor `script` du pipeline ingest (`con
     -H "Content-Type: application/json" -d @config/wazuh_cluster/alerts-pipeline.json
   ```
 
+## Détection — exécution depuis répertoire temporaire
+
+Règle locale `100625` (niv. 8, Medium) dans `local_rules.xml` : détecte l'exécution d'un binaire
+depuis `/tmp`, `/var/tmp` ou `/dev/shm` (technique classique de drop-and-execute), via le champ
+`audit.exe` du module Linux Audit (auditd).
+
+- **Nécessite auditd configuré sur l'agent** pour surveiller `execve` (ex. règle audit
+  `-a always,exit -F arch=b64 -S execve -k audit-wazuh-c`) — sans ça, aucun événement `audit.exe`
+  n'est généré et la règle ne se déclenche jamais.
+- Testé via `wazuh-logtest` : `exe="/tmp/malware"` → alerte 100625 ; `exe="/bin/bash"` → pas de
+  faux positif (tombe sur la règle par défaut 80792, niv. 3).
+- Côté Windows, couverture équivalente déjà présente dans le ruleset par défaut (Sysmon event 1/7,
+  `0800-sysmon_id_1.xml` / `0820-sysmon_id_7.xml`) pour l'exécution depuis `Users\...\AppData\Local\Temp`
+  et `Windows\Temp` — nécessite Sysmon installé sur l'agent.
+
 ## Routage des alertes par type (index dédiés)
 
 Les alertes des **agents** (pas celles du manager, agent 000) sont routées vers des index dédiés
