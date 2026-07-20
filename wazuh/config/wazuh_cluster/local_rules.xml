@@ -76,5 +76,33 @@
     </mitre>
   </rule>
 
+  <!-- Exécution fileless via memfd_create : le binaire n'existe que en RAM (fichier
+       anonyme), jamais écrit sur disque, puis exécuté via /proc/self/fd/N. /proc/PID/exe
+       pointe alors vers "/memfd:<nom> (deleted)". Aucun logiciel légitime n'exécute
+       depuis memfd -> IOC fileless très fiable, faible FP.
+       Déjà capté par l'audit execve en place (règle 100625), pas de conf auditd
+       supplémentaire nécessaire (un exec de memfd EST un execve). -->
+  <rule id="100630" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.exe" type="pcre2">(?i)memfd:</field>
+    <description>Exécution fileless détectée : binaire exécuté depuis un fichier anonyme en mémoire (memfd) - $(audit.exe)</description>
+    <mitre>
+      <id>T1620</id>
+    </mitre>
+  </rule>
+
+  <!-- Exécution d'un descripteur de fichier via /proc/[pid]/fd/N ou /proc/self/fd/N :
+       technique fileless classique - un payload est téléchargé dans un fd, souvent
+       unlink() aussitôt, puis exécuté sans chemin sur disque. Interpréteurs et loaders
+       légitimes n'exécutent pas via /proc/*/fd -> IOC fiable. -->
+  <rule id="100631" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.exe" type="pcre2">^/proc/(self|[0-9]+)/fd/[0-9]+</field>
+    <description>Exécution fileless détectée : exécution d'un descripteur de fichier ($(audit.exe)) - payload en mémoire sans chemin disque</description>
+    <mitre>
+      <id>T1620</id>
+    </mitre>
+  </rule>
+
 
 </group>
