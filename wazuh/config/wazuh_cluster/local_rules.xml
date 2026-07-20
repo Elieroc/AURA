@@ -234,4 +234,54 @@
     <mitre><id>T1082</id></mitre>
   </rule>
 
+  <!-- ===== Detection d'exploits par nom du fichier execute =====
+       Match sur le full_log via <regex> (l'exe complet et l'argv y sont intacts) :
+       ne PAS matcher audit.exe qui est tronque a la 1ere ponctuation par le decodeur
+       (/home/u/a.out -> /home/u/a), cf. [[wazuh-auditd-exe-hex-encoding]] / 100664. -->
+
+  <!-- R9 T1068 - identifiant CVE dans le binaire execute ou ses arguments
+       (ex: ./CVE-2021-4034, python3 CVE-2025-3444.py, cve_2021_4034). Quasi zero FP. -->
+  <rule id="100660" level="12">
+    <if_group>audit</if_group>
+    <regex type="pcre2">(?i)cve[-_]?\d{4}[-_]\d{4,7}</regex>
+    <description>Exploitation probable : identifiant CVE dans le fichier/commande execute</description>
+    <mitre><id>T1068</id></mitre>
+  </rule>
+
+  <!-- R10 T1068 - noms d'exploits publics connus (kernel/LPE). FP negligeable. -->
+  <rule id="100661" level="12">
+    <if_group>audit</if_group>
+    <regex type="pcre2">(?i)(pwnkit|dirtyc0w|dirty[_-]?cow|dirty[_-]?pipe|mempodipper|baron[_-]?samedit|(full|half)[_-]?nelson|dirty[_-]?sock|looney[_-]?tunables|nginxday|glibc[_-]?lpe|ptrace[_-]?traceme|overlayfs[_-]?lpe)</regex>
+    <description>Exploitation probable : nom d'exploit public connu execute</description>
+    <mitre><id>T1068</id></mitre>
+  </rule>
+
+  <!-- R11 T1068 - basename generique d'exploit/PoC execute (./exploit, poc.py,
+       privesc, rootkit, getroot...). Ancre sur separateur de chemin/quote pour
+       limiter les FP (ex: "epoch" ne matche pas "poc"). Niveau 10. -->
+  <rule id="100662" level="10">
+    <if_group>audit</if_group>
+    <regex type="pcre2">(?i)[/"._-](exploit|expl0it|poc|privesc|rootkit|rootshell|get[_-]?root|getr00t|r00t(ed|sh)?|0day|backdoor|reverse[_-]?shell|revshell)([/"._-]|$)</regex>
+    <description>Exploitation probable : basename d'exploit/PoC execute ($(audit.command))</description>
+    <mitre><id>T1068</id></mitre>
+  </rule>
+
+  <!-- R12 T1595/T1082 - outils publics d'enumeration/priv-esc (recon post-acces). -->
+  <rule id="100663" level="8">
+    <if_group>audit</if_group>
+    <regex type="pcre2">(?i)[/"._-](linpeas|linenum|lse\.sh|les\.sh|linux[_-]?exploit[_-]?suggester|unix[_-]?privesc[_-]?check|pspy\d*|traitor|deepce|kernelpop|gtfo)([/"._-]|$)</regex>
+    <description>Post-exploitation probable : outil public d'enumeration/priv-esc execute ($(audit.command))</description>
+    <mitre><id>T1082</id></mitre>
+  </rule>
+
+  <!-- R13 T1068 - execution d'un a.out (sortie gcc par defaut) : compile-and-run d'un
+       PoC/exploit. On matche audit.command (comm decode entier) et non audit.exe
+       (tronque a la 1ere ponctuation -> /home/u/a). FP possible (dev) -> niveau 8. -->
+  <rule id="100664" level="8">
+    <if_group>audit</if_group>
+    <field name="audit.command" type="pcre2">^a\.out$</field>
+    <description>Exploitation possible : execution d'un binaire a.out (compile-and-run)</description>
+    <mitre><id>T1068</id></mitre>
+  </rule>
+
 </group>
