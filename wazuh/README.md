@@ -92,6 +92,17 @@ depuis `/tmp`, `/var/tmp` ou `/dev/shm` (technique classique de drop-and-execute
 - Côté Windows, couverture équivalente déjà présente dans le ruleset par défaut (Sysmon event 1/7,
   `0800-sysmon_id_1.xml` / `0820-sysmon_id_7.xml`) pour l'exécution depuis `Users\...\AppData\Local\Temp`
   et `Windows\Temp` — nécessite Sysmon installé sur l'agent.
+- **Exclusion `100629`** (règle enfant niveau 0) pour le module `ansible.builtin.script` : en
+  temps normal, l'exécution des modules Ansible (Python) ne déclenche déjà pas 100625 —
+  `audit.exe` résout vers l'interpréteur (`/usr/bin/python3.x`), jamais vers `/tmp` (vérifié). Le
+  garde-fou couvre le cas où Ansible pousserait et exécuterait un binaire brut depuis
+  `/tmp/ansible-tmp-*`. Piège de decoder découvert en testant : Wazuh **tronque `audit.exe` au
+  premier tiret rencontré** (`/tmp/ansible-tmp-123/x` → `/tmp/ansible`, `/tmp/mal-ware` →
+  `/tmp/mal`) — l'exclusion matche donc la forme tronquée `^/tmp/ansible$`, pas le chemin complet.
+  Autre piège : le **lookahead négatif PCRE2 n'est pas honoré** par le moteur de règles Wazuh
+  (testé, matchait quand même) — la suppression passe par une règle enfant niveau 0
+  (`if_sid` + niveau 0), le mécanisme standard Wazuh pour exclure un sous-cas d'une règle plus
+  large sans y toucher.
 
 ### Setup côté agent Linux (auditd)
 
@@ -110,11 +121,11 @@ Puis ajouter dans `/var/ossec/etc/ossec.conf` de l'agent (avant `</ossec_config>
 ```
 `sudo systemctl restart wazuh-agent` pour appliquer.
 
-## Détection — fork bomb et zip bomb
+## Détection — fork bomb
 
-**Fork bomb** — règle locale `100626` (niv. 12, High) : détecte l'épuisement de la table de
-process (`ulimit -u`/nproc) via le message d'erreur émis par le noyau/PAM/le shell au moment où
-la limite est atteinte (`fork: retry: Resource temporarily unavailable`, `Too many processes`,
+Règle locale `100626` (niv. 12, High) : détecte l'épuisement de la table de process
+(`ulimit -u`/nproc) via le message d'erreur émis par le noyau/PAM/le shell au moment où la limite
+est atteinte (`fork: retry: Resource temporarily unavailable`, `Too many processes`,
 `clone() failed`) — capté via syslog/journald, déjà configuré par défaut sur l'agent.
 
 - Choix volontaire de **ne pas** auditer `clone()`/`fork()` en direct via auditd : des millions
@@ -123,24 +134,12 @@ la limite est atteinte (`fork: retry: Resource temporarily unavailable`, `Too ma
 - Testé via `wazuh-logtest` : le message déclenche 100626 ; un login SSH normal ne déclenche pas
   de faux positif.
 
-**Zip bomb / bombe de décompression** — règle locale `100627` (niv. 8, Medium) : détecte un
-fichier anormalement volumineux (≥ ~100 Mo, `size` ≥ 9 chiffres) créé ou modifié dans un
-répertoire temporaire world-writable (`/tmp`, `/var/tmp`, `/dev/shm`), via FIM (syscheck) en
-temps réel.
-
-- Nécessite le FIM temps réel sur ces répertoires : poussé à tous les agents via la config
-  partagée `config/wazuh_cluster/agent.conf` (groupe `default`, bind-monté sur le manager,
-  `check_size="yes" realtime="yes"`). S'applique automatiquement à tout nouvel agent ; les
-  agents déjà enrôlés doivent être redémarrés une fois pour l'appliquer
-  (`PUT /agents/restart?agents_list=<id>` côté API, ou `systemctl restart wazuh-agent` sur l'agent).
-- Chaînée sur les règles FIM par défaut `550` (fichier modifié) et `554` (fichier ajouté) via
-  `if_sid`, avec `field name="file"` (chemin) et `field name="size"` (taille après écriture) —
-  ce sont les noms de champs internes utilisés par le moteur de règles pour le décodeur FIM
-  (différents des noms `syscheck.path`/`syscheck.size_after` visibles dans le JSON exporté vers
-  l'indexer).
-- Testé bout-en-bout sur agent `001 debian-vm` : fichier de 220 Mo (`truncate -s 220M`, allocation
-  sparse, sans usage disque réel) → alerte 100627 remontée dans l'indexer avec la bonne taille ;
-  petit fichier texte → pas de faux positif (554 seul).
+**Zip bomb** — envisagé (règle FIM sur taille de fichier anormale dans `/tmp`), testé
+bout-en-bout avec succès (alerte remontée sur fichier 220 Mo), mais **retiré** : risque de faux
+positifs jugé trop élevé pour un usage général (dumps DB, cache de build/CI, téléchargements
+volumineux dans `/tmp` déclenchent tous légitimement le seuil). Pas de FIM temps réel poussé sur
+`/tmp`/`/var/tmp`/`/dev/shm` (config `agent.conf` retirée). À reconsidérer si un besoin précis se
+présente, avec un seuil plus élevé ou des exclusions ciblées.
 
 ## Routage des alertes par type (index dédiés)
 

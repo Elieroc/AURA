@@ -47,6 +47,23 @@
     </mitre>
   </rule>
 
+  <!-- Exclusion /tmp/ansible-tmp-* : garde-fou pour le module ansible.builtin.script
+       (pousse et exécute un binaire brut) - suppression via règle enfant niveau 0.
+       Deux pièges de decoder Wazuh découverts en testant :
+       1. Le pattern PCRE2 lookahead négatif n'est pas honoré par le moteur de règles
+          (testé : matchait quand même, contournement via règle enfant niveau 0).
+       2. Le décodeur auditd intégré de Wazuh tronque audit.exe au premier tiret
+          rencontré (ex. "/tmp/ansible-tmp-123/x" -> "/tmp/ansible", "/tmp/mal-ware"
+          -> "/tmp/mal") - d'où le match sur la forme tronquée ci-dessous, pas sur le
+          chemin complet. L'exécution normale des modules Ansible (Python) ne
+          déclenche de toute façon jamais 100625 : audit.exe résout vers
+          l'interpréteur (/usr/bin/python3.x), jamais vers le chemin /tmp (vérifié). -->
+  <rule id="100629" level="0">
+    <if_sid>100625</if_sid>
+    <field name="audit.exe" type="pcre2">^/tmp/ansible$</field>
+    <description>Exclusion 100625 : exécution via module ansible.builtin.script (bruit connu)</description>
+  </rule>
+
   <!-- Fork bomb : épuisement de la table de process (ulimit -u / nproc). Détection via
        le message d'erreur émis par le noyau/PAM/le shell quand la limite est atteinte -
        plus fiable et bien moins bruyant qu'auditer clone()/fork() en direct (des millions
@@ -59,17 +76,5 @@
     </mitre>
   </rule>
 
-  <!-- Zip bomb / bombe de décompression : fichier anormalement volumineux (>= ~100 Mo)
-       apparu dans un répertoire temporaire world-writable, via FIM temps réel
-       (voir agent.conf : /tmp, /var/tmp, /dev/shm en check_size realtime). -->
-  <rule id="100627" level="8">
-    <if_sid>550,554</if_sid>
-    <field name="file" type="pcre2">^(/tmp/|/var/tmp/|/dev/shm/)</field>
-    <field name="size" type="pcre2">^\d{9,}$</field>
-    <description>Fichier anormalement volumineux créé/modifié dans un répertoire temporaire - possible zip bomb / bombe de décompression</description>
-    <mitre>
-      <id>T1499.001</id>
-    </mitre>
-  </rule>
 
 </group>
