@@ -76,54 +76,62 @@
     </mitre>
   </rule>
 
-  <!-- Exécution fileless via memfd_create : le binaire n'existe que en RAM (fichier
+  <!-- Exécution fileless via memfd_create : le binaire n'existe qu'en RAM (fichier
        anonyme), jamais écrit sur disque, puis exécuté via /proc/self/fd/N. /proc/PID/exe
-       pointe alors vers "/memfd:<nom> (deleted)". Aucun logiciel légitime n'exécute
-       depuis memfd -> IOC fileless très fiable, faible FP.
+       pointe alors vers "/memfd:<nom> (deleted)". Aucun logiciel légitime (hors runc,
+       cf. 100632) n'exécute depuis memfd -> IOC fileless très fiable, faible FP.
+
+       IMPORTANT (validé par test end-to-end sur l'agent + wazuh-logtest manager) :
+       le champ exe d'auditd est HEX-encodé dès qu'il contient un espace - et
+       "/memfd:... (deleted)" en contient toujours un. Le décodeur auditd intégré de
+       Wazuh NE peuple PAS audit.exe dans ce cas (champ absent). On matche donc la
+       signature HEX brute dans le full_log via <regex> :
+         2F6D656D66643A = "/memfd:"
        Déjà capté par l'audit execve en place (règle 100625), pas de conf auditd
-       supplémentaire nécessaire (un exec de memfd EST un execve). -->
+       supplémentaire (un exec de memfd EST un execve). -->
   <rule id="100630" level="12">
     <if_group>audit</if_group>
-    <field name="audit.exe" type="pcre2">(?i)memfd:</field>
-    <description>Exécution fileless détectée : binaire exécuté depuis un fichier anonyme en mémoire (memfd) - $(audit.exe)</description>
+    <regex type="pcre2">exe=\w*2F6D656D66643A</regex>
+    <description>Exécution fileless détectée : binaire exécuté depuis un fichier anonyme en mémoire (memfd)</description>
     <mitre>
       <id>T1620</id>
     </mitre>
   </rule>
 
-  <!-- Exécution d'un descripteur de fichier via /proc/[pid]/fd/N ou /proc/self/fd/N :
-       technique fileless classique - un payload est téléchargé dans un fd, souvent
-       unlink() aussitôt, puis exécuté sans chemin sur disque. Interpréteurs et loaders
-       légitimes n'exécutent pas via /proc/*/fd -> IOC fiable. -->
-  <rule id="100631" level="12">
-    <if_group>audit</if_group>
-    <field name="audit.exe" type="pcre2">^/proc/(self|[0-9]+)/fd/[0-9]+</field>
-    <description>Exécution fileless détectée : exécution d'un descripteur de fichier ($(audit.exe)) - payload en mémoire sans chemin disque</description>
-    <mitre>
-      <id>T1620</id>
-    </mitre>
-  </rule>
-
-  <!-- Exclusion 100630 : runc/containerd se recopient dans un memfd avant chaque exec
-       de conteneur (mitigation CVE-2019-5736, /proc/self/exe cloné) -> déclenche 100630
-       à chaque démarrage de conteneur sur un hôte Docker/Kubernetes/Podman. Le nom
-       "runc_cloned" est fixé par runc et sans tiret (pas d'impact de la troncature du
-       décodeur audit). crun/podman exposent aussi le motif ".../proc/self/exe". -->
+  <!-- Exclusion 100630 : runc/crun/containerd se recopient dans un memfd avant chaque
+       exec de conteneur (mitigation CVE-2019-5736, /proc/self/exe cloné) -> 100630
+       déclencherait à chaque démarrage de conteneur. "runc_cloned" est fixé par runc.
+       Signature HEX : 2F6D656D66643A72756E635F636C6F6E6564 = "/memfd:runc_cloned".
+       Testé : une ligne exe=...runc_cloned... tombe bien en niveau 0. -->
   <rule id="100632" level="0">
     <if_sid>100630</if_sid>
-    <field name="audit.exe" type="pcre2">(?i)memfd:(runc_cloned|.*/proc/self/exe)</field>
+    <regex type="pcre2">exe=\w*2F6D656D66643A72756E635F636C6F6E6564</regex>
     <description>Exclusion 100630 : re-exec runc/crun via memfd (bruit conteneur connu)</description>
   </rule>
 
-  <!-- Exclusion 100631 : runtimes de conteneur et bacs à sable exécutent légitimement
-       via fexecve()/execveat sur un fd (-> exe = /proc/self/fd/N). Whitelist de départ
-       basée sur le comm du processus - à étendre en observant les vraies alertes.
-       NB : comm est falsifiable par un attaquant ; garde-fou volontairement étroit
-       (runtimes conteneur + bubblewrap/flatpak + snap uniquement). -->
+  <!-- Exécution d'un binaire unlinké/supprimé : le fichier est ouvert puis unlink()
+       avant execve (fexecve sur fd d'un fichier effacé, DDexec, drop-run-delete).
+       /proc/PID/exe -> "<chemin> (deleted)", donc exe HEX-encodé (espace) et absent
+       de audit.exe comme pour memfd. On matche le suffixe HEX " (deleted)" :
+         202864656C6574656429 = " (deleted)"
+       FP plus élevé que memfd (installeurs auto-extractibles, `go run`, snap/flatpak
+       peuvent exécuter un binaire temporaire effacé) -> niveau 10, à affiner selon les
+       alertes réelles. La règle enfant 100633 évite le doublon avec memfd. -->
+  <rule id="100631" level="10">
+    <if_group>audit</if_group>
+    <regex type="pcre2">exe=\w*202864656C6574656429</regex>
+    <description>Exécution fileless détectée : binaire supprimé/unlinké exécuté en mémoire (exec of deleted)</description>
+    <mitre>
+      <id>T1620</id>
+    </mitre>
+  </rule>
+
+  <!-- Exclusion 100631 : un memfd correspond aussi au suffixe "(deleted)" ; il est
+       déjà couvert plus précisément par 100630 -> on neutralise le doublon. Testé. -->
   <rule id="100633" level="0">
     <if_sid>100631</if_sid>
-    <field name="audit.command" type="pcre2">^(runc|crun|containerd-shim.*|podman|bwrap|flatpak-bwrap|snap-exec|snap-confine)$</field>
-    <description>Exclusion 100631 : exec via fd par un runtime conteneur/sandbox connu (bruit connu)</description>
+    <regex type="pcre2">exe=\w*2F6D656D66643A</regex>
+    <description>Exclusion 100631 : cas memfd déjà couvert par 100630</description>
   </rule>
 
 
