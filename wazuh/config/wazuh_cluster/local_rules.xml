@@ -104,5 +104,27 @@
     </mitre>
   </rule>
 
+  <!-- Exclusion 100630 : runc/containerd se recopient dans un memfd avant chaque exec
+       de conteneur (mitigation CVE-2019-5736, /proc/self/exe cloné) -> déclenche 100630
+       à chaque démarrage de conteneur sur un hôte Docker/Kubernetes/Podman. Le nom
+       "runc_cloned" est fixé par runc et sans tiret (pas d'impact de la troncature du
+       décodeur audit). crun/podman exposent aussi le motif ".../proc/self/exe". -->
+  <rule id="100632" level="0">
+    <if_sid>100630</if_sid>
+    <field name="audit.exe" type="pcre2">(?i)memfd:(runc_cloned|.*/proc/self/exe)</field>
+    <description>Exclusion 100630 : re-exec runc/crun via memfd (bruit conteneur connu)</description>
+  </rule>
+
+  <!-- Exclusion 100631 : runtimes de conteneur et bacs à sable exécutent légitimement
+       via fexecve()/execveat sur un fd (-> exe = /proc/self/fd/N). Whitelist de départ
+       basée sur le comm du processus - à étendre en observant les vraies alertes.
+       NB : comm est falsifiable par un attaquant ; garde-fou volontairement étroit
+       (runtimes conteneur + bubblewrap/flatpak + snap uniquement). -->
+  <rule id="100633" level="0">
+    <if_sid>100631</if_sid>
+    <field name="audit.command" type="pcre2">^(runc|crun|containerd-shim.*|podman|bwrap|flatpak-bwrap|snap-exec|snap-confine)$</field>
+    <description>Exclusion 100631 : exec via fd par un runtime conteneur/sandbox connu (bruit connu)</description>
+  </rule>
+
 
 </group>
