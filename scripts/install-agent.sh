@@ -3,7 +3,9 @@
 # Installation d'un agent Wazuh + user d'administration distante.
 #
 # 1. Installe wazuh-agent (repo apt officiel, version épinglée) enrôlé sur le manager.
-# 2. Crée un user "wazuh-admin" avec sudo NOPASSWD, accessible uniquement en SSH
+# 2. Installe et configure auditd (règle execve + localfile Wazuh) pour la détection
+#    d'exécution de binaire depuis /tmp, /var/tmp, /dev/shm (règle locale 100625).
+# 3. Crée un user "wazuh-admin" avec sudo NOPASSWD, accessible uniquement en SSH
 #    par clé depuis le serveur Wazuh (mot de passe verrouillé).
 #
 # NB : le user s'appelle "wazuh-admin" et non "wazuh" — le paquet wazuh-agent crée
@@ -41,7 +43,7 @@ done
 [ "$(id -u)" -ne 0 ] && { echo "ERREUR: à lancer en root"; exit 1; }
 command -v apt-get >/dev/null || { echo "ERREUR: apt requis (Debian/Ubuntu uniquement)"; exit 1; }
 
-echo "[1/4] Dépôt Wazuh"
+echo "[1/5] Dépôt Wazuh"
 apt-get update -qq
 apt-get install -y -qq gnupg curl sudo openssh-server >/dev/null
 if [ ! -f /usr/share/keyrings/wazuh.gpg ]; then
@@ -51,7 +53,7 @@ if [ ! -f /usr/share/keyrings/wazuh.gpg ]; then
   apt-get update -qq
 fi
 
-echo "[2/4] Agent Wazuh ${WAZUH_VERSION} -> manager ${MANAGER_IP}"
+echo "[2/5] Agent Wazuh ${WAZUH_VERSION} -> manager ${MANAGER_IP}"
 if dpkg -s wazuh-agent >/dev/null 2>&1; then
   echo "  déjà installé ($(dpkg -s wazuh-agent | awk '/^Version/{print $2}')), skip"
 else
@@ -62,7 +64,27 @@ fi
 systemctl daemon-reload
 systemctl enable --now wazuh-agent >/dev/null 2>&1
 
-echo "[3/4] User ${ADMIN_USER} (sudo, SSH par clé uniquement)"
+echo "[3/5] auditd (détection exec depuis /tmp,/var/tmp,/dev/shm — règle Wazuh 100625)"
+apt-get install -y -qq auditd audispd-plugins >/dev/null
+echo "-a always,exit -F arch=b64 -S execve -k audit-wazuh-c" > /etc/audit/rules.d/audit-wazuh.rules
+augenrules --load >/dev/null 2>&1
+systemctl enable --now auditd >/dev/null 2>&1
+
+OSSEC_CONF="/var/ossec/etc/ossec.conf"
+if ! grep -q "log_format>audit<" "$OSSEC_CONF" 2>/dev/null; then
+  python3 - "$OSSEC_CONF" <<'PYEOF'
+import sys
+path = sys.argv[1]
+content = open(path).read()
+insert = "  <localfile>\n    <log_format>audit</log_format>\n    <location>/var/log/audit/audit.log</location>\n  </localfile>\n\n"
+marker = "</ossec_config>"
+idx = content.rfind(marker)
+open(path, "w").write(content[:idx] + insert + content[idx:])
+PYEOF
+  systemctl restart wazuh-agent >/dev/null 2>&1
+fi
+
+echo "[4/5] User ${ADMIN_USER} (sudo, SSH par clé uniquement)"
 if ! id "$ADMIN_USER" >/dev/null 2>&1; then
   useradd -m -s /bin/bash "$ADMIN_USER"
 fi
@@ -79,8 +101,10 @@ echo "${ADMIN_USER} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/${ADMIN_USER}"
 chmod 440 "/etc/sudoers.d/${ADMIN_USER}"
 visudo -cf "/etc/sudoers.d/${ADMIN_USER}" >/dev/null || { echo "ERREUR sudoers"; rm -f "/etc/sudoers.d/${ADMIN_USER}"; exit 1; }
 
-echo "[4/4] Vérifications"
+echo "[5/5] Vérifications"
 systemctl is-active wazuh-agent >/dev/null && echo "  agent: actif" || echo "  agent: INACTIF"
+systemctl is-active auditd >/dev/null && echo "  auditd: actif" || echo "  auditd: INACTIF"
+auditctl -l 2>/dev/null | grep -q "execve" && echo "  règle audit execve: chargée" || echo "  règle audit execve: ABSENTE"
 sudo -u "$ADMIN_USER" sudo -n true 2>/dev/null && echo "  sudo ${ADMIN_USER}: OK" || echo "  sudo ${ADMIN_USER}: ECHEC"
 echo
 echo "Terminé. Test depuis le serveur Wazuh :"
