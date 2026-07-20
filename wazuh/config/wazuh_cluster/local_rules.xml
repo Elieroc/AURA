@@ -136,3 +136,102 @@
 
 
 </group>
+
+<!-- ===================================================================
+     Pack "gaps MITRE" - techniques Linux non couvertes par le ruleset
+     Wazuh par defaut. 100% base sur l'audit execve en place (cle
+     audit-wazuh-c, cf. 100625). Chaque regle validee end-to-end via
+     wazuh-logtest sur le manager (events auditd reels + agreges).
+
+     Rappel decodeur (cf. [[wazuh-auditd-exe-hex-encoding]] / regle 100629) :
+     - audit.exe / audit.command / audit.execve.a0..a7 disponibles (argv
+       plafonne a a7). Pour un match de sous-chaine dans l'argv, on utilise
+       <regex> sur le full_log (robuste au plafond a7 et a l'agregation
+       multiline), et <field name="audit.exe"> pour cibler le binaire.
+     =================================================================== -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- R1 T1059.004 - reverse shell / redirection reseau via /dev/tcp|/dev/udp (bash). -->
+  <rule id="100650" level="12">
+    <if_group>audit</if_group>
+    <regex type="pcre2">/dev/(tcp|udp)/</regex>
+    <description>Reverse shell probable : redirection reseau via /dev/tcp|/dev/udp</description>
+    <mitre><id>T1059.004</id></mitre>
+  </rule>
+
+  <!-- R2 T1059.004 - netcat/ncat avec exec (-e / -c). -->
+  <rule id="100651" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.exe" type="pcre2">/(nc|ncat|netcat)(\.\w+)?$</field>
+    <regex type="pcre2">a\d+=\"-(e|c)\"</regex>
+    <description>Reverse shell probable : netcat avec option d'execution (-e/-c)</description>
+    <mitre><id>T1059.004</id></mitre>
+  </rule>
+
+  <!-- R3 T1059 - interpreteur avec code inline de reverse shell (socket/pty/dup2).
+       FP possible : developpeurs executant du code socket legitime -> niveau 10. -->
+  <rule id="100652" level="10">
+    <if_group>audit</if_group>
+    <regex type="pcre2">(?i)(pty\.spawn|socket\.socket|os\.dup2|fsockopen|IO::Socket::INET|/inet/tcp/|Socket\.new)</regex>
+    <description>Reverse shell probable : interpreteur avec primitives socket/pty inline</description>
+    <mitre><id>T1059</id></mitre>
+  </rule>
+
+  <!-- R4 T1003.008 - lecture de /etc/shadow|/etc/gshadow via utilitaire fichier. -->
+  <rule id="100653" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.exe" type="pcre2">/(cat|less|more|head|tail|cp|dd|xxd|od|base64|strings|sort|awk|sed|nano|vi|vim|cut|grep)$</field>
+    <regex type="pcre2">/etc/(shadow|gshadow)</regex>
+    <description>Acces credentials : lecture de /etc/shadow via $(audit.command)</description>
+    <mitre><id>T1003.008</id></mitre>
+  </rule>
+
+  <!-- R5 T1562.001 - arret/desactivation d'un service de securite/journalisation,
+       purge des regles auditd (auditctl -D), desactivation SELinux (setenforce 0).
+       FP possible : maintenance admin legitime -> a corroborer avec le contexte. -->
+  <rule id="100654" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.exe" type="pcre2">/(systemctl|service|rc-service|auditctl|setenforce)$</field>
+    <regex type="pcre2">(?i)(stop|disable|mask)\b.{0,60}(auditd|wazuh|rsyslog|syslog|firewalld|ufw|falco|osquery|clamav|apparmor|fail2ban)|a\d+="(-D|0)"</regex>
+    <description>Defense evasion : alteration d'un service de securite/journalisation</description>
+    <mitre><id>T1562.001</id></mitre>
+  </rule>
+
+  <!-- R6 T1070.002 - destruction de logs (rm/shred/truncate sur /var/log). -->
+  <rule id="100655" level="10">
+    <if_group>audit</if_group>
+    <field name="audit.exe" type="pcre2">/(rm|shred|truncate|unlink)$</field>
+    <regex type="pcre2">/var/log/(auth|syslog|secure|audit|wazuh|messages|journal)</regex>
+    <description>Defense evasion : suppression/troncature de journaux ($(audit.command))</description>
+    <mitre><id>T1070.002</id></mitre>
+  </rule>
+
+  <!-- R7 T1548.001 - creation d'un binaire SUID/SGID via chmod (octal 4xxx/2xxx/6xxx
+       ou symbolique u+s/g+s). FP possible : installeurs -> niveau 10. -->
+  <rule id="100656" level="10">
+    <if_group>audit</if_group>
+    <field name="audit.exe" type="pcre2">/chmod$</field>
+    <regex type="pcre2">a\d+=\"(0?[2467][0-7]{3}|[ugoa]*\+s\w*)\"</regex>
+    <description>Privilege escalation : creation d'un binaire SUID/SGID (chmod $(audit.execve.a1))</description>
+    <mitre><id>T1548.001</id></mitre>
+  </rule>
+
+  <!-- R8 T1082/T1033/T1057 - reconnaissance systeme (base niv.2 + rafale niv.10). -->
+  <rule id="100657" level="2">
+    <if_group>audit</if_group>
+    <field name="audit.command" type="pcre2">^(whoami|id|uname|hostname|hostnamectl|uptime|lscpu|lsb_release|w|who|last|groups|arch|nproc|dnsdomainname|domainname)$</field>
+    <description>Commande de reconnaissance systeme ($(audit.command))</description>
+    <mitre><id>T1082</id></mitre>
+  </rule>
+  <!-- Correlation par frequence. NB (teste) : <same_field>audit.auid</same_field>
+       empeche la correlation dans cette version de Wazuh (la regle ne se declenche
+       jamais) -> retire. Correlation donc a l'echelle de l'hote (tous utilisateurs).
+       Seuil volontairement haut (12 cmd / 30s) : la collecte de facts Ansible et les
+       agents de monitoring lancent des rafales de discovery -> affiner si FP. -->
+  <rule id="100658" level="10" frequency="12" timeframe="30">
+    <if_matched_sid>100657</if_matched_sid>
+    <description>Rafale de reconnaissance systeme (12+ commandes en 30s) - enumeration active</description>
+    <mitre><id>T1082</id></mitre>
+  </rule>
+
+</group>
