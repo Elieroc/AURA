@@ -234,6 +234,13 @@
     <timeout_allowed>no</timeout_allowed>
   </command>
 
+  <!-- Kill d'un process par nom (déclenché via API / Shuffle, jamais automatique) -->
+  <command>
+    <name>kill-process</name>
+    <executable>kill-process.sh</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+
   <!--
   <active-response>
     active-response options here
