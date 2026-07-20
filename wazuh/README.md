@@ -84,14 +84,31 @@ Règle locale `100625` (niv. 8, Medium) dans `local_rules.xml` : détecte l'exé
 depuis `/tmp`, `/var/tmp` ou `/dev/shm` (technique classique de drop-and-execute), via le champ
 `audit.exe` du module Linux Audit (auditd).
 
-- **Nécessite auditd configuré sur l'agent** pour surveiller `execve` (ex. règle audit
-  `-a always,exit -F arch=b64 -S execve -k audit-wazuh-c`) — sans ça, aucun événement `audit.exe`
-  n'est généré et la règle ne se déclenche jamais.
+- **Nécessite auditd configuré sur l'agent** pour surveiller `execve` — sans ça, aucun événement
+  `audit.exe` n'est généré et la règle ne se déclenche jamais.
 - Testé via `wazuh-logtest` : `exe="/tmp/malware"` → alerte 100625 ; `exe="/bin/bash"` → pas de
-  faux positif (tombe sur la règle par défaut 80792, niv. 3).
+  faux positif (tombe sur la règle par défaut 80792, niv. 3). Testé bout-en-bout sur agent
+  `001 debian-vm` : binaire déposé + exécuté depuis `/tmp` → alerte 100625 remontée dans l'indexer.
 - Côté Windows, couverture équivalente déjà présente dans le ruleset par défaut (Sysmon event 1/7,
   `0800-sysmon_id_1.xml` / `0820-sysmon_id_7.xml`) pour l'exécution depuis `Users\...\AppData\Local\Temp`
   et `Windows\Temp` — nécessite Sysmon installé sur l'agent.
+
+### Setup côté agent Linux (auditd)
+
+```bash
+sudo apt-get install -y auditd audispd-plugins
+echo "-a always,exit -F arch=b64 -S execve -k audit-wazuh-c" | sudo tee /etc/audit/rules.d/audit-wazuh.rules
+sudo augenrules --load
+```
+
+Puis ajouter dans `/var/ossec/etc/ossec.conf` de l'agent (avant `</ossec_config>`) :
+```xml
+<localfile>
+  <log_format>audit</log_format>
+  <location>/var/log/audit/audit.log</location>
+</localfile>
+```
+`sudo systemctl restart wazuh-agent` pour appliquer.
 
 ## Routage des alertes par type (index dédiés)
 
