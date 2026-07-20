@@ -56,6 +56,28 @@ docker compose exec wazuh.manager /var/ossec/integrations/virustotal <alert.json
 grep -E "abuseipdb|virustotal" /var/ossec/logs/alerts/alerts.json
 ```
 
+## Sévérité des alertes (`rule.severity`)
+
+Calculée depuis `rule.level` par un processor `script` du pipeline ingest (`config/wazuh_cluster/alerts-pipeline.json`) :
+
+| `rule.level` | `rule.severity` | `rule.severity_order` |
+|---|---|---|
+| < 5 | Info | 1 |
+| 5-6 | Low | 2 |
+| 7-10 | Medium | 3 |
+| 11-14 | High | 4 |
+| 15-16 | Critical | 5 |
+
+**Escalade nocturne (20h-7h, heure Europe/Paris, DST géré)** : sévérité remontée d'un cran (ex. Low → Medium), plafonnée à Critical. Jamais appliquée à Info — les alertes bruit ne doivent pas remonter juste parce que c'est la nuit. Basée sur `ctx.timestamp` (toujours en UTC côté manager), converti en heure Paris via `ZonedDateTime`.
+
+- Modif : éditer le script `severity` dans `alerts-pipeline.json`, puis recréer le manager
+  (`docker compose up -d --force-recreate wazuh.manager`) **et** repousser le pipeline à l'indexer
+  (filebeat ne le repousse pas toujours au redémarrage) :
+  ```bash
+  curl -sk -u admin:$INDEXER_PASSWORD -X PUT "https://localhost:9200/_ingest/pipeline/filebeat-7.10.2-wazuh-alerts-pipeline" \
+    -H "Content-Type: application/json" -d @config/wazuh_cluster/alerts-pipeline.json
+  ```
+
 ## Routage des alertes par type (index dédiés)
 
 Les alertes des **agents** (pas celles du manager, agent 000) sont routées vers des index dédiés
