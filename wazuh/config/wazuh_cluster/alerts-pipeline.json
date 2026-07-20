@@ -263,10 +263,10 @@
     },
     {
       "script": {
-        "description": "SOC-AI: rule.severity + rule.severity_order depuis rule.level — Info (<5), Low (5-6), Medium (7-10), High (11-14), Critical (15-16)",
+        "description": "SOC-AI: rule.severity + rule.severity_order depuis rule.level — Info (<5), Low (5-6), Medium (7-10), High (11-14), Critical (15-16). Escalade nocturne (20h-7h heure Europe/Paris, DST géré) : +1 cran, jamais pour Info, plafonné à Critical.",
         "lang": "painless",
         "ignore_failure": true,
-        "source": "def l = ctx.rule?.level;\nif (l == null) { return; }\nint lv;\nif (l instanceof Integer) { lv = l; } else { lv = Integer.parseInt(l.toString()); }\nString s;\nint o;\nif (lv >= 15) { s = 'Critical'; o = 5; }\nelse if (lv >= 11) { s = 'High'; o = 4; }\nelse if (lv >= 7) { s = 'Medium'; o = 3; }\nelse if (lv >= 5) { s = 'Low'; o = 2; }\nelse { s = 'Info'; o = 1; }\nctx.rule.severity = s;\nctx.rule.severity_order = o;"
+        "source": "def l = ctx.rule?.level;\nif (l == null) { return; }\nint lv;\nif (l instanceof Integer) { lv = l; } else { lv = Integer.parseInt(l.toString()); }\nString s;\nint o;\nif (lv >= 15) { s = 'Critical'; o = 5; }\nelse if (lv >= 11) { s = 'High'; o = 4; }\nelse if (lv >= 7) { s = 'Medium'; o = 3; }\nelse if (lv >= 5) { s = 'Low'; o = 2; }\nelse { s = 'Info'; o = 1; }\nif (o > 1) {\n  def ts = ctx.timestamp;\n  if (ts != null) {\n    try {\n      def fmt = DateTimeFormatter.ofPattern(\"yyyy-MM-dd'T'HH:mm:ss.SSSZ\").withZone(ZoneId.of('UTC'));\n      def zdt = ZonedDateTime.parse(ts, fmt);\n      def paris = zdt.withZoneSameInstant(ZoneId.of('Europe/Paris'));\n      int hour = paris.getHour();\n      if (hour >= 20 || hour < 7) {\n        o = o + 1;\n        if (o > 5) { o = 5; }\n        if (o == 5) { s = 'Critical'; }\n        else if (o == 4) { s = 'High'; }\n        else if (o == 3) { s = 'Medium'; }\n      }\n    } catch (Exception e) { }\n  }\n}\nctx.rule.severity = s;\nctx.rule.severity_order = o;"
       }
     },
     {
