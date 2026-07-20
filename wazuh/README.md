@@ -110,6 +110,38 @@ Puis ajouter dans `/var/ossec/etc/ossec.conf` de l'agent (avant `</ossec_config>
 ```
 `sudo systemctl restart wazuh-agent` pour appliquer.
 
+## Détection — fork bomb et zip bomb
+
+**Fork bomb** — règle locale `100626` (niv. 12, High) : détecte l'épuisement de la table de
+process (`ulimit -u`/nproc) via le message d'erreur émis par le noyau/PAM/le shell au moment où
+la limite est atteinte (`fork: retry: Resource temporarily unavailable`, `Too many processes`,
+`clone() failed`) — capté via syslog/journald, déjà configuré par défaut sur l'agent.
+
+- Choix volontaire de **ne pas** auditer `clone()`/`fork()` en direct via auditd : des millions
+  d'appels légitimes par seconde en usage normal, bien trop bruyant pour une règle exploitable.
+  Le message de refus du noyau est un signal bien plus rare et bien plus fiable.
+- Testé via `wazuh-logtest` : le message déclenche 100626 ; un login SSH normal ne déclenche pas
+  de faux positif.
+
+**Zip bomb / bombe de décompression** — règle locale `100627` (niv. 8, Medium) : détecte un
+fichier anormalement volumineux (≥ ~100 Mo, `size` ≥ 9 chiffres) créé ou modifié dans un
+répertoire temporaire world-writable (`/tmp`, `/var/tmp`, `/dev/shm`), via FIM (syscheck) en
+temps réel.
+
+- Nécessite le FIM temps réel sur ces répertoires : poussé à tous les agents via la config
+  partagée `config/wazuh_cluster/agent.conf` (groupe `default`, bind-monté sur le manager,
+  `check_size="yes" realtime="yes"`). S'applique automatiquement à tout nouvel agent ; les
+  agents déjà enrôlés doivent être redémarrés une fois pour l'appliquer
+  (`PUT /agents/restart?agents_list=<id>` côté API, ou `systemctl restart wazuh-agent` sur l'agent).
+- Chaînée sur les règles FIM par défaut `550` (fichier modifié) et `554` (fichier ajouté) via
+  `if_sid`, avec `field name="file"` (chemin) et `field name="size"` (taille après écriture) —
+  ce sont les noms de champs internes utilisés par le moteur de règles pour le décodeur FIM
+  (différents des noms `syscheck.path`/`syscheck.size_after` visibles dans le JSON exporté vers
+  l'indexer).
+- Testé bout-en-bout sur agent `001 debian-vm` : fichier de 220 Mo (`truncate -s 220M`, allocation
+  sparse, sans usage disque réel) → alerte 100627 remontée dans l'indexer avec la bonne taille ;
+  petit fichier texte → pas de faux positif (554 seul).
+
 ## Routage des alertes par type (index dédiés)
 
 Les alertes des **agents** (pas celles du manager, agent 000) sont routées vers des index dédiés

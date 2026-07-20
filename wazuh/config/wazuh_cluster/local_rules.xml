@@ -47,4 +47,29 @@
     </mitre>
   </rule>
 
+  <!-- Fork bomb : épuisement de la table de process (ulimit -u / nproc). Détection via
+       le message d'erreur émis par le noyau/PAM/le shell quand la limite est atteinte -
+       plus fiable et bien moins bruyant qu'auditer clone()/fork() en direct (des millions
+       d'événements légitimes par jour). -->
+  <rule id="100626" level="12">
+    <match type="pcre2">(?i)(fork:\s*(retry:\s*)?resource temporarily unavailable|too many processes|clone\(\) failed)</match>
+    <description>Épuisement de la table de process (message noyau/PAM/shell) - signature de fork bomb</description>
+    <mitre>
+      <id>T1499.001</id>
+    </mitre>
+  </rule>
+
+  <!-- Zip bomb / bombe de décompression : fichier anormalement volumineux (>= ~100 Mo)
+       apparu dans un répertoire temporaire world-writable, via FIM temps réel
+       (voir agent.conf : /tmp, /var/tmp, /dev/shm en check_size realtime). -->
+  <rule id="100627" level="8">
+    <if_sid>550,554</if_sid>
+    <field name="file" type="pcre2">^(/tmp/|/var/tmp/|/dev/shm/)</field>
+    <field name="size" type="pcre2">^\d{9,}$</field>
+    <description>Fichier anormalement volumineux créé/modifié dans un répertoire temporaire - possible zip bomb / bombe de décompression</description>
+    <mitre>
+      <id>T1499.001</id>
+    </mitre>
+  </rule>
+
 </group>
