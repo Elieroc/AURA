@@ -1,0 +1,26 @@
+# Déclenche un cycle du pipeline toutes les 5 minutes.
+#
+# 5 min : compromis entre réactivité et charge. Un cycle est court quand il n'y
+# a rien de neuf (ingest reprend au curseur, rien à corréler, rien à trier).
+# Le verrou consultatif dans cycle.py empêche deux cycles de se superposer si
+# un afflux fait déborder un cycle au-delà de l'intervalle.
+#
+# Pour changer la cadence : éditer OnUnitActiveSec, puis
+#   systemctl --user daemon-reload && systemctl --user restart soc-agent-cycle.timer
+
+[Unit]
+Description=SOC-AI — déclenche le cycle du pipeline périodiquement
+
+[Timer]
+# Premier cycle 2 min après le démarrage de session (laisse la stack monter),
+# puis toutes les 5 min à compter de la fin du cycle précédent.
+OnStartupSec=2min
+OnUnitActiveSec=5min
+# Rattrape un déclenchement manqué (machine en veille) dès le réveil.
+Persistent=true
+# Léger décalage aléatoire : évite que tout se déclenche pile à la même
+# seconde si d'autres timers existent.
+RandomizedDelaySec=15
+
+[Install]
+WantedBy=timers.target

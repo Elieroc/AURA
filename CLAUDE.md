@@ -51,6 +51,8 @@ Phase 1 en place : ingestion + corrélation, **sans LLM**. Détail et justificat
 
 Phase 2 en place : triage LLM en **mode shadow** (verdict enregistré, rien de déclenché). Serveur llama.cpp en service systemd utilisateur (`ai/llm/`), loopback strict.
 
+Déclenchement **périodique** : `soc_agent.cycle` enchaîne ingest → correlate → triage ; timer systemd utilisateur toutes les 5 min (`ai/systemd/soc-agent-cycle.{service,timer}`). Verrou consultatif Postgres anti-chevauchement. Triage facultatif au cycle (`Wants` soc-llm, pas `Requires`). Plus lancé à la main.
+
 - Le modèle ne rend qu'un **jugement** (verdict, confiance, remédiations). L'ouverture/clôture du dossier est déduite du verdict (`actions.py`), pas demandée au modèle — il oubliait `open_case` une fois sur deux.
 - Cohérence verdict/actions vérifiée après coup (`coherence.py`) : mesurable sans jeu labellisé, signale un prompt dégradé.
 - Température 0,2 + seed fixe = verdict reproductible. `triages` est à historique (on ajoute, on n'écrase pas) pour comparer deux prompts. `prompt_sha` tracé.
