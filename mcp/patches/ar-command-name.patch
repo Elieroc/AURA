@@ -1,5 +1,5 @@
 diff --git a/src/wazuh_mcp_server/api/wazuh_client.py b/src/wazuh_mcp_server/api/wazuh_client.py
-index 243d26b..6329011 100644
+index 243d26b..f502dd8 100644
 --- a/src/wazuh_mcp_server/api/wazuh_client.py
 +++ b/src/wazuh_mcp_server/api/wazuh_client.py
 @@ -400,6 +400,17 @@ class WazuhClient:
@@ -20,3 +20,61 @@ index 243d26b..6329011 100644
          # Wazuh 4.x API: agent_list must be passed as query param 'agents_list'
          agents_list = data.pop("agent_list", None)
          params = {}
+@@ -2075,7 +2086,15 @@ class WazuhClient:
+         if not agent_id:
+             raise ValueError("agent_id is required for disable_user")
+         username = self._sanitize_ar_argument(username, "username")
+-        data = {"command": "!disable-account", "agent_list": [agent_id], "arguments": [username]}
++        # PATCH SOC-AI: the stock disable-account binary reads the account from
++        # alert.data.dstuser, not from extra_args, and aborts with
++        # "Cannot read 'dstuser' from data" when the alert is empty.
++        data = {
++            "command": "!disable-account",
++            "agent_list": [agent_id],
++            "arguments": [username],
++            "alert": {"data": {"dstuser": username}},
++        }
+         return await self.execute_active_response(data)
+ 
+     async def quarantine_file(self, agent_id: str, file_path: str) -> Dict[str, Any]:
+@@ -2091,6 +2110,8 @@ class WazuhClient:
+         "!firewall-drop", "!host-isolation", "!kill-process",
+         "!disable-account", "!enable-account", "!quarantine",
+         "!host-deny", "!restart-wazuh",
++        # PATCH SOC-AI: rollback commands backed by our own AR scripts.
++        "!firewall-allow", "!host-allow",
+     ])
+ 
+     async def run_active_response(self, agent_id: str, command: str, parameters: dict = None) -> Dict[str, Any]:
+@@ -2252,10 +2273,14 @@ class WazuhClient:
+         """Remove firewall drop rule via active response."""
+         self._validate_ip(src_ip)
+         src_ip = self._sanitize_ar_argument(src_ip, "src_ip")
++        # PATCH SOC-AI: firewall-drop only undoes a block when wazuh-execd itself
++        # sends command "delete" (timeout expiry) and it reads the IP from
++        # alert.data.srcip — an API call can do neither. firewall-allow.sh
++        # (wazuh/active-response/) removes the rule from extra_args instead.
+         data = {
+-            "command": "!firewall-drop",
++            "command": "!firewall-allow",
+             "agent_list": [agent_id],
+-            "arguments": [f"-srcip {src_ip}", "delete"],
++            "arguments": [src_ip],
+         }
+         return await self.execute_active_response(data)
+ 
+@@ -2263,10 +2288,12 @@ class WazuhClient:
+         """Remove hosts.deny entry via active response."""
+         self._validate_ip(src_ip)
+         src_ip = self._sanitize_ar_argument(src_ip, "src_ip")
++        # PATCH SOC-AI: same limitation as firewall_allow — host-allow.sh removes
++        # the /etc/hosts.deny entry using the IP passed in extra_args.
+         data = {
+-            "command": "!host-deny",
++            "command": "!host-allow",
+             "agent_list": [agent_id],
+-            "arguments": [f"-srcip {src_ip}", "delete"],
++            "arguments": [src_ip],
+         }
+         return await self.execute_active_response(data)
+ 

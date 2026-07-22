@@ -57,7 +57,8 @@ c'est le mode à privilégier pour un usage quotidien.
 
 ## Active response
 
-Deux écarts entre l'upstream et une install Wazuh standard, corrigés ici.
+Quatre écarts entre l'upstream et une install Wazuh standard, corrigés ici.
+Tous étaient silencieux : l'API répond 200, l'action ne se fait pas.
 
 **1. Nom des commandes.** L'upstream envoie `!<commande>` à l'API. L'API
 répond 200 mais `wazuh-execd` sur l'agent ignore le message : il n'exécute que
@@ -65,17 +66,32 @@ les commandes dont le nom correspond exactement à une entrée de son
 `etc/shared/ar.conf`, soit `<commande><chiffre-de-location>` sans `!`
 (`kill-process0`). D'où `patches/ar-command-name.patch`.
 
+**3. Compte à désactiver.** Le binaire `disable-account` lit le compte dans
+`alert.data.dstuser`, pas dans `extra_args` : sans alerte il s'arrête sur
+`Cannot read 'dstuser' from data`. Le patch renseigne l'alerte.
+
+**4. Rollbacks firewall.** `firewall-drop` et `host-deny` n'annulent un blocage
+que sur expiration de timeout (commande `delete` émise par `execd`) et lisent
+l'IP dans l'alerte — un appel API ne peut faire ni l'un ni l'autre. Deux
+scripts dédiés remplacent ce chemin : `firewall-allow.sh` et `host-allow.sh`.
+
 **2. Commandes absentes.** Une commande n'est poussée dans le `ar.conf` des
 agents que si elle apparaît dans un bloc `<active-response>` du manager. Ces
 blocs sont déclarés dans `wazuh/config/wazuh_cluster/wazuh_manager.conf` avec
 `<rules_id>999999</rules_id>` — règle inexistante, donc **aucun déclenchement
 automatique** : seul un appel API (MCP ou Shuffle) exécute l'action.
 
-Les noms attendus par le MCP ne correspondaient pas à nos scripts : trois
+Les noms attendus par le MCP ne correspondaient pas à nos scripts : cinq
 scripts de liaison ont été ajoutés dans `wazuh/active-response/` —
 `host-isolation.sh` (route vers `host-isolate.sh` / `host-unisolate.sh` selon
-l'argument `undo`), `quarantine.sh`, `enable-account.sh`. `kill-process.sh`
-accepte désormais un PID en plus d'un nom de process (le MCP envoie un PID).
+l'argument `undo`), `quarantine.sh`, `enable-account.sh`, `firewall-allow.sh`,
+`host-allow.sh`. `kill-process.sh` accepte désormais un PID en plus d'un nom de
+process (le MCP envoie un PID).
+
+`firewall-drop` (binaire Wazuh) exige `iptables`, absent d'une Debian 12 qui
+n'a que nftables : installer le paquet `iptables` (backend `nf_tables`) sur les
+agents Debian, sinon l'action échoue sur
+`The iptables file 'iptables' is not accessible`.
 
 Après modification de la conf manager :
 
@@ -88,12 +104,19 @@ Les scripts doivent être présents sur **chaque agent** dans
 
 ### État vérifié sur l'agent 001 (debian-vm)
 
-| Outil MCP | Testé |
-|---|---|
-| `wazuh_kill_process` | OK (PID ciblé uniquement, safelist respectée) |
-| `wazuh_quarantine_file` / `wazuh_restore_file` | OK |
-| `wazuh_isolate_host` / `wazuh_unisolate_host` | OK |
+Les 9 outils d'action ont été exécutés pour de vrai sur l'agent 001, avec leur
+rollback, et l'agent a été remis dans son état initial.
 
-Non testés en conditions réelles : `wazuh_block_ip`, `wazuh_firewall_drop`,
-`wazuh_host_deny`, `wazuh_disable_user` / `wazuh_enable_user`, `wazuh_restart`.
-Les commandes sont câblées, l'exécution reste à valider.
+| Outil MCP | Effet vérifié sur l'hôte |
+|---|---|
+| `wazuh_kill_process` | PID ciblé tué, homonymes épargnés, safelist respectée |
+| `wazuh_quarantine_file` / `wazuh_restore_file` | fichier déplacé en quarantaine puis restauré |
+| `wazuh_isolate_host` / `wazuh_unisolate_host` | table nftables posée puis retirée, réseau rétabli |
+| `wazuh_block_ip` / `wazuh_firewall_allow` | règle `DROP` iptables ajoutée puis supprimée |
+| `wazuh_host_deny` / `wazuh_host_allow` | ligne `ALL:<ip>` ajoutée puis retirée de `/etc/hosts.deny` |
+| `wazuh_disable_user` / `wazuh_enable_user` | compte verrouillé (`passwd -S` = `L`) puis rouvert (`P`) |
+| `wazuh_restart` | agent redémarré |
+
+Les outils de vérification `wazuh_check_blocked_ip` et `wazuh_check_user_status`
+répondent correctement, mais ils déduisent l'état de l'historique des alertes,
+pas de l'hôte : à recouper avec l'agent en cas de doute.
