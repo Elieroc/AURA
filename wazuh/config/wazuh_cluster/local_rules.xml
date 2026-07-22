@@ -293,3 +293,86 @@
   </rule>
 
 </group>
+
+<!-- ===================================================================
+     Detection ransomware (T1486 / T1490 / T1489)
+     Strategie : deception (fichiers canaris) plutot que detection de masse.
+     Un burst FIM sur /home genere des FP garantis (rsync, apt, git, CI) ;
+     un canari n'est touche par AUCUN process legitime -> 1 evenement = 1 alerte.
+     Le FIM ne pose des watches que sur les fichiers matchant `restrict`
+     (voir agent.conf), donc cout inotify negligeable et volume d'events ~0.
+     =================================================================== -->
+<group name="ransomware,threat_hunting,linux,">
+
+  <!-- R1 T1486 - canari modifie/chiffre/renomme. Level 15 : aucune raison
+       legitime qu'un fichier canari change. `if_group syscheck` couvre les
+       regles 550 (modified), 553 (deleted), 554 (added). -->
+  <rule id="100670" level="15">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">CANARY_SOC_NE_PAS_TOUCHER</field>
+    <description>Ransomware probable : fichier canari altere ($(file)) - chiffrement en cours</description>
+    <mitre>
+      <id>T1486</id>
+    </mitre>
+  </rule>
+
+  <!-- R2 T1486 - note de rancon deposee. Motifs volontairement specifiques :
+       `README` seul est bien trop courant en /home et /srv -> exclu.
+       Couvre STOP/Djvu (_readme.txt), LockBit, Conti, Hive, Royal, Akira. -->
+  <rule id="100671" level="14">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">(?i)(_readme\.txt|how[_ -]?to[_ -]?(decrypt|restore|recover)|(decrypt|restore|recover)[_ -]?(your[_ -]?)?files|readme[_-]for[_-]decrypt|!+[_ -]?restore|ransom[_ -]?note|akira_readme|recover[_-]?your[_-]?data)</field>
+    <description>Ransomware probable : note de rancon deposee ($(file))</description>
+    <mitre>
+      <id>T1486</id>
+    </mitre>
+  </rule>
+
+  <!-- R3 T1486 - extension de chiffrement connue apposee sur un fichier.
+       Scope restreint aux extensions sans usage legitime (pas de .enc/.aes :
+       utilises par des outils d'admin). -->
+  <rule id="100672" level="14">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">(?i)\.(locky|lockbit|conti|ryuk|revil|sodinokibi|djvu|wncry|wannacry|crysis|phobos|makop|mallox|blackcat|royal|akira|basta|8base|cuba|hive|nokoyawa|encrypted|crypted|cryptolocker|kraken|onion|payransom)$</field>
+    <description>Ransomware probable : fichier avec extension de chiffrement connue ($(file))</description>
+    <mitre>
+      <id>T1486</id>
+    </mitre>
+  </rule>
+
+  <!-- R4 T1490 - destruction des sauvegardes/snapshots avant chiffrement.
+       ATTENTION au format auditd : les arguments arrivent decoupes en
+       `a0="zfs" a1="destroy"`, il n'y a PAS d'espace entre le binaire et son
+       verbe dans full_log. Une regex de type `zfs\s+destroy` ne matche jamais.
+       On matche donc le binaire en a0 (avec chemin optionnel) puis le verbe
+       dans un argument ulterieur quelconque.
+
+       Verbes volontairement limites a la destruction non ambigue. Sont EXCLUS
+       `restic forget`, `borg prune`, `duplicity remove` : ce sont les commandes
+       de retention, executees par cron sur toute machine correctement
+       sauvegardee -> FP quotidien garanti. Un `rm -rf /var/backups` nu est
+       exclu pour la meme raison (scripts de menage).
+       Reste un FP possible : purge de snapshots planifiee (zfs-auto-snapshot).
+       D'ou le niveau 12 et non 15 - le signal a zero FP, c'est le canari. -->
+  <rule id="100673" level="12">
+    <if_group>audit</if_group>
+    <regex type="pcre2">a0="(?:[^"]*/)?(?i:zfs|borg|btrfs|virsh|timeshift|snapper|lvremove)"(?: a\d+="[^"]*")*? a\d+="(?i:destroy|delete|--delete|snapshot-delete)"</regex>
+    <description>Inhibition de la restauration : destruction de sauvegardes/snapshots ($(audit.command))</description>
+    <mitre>
+      <id>T1490</id>
+    </mitre>
+  </rule>
+
+  <!-- R5 T1490 - desactivation d'un service de sauvegarde. Distinct de 100654
+       (services de securite/journalisation), meme logique, meme contrainte de
+       format sur les arguments auditd. -->
+  <rule id="100674" level="12">
+    <if_group>audit</if_group>
+    <regex type="pcre2">a0="(?:[^"]*/)?systemctl" a\d+="(?i:disable|stop|mask)"(?: a\d+="[^"]*")*? a\d+="[^"]*(?i:borgmatic|restic|duplicity|bacula|amanda|urbackup|timeshift|rsnapshot|veeam|backup)[^"]*"</regex>
+    <description>Inhibition de la restauration : arret/desactivation d'un service de sauvegarde</description>
+    <mitre>
+      <id>T1490</id>
+    </mitre>
+  </rule>
+
+</group>
