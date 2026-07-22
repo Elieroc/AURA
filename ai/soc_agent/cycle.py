@@ -18,7 +18,7 @@ import sys
 
 import psycopg
 
-from . import config, correlate, ingest, triage
+from . import config, correlate, ingest, triage, whitelist
 
 # Journalisé sur stderr -> capté par journald quand lancé en service systemd.
 logging.basicConfig(
@@ -63,6 +63,14 @@ def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
             except Exception as e:  # noqa: BLE001 — on veut tout rattraper ici
                 log.warning("triage sauté (serveur LLM injoignable ?) : %s", e)
                 return 0
+
+            # Boucle fermée : les FP récurrents deviennent des exceptions. Ne
+            # tourne qu'après le triage, il lui faut des verdicts frais.
+            crees = [d for d in whitelist.analyser(config.WHITELIST_MIN_FP, False)
+                     if d["action"] == "créé"]
+            if crees:
+                log.info("whitelist : %d exception(s) créée(s) : %s",
+                         len(crees), ", ".join(d["signature"] for d in crees))
 
             return 0
         finally:

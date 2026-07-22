@@ -67,7 +67,7 @@ def _entite(src: dict) -> str | None:
     ])
 
 
-def _aplatir(src: dict) -> dict:
+def _aplatir(src: dict, filtre: noise.NoiseFilter) -> dict:
     """Document indexer -> ligne de la table alerts."""
     regle = src.get("rule", {})
     agent = src.get("agent", {})
@@ -102,7 +102,7 @@ def _aplatir(src: dict) -> dict:
         "entity": _entite(src),
         # Suppression post-retrieval du noise filter : l'alerte est ingérée
         # mais marquée, pour rester relisible tout en sortant de la corrélation.
-        "suppress_reason": noise.charger().raison_suppression(src),
+        "suppress_reason": filtre.raison_suppression(src),
         "raw": json.dumps(src),
     }
 
@@ -119,7 +119,8 @@ ON CONFLICT (id) DO NOTHING
 """
 
 
-def _lot(depuis: str | None, apres: tuple | None, taille: int) -> list[dict]:
+def _lot(depuis: str | None, apres: tuple | None, taille: int,
+         filtre: noise.NoiseFilter) -> list[dict]:
     """Un lot d'alertes, trié par (timestamp, id) pour une reprise fiable."""
     requete: dict = {"bool": {"filter": [], "must_not": []}}
     if config.INGEST_MIN_LEVEL > 0:
@@ -130,7 +131,7 @@ def _lot(depuis: str | None, apres: tuple | None, taille: int) -> list[dict]:
             {"range": {"@timestamp": {"gte": f"now-{depuis}"}}})
     # Bouclier d'ingestion : le bruit certain (query_level: true) est écarté
     # côté indexer, il n'entre jamais en base.
-    requete["bool"]["must_not"] = noise.charger().clauses_must_not()
+    requete["bool"]["must_not"] = filtre.clauses_must_not()
     if not requete["bool"]["filter"] and not requete["bool"]["must_not"]:
         requete = {"match_all": {}}
 
@@ -158,6 +159,9 @@ def _lot(depuis: str | None, apres: tuple | None, taille: int) -> list[dict]:
 def ingerer(depuis: str | None, taille_lot: int) -> int:
     total = 0
     with psycopg.connect(config.PG_DSN) as conn:
+        # Filtre construit une fois par run, whitelist auto (DB) comprise.
+        filtre = noise.charger_avec_db(conn)
+
         with conn.cursor() as cur:
             cur.execute("SELECT last_ts, last_alert_id FROM ingest_cursor")
             ligne = cur.fetchone()
@@ -170,11 +174,11 @@ def ingerer(depuis: str | None, taille_lot: int) -> int:
             depuis = None
 
         while True:
-            hits = _lot(depuis, apres, taille_lot)
+            hits = _lot(depuis, apres, taille_lot, filtre)
             if not hits:
                 break
 
-            lignes = [_aplatir(h["_source"]) for h in hits]
+            lignes = [_aplatir(h["_source"], filtre) for h in hits]
             with conn.cursor() as cur:
                 cur.executemany(INSERT, lignes)
                 dernier = hits[-1]
@@ -208,9 +212,9 @@ def reappliquer_filtre() -> tuple[int, int]:
     brut conservé. Ne touche pas au rattachement : une alerte nouvellement
     supprimée sortira de la corrélation au prochain `correlate --recommencer`.
     """
-    filtre = noise.charger()
     vus = supprimees = 0
     with psycopg.connect(config.PG_DSN, row_factory=psycopg.rows.dict_row) as conn:
+        filtre = noise.charger_avec_db(conn)
         lignes = conn.execute("SELECT id, raw FROM alerts").fetchall()
         for ligne in lignes:
             vus += 1

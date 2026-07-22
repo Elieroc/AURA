@@ -51,7 +51,9 @@ Phase 1 en place : ingestion + corrélation, **sans LLM**. Détail et justificat
 
 Phase 2 en place : triage LLM en **mode shadow** (verdict enregistré, rien de déclenché). Serveur llama.cpp en service systemd utilisateur (`ai/llm/`), loopback strict.
 
-Déclenchement **périodique** : `soc_agent.cycle` enchaîne ingest → correlate → triage ; timer systemd utilisateur toutes les 5 min (`ai/systemd/soc-agent-cycle.{service,timer}`). Verrou consultatif Postgres anti-chevauchement. Triage facultatif au cycle (`Wants` soc-llm, pas `Requires`). Plus lancé à la main.
+**Whitelist automatique** (`soc_agent.whitelist`) : les FP récurrents jugés par l'IA (même signature, ≥ `WHITELIST_MIN_FP`) deviennent des exceptions dans `whitelist_rules` (table distincte du YAML humain, lue par `noise.py`). Toujours composite + post-retrieval. Signature = champs constants parmi `rule_id`/`src_user`/`command`/`file` (`file` virtuel : whitelister `/tmp/eicar.com` sans aveugler la règle VT). Garde-fous : signature précise obligatoire (rule_id seul refusé), jamais au-dessus de niveau 14, jamais une signature vue en TP.
+
+Déclenchement **périodique** : `soc_agent.cycle` enchaîne ingest → correlate → triage → whitelist ; timer systemd utilisateur toutes les 5 min (`ai/systemd/soc-agent-cycle.{service,timer}`). Verrou consultatif Postgres anti-chevauchement. Triage facultatif au cycle (`Wants` soc-llm, pas `Requires`). Plus lancé à la main.
 
 - Le modèle ne rend qu'un **jugement** (verdict, confiance, remédiations). L'ouverture/clôture du dossier est déduite du verdict (`actions.py`), pas demandée au modèle — il oubliait `open_case` une fois sur deux.
 - Cohérence verdict/actions vérifiée après coup (`coherence.py`) : mesurable sans jeu labellisé, signale un prompt dégradé.
@@ -62,7 +64,7 @@ Déclenchement **périodique** : `soc_agent.cycle` enchaîne ingest → correlat
 
 Infra en place : Wazuh (manager, indexer, dashboard, agents, intégrations VT/AbuseIPDB/GeoIP), Shuffle, serveur MCP Wazuh, DFIR-IRIS, pipeline soc_agent (phases 1 et 2).
 
-Reste à faire, dans l'ordre : golden set (~200 alertes labellisées) → mesure de justesse → création de cases IRIS → RAG → whitelist → rules creator → remédiation avec gate humain.
+Reste à faire, dans l'ordre : golden set (~200 alertes labellisées) → mesure de justesse → création de cases IRIS → RAG → rules creator → remédiation (autonomie configurable).
 
 ## Conventions
 

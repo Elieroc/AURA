@@ -273,6 +273,45 @@ Points de conception :
 - **Plafond par cycle** (`--limite-triage`, 50) : garde-fou contre un afflux
   qui saturerait le CPU d'un coup.
 
+### Whitelist automatique
+
+La boucle se referme : quand le triage juge `false_positive` de façon répétée
+sur une même signature, `soc_agent.whitelist` crée une exception, et les
+alertes futures qui matchent sont écartées avant corrélation et triage. L'IA
+cesse de rejuger sans fin le même faux positif. Intégré au cycle, après le
+triage.
+
+```bash
+$VENV -m soc_agent.whitelist --simulation   # montre sans créer
+$VENV -m soc_agent.whitelist                # crée les exceptions dues
+$VENV -m soc_agent.whitelist --lister
+```
+
+Une exception est une entrée `whitelist_rules` (table distincte du
+`noise_filter.yaml` humain — un processus auto ne réécrit pas un fichier
+versionné). `noise.py` lit les deux sources. Toujours composite et
+post-retrieval : l'alerte reste en base pour l'audit, une whitelist trop large
+reste rattrapable.
+
+**Signature.** Les champs constants sur toutes les alertes de l'incident,
+parmi `rule_id`, `src_user`, `command`, `file`. Le champ `file` est virtuel
+(résout `syscheck.path`, le fichier VirusTotal, la cible auditd…) : il permet
+de whitelister un chemin précis — `/tmp/eicar.com` — sans neutraliser toute la
+règle VirusTotal.
+
+**Trois garde-fous**, même logique que le triage :
+
+- Signature **précise** exigée : `rule_id` seul est refusé (il neutraliserait
+  une règle entière). Il faut au moins un compte, une commande ou un fichier.
+- Jamais de whitelist auto au-dessus de `WHITELIST_MAX_LEVEL` (14). C'est aussi
+  le mur contre un attaquant qui provoquerait des FP répétés pour se faire
+  whitelister.
+- Une signature vue **au moins une fois en `true_positive`** n'est jamais
+  whitelistée, même si elle apparaît par ailleurs en FP.
+
+Seuil de récurrence : `WHITELIST_MIN_FP` (3 par défaut). Un seul FP peut être
+un accident ; la récurrence est le signal. `--min-fp 1` pour un POC agressif.
+
 ### Sortir du mode shadow
 
 `evaluate.py` refuse de conclure sous 30 incidents labellisés : un « 100 % »

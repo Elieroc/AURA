@@ -78,3 +78,16 @@ ENTITY_GAP_MINUTES = int(os.environ.get("ENTITY_GAP_MINUTES", "360"))
 # Garde-fou contre le chaînage sans fin : sur un hôte bruyant, une alerte toutes
 # les 25 minutes fusionnerait une semaine entière en un seul incident illisible.
 MAX_INCIDENT_HOURS = int(os.environ.get("MAX_INCIDENT_HOURS", "6"))
+
+# --- Whitelist automatique --------------------------------------------------
+#
+# Nombre d'incidents distincts jugés false_positive, sur une même signature,
+# avant qu'une exception soit créée automatiquement. Un seul FP peut être un
+# accident ; la récurrence est le signal.
+WHITELIST_MIN_FP = int(os.environ.get("WHITELIST_MIN_FP", "3"))
+
+# Niveau Wazuh à partir duquel on ne whitelist JAMAIS automatiquement, même sur
+# des FP répétés. Même logique que le garde-fou de clôture : une règle qui tire
+# à 14+ mérite un humain avant d'être neutralisée. Un attaquant qui provoque
+# des FP répétés pour se faire whitelister s'arrête à ce mur.
+WHITELIST_MAX_LEVEL = int(os.environ.get("WHITELIST_MAX_LEVEL", "14"))

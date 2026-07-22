@@ -131,3 +131,34 @@ ALTER TABLE triages ADD COLUMN IF NOT EXISTS incoherences text[] NOT NULL DEFAUL
 -- passer et ce qu'on a refusé.
 ALTER TABLE triages ADD COLUMN IF NOT EXISTS injection_motifs text[] NOT NULL DEFAULT '{}';
 ALTER TABLE triages ADD COLUMN IF NOT EXISTS garde_fous text[] NOT NULL DEFAULT '{}';
+
+-- ---------------------------------------------------------------------------
+-- Whitelist automatique
+-- ---------------------------------------------------------------------------
+
+-- Exceptions générées par l'IA à partir des faux positifs récurrents.
+--
+-- Table distincte du noise_filter.yaml (édité par un humain) : on ne veut pas
+-- qu'un processus automatique réécrive un fichier versionné que l'analyste
+-- édite aussi. noise.py lit les DEUX sources. Une exception auto reste
+-- traçable (incidents d'origine, compte de FP) et désactivable sans toucher au
+-- code.
+--
+-- match_all : conjonction de champs (mêmes clés que le noise filter —
+-- rule_id, src_user, dst_user, command, agent_name, agent_id). Toujours
+-- post-retrieval : l'alerte est ingérée et conservée pour l'audit, jamais
+-- écartée en silence côté indexer. Une whitelist auto trop large doit rester
+-- rattrapable.
+CREATE TABLE IF NOT EXISTS whitelist_rules (
+    id               bigserial PRIMARY KEY,
+    signature        text UNIQUE NOT NULL,   -- forme canonique de match_all, anti-doublon
+    match_all        jsonb NOT NULL,
+    reason           text NOT NULL,
+    source           text NOT NULL DEFAULT 'auto',   -- 'auto' | 'humain'
+    active           boolean NOT NULL DEFAULT true,
+    origin_incidents bigint[] NOT NULL DEFAULT '{}',
+    fp_count         integer NOT NULL DEFAULT 0,
+    created_at       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS whitelist_active ON whitelist_rules (active);
