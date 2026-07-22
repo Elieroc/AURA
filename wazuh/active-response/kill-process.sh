@@ -39,7 +39,9 @@ case "$COMMAND" in
         ;;
 esac
 
-# extra_args[0] = nom exact du process cible (comm, ex: "malware_bin")
+# extra_args[0] = nom exact du process cible (comm, ex: "malware_bin"), ou un
+# PID numérique (le serveur MCP envoie un PID). Un PID est résolu en nom via
+# /proc/<pid>/comm pour que la safelist s'applique dans les deux cas.
 PROC=$(echo "$INPUT_JSON" | sed -n 's/.*"extra_args"[[:space:]]*:[[:space:]]*\[[[:space:]]*"\([^"]*\)".*/\1/p')
 
 if [ -z "$PROC" ]; then
@@ -47,12 +49,36 @@ if [ -z "$PROC" ]; then
     exit 1
 fi
 
+TARGET_PID=""
+case "$PROC" in
+    ''|*[!0-9]*) ;;
+    *)
+        if [ ! -r "/proc/$PROC/comm" ]; then
+            log "pid $PROC introuvable, rien à faire"
+            exit 0
+        fi
+        TARGET_PID="$PROC"
+        PROC=$(cat "/proc/$PROC/comm")
+        log "pid $TARGET_PID résolu en process '$PROC'"
+        ;;
+esac
+
 for safe in $SAFELIST; do
     if [ "$PROC" = "$safe" ]; then
         log "REFUS: '$PROC' est dans la safelist (process critique), kill annulé"
         exit 1
     fi
 done
+
+# Cible désignée par PID : on ne tue que ce PID, pas tous les homonymes.
+if [ -n "$TARGET_PID" ]; then
+    if kill -TERM "$TARGET_PID" 2>/dev/null; then
+        log "process '$PROC' (pid $TARGET_PID) tué"
+        exit 0
+    fi
+    log "ERREUR: échec kill du pid $TARGET_PID ('$PROC')"
+    exit 1
+fi
 
 if ! pgrep -x "$PROC" >/dev/null 2>&1; then
     log "process '$PROC' introuvable, rien à faire"
