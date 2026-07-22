@@ -1,0 +1,62 @@
+# Schéma de sortie du triage — grammaire de production.
+#
+# Issue de ai/bench/triage-v2.gbnf, validée au bench (ai/bench/RESULTS.md).
+#
+# `reason` est en PREMIER : avec `verdict` d'abord, le modèle tranche au premier
+# token utile, sans un seul token de raisonnement derrière lui, et se trompe.
+# En plaçant l'analyse d'abord, le JSON sert lui-même de chaîne de raisonnement.
+# Coût identique, mêmes tokens générés.
+#
+# La contrainte s'applique à l'échantillonnage : les tokens hors grammaire ont
+# une probabilité nulle. Aucune injection dans les logs ne peut faire produire
+# au modèle une action absente de l'enum, ni un JSON malformé — pas de parsing
+# défensif ni de retry à prévoir.
+#
+# `actions` ne contient QUE des actions de remédiation. `open_case` et
+# `close_false_positive` en ont été RETIRÉS : ce ne sont pas des jugements mais
+# des conséquences mécaniques du verdict, déduites par soc_agent/actions.py. Le
+# modèle omettait `open_case` deux fois sur quatre au premier passage réel — on
+# ne lui demande plus de tenir la comptabilité, seulement de juger.
+#
+# L'enum reste fermée et les actions restent des PROPOSITIONS : rien ne
+# s'exécute sans passer par la validation de l'orchestrateur.
+#
+# SYNTAXE — une règle se termine au retour à la ligne et ne peut s'étendre sur
+# plusieurs lignes qu'entre parenthèses. Un « | » en début de ligne fait
+# échouer tout le fichier sur un « failed to parse grammar » sans numéro de
+# ligne.
+
+root ::= (
+    "{" ws
+        "\"reason\":"     ws reason     "," ws
+        "\"mitre\":"      ws mitre      "," ws
+        "\"verdict\":"    ws verdict    "," ws
+        "\"confidence\":" ws confidence "," ws
+        "\"actions\":"    ws actions    ws
+    "}"
+)
+
+verdict ::= "\"true_positive\"" | "\"false_positive\"" | "\"needs_investigation\""
+
+confidence ::= "\"low\"" | "\"medium\"" | "\"high\""
+
+# Technique ATT&CK au format Tnnnn[.nnn], ou null si non applicable.
+mitre ::= "null" | "\"T" [0-9] [0-9] [0-9] [0-9] ("." [0-9] [0-9] [0-9])? "\""
+
+# Liste possiblement vide : un vrai positif de faible gravité peut n'appeler
+# aucune remédiation. Plafond à 4 pour qu'un modèle hésitant ne coche pas tout
+# l'inventaire, ce qui reviendrait à ne rien décider.
+actions ::= "[" ws (action (ws "," ws action){0,3} ws)? "]"
+
+action ::= (
+    "\"propose_block_ip\"" |
+    "\"propose_isolate_host\"" |
+    "\"propose_disable_user\"" |
+    "\"collect_endpoint_evidence\"" |
+    "\"escalate_human\""
+)
+
+reason ::= "\"" char{20,320} "\""
+
+char ::= [^"\\\x7F\x00-\x1F] | "\\" (["\\bfnrt] | "u" [0-9a-fA-F]{4})
+ws ::= [ \t\n]*

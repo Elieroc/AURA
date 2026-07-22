@@ -36,6 +36,7 @@ L'IA doit pouvoir aller chercher des infos sur la machine d'un agent (FP ou pas,
 - Toute donnée SOC (logs, alertes, IOC) reste locale. Pas d'envoi vers API LLM cloud.
 - Actions de mitigation à fort impact (blocage, isolation, changement de règle en prod) : proposer, ne jamais exécuter automatiquement sans validation explicite.
 - Clés API (VT, AbuseIPDB) et secrets Wazuh : jamais en clair dans le repo — utiliser `.env` (gitignored) ou secrets manager.
+- **Le LLM n'est pas une frontière de sécurité.** Mesuré : sur un ransomware avéré, 3 injections sur 4 dans les logs retournent le verdict du modèle en `false_positive`. La grammaire GBNF garantit la forme et l'enum d'actions, pas le verdict. Toute conséquence dangereuse (clôture d'un incident grave) est bloquée par une **barrière déterministe** dans le code (`actions.appliquer_garde_fous`), jamais par le prompt. Le texte non fiable est neutralisé avant le modèle (`sanitize.py`), mais ce n'est qu'une défense secondaire.
 
 ## Pipeline (ai/soc_agent/)
 
@@ -47,11 +48,18 @@ Phase 1 en place : ingestion + corrélation, **sans LLM**. Détail et justificat
 - Mesuré sur données réelles : 680 alertes → 36 retenues (niveau ≥ 12) → 4 incidents, facteur 9.
 - Piège : `TRUNCATE incidents CASCADE` vide aussi `alerts`. Utiliser `correlate --recommencer`.
 
+Phase 2 en place : triage LLM en **mode shadow** (verdict enregistré, rien de déclenché). Serveur llama.cpp en service systemd utilisateur (`ai/llm/`), loopback strict.
+
+- Le modèle ne rend qu'un **jugement** (verdict, confiance, remédiations). L'ouverture/clôture du dossier est déduite du verdict (`actions.py`), pas demandée au modèle — il oubliait `open_case` une fois sur deux.
+- Cohérence verdict/actions vérifiée après coup (`coherence.py`) : mesurable sans jeu labellisé, signale un prompt dégradé.
+- Température 0,2 + seed fixe = verdict reproductible. `triages` est à historique (on ajoute, on n'écrase pas) pour comparer deux prompts. `prompt_sha` tracé.
+- Sortie du mode shadow : `evaluate.py` refuse de conclure sous 30 incidents labellisés. Golden set (~200) requis, et même alors l'automatisation reste une décision humaine par niveau d'autonomie.
+
 ## État du projet
 
-Infra en place : Wazuh (manager, indexer, dashboard, agents, intégrations VT/AbuseIPDB/GeoIP), Shuffle, serveur MCP Wazuh, DFIR-IRIS.
+Infra en place : Wazuh (manager, indexer, dashboard, agents, intégrations VT/AbuseIPDB/GeoIP), Shuffle, serveur MCP Wazuh, DFIR-IRIS, pipeline soc_agent (phases 1 et 2).
 
-Reste à faire, dans l'ordre : triage LLM en shadow mode (golden set de ~200 alertes labellisées d'abord) → création de cases IRIS → RAG → whitelist → rules creator → remédiation avec gate humain.
+Reste à faire, dans l'ordre : golden set (~200 alertes labellisées) → mesure de justesse → création de cases IRIS → RAG → whitelist → rules creator → remédiation avec gate humain.
 
 ## Conventions
 
