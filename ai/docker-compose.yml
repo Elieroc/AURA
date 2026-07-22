@@ -1,0 +1,34 @@
+# Base de données du soc-agent.
+#
+# Séparée de celle d'IRIS volontairement : IRIS applique ses propres migrations
+# de schéma au démarrage et monte de version à son rythme. Partager l'instance
+# reviendrait à lier nos migrations aux siennes.
+#
+# Pas de Redis à ce stade. La file avait du sens avec un ingest poussé par
+# Wazuh ; on tire depuis l'indexer, donc le curseur en base joue déjà le rôle
+# de tampon et rien ne se perd si le soc-agent est arrêté. Redis reviendra
+# quand il y aura plusieurs workers à alimenter.
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: socagent-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${PGUSER:-socagent}
+      - POSTGRES_PASSWORD=${PGPASSWORD:?PGPASSWORD requis, cf. .env.example}
+      - POSTGRES_DB=${PGDATABASE:-socagent}
+    # 5433 : 5432 reste libre pour un usage local, et on évite toute confusion
+    # avec la base d'IRIS.
+    ports:
+      - "127.0.0.1:${PGPORT:-5433}:5432"
+    mem_limit: 512m
+    volumes:
+      - socagent_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-socagent}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  socagent_db:

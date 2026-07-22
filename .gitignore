@@ -31,3 +31,6 @@ mcp/wazuh-mcp-server/
 ai/bench/.server.log
 ai/bench/.quality-server.log
 ai/bench/.bench-stderr.log
+
+# Environnement Python du soc-agent : hors dépôt (~/.local/share/soc-ai/venv)
+.pytest_cache/

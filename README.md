@@ -47,6 +47,9 @@ SOC piloté par une IA locale. Détection avec Wazuh, enrichissement threat inte
 | [`shuffle/`](shuffle/) | SOAR Shuffle — orchestration des remédiations | ✅ Testé E2E |
 | Remédiation — isolation hôte | Active response nftables via workflow Shuffle ([`shuffle/README.md`](shuffle/README.md)) | ✅ Testé E2E |
 | [`iris/`](iris/) | DFIR-IRIS — case management des incidents (https://localhost:8443) | ✅ Testé E2E |
+| [`ai/bench/`](ai/bench/) | Bench llama.cpp CPU — modèle, quantification, prompts | ✅ Mesuré |
+| [`ai/soc_agent/`](ai/soc_agent/) | Ingestion + corrélation des alertes en incidents (phase 1, sans LLM) | ✅ Sur données réelles |
+| IA — Triage | Verdict LLM sur les incidents (Qwen3-8B Q4_K_M, local) | 🔜 Phase 2 |
 | IA — Rules creator | Génération de règles/decoders Wazuh à partir des alertes | 🔜 À venir |
 | IA — Whitelist | Gestion des faux positifs récurrents | 🔜 À venir |
 | IA — Mitigation | Propositions d'actions de remédiation | 🔜 À venir |
@@ -78,6 +81,7 @@ Détail complet (setup, intégrations, tests manuels) : [`wazuh/README.md`](wazu
 SOC-AI/
 ├── CLAUDE.md            # contexte projet pour Claude Code
 ├── README.md
+├── ai/                  # couche IA : bench llama.cpp + soc_agent (ingest, corrélation)
 ├── iris/                # DFIR-IRIS (case management)
 ├── scripts/             # install-agent.sh (agent + user d'admin distante)
 ├── shuffle/             # SOAR Shuffle (remédiation, workflow isolation d'hôte)
