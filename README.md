@@ -50,7 +50,7 @@ SOC piloté par une IA locale. Détection avec Wazuh, enrichissement threat inte
 | [`ai/bench/`](ai/bench/) | Bench llama.cpp CPU — modèle, quantification, prompts | ✅ Mesuré |
 | [`ai/soc_agent/`](ai/soc_agent/) | Pipeline : ingest + corrélation (ph.1), triage LLM shadow (ph.2) | ✅ Sur données réelles |
 | IA — Rules creator | Génération de règles/decoders Wazuh à partir des alertes | 🔜 À venir |
-| IA — Whitelist | Gestion des faux positifs récurrents | 🔜 À venir |
+| IA — Whitelist | Exceptions auto sur FP récurrents jugés par l'IA | ✅ Boucle fermée |
 | IA — Mitigation | Propositions d'actions de remédiation | 🔜 À venir |
 
 ## Démarrage rapide

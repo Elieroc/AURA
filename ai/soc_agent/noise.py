@@ -34,6 +34,22 @@ CHAMP = {
     "agent_id": "agent.id",
 }
 
+# Le fichier concerné n'a pas un emplacement unique : selon le décodeur, c'est
+# syscheck.path, le fichier VirusTotal, la cible auditd… « file » est donc un
+# champ VIRTUEL, résolu par essais successifs. Réservé aux composites
+# (post-retrieval) : il permet de whitelister un chemin précis sans aveugler
+# toute une règle — p.ex. /tmp/eicar.com sans neutraliser la règle VirusTotal.
+FICHIER_CHEMINS = [
+    "syscheck.path",
+    "data.virustotal.source.file",
+    "data.audit.exe",
+    "data.audit.file.name",
+    "data.win.eventdata.image",
+]
+
+# Champs autorisés dans un match_all de composite (simples + le virtuel).
+CHAMP_COMPOSITE = set(CHAMP) | {"file"}
+
 
 def _lire(src: dict, chemin: str):
     """Valeur d'un champ Wazuh en notation pointée dans le document brut."""
@@ -45,6 +61,17 @@ def _lire(src: dict, chemin: str):
         if noeud is None:
             return None
     return noeud
+
+
+def _valeur_champ(src: dict, champ: str):
+    """Valeur d'un champ de composite, y compris le virtuel « file »."""
+    if champ == "file":
+        for chemin in FICHIER_CHEMINS:
+            v = _lire(src, chemin)
+            if v:
+                return v
+        return None
+    return _lire(src, CHAMP.get(champ, champ))
 
 
 class NoiseFilter:
@@ -63,6 +90,14 @@ class NoiseFilter:
     def _ajouter(self, type_champ: str, valeur, query_level: bool, reason: str):
         cible = self.query_level if query_level else self.post
         cible.append((type_champ, str(valeur), reason or type_champ))
+
+    def ajouter_composite(self, match_all: dict, nom: str) -> None:
+        """Ajoute une règle composite (utilisé pour les exceptions en base).
+
+        Toujours post-retrieval : une exception large doit rester rattrapable,
+        donc jamais écartée côté indexer.
+        """
+        self.composites.append({"name": nom, "match_all": match_all})
 
     def _charger(self, f: dict) -> None:
         for e in f.get("rules", {}).get("ignore_rule_ids") or []:
@@ -111,8 +146,8 @@ class NoiseFilter:
             # Toutes les clés doivent être connues ET matcher. Sans le premier
             # test, un composite aux clés inconnues donnerait un all() vide,
             # donc vrai, et supprimerait toutes les alertes.
-            if conditions and all(k in CHAMP for k in conditions) and all(
-                    str(_lire(src, CHAMP[k])) == str(v)
+            if conditions and all(k in CHAMP_COMPOSITE for k in conditions) and all(
+                    str(_valeur_champ(src, k)) == str(v)
                     for k, v in conditions.items()):
                 return c.get("name") or c.get("description") or "composite"
         return None
@@ -123,3 +158,26 @@ def charger(chemin: str | None = None) -> NoiseFilter:
     p = Path(chemin) if chemin else CONFIG_DEFAUT
     with open(p, encoding="utf-8") as fh:
         return NoiseFilter(yaml.safe_load(fh) or {})
+
+
+def charger_avec_db(conn, chemin: str | None = None) -> NoiseFilter:
+    """Filtre complet : noise_filter.yaml (humain) + whitelist_rules (auto).
+
+    Reconstruit à chaque appel, sans cache : les exceptions auto évoluent à
+    chaque cycle. À appeler une fois par run et passer aux fonctions, pas par
+    alerte.
+    """
+    p = Path(chemin) if chemin else CONFIG_DEFAUT
+    with open(p, encoding="utf-8") as fh:
+        filtre = NoiseFilter(yaml.safe_load(fh) or {})
+
+    # Curseur tuple explicite : si la connexion appelante utilise dict_row,
+    # déballer « for sig, match_all, reason in ... » itérerait les CLÉS de
+    # chaque ligne, pas ses valeurs, et chargerait des composites cassés.
+    from psycopg.rows import tuple_row
+    with conn.cursor(row_factory=tuple_row) as cur:
+        cur.execute("SELECT signature, match_all, reason FROM whitelist_rules "
+                    "WHERE active")
+        for sig, match_all, reason in cur.fetchall():
+            filtre.ajouter_composite(match_all, reason or sig)
+    return filtre
