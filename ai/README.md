@@ -67,9 +67,10 @@ $VENV -m soc_agent.correlate             # regroupe en incidents
 $VENV -m soc_agent.report                # l'entonnoir et la charge LLM
 ```
 
-Les deux premières commandes sont faites pour tourner en boucle (cron ou
-timer) : l'ingestion reprend à son curseur, la corrélation ne traite que les
-alertes non encore rattachées.
+Les deux premières commandes sont faites pour tourner en boucle : l'ingestion
+reprend à son curseur, la corrélation ne traite que les alertes non encore
+rattachées. En pratique on ne les lance pas à la main — voir le déclenchement
+périodique ci-dessous.
 
 Rejouer la corrélation après un changement de paramètres :
 
@@ -240,6 +241,37 @@ Sans ça, impossible de dire si un changement de prompt améliore ou si c'est du
 bruit. Chaque triage enregistre le modèle et l'empreinte du prompt (`prompt_sha`)
 pour la même raison. `triages` est une table à historique : on ajoute, on
 n'écrase pas — c'est ce qui permet de comparer.
+
+### Déclenchement périodique
+
+Le pipeline n'attend pas qu'on le lance. `soc_agent.cycle` enchaîne
+ingest → correlate → triage en une exécution, et un timer systemd le déclenche
+toutes les 5 minutes (unités dans [`systemd/`](systemd/)).
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp systemd/soc-agent-cycle.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now soc-agent-cycle.timer
+
+systemctl --user list-timers soc-agent-cycle.timer     # prochain passage
+journalctl --user -u soc-agent-cycle.service -f        # suivi
+systemctl --user start soc-agent-cycle.service         # forcer un cycle
+```
+
+Points de conception :
+
+- **Verrou consultatif Postgres** (`pg_try_advisory_lock`) : si un cycle
+  déborde sur l'intervalle du timer, le suivant passe son tour au lieu de se
+  superposer. Le triage sature déjà le CPU, deux cycles en parallèle ne
+  gagneraient rien.
+- **Idempotent** : chaque étape reprend où elle en est (curseur, alertes non
+  corrélées, incidents non triés). Rejouer un cycle ne duplique rien.
+- **Le triage est facultatif au cycle** : `Wants=soc-llm.service`, pas
+  `Requires`. Serveur LLM absent → ingest et correlate tournent quand même, le
+  triage est sauté et repris au tour suivant.
+- **Plafond par cycle** (`--limite-triage`, 50) : garde-fou contre un afflux
+  qui saturerait le CPU d'un coup.
 
 ### Sortir du mode shadow
 
