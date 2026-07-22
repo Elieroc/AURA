@@ -4,6 +4,7 @@
 !*/.env.example
 *.key
 *.pem
+*.srl
 secrets/
 wazuh/config/wazuh_cluster/wazuh_manager.conf
 
