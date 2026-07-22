@@ -1,0 +1,15 @@
+# Override local SOC-AI :
+# - expose le serveur MCP uniquement sur 127.0.0.1 (pas d'écoute réseau)
+# - le rattache au réseau du stack Wazuh pour résoudre wazuh.manager / wazuh.indexer
+services:
+  wazuh-main-server:
+    ports: !override
+      - "127.0.0.1:3000:3000"
+    networks:
+      - default
+      - wazuh
+
+networks:
+  wazuh:
+    name: wazuh_default
+    external: true

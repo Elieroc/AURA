@@ -16,3 +16,6 @@ venv/
 node_modules/
 .claude/
 graphify-out/
+
+# Clone upstream du serveur MCP (voir mcp/README.md)
+mcp/wazuh-mcp-server/

@@ -1,0 +1,22 @@
+diff --git a/src/wazuh_mcp_server/api/wazuh_client.py b/src/wazuh_mcp_server/api/wazuh_client.py
+index 243d26b..6329011 100644
+--- a/src/wazuh_mcp_server/api/wazuh_client.py
++++ b/src/wazuh_mcp_server/api/wazuh_client.py
+@@ -400,6 +400,17 @@ class WazuhClient:
+         # Ensure data dict doesn't contain deprecated 'custom' parameter
+         if "custom" in data:
+             data = {k: v for k, v in data.items() if k != "custom"}
++        # PATCH SOC-AI: the upstream code sends "!<command>", which the Wazuh 4.9
++        # API accepts (HTTP 200) but the agent's wazuh-execd silently drops. The
++        # agent only runs a command whose name matches its shared/ar.conf entry,
++        # i.e. "<command><location-digit>" with no "!" prefix ("kill-process0").
++        # Normalize here so every AR tool hits the real command name.
++        command = data.get("command")
++        if isinstance(command, str) and command:
++            command = command.lstrip("!")
++            if not command[-1].isdigit():
++                command = f"{command}0"
++            data = {**data, "command": command}
+         # Wazuh 4.x API: agent_list must be passed as query param 'agents_list'
+         agents_list = data.pop("agent_list", None)
+         params = {}

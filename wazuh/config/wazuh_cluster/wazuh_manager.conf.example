@@ -234,7 +234,7 @@
     <timeout_allowed>no</timeout_allowed>
   </command>
 
-  <!-- Kill d'un process par nom (déclenché via API / Shuffle, jamais automatique) -->
+  <!-- Kill d'un process par nom ou PID (déclenché via API / Shuffle / MCP, jamais automatique) -->
   <command>
     <name>kill-process</name>
     <executable>kill-process.sh</executable>
@@ -242,10 +242,100 @@
   </command>
 
   <!--
-  <active-response>
-    active-response options here
-  </active-response>
+    Commandes attendues par le serveur MCP (mcp/wazuh-mcp-server) : il n'appelle
+    qu'un seul nom pour isolation + rollback ("host-isolation" avec argument
+    "undo"), d'où le wrapper. Toujours déclenchées manuellement via l'API.
   -->
+  <command>
+    <name>host-isolation</name>
+    <executable>host-isolation.sh</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+
+  <command>
+    <name>quarantine</name>
+    <executable>quarantine.sh</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+
+  <command>
+    <name>enable-account</name>
+    <executable>enable-account.sh</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+
+  <!--
+    Blocs active-response "manuels".
+
+    Une commande n'est poussée dans le ar.conf des agents que si elle apparaît
+    dans un bloc <active-response> ; sans ça wazuh-execd refuse l'exécution,
+    même pour un déclenchement via l'API (PUT /active-response). On déclare donc
+    chaque commande avec <rules_id>999999</rules_id> : cette règle n'existe pas,
+    donc aucun déclenchement automatique — seul l'appel API (Shuffle / serveur
+    MCP) exécute l'action, ce qui garde la décision humaine (cf. CLAUDE.md).
+  -->
+  <active-response>
+    <disabled>no</disabled>
+    <command>host-isolate</command>
+    <location>local</location>
+    <rules_id>999999</rules_id>
+  </active-response>
+
+  <active-response>
+    <disabled>no</disabled>
+    <command>host-unisolate</command>
+    <location>local</location>
+    <rules_id>999999</rules_id>
+  </active-response>
+
+  <active-response>
+    <disabled>no</disabled>
+    <command>host-isolation</command>
+    <location>local</location>
+    <rules_id>999999</rules_id>
+  </active-response>
+
+  <active-response>
+    <disabled>no</disabled>
+    <command>kill-process</command>
+    <location>local</location>
+    <rules_id>999999</rules_id>
+  </active-response>
+
+  <active-response>
+    <disabled>no</disabled>
+    <command>quarantine</command>
+    <location>local</location>
+    <rules_id>999999</rules_id>
+  </active-response>
+
+  <active-response>
+    <disabled>no</disabled>
+    <command>disable-account</command>
+    <location>local</location>
+    <rules_id>999999</rules_id>
+  </active-response>
+
+  <active-response>
+    <disabled>no</disabled>
+    <command>enable-account</command>
+    <location>local</location>
+    <rules_id>999999</rules_id>
+  </active-response>
+
+  <active-response>
+    <disabled>no</disabled>
+    <command>firewall-drop</command>
+    <location>local</location>
+    <rules_id>999999</rules_id>
+  </active-response>
+
+  <active-response>
+    <disabled>no</disabled>
+    <command>host-deny</command>
+    <location>local</location>
+    <rules_id>999999</rules_id>
+  </active-response>
 
   <!-- Log analysis -->
   <localfile>
