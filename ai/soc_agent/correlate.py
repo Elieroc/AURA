@@ -61,7 +61,7 @@ SELECT_NON_RATTACHEES = """
 SELECT id, ts, agent_id, agent_name, rule_id, rule_level, rule_groups,
        mitre_tactics, srcip, srcuser, entity
   FROM alerts
- WHERE incident_id IS NULL AND rule_level >= %s
+ WHERE incident_id IS NULL AND rule_level >= %s AND NOT suppressed
  ORDER BY agent_id, ts, id
 """
 

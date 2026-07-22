@@ -148,6 +148,34 @@ Les intégrations rangent l'IP source sous leur propre clé —
 alertes AbuseIPDB, celles qui portent précisément la réputation, arrivaient
 sans IP et restaient incorrélables.
 
+### Noise filter à deux niveaux
+
+`noise_filter.yaml` déclare les alertes à écarter, avec un `query_level` par
+entrée (idée reprise de majiinB/Wazuh-AI-Integration, adaptée au pull) :
+
+- **`query_level: true`** — poussé dans un `must_not` de la requête à
+  l'indexer. L'alerte n'entre jamais en base. Pour le bruit certain et
+  volumineux.
+- **`query_level: false`** — l'alerte est ingérée et **conservée pour
+  l'audit**, mais marquée `suppressed` et exclue de la corrélation. Pour ce
+  qu'on veut pouvoir relire.
+
+Les filtres composites (`match_all` : plusieurs champs à la fois, p.ex.
+`root` + commande de maintenance APT) sont toujours post-retrieval.
+
+Le fichier livré est un **point de départ** : les comptes bruyants qu'il liste
+(`_apt`, `nobody`…) ne sont pas forcément sur ton parc. Les vrais faux positifs
+récurrents se découvrent en exploitation. Après édition :
+
+```bash
+$VENV -m soc_agent.ingest --reappliquer-filtre   # réévalue l'existant
+$VENV -m soc_agent.correlate --recommencer
+```
+
+`report.py` affiche le nombre d'alertes écartées. Prudence : `query_level: true`
+seulement quand l'alerte n'a *aucune* valeur — dans le doute, `false`, on garde
+la trace.
+
 ## Phase 2 — triage LLM, mode shadow
 
 Le modèle rend un verdict sur chaque incident. **Rien ne se déclenche** : les

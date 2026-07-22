@@ -55,6 +55,12 @@ CREATE TABLE IF NOT EXISTS alerts (
     entity        text,
     raw           jsonb NOT NULL,
     incident_id   bigint REFERENCES incidents(id) ON DELETE SET NULL,
+    -- Suppression post-retrieval du noise filter (query_level: false). L'alerte
+    -- est ingérée et conservée pour l'audit, mais exclue de la corrélation. Les
+    -- entrées query_level: true, elles, ne sont jamais ingérées (must_not
+    -- OpenSearch) et n'apparaissent donc pas ici.
+    suppressed     boolean NOT NULL DEFAULT false,
+    suppress_reason text,
     ingested_at   timestamptz NOT NULL DEFAULT now()
 );
 
