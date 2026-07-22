@@ -265,6 +265,23 @@
   </command>
 
   <!--
+    Rollbacks de firewall-drop / host-deny : les binaires Wazuh n'annulent un
+    blocage que sur expiration de timeout (commande "delete" émise par execd) et
+    lisent l'IP dans l'alerte, donc inutilisables via l'API. Scripts dédiés.
+  -->
+  <command>
+    <name>firewall-allow</name>
+    <executable>firewall-allow.sh</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+
+  <command>
+    <name>host-allow</name>
+    <executable>host-allow.sh</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+
+  <!--
     Blocs active-response "manuels".
 
     Une commande n'est poussée dans le ar.conf des agents que si elle apparaît
@@ -333,6 +350,20 @@
   <active-response>
     <disabled>no</disabled>
     <command>host-deny</command>
+    <location>local</location>
+    <rules_id>999999</rules_id>
+  </active-response>
+
+  <active-response>
+    <disabled>no</disabled>
+    <command>firewall-allow</command>
+    <location>local</location>
+    <rules_id>999999</rules_id>
+  </active-response>
+
+  <active-response>
+    <disabled>no</disabled>
+    <command>host-allow</command>
     <location>local</location>
     <rules_id>999999</rules_id>
   </active-response>
