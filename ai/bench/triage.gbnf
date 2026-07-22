@@ -1,0 +1,50 @@
+# Grammaire de sortie du nœud de triage.
+#
+# Le modèle ne peut produire QUE cette structure : la contrainte s'applique au
+# niveau de l'échantillonnage, les tokens hors grammaire ont une probabilité
+# nulle. Un JSON malformé ou un champ inventé sont donc impossibles par
+# construction — pas de parsing défensif ni de retry à prévoir.
+#
+# C'est aussi une brique anti-prompt-injection : le contenu des logs est
+# contrôlé par l'attaquant, mais quoi qu'il y injecte, le modèle ne peut pas
+# sortir de cette forme ni nommer une action absente de l'enum.
+#
+# SYNTAXE — une règle se termine au retour à la ligne. Elle ne peut s'étendre
+# sur plusieurs lignes qu'à l'INTÉRIEUR de parenthèses (cf. grammars/json.gbnf
+# upstream). D'où les parenthèses englobantes ci-dessous : sans elles, le
+# fichier entier échoue au parsing avec un simple « failed to parse grammar ».
+
+root ::= (
+    "{" ws
+        "\"verdict\":"     ws verdict    "," ws
+        "\"confidence\":"  ws confidence "," ws
+        "\"mitre\":"       ws mitre      "," ws
+        "\"next_action\":" ws action     "," ws
+        "\"reason\":"      ws reason     ws
+    "}"
+)
+
+verdict ::= "\"true_positive\"" | "\"false_positive\"" | "\"needs_investigation\""
+
+confidence ::= "\"low\"" | "\"medium\"" | "\"high\""
+
+# Technique ATT&CK au format Tnnnn[.nnn], ou null si non applicable.
+mitre ::= "null" | "\"T" [0-9] [0-9] [0-9] [0-9] ("." [0-9] [0-9] [0-9])? "\""
+
+# Enum fermée : le LLM choisit une action, il n'en formule jamais une.
+# L'orchestrateur seul décide de l'exécuter, après validation des paramètres.
+action ::= (
+    "\"close_false_positive\"" |
+    "\"open_case\"" |
+    "\"collect_endpoint_evidence\"" |
+    "\"propose_block_ip\"" |
+    "\"propose_isolate_host\"" |
+    "\"escalate_human\""
+)
+
+# Justification bornée : au-delà on paye de la génération pour rien, et les
+# tokens générés sont la ressource rare sur CPU.
+reason ::= "\"" char{20,320} "\""
+
+char ::= [^"\\\x7F\x00-\x1F] | "\\" (["\\bfnrt] | "u" [0-9a-fA-F]{4})
+ws ::= [ \t\n]*

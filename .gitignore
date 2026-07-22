@@ -24,3 +24,10 @@ graphify-out/
 
 # Clone upstream du serveur MCP (voir mcp/README.md)
 mcp/wazuh-mcp-server/
+
+# Modèles GGUF et build llama.cpp : hors dépôt (~/.local/share/soc-ai/),
+# le dépôt est synchronisé Nextcloud.
+*.gguf
+ai/bench/.server.log
+ai/bench/.quality-server.log
+ai/bench/.bench-stderr.log

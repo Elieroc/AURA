@@ -12,8 +12,10 @@ SOC piloté par IA locale. Détection Wazuh + enrichissement threat intel + auto
 - **DFIR-IRIS** (`iris/`) — case management. Un case par incident : timeline, IOC, assets, trace des actions automatiques. Retenu contre TheHive 5 (partiellement sous licence commerciale, et 6–8 Go de RAM contre ~650 Mo). API « legacy » `/manage/*` — **pas de `/api/v2` en v2.4.27**.
 - **IA locale** — **pas de GPU sur cet hôte** (Ryzen 8c/16t AVX-512, 30 Go RAM partagés avec toute la stack). Conséquences structurantes :
   - Runtime : **llama.cpp** (et pas vLLM, dont le backend CPU est faible). Grammaires GBNF pour garantir le JSON, prefix caching par slots.
-  - Deux modèles : un petit (~4B) pour le volume, un plus gros (~8B) réservé aux nœuds de jugement.
-  - Le prefill est le goulot, pas la génération. Budget dur : **≤ 2 000 tokens de contexte par appel**. Préfiltrage déterministe avant tout appel LLM. Traitement asynchrone, SLA en minutes.
+  - **Un seul modèle : Qwen3-8B Q4_K_M.** Mesuré (`ai/bench/RESULTS.md`) : un 4B se trompe de verdict dans toutes les configurations testées, et le **Q4_K prefill plus vite que le Q5_K** (repacking AVX-512). Ne jamais prendre de quantification autre que Q4_K_M sur cette machine.
+  - Toujours `/v1/chat/completions`, jamais `/completion` : le template de chat change le verdict.
+  - Dans tout schéma de sortie, **`reason` avant `verdict`** : sinon le modèle tranche sans un token de raisonnement, et se trompe.
+  - Le prefill est le goulot (~50 t/s mesurés, pas les 100-150 estimés). Contexte visé **500–800 tokens, plafond dur 1500**. Préfiltrage déterministe avant tout appel LLM. Traitement asynchrone, ~15-25 s par alerte.
   - **L'IA ne traite que les alertes de niveau HIGH/CRITICAL.**
   - **Rules creator** — génère/propose règles Wazuh (decoders/rules XML). Jamais d'écriture directe : validation `wazuh-logtest` + rejeu de régression → PR git → merge humain.
   - **Whitelist** — propose/gère exceptions (faux positifs récurrents, IP/hosts de confiance), même flux PR.
