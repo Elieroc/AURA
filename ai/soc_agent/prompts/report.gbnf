@@ -1,0 +1,40 @@
+# Rapport d'analyse d'un incident confirmé (true_positive), pour le case IRIS.
+#
+# Généré seulement pour les vrais positifs : un case FP se contente de la
+# justification du triage. Ici on veut un récit exploitable par un analyste et
+# une réponse explicite sur le manque de détection.
+#
+# `resume` d'abord (le modèle pose les faits), puis `analyse` (le raisonnement),
+# puis la question de couverture : `detection_gap` avant `detection_suggestion`
+# pour que le booléen soit tranché avant d'écrire la suggestion.
+#
+# DEUX PIÈGES DU PARSER GBNF llama.cpp, appris à la dure :
+#  1. une règle se termine au retour à la ligne, multi-lignes seulement entre
+#     parenthèses ;
+#  2. les noms de règles n'acceptent PAS l'underscore (`texte_long` fait échouer
+#     tout le fichier sur « failed to parse grammar », sans numéro de ligne).
+#     D'où les noms accolés ci-dessous.
+
+root ::= (
+    "{" ws
+        "\"resume\":"               ws resumetxt   "," ws
+        "\"analyse\":"              ws analysetxt  "," ws
+        "\"detection_gap\":"        ws booleen     "," ws
+        "\"detection_suggestion\":" ws suggestion  ws
+    "}"
+)
+
+booleen ::= "true" | "false"
+
+# Résumé factuel : ce qui s'est passé, en clair.
+resumetxt ::= "\"" char{40,400} "\""
+# Analyse : déroulé, portée, ce qui est confirmé vs supposé.
+analysetxt ::= "\"" char{80,900} "\""
+
+# Suggestion de règle Wazuh si une détection manque, sinon null. Ce n'est PAS
+# une règle déployée : une piste rédigée pour l'analyste (le flux de création de
+# règles reste une PR validée par un humain).
+suggestion ::= "null" | "\"" char{20,500} "\""
+
+char ::= [^"\\\x7F\x00-\x1F] | "\\" (["\\bfnrt] | "u" [0-9a-fA-F]{4})
+ws ::= [ \t\n]*

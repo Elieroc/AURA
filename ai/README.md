@@ -312,6 +312,38 @@ règle VirusTotal.
 Seuil de récurrence : `WHITELIST_MIN_FP` (3 par défaut). Un seul FP peut être
 un accident ; la récurrence est le signal. `--min-fp 1` pour un POC agressif.
 
+### Cases DFIR-IRIS
+
+Un case IRIS par incident trié (`soc_agent.iris`, en fin de cycle). Écrit en
+`dfir-iris-client` direct — déterministe, pas de boucle d'outils. Le serveur
+MCP IRIS (`iris/mcp/`) sert l'investigation *interactive*, c'est un autre
+usage.
+
+```bash
+$VENV -m soc_agent.iris              # crée les cases manquants
+$VENV -m soc_agent.iris --incident 15
+```
+
+Chaque case reçoit les IOC de l'incident (IP source, fichiers, hashs) et une
+note d'analyse, selon le verdict :
+
+- **Faux positif** → note expliquant pourquoi, et l'**exception de whitelist**
+  si le pipeline en a créé une pour cette signature (état, `match_all`, motif).
+- **Vrai positif** → **rapport généré par le LLM** (`prompts/report.gbnf`) :
+  résumé, analyse, puis les **actions de remédiation** proposées (celles à fort
+  impact marquées « validation humaine requise »), et une **piste de règle
+  Wazuh** si le modèle repère un angle mort de détection — une proposition pour
+  l'analyste, jamais une règle déployée.
+
+`incidents.iris_case_id` garde le lien et évite les doublons. Si le LLM est
+injoignable, le case se crée quand même, avec la justification du triage en
+guise de rapport.
+
+> `correlate --recommencer` supprime les incidents et donc le lien
+> `iris_case_id` : les cases déjà dans IRIS deviennent orphelins et un doublon
+> serait recréé au cycle suivant. La commande le signale ; en fonctionnement
+> normal (cycle), `--recommencer` n'est pas utilisé.
+
 ### Sortir du mode shadow
 
 `evaluate.py` refuse de conclure sous 30 incidents labellisés : un « 100 % »

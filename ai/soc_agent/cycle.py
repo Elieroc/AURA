@@ -18,7 +18,7 @@ import sys
 
 import psycopg
 
-from . import config, correlate, ingest, triage, whitelist
+from . import config, correlate, ingest, iris, triage, whitelist
 
 # Journalisé sur stderr -> capté par journald quand lancé en service systemd.
 logging.basicConfig(
@@ -71,6 +71,16 @@ def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
             if crees:
                 log.info("whitelist : %d exception(s) créée(s) : %s",
                          len(crees), ", ".join(d["signature"] for d in crees))
+
+            # Un case IRIS par incident trié. Après la whitelist : un incident
+            # qui vient de passer en 'whitelisted' n'a pas de verdict à verser
+            # (déjà écarté), les autres oui.
+            try:
+                cases = iris.creer_cases()
+                if cases:
+                    log.info("IRIS : %d case(s) créé(s)", len(cases))
+            except Exception as e:  # noqa: BLE001 — IRIS down ne casse pas le cycle
+                log.warning("création de cases IRIS sautée : %s", e)
 
             return 0
         finally:

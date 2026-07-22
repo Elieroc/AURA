@@ -34,3 +34,6 @@ ai/bench/.bench-stderr.log
 
 # Environnement Python du soc-agent : hors dépôt (~/.local/share/soc-ai/venv)
 .pytest_cache/
+
+# Clone upstream du serveur MCP DFIR-IRIS (voir iris/mcp/README.md)
+iris/mcp/iris-mcp/
