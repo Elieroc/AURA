@@ -241,16 +241,6 @@
     <timeout_allowed>no</timeout_allowed>
   </command>
 
-  <!-- Collecte forensique RAM + image disque (déclenchée via Shuffle, jamais
-       automatique). timeout_allowed no : rien à annuler, une collecte de preuves
-       ne se "dé-collecte" pas. Le script rend la main tout de suite et détache
-       un worker — la collecte elle-même dure des minutes à des heures. -->
-  <command>
-    <name>forensic-collect</name>
-    <executable>forensic-collect.sh</executable>
-    <timeout_allowed>no</timeout_allowed>
-  </command>
-
   <!--
     Commandes attendues par le serveur MCP (mcp/wazuh-mcp-server) : il n'appelle
     qu'un seul nom pour isolation + rollback ("host-isolation" avec argument
@@ -325,16 +315,6 @@
   <active-response>
     <disabled>no</disabled>
     <command>kill-process</command>
-    <location>local</location>
-    <rules_id>999999</rules_id>
-  </active-response>
-
-  <!-- rules_id 999999 = règle inexistante : le bloc n'existe que pour déclarer
-       la commande à execd, jamais pour déclencher sur alerte (cf. CLAUDE.md,
-       action à fort impact = décision humaine). Même convention que les autres. -->
-  <active-response>
-    <disabled>no</disabled>
-    <command>forensic-collect</command>
     <location>local</location>
     <rules_id>999999</rules_id>
   </active-response>

@@ -1,43 +1,67 @@
-# Configuration SOC-AI déployée sur les AGENTS -> /var/ossec/etc/soc-ai.conf
+# Configuration SOC-AI
 #
-# Copier, remplir, déployer :
+# Deux fichiers distincts, deux machines, deux jeux de clés :
+#
+#   - sur les AGENTS      -> /var/ossec/etc/soc-ai.conf   (WAZUH_MANAGER_IP)
+#   - sur l'HÔTE MANAGER  -> /etc/soc-ai/soc-ai.conf      (bloc forensique)
+#
+# On peut déployer ce même fichier des deux côtés : chaque script ne lit que
+# les clés qui le concernent. Mais les CLÉS SSH, elles, ne vont QUE sur le
+# manager (cf. plus bas).
+#
 #   cp config/soc-ai.conf.example config/soc-ai.conf
-#   scp config/soc-ai.conf <agent>:/tmp/soc-ai.conf
+#   # agents :
 #   ssh <agent> 'sudo install -o root -g wazuh -m 640 /tmp/soc-ai.conf /var/ossec/etc/soc-ai.conf'
+#   # manager :
+#   sudo install -o root -g root -m 640 config/soc-ai.conf /etc/soc-ai/soc-ai.conf
 #
-# Le vrai fichier (config/soc-ai.conf) est gitignored : il contient la
-# topologie réseau du SOC, qui n'a pas à être publique.
+# Le vrai fichier (config/soc-ai.conf) est gitignored : il décrit la topologie
+# du SOC, qui n'a pas à être publique.
 #
-# Format : shell POSIX, sourcé par les scripts active response tournant EN ROOT.
-# Donc : pas de substitution de commande, pas de `$(...)`, uniquement des
-# affectations KEY="valeur". Une ligne exotique ici s'exécute en root sur
-# l'agent. D'où aussi le mode 640 root:wazuh à l'installation — un fichier
-# inscriptible par un autre compte serait une escalade de privilèges directe.
-#
-# Les scripts fonctionnent sans ce fichier (valeurs par défaut intégrées), sauf
-# forensic-collect.sh qui a besoin d'un serveur de preuves joignable.
+# Format : shell POSIX, sourcé par des scripts tournant EN ROOT. Donc
+# uniquement des affectations KEY="valeur" littérales — pas de $(...), pas de
+# backticks. Une ligne exotique ici s'exécute en root. D'où le mode 640
+# root:wazuh (agents) / root:root (manager) : un fichier inscriptible par un
+# autre compte serait une escalade de privilèges directe.
 
-# --- Manager Wazuh ---------------------------------------------------------
+# ===========================================================================
+# AGENTS — /var/ossec/etc/soc-ai.conf
+# ===========================================================================
+
 # IP du manager TELLE QUE LES AGENTS LA JOIGNENT (pas l'IP vue du manager
-# lui-même, ni 127.0.0.1). Utilisée par host-isolate.sh pour garder l'agent
-# pilotable pendant l'isolation : c'est la seule sortie autorisée.
+# lui-même, ni 127.0.0.1). Utilisée par host-isolate.sh : c'est la seule sortie
+# laissée ouverte pendant l'isolation, donc la seule façon de garder l'agent
+# pilotable. Une valeur fausse ici coupe l'agent définitivement.
 WAZUH_MANAGER_IP="192.168.122.1"
 
-# --- Serveur de preuves forensiques ----------------------------------------
-# Destination des images RAM/disque (forensic-collect.sh). Doit être un hôte
-# SÉPARÉ de la machine analysée : des preuves stockées sur le système compromis
-# sont modifiables par l'attaquant, et l'écriture locale écrase l'espace non
-# alloué (donc les fichiers supprimés récupérables).
+# ===========================================================================
+# HÔTE MANAGER — /etc/soc-ai/soc-ai.conf (collecte forensique)
+# ===========================================================================
+#
+# SENS DU FLUX : le manager TIRE les preuves de l'agent, puis les pousse vers
+# le dépôt. Aucune clé privée ne réside sur la machine suspecte — elle ne
+# détient qu'une clé publique dans authorized_keys et n'a aucun accès sortant.
+# (La version initiale poussait depuis l'agent : root sur l'agent donnait alors
+# un accès en écriture au dépôt de preuves.)
+
+# --- Accès manager -> agent (lecture des preuves) ---------------------------
+# Clé bornée côté agent par une forced command sur forensic-source.sh, qui
+# n'accepte que trois mots-clés (ram|disk|meta) et ne produit que des octets.
+# Elle permet malgré tout de lire le disque brut en entier : secret de premier
+# ordre, à traiter comme une clé root.
+AGENT_SSH_USER="forensic"
+AGENT_SSH_KEY="/etc/soc-ai/forensic_agent_ed25519"
+
+# known_hosts épinglé (StrictHostKeyChecking=yes) : sans ça, un MITM sur le
+# réseau d'un agent compromis se ferait passer pour l'agent et fabriquerait
+# les preuves.
+AGENT_KNOWN_HOSTS="/etc/soc-ai/known_hosts_agents"
+
+# --- Accès manager -> serveur de dépôt (écriture des preuves) ---------------
+# Hôte SÉPARÉ de la machine analysée et du manager : des preuves stockées sur
+# le système compromis sont modifiables par l'attaquant.
 EVIDENCE_HOST="192.168.122.1"
 EVIDENCE_USER="forensics"
 EVIDENCE_PATH="/var/lib/forensics"
-
-# Clé SSH privée dédiée à la collecte, sur l'agent. Jamais la clé d'admin :
-# l'agent est potentiellement compromis, cette clé doit donc n'ouvrir que le
-# dépôt de preuves (côté serveur : command="" restreinte, ou compte dédié).
-EVIDENCE_SSH_KEY="/var/ossec/active-response/.ssh/forensic_ed25519"
-
-# known_hosts épinglé (StrictHostKeyChecking=yes). Sans ça, un MITM sur le
-# réseau d'un agent compromis récupérerait les preuves en se faisant passer
-# pour le serveur de dépôt.
-EVIDENCE_KNOWN_HOSTS="/var/ossec/active-response/.ssh/known_hosts"
+EVIDENCE_SSH_KEY="/etc/soc-ai/forensic_evidence_ed25519"
+EVIDENCE_KNOWN_HOSTS="/etc/soc-ai/known_hosts_evidence"
