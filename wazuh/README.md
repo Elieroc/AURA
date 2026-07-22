@@ -199,9 +199,46 @@ est portée par les règles, qui utilisent du PCRE2 fiable.
 | `100672` | 14 | fichier avec extension de chiffrement connue (`.lockbit`, `.djvu`, `.phobos`…) | T1486 |
 | `100673` | 12 | destruction de sauvegardes/snapshots | T1490 |
 | `100674` | 12 | arrêt/désactivation d'un service de sauvegarde | T1490 |
+| `100680` | 13 | effacement bas niveau d'un support (`wipefs`, `mkfs`, `dd of=/dev/…`) | T1561.001 |
+| `100681` | 12 | `rm -rf` sur une racine système/données | T1485 |
+| `100682` | 15 | corrélation : 3+ canaris altérés en 2 min | T1485 / T1486 |
 
 `100671` exclut volontairement `README` nu — bien trop courant en `/home` et `/srv`. Seuls les
 motifs sans usage légitime sont retenus.
+
+### Destruction massive de fichiers (T1485 / T1561)
+
+La règle native `553` (« File deleted », niveau 7) est taggée T1485 mais raisonne **par fichier** :
+elle ne distingue pas une suppression isolée d'un effacement complet. Et notre FIM étant filtré par
+`restrict`, elle ne se déclenche de toute façon quasiment jamais. D'où trois règles dédiées.
+
+Même doctrine que le reste du pack : on ne cherche pas le volume — compter les suppressions
+impliquerait de surveiller `/home` en entier, soit exactement le bruit qu'on a refusé — on cherche
+l'**intention non ambiguë**, plus une corrélation sur les canaris.
+
+- **`100680`** — primitives de wipe (`wipefs`, `blkdiscard`, `mkfs.*`, `dd of=/dev/…`,
+  `shred /dev/…`). Aucun usage courant en production : ces commandes apparaissent au provisioning
+  (machine neuve, pas encore d'agent) ou lors d'un wipe malveillant. Un `dd of=/tmp/img.bin` ne
+  matche pas — la cible doit être un device.
+- **`100681`** — `rm -rf` sur une racine fermée (`/`, `/home`, `/srv`, `/etc`, `/boot`, `/var`,
+  `/var/lib/mysql`…). Un `rm -rf` générique est l'opération la plus banale d'un script de build :
+  l'alerter revient à alerter en continu. **Limite assumée** : le shell développe `rm -rf /home/*`
+  *avant* `execve`, donc auditd voit les chemins un par un et la règle ne matche pas ce cas — il
+  est couvert par le canari (100670), qui se trouve précisément dans ces répertoires. Les deux
+  règles sont complémentaires par construction.
+- **`100682`** — corrélation `if_matched_sid` sur 100670. Un canari isolé peut à la rigueur être
+  une manipulation humaine maladroite ; trois canaris dans des répertoires différents en deux
+  minutes, non : c'est la signature d'un parcours récursif automatisé. Pas de `<same_field>` dans
+  cette règle — il casse le comptage de fréquence (même piège que sur 100658).
+
+Angle écarté : audit des syscalls `unlink`/`unlinkat`. Techniquement précis, mais chaque fichier
+temporaire supprimé génère un événement — volume ingérable, même raisonnement que pour
+`clone()`/`fork()` en 100626.
+
+Testé : matrice `wazuh-logtest` 11 cas sur 100680/100681 (les 4 primitives de wipe et les 3 formes
+de `rm -rf` sur racine matchent ; `dd of=/tmp/img.bin`, `rm -rf node_modules`,
+`rm -rf /var/cache/apt/x` et `rm -f` non récursif restent en 80792 niveau 3). `100682` testée
+bout-en-bout sur `debian-vm` : suppression de 4 canaris → 4 alertes 100670 puis 1 alerte 100682.
 
 ### Ordre de déploiement (sinon alertes parasites)
 
