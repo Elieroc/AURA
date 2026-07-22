@@ -437,3 +437,70 @@
   </rule>
 
 </group>
+
+<!-- ==========================================================================
+     Brute force SSH REUSSI (T1110 -> T1078)
+
+     Trou de detection du ruleset par defaut : il sait dire "on brute force"
+     (5720, 5763) et "quelqu'un s'est connecte" (5715), mais jamais "celui qui
+     brute forcait vient d'entrer". Or c'est le seul des trois qui est un
+     incident : les deux autres sont du bruit de fond sur toute machine exposee.
+
+     On correle sur les echecs bruts et non sur 5763/5712 (le brute force deja
+     qualifie) : ces deux regles portent ignore="60", donc apres declenchement
+     elles restent muettes 60s - exactement la fenetre pendant laquelle le succes
+     a le plus de chances de tomber. Chainer dessus perdrait le cas nominal.
+
+     Deux regles jumelles, une par sid d'echec, parce que les deux syntaxes plus
+     compactes ont ete testees et ne fonctionnent PAS (verifie en logtest, le cas
+     nominal cessait de declencher) :
+       - <if_matched_group>authentication_failed</if_matched_group> : ne matche
+         jamais, meme quand les echecs viennent bien de ce groupe.
+       - <if_matched_sid>5710,5760</if_matched_sid> : la liste n'est pas parsee,
+         if_matched_sid n'accepte qu'un seul sid.
+     Il FAUT couvrir les deux sids : un brute force sur compte inexistant sort en
+     5710 et non en 5760, or c'est le scenario le plus courant (l'attaquant essaie
+     admin/root/test, puis tombe sur un compte valide). Ne chainer que sur 5760
+     rate ce cas - c'etait le trou de la premiere version.
+
+     Double alerte possible si les deux compteurs franchissent le seuil sur le
+     meme incident : assume, deux alertes valent mieux qu'un scenario manque.
+
+     Pas de correlation sur le compte (same_field srcuser) : elle casse le
+     comptage de frequence (meme piege que 100658/100682, cf. README). On reste
+     donc au niveau IP - un attaquant qui echoue sur `admin` puis reussit sur
+     `backup` depuis la meme IP declenche quand meme, ce qui est le comportement
+     voulu (password spraying).
+     ========================================================================== -->
+<group name="authentication,ssh,threat_hunting,">
+
+  <!-- Echecs sur comptes EXISTANTS (5760) puis succes -->
+  <rule id="100690" level="14" frequency="5" timeframe="300">
+    <if_sid>5715</if_sid>
+    <if_matched_sid>5760</if_matched_sid>
+    <same_source_ip />
+    <description>Brute force SSH REUSSI : authentification acceptee depuis une IP en echec repete ($(srcip) -> compte $(dstuser))</description>
+    <mitre>
+      <id>T1110</id>
+      <id>T1078</id>
+    </mitre>
+    <group>authentication_success,attack,</group>
+  </rule>
+
+  <!-- Echecs sur comptes INEXISTANTS (5710) puis succes = enumeration de comptes
+       suivie d'une connexion valide. Signal plus fort que 100690 : l'attaquant a
+       devine le nom de compte en meme temps que le mot de passe. -->
+  <rule id="100691" level="14" frequency="5" timeframe="300">
+    <if_sid>5715</if_sid>
+    <if_matched_sid>5710</if_matched_sid>
+    <same_source_ip />
+    <description>Brute force SSH REUSSI apres enumeration de comptes : succes depuis une IP ayant teste des comptes inexistants ($(srcip) -> compte $(dstuser))</description>
+    <mitre>
+      <id>T1110</id>
+      <id>T1078</id>
+      <id>T1589.001</id>
+    </mitre>
+    <group>authentication_success,attack,</group>
+  </rule>
+
+</group>
