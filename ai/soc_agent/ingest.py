@@ -16,7 +16,7 @@ import psycopg
 import requests
 import urllib3
 
-from . import config
+from . import config, noise
 
 # L'indexer utilise les certificats auto-signés de la stack Wazuh, sur la
 # loopback. L'avertissement urllib3 noierait la sortie à chaque lot ; la
@@ -100,6 +100,9 @@ def _aplatir(src: dict) -> dict:
             ("data", "win", "eventdata", "targetUserName"),
         ]),
         "entity": _entite(src),
+        # Suppression post-retrieval du noise filter : l'alerte est ingérée
+        # mais marquée, pour rester relisible tout en sortant de la corrélation.
+        "suppress_reason": noise.charger().raison_suppression(src),
         "raw": json.dumps(src),
     }
 
@@ -107,24 +110,28 @@ def _aplatir(src: dict) -> dict:
 INSERT = """
 INSERT INTO alerts (id, ts, agent_id, agent_name, rule_id, rule_level,
                     rule_desc, rule_groups, mitre_ids, mitre_tactics,
-                    srcip, srcuser, entity, raw)
+                    srcip, srcuser, entity, suppressed, suppress_reason, raw)
 VALUES (%(id)s, %(ts)s, %(agent_id)s, %(agent_name)s, %(rule_id)s,
         %(rule_level)s, %(rule_desc)s, %(rule_groups)s, %(mitre_ids)s,
-        %(mitre_tactics)s, %(srcip)s, %(srcuser)s, %(entity)s, %(raw)s)
+        %(mitre_tactics)s, %(srcip)s, %(srcuser)s, %(entity)s,
+        %(suppress_reason)s IS NOT NULL, %(suppress_reason)s, %(raw)s)
 ON CONFLICT (id) DO NOTHING
 """
 
 
 def _lot(depuis: str | None, apres: tuple | None, taille: int) -> list[dict]:
     """Un lot d'alertes, trié par (timestamp, id) pour une reprise fiable."""
-    requete: dict = {"bool": {"filter": []}}
+    requete: dict = {"bool": {"filter": [], "must_not": []}}
     if config.INGEST_MIN_LEVEL > 0:
         requete["bool"]["filter"].append(
             {"range": {"rule.level": {"gte": config.INGEST_MIN_LEVEL}}})
     if depuis:
         requete["bool"]["filter"].append(
             {"range": {"@timestamp": {"gte": f"now-{depuis}"}}})
-    if not requete["bool"]["filter"]:
+    # Bouclier d'ingestion : le bruit certain (query_level: true) est écarté
+    # côté indexer, il n'entre jamais en base.
+    requete["bool"]["must_not"] = noise.charger().clauses_must_not()
+    if not requete["bool"]["filter"] and not requete["bool"]["must_not"]:
         requete = {"match_all": {}}
 
     corps = {
@@ -192,6 +199,32 @@ def ingerer(depuis: str | None, taille_lot: int) -> int:
     return total
 
 
+def reappliquer_filtre() -> tuple[int, int]:
+    """Réévalue la suppression du noise filter sur les alertes déjà en base.
+
+    L'ingestion étant idempotente, un filtre modifié ne s'applique pas tout
+    seul à l'existant — c'est pourtant le cas d'usage normal, le filtre
+    s'enrichit en exploitation. On rejoue donc la décision à partir du document
+    brut conservé. Ne touche pas au rattachement : une alerte nouvellement
+    supprimée sortira de la corrélation au prochain `correlate --recommencer`.
+    """
+    filtre = noise.charger()
+    vus = supprimees = 0
+    with psycopg.connect(config.PG_DSN, row_factory=psycopg.rows.dict_row) as conn:
+        lignes = conn.execute("SELECT id, raw FROM alerts").fetchall()
+        for ligne in lignes:
+            vus += 1
+            raison = filtre.raison_suppression(ligne["raw"])
+            if raison:
+                supprimees += 1
+            conn.execute(
+                "UPDATE alerts SET suppressed = %s, suppress_reason = %s "
+                "WHERE id = %s",
+                (raison is not None, raison, ligne["id"]))
+        conn.commit()
+    return supprimees, vus
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--depuis", default="30d",
@@ -200,7 +233,16 @@ def main() -> None:
     ap.add_argument("--reinitialiser-curseur", action="store_true",
                     help="repart du début ; l'ingestion étant idempotente, "
                          "cela ne duplique rien")
+    ap.add_argument("--reappliquer-filtre", action="store_true",
+                    help="réévalue le noise filter sur les alertes déjà en "
+                         "base, sans réingérer")
     args = ap.parse_args()
+
+    if args.reappliquer_filtre:
+        supp, vus = reappliquer_filtre()
+        print(f"Noise filter réappliqué : {supp}/{vus} alertes supprimées.")
+        print("Lancer `correlate --recommencer` pour recorréler.")
+        return
 
     if args.reinitialiser_curseur:
         with psycopg.connect(config.PG_DSN) as conn:

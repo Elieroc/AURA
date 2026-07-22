@@ -31,13 +31,18 @@ def main() -> None:
         jours = conn.execute(
             "SELECT greatest(extract(epoch FROM max(ts) - min(ts)) / 86400, 1) j "
             "FROM alerts").fetchone()["j"]
+        supprimees = conn.execute(
+            "SELECT count(*) n FROM alerts WHERE suppressed").fetchone()["n"]
         retenues = conn.execute(
-            "SELECT count(*) n FROM alerts WHERE rule_level >= %s",
+            "SELECT count(*) n FROM alerts "
+            "WHERE rule_level >= %s AND NOT suppressed",
             (config.MIN_LEVEL,)).fetchone()["n"]
         incidents = conn.execute("SELECT count(*) n FROM incidents").fetchone()["n"]
 
         print(f"  Alertes ingérées            {total:6d}   sur {jours:.1f} jours "
               f"({total / jours:.0f}/jour)")
+        print(f"  Écartées (noise filter)     {supprimees:6d}   "
+              f"post-retrieval, conservées pour l'audit")
         print(f"  Retenues (niveau >= {config.MIN_LEVEL:2d})     {retenues:6d}   "
               f"{100 * retenues / total:.1f} % du total")
         print(f"  Incidents après corrélation {incidents:6d}", end="")

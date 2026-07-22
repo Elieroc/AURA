@@ -45,6 +45,7 @@ Phase 1 en place : ingestion + corrélation, **sans LLM**. Détail et justificat
 - On **tire** les alertes depuis l'indexer, on ne se fait pas pousser par l'integrator : le GeoIP est appliqué par un pipeline d'ingest côté indexer et n'existe que dans cette copie. Rattrapage gratuit après un arrêt.
 - Pas de Redis tant que l'ingestion est en pull — le curseur en base fait tampon.
 - Corrélation : proximité temporelle **et** point commun nommable, agent par agent. Fenêtre à deux vitesses (6 h pour un lien fort — même IP/fichier/compte ; 30 min pour un lien faible — tactique MITRE, groupe de règle). Plusieurs incidents ouverts en parallèle par agent.
+- Noise filter à deux niveaux (`noise_filter.yaml`, idée reprise de majiinB/Wazuh-AI-Integration) : `query_level: true` → `must_not` indexer, jamais ingéré ; `false` → ingéré, marqué `suppressed`, gardé pour l'audit, exclu de la corrélation. `ingest --reappliquer-filtre` pour réévaluer l'existant après édition du YAML.
 - Mesuré sur données réelles : 680 alertes → 36 retenues (niveau ≥ 12) → 4 incidents, facteur 9.
 - Piège : `TRUNCATE incidents CASCADE` vide aussi `alerts`. Utiliser `correlate --recommencer`.
 

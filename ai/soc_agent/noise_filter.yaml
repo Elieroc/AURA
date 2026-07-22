@@ -1,0 +1,71 @@
+# Filtrage du bruit avant corrélation et triage.
+#
+# Idée reprise de majiinB/Wazuh-AI-Integration (config/exclude_in_query.yaml),
+# adaptée à notre pipeline en pull. Deux niveaux, c'est tout l'intérêt :
+#
+#   query_level: true   -> l'alerte est écartée AVANT l'ingestion, via un
+#                          must_not dans la requête à l'indexer. Elle n'entre
+#                          jamais en base. Pour le bruit certain et volumineux.
+#   query_level: false  -> l'alerte est ingérée et CONSERVÉE (audit), mais
+#                          marquée suppressed et exclue de la corrélation. Pour
+#                          ce qu'on veut pouvoir relire en cas de doute.
+#
+# Régle de prudence : query_level: true seulement quand on est sûr que l'alerte
+# n'a aucune valeur, jamais. Dans le doute, false — on garde la trace.
+#
+# Ce fichier est un POINT DE DÉPART. Les faux positifs récurrents se
+# découvrent en exploitation (et bientôt via le clustering de whitelist). À
+# tenir à jour, avec un `reason` sur chaque ligne pour l'audit.
+
+version: 1
+
+filters:
+
+  # Par identifiant de règle Wazuh.
+  rules:
+    ignore_rule_ids: []
+      # Exemple (désactivé tant que non observé sur notre parc) :
+      # - id: "5715"
+      #   reason: "PAM session opened — bruit de cycle de vie"
+      #   query_level: true
+
+  # Par compte source (data.srcuser).
+  actors:
+    ignore_src_users:
+      - user: "_apt"
+        query_level: true
+        reason: "Gestionnaire de paquets APT — activité système normale"
+      - user: "nobody"
+        query_level: true
+        reason: "Compte de service anonyme"
+      - user: "syslog"
+        query_level: true
+        reason: "Démon de journalisation"
+
+  # Par compte cible (data.dstuser).
+  destinations:
+    ignore_dst_users:
+      - user: "messagebus"
+        query_level: true
+        reason: "Bus système D-Bus"
+
+  # Par commande (data.command).
+  commands:
+    ignore_commands: []
+
+  # Par hôte. À NE PAS remplir à la légère : exclure un agent aveugle le SOC
+  # sur cette machine. Réservé aux hôtes de test.
+  hosts:
+    ignore_agent_names: []
+    ignore_agent_ids: []
+
+  # Filtres composites : toutes les conditions doivent matcher la même alerte.
+  # Toujours post-retrieval (query_level: false) — trop spécifiques pour un
+  # must_not, et c'est justement le genre de suppression qu'on veut pouvoir
+  # relire.
+  composite:
+    - name: "apt_daily_root"
+      description: "Maintenance quotidienne d'APT lancée par root"
+      match_all:
+        src_user: "root"
+        command: "/usr/lib/apt/apt.systemd.daily"
