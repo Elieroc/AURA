@@ -141,6 +141,104 @@ volumineux dans `/tmp` déclenchent tous légitimement le seuil). Pas de FIM tem
 `/tmp`/`/var/tmp`/`/dev/shm` (config `agent.conf` retirée). À reconsidérer si un besoin précis se
 présente, avec un seuil plus élevé ou des exclusions ciblées.
 
+## Détection — ransomware (T1486 / T1490)
+
+Règles `100670`-`100674`. Approche retenue : **déception (fichiers canaris)**, pas détection de
+masse.
+
+### Pourquoi pas la détection de burst FIM
+
+L'approche réflexe — alerter sur *N* modifications de fichiers en *T* secondes (`frequency` sur la
+règle 550) — a été écartée. Elle regarde beaucoup de fichiers en cherchant l'anormal, donc elle
+produit du bruit par construction : `rsync`, `apt upgrade`, `git clone`, décompression d'archive,
+job de build CI et sauvegarde nocturne génèrent tous des bursts d'écritures parfaitement
+légitimes. Chaque déploiement d'appli devient une alerte, et le seuil qui les fait taire est aussi
+celui qui laisse passer un chiffrement lent.
+
+Le canari inverse le rapport signal/bruit : il ne surveille que des fichiers que **rien de
+légitime n'écrit**. Un seul événement suffit, pas de seuil ni de fenêtre temporelle à régler, pas
+de whitelist à maintenir. Les lectures (antivirus, `updatedb`, sauvegarde) ne déclenchent pas le
+FIM — seules les écritures, renommages et suppressions le font.
+
+### Fonctionnement
+
+`scripts/deploy-canary.sh` dépose des leurres `000_CANARY_SOC_NE_PAS_TOUCHER.{xlsx,docx,pdf}` à la
+racine et au premier niveau de `/home/*`, `/srv`, `/var/www`, `/root`. Détails qui conditionnent
+la détection :
+
+- préfixe `000_` : les chiffreurs parcourent les répertoires dans l'ordre de `scandir`, souvent
+  trié — le canari est touché tôt ;
+- extensions bureautiques : les familles courantes chiffrent sur liste blanche d'extensions ; un
+  `.txt` ou un fichier caché est souvent ignoré, donc le canari n'est **ni caché ni exotique** ;
+- ~16 Ko de contenu compressible : certaines familles sautent les fichiers vides ou déjà à haute
+  entropie ;
+- propriétaire = propriétaire du répertoire, mode `0644` : le canari doit être **écriturable** par
+  le compte qu'un ransomware compromettrait, sinon il est sauté et ne détecte rien.
+
+Le script est idempotent (ne réécrit pas un canari existant — sinon chaque exécution déclencherait
+l'alerte qu'il surveille) et réversible (`--remove`).
+
+### Surveillance FIM
+
+`config/wazuh_cluster/agent.conf` (monté sur `/wazuh-config-mount/etc/shared/default/agent.conf`,
+poussé automatiquement aux agents). On ne surveille **pas** `/home` en entier : l'attribut
+`restrict` fait que Wazuh ne pose des watches inotify que sur les chemins matchant le motif —
+quelques watches par arborescence au lieu de plusieurs milliers, et un volume d'événements nul en
+fonctionnement normal.
+
+Un seul bloc `<directories>` par chemin : Wazuh ne garde qu'une entrée par répertoire, deux blocs
+sur `/home` feraient perdre le premier motif. Le `restrict` est donc un pré-filtre unique couvrant
+à la fois les canaris, les noms de notes de rançon et les extensions de chiffrement connues. Sa
+syntaxe est le *sregex* OSSEC (limitée) : on s'y tient à des sous-chaînes littérales, la précision
+est portée par les règles, qui utilisent du PCRE2 fiable.
+
+| Règle | Niv. | Détecte | MITRE |
+|---|---|---|---|
+| `100670` | 15 | canari modifié / supprimé / renommé | T1486 |
+| `100671` | 14 | note de rançon déposée (`_readme.txt`, `HOW_TO_DECRYPT…`, `akira_readme`…) | T1486 |
+| `100672` | 14 | fichier avec extension de chiffrement connue (`.lockbit`, `.djvu`, `.phobos`…) | T1486 |
+| `100673` | 12 | destruction de sauvegardes/snapshots | T1490 |
+| `100674` | 12 | arrêt/désactivation d'un service de sauvegarde | T1490 |
+
+`100671` exclut volontairement `README` nu — bien trop courant en `/home` et `/srv`. Seuls les
+motifs sans usage légitime sont retenus.
+
+### Ordre de déploiement (sinon alertes parasites)
+
+Déposer les canaris **avant** de pousser `agent.conf`. Dans l'autre sens, la création de chaque
+canari est vue par le FIM comme un fichier ajouté et génère une alerte `100670` — bruit ponctuel
+et sans gravité, mais évitable :
+
+```bash
+sudo ./deploy-canary.sh              # 1. les leurres
+# 2. puis recréer le manager pour pousser agent.conf, puis sur l'agent :
+sudo systemctl restart wazuh-agent
+```
+
+### Pièges auditd (règles 100673 / 100674)
+
+Les arguments arrivent découpés en `a0="zfs" a1="destroy"` — il n'y a **pas d'espace** entre le
+binaire et son verbe dans `full_log`. Une regex de type `zfs\s+destroy` ne matche jamais. Les
+règles matchent donc le binaire en `a0` (chemin optionnel) puis le verbe dans un argument
+ultérieur quelconque. Même piège que le hex-encoding documenté plus haut.
+
+Verbes limités à la destruction non ambiguë. Sont **exclus** `restic forget`, `borg prune`,
+`duplicity remove` : ce sont les commandes de rétention, lancées par cron sur toute machine
+correctement sauvegardée — faux positif quotidien garanti. `rm -rf /var/backups` nu est exclu pour
+la même raison (scripts de ménage). FP résiduel possible : purge de snapshots planifiée
+(`zfs-auto-snapshot`) — d'où le niveau 12 et non 15. Le signal à zéro FP, c'est le canari.
+
+### Testé bout-en-bout
+
+- `100673` / `100674` via `wazuh-logtest`, matrice 6 cas : `zfs destroy` et
+  `btrfs subvolume delete` matchent ; `restic forget`, `zfs list` et `systemctl restart nginx` ne
+  matchent pas (restent en 80792 niveau 3).
+- `100670` / `100671` / `100672` sur l'agent `debian-vm` : écriture sur un canari, dépôt d'un
+  `HOW_TO_DECRYPT_FILES.txt` et création d'un `.lockbit` remontent bien en niveaux 15/14/14.
+
+Réserve connue : le canari de `/var/www/html` est téléchargeable si le vhost sert le répertoire.
+Sans impact (contenu inerte), mais à retirer sur un serveur exposé publiquement.
+
 ## Routage des alertes par type (index dédiés)
 
 Les alertes des **agents** (pas celles du manager, agent 000) sont routées vers des index dédiés
