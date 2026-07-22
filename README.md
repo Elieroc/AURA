@@ -21,11 +21,18 @@ SOC piloté par une IA locale. Détection avec Wazuh, enrichissement threat inte
                                  │               │
                   ┌──────────────▼──────┐   ┌────▼─────────────────┐
                   │   Wazuh Dashboard   │   │      IA locale       │
-                  │   https://localhost │   │  (runtime à définir) │
-                  └─────────────────────┘   │  • Rules creator     │
+                  │   https://localhost │   │  (llama.cpp, CPU)    │
+                  └─────────────────────┘   │  • Triage HIGH/CRIT  │
+                                            │  • Rules creator     │
                                             │  • Whitelist         │
                                             │  • Mitigation        │
-                                            └──────────────────────┘
+                                            └──────┬───────────────┘
+                                                   │
+                                    ┌──────────────▼──────────────┐
+                                    │         DFIR-IRIS           │
+                                    │  cases, timeline, IOC       │
+                                    │  https://localhost:8443     │
+                                    └─────────────────────────────┘
 ```
 
 ## Composants
@@ -39,6 +46,7 @@ SOC piloté par une IA locale. Détection avec Wazuh, enrichissement threat inte
 | Agents | Déploiement d'agents Wazuh sur les endpoints ([`scripts/install-agent.sh`](scripts/install-agent.sh)) | ✅ debian-vm actif |
 | [`shuffle/`](shuffle/) | SOAR Shuffle — orchestration des remédiations | ✅ Testé E2E |
 | Remédiation — isolation hôte | Active response nftables via workflow Shuffle ([`shuffle/README.md`](shuffle/README.md)) | ✅ Testé E2E |
+| [`iris/`](iris/) | DFIR-IRIS — case management des incidents (https://localhost:8443) | ✅ Testé E2E |
 | IA — Rules creator | Génération de règles/decoders Wazuh à partir des alertes | 🔜 À venir |
 | IA — Whitelist | Gestion des faux positifs récurrents | 🔜 À venir |
 | IA — Mitigation | Propositions d'actions de remédiation | 🔜 À venir |
@@ -70,6 +78,7 @@ Détail complet (setup, intégrations, tests manuels) : [`wazuh/README.md`](wazu
 SOC-AI/
 ├── CLAUDE.md            # contexte projet pour Claude Code
 ├── README.md
+├── iris/                # DFIR-IRIS (case management)
 ├── scripts/             # install-agent.sh (agent + user d'admin distante)
 ├── shuffle/             # SOAR Shuffle (remédiation, workflow isolation d'hôte)
 └── wazuh/               # stack Wazuh dockerisée
