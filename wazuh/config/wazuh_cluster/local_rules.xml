@@ -375,4 +375,65 @@
     </mitre>
   </rule>
 
+  <!-- ==== Destruction massive de donnees (T1485 / T1561) ====
+       La regle native 553 ("File deleted", niveau 7) est taggee T1485 mais
+       raisonne par fichier : elle ne distingue pas une suppression isolee d'un
+       effacement complet. Et notre FIM etant filtre par `restrict`, elle ne se
+       declenche de toute facon quasiment jamais.
+
+       Deux angles retenus, meme doctrine que le reste du pack : on ne cherche
+       pas le volume (compter les suppressions implique de surveiller /home en
+       entier -> le bruit qu'on a refuse), on cherche l'INTENTION non ambigue.
+
+       Angle ecarte : audit des syscalls unlink/unlinkat. Techniquement precis,
+       mais chaque fichier temporaire supprime genere un evenement - volume
+       ingerable, meme raisonnement que pour clone()/fork() en 100626. -->
+
+  <!-- R6 T1561 - destruction irreversible d'un support. Aucune de ces commandes
+       n'a d'usage courant en production : elles apparaissent au provisioning
+       (machine neuve, pas encore d'agent Wazuh) ou lors d'un wipe malveillant. -->
+  <rule id="100680" level="13">
+    <if_group>audit</if_group>
+    <regex type="pcre2">a0="(?:[^"]*/)?(?:(?i:wipefs|blkdiscard)"|(?i:mkfs)(?:\.[a-z0-9]+)?"|(?i:shred|dd)"(?: a\d+="[^"]*")*? a\d+="(?:of=)?/dev/(?:sd|nvme|vd|hd|mapper|disk))</regex>
+    <description>Destruction de donnees : effacement bas niveau d'un support ($(audit.command))</description>
+    <mitre>
+      <id>T1561.001</id>
+      <id>T1485</id>
+    </mitre>
+  </rule>
+
+  <!-- R7 T1485 - rm -rf sur une racine systeme ou de donnees. Liste de cibles
+       volontairement fermee : un `rm -rf` generique est l'operation la plus
+       banale d'un script de build ou de menage, l'alerter revient a alerter en
+       continu. On ne matche que les racines dont la suppression n'a aucune
+       justification operationnelle.
+       Limite assumee : le shell developpe `rm -rf /home/*` AVANT execve, donc
+       auditd voit les chemins un par un et cette regle ne matche pas ce cas -
+       il est couvert par le canari (100670), qui se trouve precisement dans ces
+       repertoires. Les deux regles sont complementaires par construction. -->
+  <rule id="100681" level="12">
+    <if_group>audit</if_group>
+    <regex type="pcre2">a0="(?:[^"]*/)?rm"(?: a\d+="[^"]*")*? a\d+="-[a-zA-Z]*[rR][a-zA-Z]*"(?: a\d+="[^"]*")*? a\d+="/(?:|home|srv|etc|boot|data|opt|var|var/www|var/lib|var/lib/mysql|var/lib/postgresql|var/backups)/?"</regex>
+    <description>Destruction de donnees : suppression recursive d'une racine systeme ($(audit.command))</description>
+    <mitre>
+      <id>T1485</id>
+    </mitre>
+  </rule>
+
+  <!-- R8 T1485/T1486 - correlation : plusieurs canaris touches dans une fenetre
+       courte. Un canari isole peut theoriquement etre une manipulation humaine
+       maladroite ; trois canaris dans des repertoires differents en 2 min, non.
+       C'est la signature d'un parcours recursif automatise - chiffrement ou
+       effacement de masse en cours, et non un incident ponctuel.
+       Pas de <same_field> ici : teste, il casse le comptage de frequence
+       (cf. README, meme piege que sur 100658). -->
+  <rule id="100682" level="15" frequency="3" timeframe="120">
+    <if_matched_sid>100670</if_matched_sid>
+    <description>Destruction/chiffrement de masse confirme : 3+ canaris alteres en 2 min</description>
+    <mitre>
+      <id>T1485</id>
+      <id>T1486</id>
+    </mitre>
+  </rule>
+
 </group>
