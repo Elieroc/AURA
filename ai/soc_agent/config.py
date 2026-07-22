@@ -61,6 +61,17 @@ INGEST_MIN_LEVEL = int(os.environ.get("INGEST_MIN_LEVEL", "0"))
 # joignable depuis le réseau. Service systemd utilisateur, cf. ai/llm/.
 LLM_URL = os.environ.get("LLM_URL", "http://127.0.0.1:8081")
 
+# --- DFIR-IRIS (case management) --------------------------------------------
+#
+# Un case par incident trié. Le pipeline y écrit en dfir-iris-client direct
+# (déterministe) ; le serveur MCP IRIS, lui, sert l'investigation interactive.
+IRIS_URL = os.environ.get("IRIS_URL", "https://127.0.0.1:8443")
+IRIS_API_KEY = os.environ.get("IRIS_API_KEY", "")
+# Certificat auto-signé sur la loopback. À passer à true si IRIS est exposé.
+IRIS_VERIFY_TLS = os.environ.get("IRIS_VERIFY_TLS", "false").lower() == "true"
+# Client IRIS (dossier « customer ») rattaché aux cases. 1 = client par défaut.
+IRIS_CUSTOMER = int(os.environ.get("IRIS_CUSTOMER", "1"))
+
 # --- Corrélation ------------------------------------------------------------
 #
 # Deux alertes du même agent séparées de moins de CORRELATION_GAP_MINUTES et

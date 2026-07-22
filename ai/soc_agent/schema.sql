@@ -162,3 +162,7 @@ CREATE TABLE IF NOT EXISTS whitelist_rules (
 );
 
 CREATE INDEX IF NOT EXISTS whitelist_active ON whitelist_rules (active);
+
+-- Case IRIS créé pour l'incident (un par incident trié). NULL tant que non
+-- créé ; sert de garde anti-doublon au cycle.
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS iris_case_id bigint;

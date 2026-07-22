@@ -46,7 +46,8 @@ SOC piloté par une IA locale. Détection avec Wazuh, enrichissement threat inte
 | Agents | Déploiement d'agents Wazuh sur les endpoints ([`scripts/install-agent.sh`](scripts/install-agent.sh)) | ✅ debian-vm actif |
 | [`shuffle/`](shuffle/) | SOAR Shuffle — orchestration des remédiations | ✅ Testé E2E |
 | Remédiation — isolation hôte | Active response nftables via workflow Shuffle ([`shuffle/README.md`](shuffle/README.md)) | ✅ Testé E2E |
-| [`iris/`](iris/) | DFIR-IRIS — case management des incidents (https://localhost:8443) | ✅ Testé E2E |
+| [`iris/`](iris/) | DFIR-IRIS — case management, un case par incident trié (IOC + rapport IA) | ✅ Boucle fermée |
+| [`iris/mcp/`](iris/mcp/) | Serveur MCP IRIS (srozb/iris-mcp) — investigation interactive | ✅ Connecté |
 | [`ai/bench/`](ai/bench/) | Bench llama.cpp CPU — modèle, quantification, prompts | ✅ Mesuré |
 | [`ai/soc_agent/`](ai/soc_agent/) | Pipeline : ingest + corrélation (ph.1), triage LLM shadow (ph.2) | ✅ Sur données réelles |
 | IA — Rules creator | Génération de règles/decoders Wazuh à partir des alertes | 🔜 À venir |

@@ -171,6 +171,17 @@ def recommencer() -> None:
     `alerts`, à cause de la clé étrangère — ce qui oblige à tout réingérer.
     """
     with psycopg.connect(config.PG_DSN) as conn:
+        # Un incident déjà versé dans IRIS y a laissé un case. Le supprimer ici
+        # rompt le lien iris_case_id : le prochain passage IRIS recréerait un
+        # case en double. On prévient plutôt que de nettoyer côté IRIS à
+        # l'aveugle — la décision revient à l'analyste.
+        orphelins = conn.execute(
+            "SELECT count(*) FROM incidents WHERE iris_case_id IS NOT NULL"
+        ).fetchone()[0]
+        if orphelins:
+            print(f"ATTENTION : {orphelins} incident(s) ont un case IRIS. Les "
+                  "supprimer ici orpheline ces cases (doublons au prochain "
+                  "cycle). Les retirer d'IRIS à la main si besoin.")
         conn.execute("UPDATE alerts SET incident_id = NULL")
         conn.execute("DELETE FROM incidents")
         conn.commit()

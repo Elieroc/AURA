@@ -9,7 +9,7 @@ SOC piloté par IA locale. Détection Wazuh + enrichissement threat intel + auto
   - **VirusTotal (VT)** — enrichissement réputation fichiers/hash/IP via API VT.
   - **AbuseIPDB** — enrichissement réputation IP (score abus, historique reports).
 - **Shuffle** — SOAR pour l'orchestration des remédiations (`shuffle/`). Workflow "Wazuh - Host Isolation" : webhook → API Wazuh → active response `host-isolate.sh`/`host-unisolate.sh` (nftables) sur l'agent. Déclenchement manuel uniquement.
-- **DFIR-IRIS** (`iris/`) — case management. Un case par incident : timeline, IOC, assets, trace des actions automatiques. Retenu contre TheHive 5 (partiellement sous licence commerciale, et 6–8 Go de RAM contre ~650 Mo). API « legacy » `/manage/*` — **pas de `/api/v2` en v2.4.27**.
+- **DFIR-IRIS** (`iris/`) — case management. Un case par incident trié (`soc_agent.iris`, en `dfir-iris-client` direct) : IOC + note d'analyse. FP → explication + exception whitelist ; TP → rapport LLM (résumé, analyse, remédiation, piste de règle si angle mort). Retenu contre TheHive 5 (partiellement sous licence commerciale, et 6–8 Go de RAM contre ~650 Mo). API « legacy » `/manage/*` — **pas de `/api/v2` en v2.4.27**. Serveur **MCP IRIS** (`iris/mcp/`, srozb/iris-mcp, stdio) pour l'investigation interactive — distinct de la création auto.
 - **IA locale** — **pas de GPU sur cet hôte** (Ryzen 8c/16t AVX-512, 30 Go RAM partagés avec toute la stack). Conséquences structurantes :
   - Runtime : **llama.cpp** (et pas vLLM, dont le backend CPU est faible). Grammaires GBNF pour garantir le JSON, prefix caching par slots.
   - **Un seul modèle : Qwen3-8B Q4_K_M**, pour sa robustesse au prompt. Mesuré (`ai/bench/RESULTS.md`) : le **Q4_K prefill plus vite que le Q5_K** malgré plus de paramètres (repacking AVX-512). Ne jamais prendre autre chose que du Q4_K_M sur cette machine ; repli éventuel sur un 4B, en Q4_K_M.
@@ -53,7 +53,7 @@ Phase 2 en place : triage LLM en **mode shadow** (verdict enregistré, rien de d
 
 **Whitelist automatique** (`soc_agent.whitelist`) : les FP récurrents jugés par l'IA (même signature, ≥ `WHITELIST_MIN_FP`) deviennent des exceptions dans `whitelist_rules` (table distincte du YAML humain, lue par `noise.py`). Toujours composite + post-retrieval. Signature = champs constants parmi `rule_id`/`src_user`/`command`/`file` (`file` virtuel : whitelister `/tmp/eicar.com` sans aveugler la règle VT). Garde-fous : signature précise obligatoire (rule_id seul refusé), jamais au-dessus de niveau 14, jamais une signature vue en TP.
 
-Déclenchement **périodique** : `soc_agent.cycle` enchaîne ingest → correlate → triage → whitelist ; timer systemd utilisateur toutes les 5 min (`ai/systemd/soc-agent-cycle.{service,timer}`). Verrou consultatif Postgres anti-chevauchement. Triage facultatif au cycle (`Wants` soc-llm, pas `Requires`). Plus lancé à la main.
+Déclenchement **périodique** : `soc_agent.cycle` enchaîne ingest → correlate → triage → whitelist → cases IRIS ; timer systemd utilisateur toutes les 5 min (`ai/systemd/soc-agent-cycle.{service,timer}`). Verrou consultatif Postgres anti-chevauchement. Triage facultatif au cycle (`Wants` soc-llm, pas `Requires`). Plus lancé à la main.
 
 - Le modèle ne rend qu'un **jugement** (verdict, confiance, remédiations). L'ouverture/clôture du dossier est déduite du verdict (`actions.py`), pas demandée au modèle — il oubliait `open_case` une fois sur deux.
 - Cohérence verdict/actions vérifiée après coup (`coherence.py`) : mesurable sans jeu labellisé, signale un prompt dégradé.
@@ -64,7 +64,7 @@ Déclenchement **périodique** : `soc_agent.cycle` enchaîne ingest → correlat
 
 Infra en place : Wazuh (manager, indexer, dashboard, agents, intégrations VT/AbuseIPDB/GeoIP), Shuffle, serveur MCP Wazuh, DFIR-IRIS, pipeline soc_agent (phases 1 et 2).
 
-Reste à faire, dans l'ordre : golden set (~200 alertes labellisées) → mesure de justesse → création de cases IRIS → RAG → rules creator → remédiation (autonomie configurable).
+Reste à faire, dans l'ordre : golden set (~200 alertes labellisées) → mesure de justesse → RAG → rules creator (PR) → remédiation (autonomie configurable).
 
 ## Conventions
 

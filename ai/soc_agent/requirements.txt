@@ -1,3 +1,4 @@
 psycopg[binary]==3.3.4
 requests==2.32.5
 PyYAML==6.0.2
+dfir-iris-client>=2.0.4
