@@ -1,0 +1,43 @@
+# Configuration SOC-AI déployée sur les AGENTS -> /var/ossec/etc/soc-ai.conf
+#
+# Copier, remplir, déployer :
+#   cp config/soc-ai.conf.example config/soc-ai.conf
+#   scp config/soc-ai.conf <agent>:/tmp/soc-ai.conf
+#   ssh <agent> 'sudo install -o root -g wazuh -m 640 /tmp/soc-ai.conf /var/ossec/etc/soc-ai.conf'
+#
+# Le vrai fichier (config/soc-ai.conf) est gitignored : il contient la
+# topologie réseau du SOC, qui n'a pas à être publique.
+#
+# Format : shell POSIX, sourcé par les scripts active response tournant EN ROOT.
+# Donc : pas de substitution de commande, pas de `$(...)`, uniquement des
+# affectations KEY="valeur". Une ligne exotique ici s'exécute en root sur
+# l'agent. D'où aussi le mode 640 root:wazuh à l'installation — un fichier
+# inscriptible par un autre compte serait une escalade de privilèges directe.
+#
+# Les scripts fonctionnent sans ce fichier (valeurs par défaut intégrées), sauf
+# forensic-collect.sh qui a besoin d'un serveur de preuves joignable.
+
+# --- Manager Wazuh ---------------------------------------------------------
+# IP du manager TELLE QUE LES AGENTS LA JOIGNENT (pas l'IP vue du manager
+# lui-même, ni 127.0.0.1). Utilisée par host-isolate.sh pour garder l'agent
+# pilotable pendant l'isolation : c'est la seule sortie autorisée.
+WAZUH_MANAGER_IP="192.168.122.1"
+
+# --- Serveur de preuves forensiques ----------------------------------------
+# Destination des images RAM/disque (forensic-collect.sh). Doit être un hôte
+# SÉPARÉ de la machine analysée : des preuves stockées sur le système compromis
+# sont modifiables par l'attaquant, et l'écriture locale écrase l'espace non
+# alloué (donc les fichiers supprimés récupérables).
+EVIDENCE_HOST="192.168.122.1"
+EVIDENCE_USER="forensics"
+EVIDENCE_PATH="/var/lib/forensics"
+
+# Clé SSH privée dédiée à la collecte, sur l'agent. Jamais la clé d'admin :
+# l'agent est potentiellement compromis, cette clé doit donc n'ouvrir que le
+# dépôt de preuves (côté serveur : command="" restreinte, ou compte dédié).
+EVIDENCE_SSH_KEY="/var/ossec/active-response/.ssh/forensic_ed25519"
+
+# known_hosts épinglé (StrictHostKeyChecking=yes). Sans ça, un MITM sur le
+# réseau d'un agent compromis récupérerait les preuves en se faisant passer
+# pour le serveur de dépôt.
+EVIDENCE_KNOWN_HOSTS="/var/ossec/active-response/.ssh/known_hosts"

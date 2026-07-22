@@ -41,12 +41,19 @@
 
 set -u
 
-# --- Configuration (même logique que MANAGER_IP dans host-isolate.sh) --------
+# --- Configuration ----------------------------------------------------------
+# Valeurs par défaut, surchargées par /var/ossec/etc/soc-ai.conf (déployé
+# depuis config/soc-ai.conf du repo). Défauts définis AVANT le source pour que
+# `set -u` tienne même si le fichier est absent ou incomplet.
 EVIDENCE_HOST="192.168.122.1"
 EVIDENCE_USER="forensics"
 EVIDENCE_PATH="/var/lib/forensics"
-SSH_KEY="/var/ossec/active-response/.ssh/forensic_ed25519"
-SSH_KNOWN_HOSTS="/var/ossec/active-response/.ssh/known_hosts"
+EVIDENCE_SSH_KEY="/var/ossec/active-response/.ssh/forensic_ed25519"
+EVIDENCE_KNOWN_HOSTS="/var/ossec/active-response/.ssh/known_hosts"
+
+CONF_FILE="/var/ossec/etc/soc-ai.conf"
+# shellcheck source=/dev/null
+[ -r "$CONF_FILE" ] && . "$CONF_FILE"
 
 AVML="/var/ossec/active-response/bin/avml"
 LOG_FILE="/var/ossec/logs/active-responses.log"
@@ -58,7 +65,7 @@ log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') forensic-collect: $1" >> "$LOG_FILE"
 }
 
-SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_KNOWN_HOSTS -o BatchMode=yes -o ConnectTimeout=15"
+SSH_OPTS="-i $EVIDENCE_SSH_KEY -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$EVIDENCE_KNOWN_HOSTS -o BatchMode=yes -o ConnectTimeout=15"
 
 ssh_evidence() {
     # shellcheck disable=SC2086
@@ -107,7 +114,7 @@ if [ "${1:-}" = "--worker" ]; then
     fi
 
     if ! ssh_evidence "mkdir -p '$REMOTE_DIR'" 2>/dev/null; then
-        log "ERREUR: serveur de preuves ${EVIDENCE_USER}@${EVIDENCE_HOST} injoignable (clé $SSH_KEY / known_hosts), collecte abandonnée"
+        log "ERREUR: serveur de preuves ${EVIDENCE_USER}@${EVIDENCE_HOST} injoignable (clé $EVIDENCE_SSH_KEY / known_hosts), collecte abandonnée"
         exit 1
     fi
     log "collecte $CASE_ID démarrée (périmètre: $SCOPE) -> ${EVIDENCE_USER}@${EVIDENCE_HOST}:$REMOTE_DIR"

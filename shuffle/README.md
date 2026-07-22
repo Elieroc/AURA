@@ -98,6 +98,16 @@ Un hôte isolé par `host-isolate.sh` n'a plus de sortie que vers le manager —
 
 ### Prérequis d'installation
 
+**0. Fichier de conf** — l'IP du manager et la destination des preuves ne sont plus en dur dans les scripts :
+
+```bash
+cp config/soc-ai.conf.example config/soc-ai.conf   # gitignored, remplir
+scp config/soc-ai.conf <agent>:/tmp/
+ssh <agent> 'sudo install -o root -g wazuh -m 640 /tmp/soc-ai.conf /var/ossec/etc/soc-ai.conf'
+```
+
+Sourcé en root par les scripts AR : mode `640 root:wazuh` obligatoire (inscriptible par un autre compte = escalade de privilèges directe), et uniquement des affectations `KEY="valeur"` littérales. Les scripts gardent des valeurs par défaut si le fichier est absent — sauf que `WAZUH_MANAGER_IP` faux couperait l'agent lors d'une isolation.
+
 **1. Serveur de preuves** (hôte séparé de la machine analysée) :
 
 ```bash
