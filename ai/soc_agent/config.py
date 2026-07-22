@@ -55,6 +55,12 @@ MIN_LEVEL = int(os.environ.get("MIN_LEVEL", "12"))
 # les statistiques complètes ; monter à MIN_LEVEL une fois la mesure faite.
 INGEST_MIN_LEVEL = int(os.environ.get("INGEST_MIN_LEVEL", "0"))
 
+# --- Serveur d'inférence local ---------------------------------------------
+#
+# llama.cpp, sur la loopback exclusivement : le modèle ne doit jamais être
+# joignable depuis le réseau. Service systemd utilisateur, cf. ai/llm/.
+LLM_URL = os.environ.get("LLM_URL", "http://127.0.0.1:8081")
+
 # --- Corrélation ------------------------------------------------------------
 #
 # Deux alertes du même agent séparées de moins de CORRELATION_GAP_MINUTES et

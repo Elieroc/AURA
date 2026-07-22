@@ -64,3 +64,64 @@ CREATE INDEX IF NOT EXISTS alerts_incident ON alerts (incident_id);
 -- d'un agent par ordre chronologique.
 CREATE INDEX IF NOT EXISTS alerts_unlinked
     ON alerts (agent_id, ts) WHERE incident_id IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Phase 2 : triage LLM
+-- ---------------------------------------------------------------------------
+
+-- Un verdict rendu par le modèle sur un incident.
+--
+-- Table à part et non colonnes sur `incidents` : on veut pouvoir rejouer le
+-- même incident après un changement de prompt ou de modèle et COMPARER, pas
+-- écraser. C'est la seule façon de savoir si une modification améliore ou
+-- dégrade.
+CREATE TABLE IF NOT EXISTS triages (
+    id            bigserial PRIMARY KEY,
+    incident_id   bigint NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+    verdict       text NOT NULL,
+    confidence    text NOT NULL,
+    mitre         text,
+    actions       text[] NOT NULL DEFAULT '{}',
+    reason        text NOT NULL,
+    -- Traçabilité : sans le modèle et l'empreinte du prompt, un écart entre
+    -- deux passages est ininterprétable.
+    modele        text NOT NULL,
+    prompt_sha    text NOT NULL,
+    prompt_tokens integer,
+    duree_ms      integer,
+    -- 'shadow' : le verdict est enregistré, rien n'est déclenché. Tant que la
+    -- justesse n'est pas mesurée sur un jeu labellisé, on n'agit pas.
+    mode          text NOT NULL DEFAULT 'shadow',
+    created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS triages_incident ON triages (incident_id, created_at DESC);
+
+-- Vérité terrain, saisie par un analyste humain.
+--
+-- Sans elle, on sait seulement que le modèle répond, pas s'il a raison. C'est
+-- le prérequis à toute sortie du mode shadow.
+CREATE TABLE IF NOT EXISTS labels (
+    incident_id     bigint PRIMARY KEY REFERENCES incidents(id) ON DELETE CASCADE,
+    verdict         text NOT NULL
+        CHECK (verdict IN ('true_positive', 'false_positive', 'needs_investigation')),
+    actions         text[] NOT NULL DEFAULT '{}',
+    commentaire     text,
+    -- 'humain' vs 'synthetique' : un jeu d'amorçage fabriqué ne doit jamais
+    -- être confondu avec des cas réellement observés et jugés.
+    origine         text NOT NULL DEFAULT 'humain',
+    labellise_par   text,
+    created_at      timestamptz NOT NULL DEFAULT now()
+);
+
+-- Incohérences verdict/actions relevées par coherence.py. Colonne et non
+-- table : c'est une propriété du triage, pas une entité. Un taux qui monte
+-- signale un prompt dégradé, et se mesure sans jeu labellisé.
+ALTER TABLE triages ADD COLUMN IF NOT EXISTS incoherences text[] NOT NULL DEFAULT '{}';
+
+-- Motifs d'injection repérés dans les données de l'incident, et interventions
+-- des garde-fous déterministes. Mesuré : 3 charges d'injection sur 4
+-- retournent le verdict du modèle. On trace donc à la fois ce qu'on a vu
+-- passer et ce qu'on a refusé.
+ALTER TABLE triages ADD COLUMN IF NOT EXISTS injection_motifs text[] NOT NULL DEFAULT '{}';
+ALTER TABLE triages ADD COLUMN IF NOT EXISTS garde_fous text[] NOT NULL DEFAULT '{}';
