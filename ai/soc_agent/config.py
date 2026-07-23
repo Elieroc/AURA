@@ -110,6 +110,15 @@ WAZUH_API_URL = os.environ.get("WAZUH_API_URL", "https://127.0.0.1:55000")
 WAZUH_API_USER = os.environ.get("WAZUH_API_USER", "wazuh-wui")
 WAZUH_API_PASSWORD = os.environ.get("WAZUH_API_PASSWORD", "")
 
+# SSH vers les agents, pour lire le marqueur d'isolation (/var/ossec/isolated).
+# Réservé à la LECTURE d'état : jamais de shell piloté par le LLM (cf. CLAUDE.md).
+# La règle d'isolation n'autorise SSH que depuis le manager — ce lecteur doit
+# donc tourner sur l'hôte du manager pour rester fiable même agent isolé.
+SSH_KEY = os.path.expanduser(
+    os.environ.get("SSH_KEY", "~/.ssh/wazuh_ops_ed25519"))
+SSH_USER = os.environ.get("SSH_USER", "wazuh-admin")
+ISOLATION_MARKER = os.environ.get("ISOLATION_MARKER", "/var/ossec/isolated")
+
 
 # --- Corrélation ------------------------------------------------------------
 #

@@ -25,6 +25,8 @@ verdict de modèle. Trois barrières AVANT toute exécution :
 import argparse
 import json
 import logging
+import subprocess
+import time
 
 import psycopg
 import requests
@@ -94,16 +96,29 @@ def _tracer_isolation(agent_id: str, isoler: bool, reason: str) -> None:
         conn.commit()
 
 
+def _afficher_etat(etat: dict) -> None:
+    a = etat["agent_id"]
+    if not etat["reachable"]:
+        print(f"  agent {a} : état INCONNU (injoignable via SSH depuis le manager)")
+    elif etat["isolated"]:
+        depuis = (etat.get("marker") or {}).get("since", "?")
+        print(f"  agent {a} : ISOLÉ (marqueur présent, depuis {depuis})")
+    else:
+        print(f"  agent {a} : non isolé (pas de marqueur)")
+
+
 def isoler(agent_id: str, reason: str = "isolation manuelle") -> None:
     fire_isolation(agent_id, True, reason)
     _tracer_isolation(agent_id, True, reason)
     print(f"  agent {agent_id} : isolation demandée ({reason})")
+    _afficher_etat(_confirmer(agent_id, True))
 
 
 def desisoler(agent_id: str, reason: str = "désisolation manuelle") -> None:
     fire_isolation(agent_id, False, reason)
     _tracer_isolation(agent_id, False, reason)
     print(f"  agent {agent_id} : levée d'isolation demandée ({reason})")
+    _afficher_etat(_confirmer(agent_id, False))
 
 
 def _wazuh_token() -> str:
@@ -126,6 +141,75 @@ def _wazuh_ar(agent_id: str, command: str, arguments: list[str]) -> dict:
         verify=False, timeout=20)
     r.raise_for_status()
     return r.json()
+
+
+# --- lecture de l'état d'isolation (marqueur, via SSH) ----------------------
+
+def _agent_ip(agent_id: str) -> str | None:
+    tok = _wazuh_token()
+    r = requests.get(f"{config.WAZUH_API_URL}/agents",
+                     params={"agents_list": agent_id, "select": "ip"},
+                     headers={"Authorization": f"Bearer {tok}"},
+                     verify=False, timeout=15)
+    r.raise_for_status()
+    items = r.json().get("data", {}).get("affected_items", [])
+    return items[0].get("ip") if items else None
+
+
+def _interpreter(stdout: str, returncode: int) -> dict:
+    """Traduit la sortie de `cat marqueur` en état d'isolation. Fonction pure.
+
+    - rc 255  : échec SSH (agent injoignable) -> état inconnu.
+    - stdout non vide : marqueur présent -> isolé (on parse le JSON si possible).
+    - stdout vide (fichier absent) : non isolé.
+    """
+    if returncode == 255:
+        return {"isolated": None, "reachable": False, "marker": None}
+    texte = stdout.strip()
+    if not texte:
+        return {"isolated": False, "reachable": True, "marker": None}
+    try:
+        marker = json.loads(texte)
+        isolated = bool(marker.get("isolated"))
+    except (json.JSONDecodeError, AttributeError):
+        marker, isolated = None, True  # marqueur présent mais illisible = isolé
+    return {"isolated": isolated, "reachable": True, "marker": marker}
+
+
+def etat_isolation(agent_id: str) -> dict:
+    """État d'isolation d'un agent, lu depuis le marqueur /var/ossec/isolated.
+
+    Vérité terrain (fichier posé par host-isolate.sh), fiable même agent isolé
+    tant que ce lecteur tourne sur l'hôte du manager (SSH autorisé de là).
+    Lecture seule, commande figée — pas de shell piloté.
+    """
+    ip = _agent_ip(agent_id)
+    if not ip:
+        return {"agent_id": agent_id, "ip": None, "isolated": None,
+                "reachable": False, "marker": None}
+    cmd = ["ssh", "-i", config.SSH_KEY,
+           "-o", "StrictHostKeyChecking=accept-new",
+           "-o", "ConnectTimeout=8", "-o", "BatchMode=yes",
+           f"{config.SSH_USER}@{ip}",
+           f"sudo -n cat {config.ISOLATION_MARKER} 2>/dev/null"]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        etat = _interpreter(p.stdout, p.returncode)
+    except subprocess.TimeoutExpired:
+        etat = {"isolated": None, "reachable": False, "marker": None}
+    etat.update({"agent_id": agent_id, "ip": ip})
+    return etat
+
+
+def _confirmer(agent_id: str, attendu: bool, essais: int = 6) -> dict:
+    """Attend que le marqueur reflète l'état attendu (l'AR met qq s à se poser)."""
+    etat = {}
+    for _ in range(essais):
+        etat = etat_isolation(agent_id)
+        if etat["isolated"] == attendu:
+            return etat
+        time.sleep(3)
+    return etat
 
 
 # --- exécuteurs par action --------------------------------------------------
@@ -349,6 +433,8 @@ def main() -> None:
                    help="isole un agent du réseau (action opérateur, exécutée)")
     g.add_argument("--desisoler", metavar="AGENT_ID",
                    help="lève l'isolation d'un agent (action opérateur, exécutée)")
+    g.add_argument("--etat", metavar="AGENT_ID",
+                   help="lit l'état d'isolation d'un agent (marqueur, SSH)")
     ap.add_argument("--motif", default="action opérateur",
                     help="motif consigné avec l'(dé)isolation manuelle")
     args = ap.parse_args()
@@ -360,6 +446,8 @@ def main() -> None:
         isoler(args.isoler, args.motif)
     elif args.desisoler:
         desisoler(args.desisoler, args.motif)
+    elif args.etat:
+        _afficher_etat(etat_isolation(args.etat))
     else:
         executer(args.incident)
 
