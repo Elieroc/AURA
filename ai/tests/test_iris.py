@@ -75,6 +75,9 @@ def test_note_tp_fallback_sans_llm(monkeypatch):
         raise RuntimeError("LLM down")
 
     monkeypatch.setattr(iris, "completion", boom)
+    # La map d'anonymisation n'a pas besoin de base pour ce test.
+    monkeypatch.setattr(iris, "charger_map", lambda *a, **k: {})
+    monkeypatch.setattr(iris, "sauver_map", lambda *a, **k: None)
     triage = {"verdict": "true_positive", "confidence": "high", "mitre": "T1486",
               "reason": "Ransomware confirmé.",
               "actions": ["propose_isolate_host", "open_case"]}
@@ -82,10 +85,10 @@ def test_note_tp_fallback_sans_llm(monkeypatch):
            "first_seen": __import__("datetime").datetime(2026, 7, 22),
            "last_seen": __import__("datetime").datetime(2026, 7, 22),
            "alert_count": 3, "max_level": 15, "mitre_tactics": ["Impact"]}
-    note = _note_tp(inc, triage, [{"rule_id": "100670", "rule_level": 15,
-                                   "rule_desc": "canari", "rule_groups": ["ransomware"],
-                                   "srcip": None, "srcuser": None,
-                                   "entity": "/root/c.docx", "raw": "{}"}])
+    note = _note_tp(None, inc, triage, [{"rule_id": "100670", "rule_level": 15,
+                                         "rule_desc": "canari", "rule_groups": ["ransomware"],
+                                         "srcip": None, "srcuser": None,
+                                         "entity": "/root/c.docx", "raw": "{}"}])
     assert "Ransomware confirmé" in note
     assert "Isoler l'hôte" in note
     assert "validation humaine requise" in note   # action à fort impact signalée
