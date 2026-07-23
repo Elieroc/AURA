@@ -1,6 +1,22 @@
 """Logique pure de la remédiation (sans Shuffle, Wazuh ni IRIS)."""
 
-from soc_agent.mitigate import REMEDIATIONS, _cibles, _note
+from soc_agent.mitigate import REMEDIATIONS, _cibles, _interpreter, _note
+
+
+def test_interpreter_etat_isolation():
+    # Marqueur présent -> isolé.
+    e = _interpreter('{"isolated": true, "since": "x"}', 0)
+    assert e == {"isolated": True, "reachable": True,
+                 "marker": {"isolated": True, "since": "x"}}
+    # Fichier absent (stdout vide, rc non nul) -> non isolé.
+    assert _interpreter("", 1) == {"isolated": False, "reachable": True,
+                                   "marker": None}
+    # Échec SSH -> état inconnu.
+    assert _interpreter("", 255) == {"isolated": None, "reachable": False,
+                                     "marker": None}
+    # Marqueur illisible mais présent -> isolé, sans détail.
+    e = _interpreter("corrompu", 0)
+    assert e["isolated"] is True and e["marker"] is None
 
 
 def test_cibles_par_action():
