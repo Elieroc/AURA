@@ -25,9 +25,25 @@ MANAGER_IP="$WAZUH_MANAGER_IP"
 NFT="/usr/sbin/nft"
 TABLE="wazuh_isolation"
 LOG_FILE="/var/ossec/logs/active-responses.log"
+# Marqueur d'état robuste. Deux formes, complémentaires :
+#  - MARKER : fichier local, vérité terrain inspectable même hors réseau (le
+#    manager garde SSH). Contient un JSON état + horodatage.
+#  - le token SOC-AI-ISOLATION-STATE=<état> écrit dans active-responses.log,
+#    ingéré par Wazuh -> interrogeable à distance sans toucher l'agent.
+# La présence de la table nftables reste l'autorité ; le marqueur la reflète.
+MARKER="/var/ossec/isolated"
 
 log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') host-isolate: $1" >> "$LOG_FILE"
+}
+
+# Écrit le marqueur d'isolation (état "isolated") de façon atomique.
+poser_marqueur() {
+    _tmp="${MARKER}.tmp.$$"
+    printf '{"isolated":true,"since":"%s","manager":"%s","table":"%s"}\n' \
+        "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$MANAGER_IP" "$TABLE" > "$_tmp" \
+        && mv "$_tmp" "$MARKER"
+    log "SOC-AI-ISOLATION-STATE=isolated (marqueur $MARKER)"
 }
 
 # Message AR v2 sur stdin
@@ -51,8 +67,11 @@ if [ ! -x "$NFT" ]; then
     exit 1
 fi
 
-# Idempotent : table déjà en place = déjà isolé
+# Idempotent : table déjà en place = déjà isolé. On (re)pose le marqueur au cas
+# où il aurait disparu (agent redémarré, marqueur effacé), pour qu'il reflète
+# toujours l'état réel de la table.
 if "$NFT" list table inet "$TABLE" >/dev/null 2>&1; then
+    poser_marqueur
     log "déjà isolé (table $TABLE présente)"
     exit 0
 fi
@@ -79,6 +98,7 @@ table inet $TABLE {
 EOF
 
 if [ $? -eq 0 ]; then
+    poser_marqueur
     log "hôte isolé du réseau (exceptions: lo, manager $MANAGER_IP 1514/1515, SSH depuis manager)"
     exit 0
 else
