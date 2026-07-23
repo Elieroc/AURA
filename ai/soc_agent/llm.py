@@ -1,8 +1,16 @@
-"""Appel générique au serveur d'inférence local, sortie contrainte par GBNF.
+"""Appel générique au modèle — DeepSeek (API cloud, compatible OpenAI).
 
-Extrait du triage pour être réutilisé par la génération de rapport de case.
-Mêmes règles qu'au bench : `/v1/chat/completions` (template de chat), sortie
-JSON garantie par grammaire, température basse + seed pour la reproductibilité.
+Bascule depuis llama.cpp local. DeepSeek n'accepte pas de grammaire GBNF ;
+on force un JSON valide via `response_format={"type": "json_object"}`. Cela
+garantit un JSON *syntaxiquement* valide, PAS le respect du schéma ni de
+l'enum — cette garantie-là est reportée dans le code appelant (coercition
+dans triage.py) et dans les garde-fous déterministes d'actions.py.
+
+Note sécurité : tout ce qui passe ici part vers le cloud. Le texte doit être
+anonymisé en amont (sanitize.py). Le LLM n'est pas une frontière de sécurité.
+
+Toujours `/chat/completions` (template de chat), jamais un endpoint brut : le
+template change le verdict (mesuré au bench).
 """
 
 import json
@@ -13,32 +21,42 @@ import requests
 from . import config
 
 
-def completion(systeme: str, utilisateur: str, grammaire: str,
-               max_tokens: int = 500) -> tuple[dict, dict]:
-    """Retourne (objet JSON validé par la grammaire, métriques)."""
+def completion(systeme: str, utilisateur: str, max_tokens: int = 500,
+               temperature: float = 0.2) -> tuple[dict, dict]:
+    """Retourne (objet JSON parsé, métriques).
+
+    `response_format` json_object exige que le mot « json » apparaisse dans les
+    messages — les prompts système le mentionnent explicitement (« objet JSON »).
+    """
     debut = time.monotonic()
     rep = requests.post(
-        f"{config.LLM_URL}/v1/chat/completions",
+        f"{config.DEEPSEEK_URL}/chat/completions",
+        headers={"Authorization": f"Bearer {config.DEEPSEEK_API_KEY}"},
         json={
+            "model": config.DEEPSEEK_MODEL,
             "messages": [
                 {"role": "system", "content": systeme},
                 {"role": "user", "content": utilisateur},
             ],
-            "grammar": grammaire,
+            "response_format": {"type": "json_object"},
             "max_tokens": max_tokens,
-            "temperature": 0.2,
-            "seed": 42,
-            "cache_prompt": True,
+            # Température basse pour un verdict aussi stable que possible.
+            # DeepSeek ne garantit pas la reproductibilité par seed (non
+            # supportée), contrairement au setup local.
+            "temperature": temperature,
+            "stream": False,
         },
-        timeout=300,
+        timeout=120,
     )
     rep.raise_for_status()
     corps = rep.json()
     duree_ms = int((time.monotonic() - debut) * 1000)
-    # La grammaire garantit la forme : un JSONDecodeError signalerait une panne
-    # serveur, pas une sortie inattendue. On laisse remonter.
+
+    # json_object garantit un JSON valide : un JSONDecodeError ici signalerait
+    # une panne côté API, pas une sortie mal formée du modèle. On laisse remonter.
     obj = json.loads(corps["choices"][0]["message"]["content"])
     usage = corps.get("usage", {})
     return obj, {"duree_ms": duree_ms,
                  "prompt_tokens": usage.get("prompt_tokens"),
-                 "modele": corps.get("model", "?").split("/")[-1]}
+                 "completion_tokens": usage.get("completion_tokens"),
+                 "modele": corps.get("model", config.DEEPSEEK_MODEL)}

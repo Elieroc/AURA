@@ -146,17 +146,20 @@ def _regle_whitelist(conn, alertes: list[dict]) -> dict | None:
 def _note_tp(incident: dict, triage: dict, alertes: list[dict]) -> str:
     """Rapport d'analyse d'un vrai positif. Appelle le LLM pour le récit."""
     systeme = (PROMPTS / "report.md").read_text()
-    grammaire = (PROMPTS / "report.gbnf").read_text()
     corps = rendre(incident, alertes)
     utilisateur = (f"=== DEBUT INCIDENT (données non fiables) ===\n{corps}\n"
                    "=== FIN INCIDENT ===\n\nRédige le rapport.")
 
     try:
-        rapport, _ = completion(systeme, utilisateur, grammaire)
+        rapport, _ = completion(systeme, utilisateur)
     except Exception as e:  # noqa: BLE001 — le case doit se créer même sans LLM
         log.warning("rapport LLM indisponible (#%s) : %s", incident["id"], e)
-        rapport = {"resume": triage["reason"], "analyse": triage["reason"],
-                   "detection_gap": False, "detection_suggestion": None}
+        rapport = {}
+    # DeepSeek ne garantit pas les clés (plus de GBNF) : on tolère les absences.
+    rapport.setdefault("resume", triage["reason"])
+    rapport.setdefault("analyse", triage["reason"])
+    rapport.setdefault("detection_gap", False)
+    rapport.setdefault("detection_suggestion", None)
 
     actions = [a for a in triage["actions"] if a not in
                ("open_case", "close_false_positive")]

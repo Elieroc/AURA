@@ -10,25 +10,69 @@ sur une sortie de modèle serait un pari.
 
 import argparse
 import hashlib
-import json
-import time
 from pathlib import Path
 
 import psycopg
-import requests
 from psycopg.rows import dict_row
 
 from . import config
 from .actions import appliquer_garde_fous, deduire, necessite_validation
 from .coherence import verifier
+from .llm import completion
 from .render import motifs_injection, rendre
 
 PROMPTS = Path(__file__).parent / "prompts"
 
-# Bornes de sécurité du prompt. Mesuré sur cet hôte : ~50 tokens/s de prefill,
-# donc 1500 tokens = 30 s avant le premier token. Dépasser n'est pas une
-# dégradation progressive, c'est un budget qui explose.
+# Plafond de taille de prompt. À l'époque du local, c'était un budget de temps
+# (~50 tokens/s de prefill). En cloud, c'est un budget de coût et une borne
+# contre un prompt qui déraille. On garde la limite.
 PLAFOND_TOKENS = 1500
+
+# Enums de sortie. La GBNF les garantissait à l'échantillonnage ; DeepSeek ne
+# garantit que le JSON valide. On revalide donc ici — c'est la place correcte
+# pour la barrière (le modèle n'est pas une frontière de sécurité).
+VERDICTS_OK = {"true_positive", "false_positive", "needs_investigation"}
+CONFIANCES_OK = {"low", "medium", "high"}
+ACTIONS_OK = {"propose_block_ip", "propose_isolate_host",
+              "propose_disable_user", "collect_endpoint_evidence",
+              "escalate_human"}
+
+
+def _valider(brut: dict) -> dict:
+    """Coerce la sortie du modèle vers le schéma attendu.
+
+    Toute valeur hors enum est ramenée à une valeur sûre plutôt que propagée :
+    un verdict inconnu devient `needs_investigation` (n'entraîne aucune action
+    automatique), une action inconnue est écartée. Sans la GBNF, c'est ici
+    qu'on garantit la forme.
+    """
+    verdict = brut.get("verdict")
+    if verdict not in VERDICTS_OK:
+        verdict = "needs_investigation"
+
+    confidence = brut.get("confidence")
+    if confidence not in CONFIANCES_OK:
+        confidence = "low"
+
+    actions_brutes = brut.get("actions") or []
+    if not isinstance(actions_brutes, list):
+        actions_brutes = []
+    # Filtrage à l'enum, dédup en gardant l'ordre, plafond à 4.
+    actions, vus = [], set()
+    for a in actions_brutes:
+        if a in ACTIONS_OK and a not in vus:
+            vus.add(a)
+            actions.append(a)
+    actions = actions[:4]
+
+    mitre = brut.get("mitre")
+    if not (isinstance(mitre, str) and mitre.startswith("T")):
+        mitre = None
+
+    reason = str(brut.get("reason") or "").strip() or "(aucune justification)"
+
+    return {"verdict": verdict, "confidence": confidence, "actions": actions,
+            "mitre": mitre, "reason": reason}
 
 SELECT_INCIDENTS = """
 SELECT i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
@@ -66,51 +110,21 @@ def construire_prompt(incident: dict, alertes: list[dict]) -> tuple[str, str]:
 
 
 def compter_tokens(texte: str) -> int:
-    rep = requests.post(f"{config.LLM_URL}/tokenize",
-                        json={"content": texte}, timeout=30)
-    rep.raise_for_status()
-    return len(rep.json()["tokens"])
+    """Estimation grossière du nombre de tokens.
+
+    DeepSeek n'expose pas d'endpoint de tokenisation. ~4 caractères par token
+    (ordre de grandeur observé sur ces prompts) : suffisant pour le garde-fou
+    de taille de prompt, qui n'a pas besoin d'être exact. Le compte réel est
+    récupéré après coup depuis l'usage renvoyé par l'API.
+    """
+    return len(texte) // 4
 
 
 def interroger(systeme: str, utilisateur: str) -> tuple[dict, dict]:
-    """Appelle le modèle. Retourne (verdict, métriques)."""
-    grammaire = (PROMPTS / "triage.gbnf").read_text()
-
-    debut = time.monotonic()
-    rep = requests.post(
-        f"{config.LLM_URL}/v1/chat/completions",
-        json={
-            # /v1/chat/completions et jamais /completion : le template de chat
-            # embarqué dans le GGUF change le verdict (cf. bench/RESULTS.md).
-            "messages": [
-                {"role": "system", "content": systeme},
-                {"role": "user", "content": utilisateur},
-            ],
-            "grammar": grammaire,
-            "max_tokens": 400,
-            # Température basse : on veut un verdict reproductible, pas de la
-            # variété. Avec la seed fixe, deux passages identiques donnent le
-            # même résultat — indispensable pour comparer deux prompts.
-            "temperature": 0.2,
-            "seed": 42,
-            "cache_prompt": True,
-        },
-        timeout=300,
-    )
-    rep.raise_for_status()
-    corps = rep.json()
-    duree_ms = int((time.monotonic() - debut) * 1000)
-
-    # La grammaire garantit la forme : un JSONDecodeError ici signalerait une
-    # panne du serveur, pas une sortie inattendue du modèle. On laisse remonter.
-    verdict = json.loads(corps["choices"][0]["message"]["content"])
-
-    t = corps.get("usage", {})
-    return verdict, {
-        "duree_ms": duree_ms,
-        "prompt_tokens": t.get("prompt_tokens"),
-        "modele": corps.get("model", "?").split("/")[-1],
-    }
+    """Appelle le modèle (DeepSeek) et valide la sortie. Retourne (verdict, m)."""
+    brut, m = completion(systeme, utilisateur, max_tokens=400)
+    verdict = _valider(brut)
+    return verdict, m
 
 
 INSERT_TRIAGE = """
