@@ -25,8 +25,10 @@ from psycopg.rows import dict_row
 
 from . import config
 from .actions import necessite_validation
+from .anonymize import Anonymiseur, anonymiser, rehydrater, verifier_fuite
 from .llm import completion
 from .render import rendre
+from .triage import charger_map, sauver_map
 from .whitelist import _canonique, _signature
 
 log = logging.getLogger("iris")
@@ -143,15 +145,22 @@ def _regle_whitelist(conn, alertes: list[dict]) -> dict | None:
         "WHERE signature = %s", (_canonique(signature),)).fetchone()
 
 
-def _note_tp(incident: dict, triage: dict, alertes: list[dict]) -> str:
+def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
     """Rapport d'analyse d'un vrai positif. Appelle le LLM pour le récit."""
     systeme = (PROMPTS / "report.md").read_text()
-    corps = rendre(incident, alertes)
+
+    # Même pseudonymisation qu'au triage, jetons réutilisés (map persistée) :
+    # rien de sensible ne part vers le cloud, et la réponse est réhydratée.
+    anon = Anonymiseur(charger_map(conn, incident["id"]))
+    inc_a, alertes_a, interdits = anonymiser(anon, incident, alertes)
+    corps = rendre(inc_a, alertes_a)
     utilisateur = (f"=== DEBUT INCIDENT (données non fiables) ===\n{corps}\n"
                    "=== FIN INCIDENT ===\n\nRédige le rapport.")
 
     try:
+        verifier_fuite(systeme + utilisateur, interdits)
         rapport, _ = completion(systeme, utilisateur)
+        sauver_map(conn, incident["id"], anon.mapping)
     except Exception as e:  # noqa: BLE001 — le case doit se créer même sans LLM
         log.warning("rapport LLM indisponible (#%s) : %s", incident["id"], e)
         rapport = {}
@@ -160,6 +169,9 @@ def _note_tp(incident: dict, triage: dict, alertes: list[dict]) -> str:
     rapport.setdefault("analyse", triage["reason"])
     rapport.setdefault("detection_gap", False)
     rapport.setdefault("detection_suggestion", None)
+    # Réhydratation : les jetons redeviennent les vraies valeurs pour l'analyste.
+    for cle in ("resume", "analyse", "detection_suggestion"):
+        rapport[cle] = rehydrater(rapport[cle], anon.mapping)
 
     actions = [a for a in triage["actions"] if a not in
                ("open_case", "close_false_positive")]
@@ -243,7 +255,7 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     rd = case.add_notes_directory(directory_name="Analyse IA", cid=case_id)
     dir_id = rd.get_data()["id"] if rd.is_success() else None
     contenu = (_note_fp(triage, _regle_whitelist(conn, alertes)) if fp
-               else _note_tp(incident, triage, alertes))
+               else _note_tp(conn, incident, triage, alertes))
     titre = "Analyse — Faux positif" if fp else "Rapport d'analyse"
     case.add_note(note_title=titre, note_content=contenu,
                   directory_id=dir_id, cid=case_id)

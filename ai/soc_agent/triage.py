@@ -10,6 +10,7 @@ sur une sortie de modèle serait un pari.
 
 import argparse
 import hashlib
+import json
 from pathlib import Path
 
 import psycopg
@@ -17,6 +18,8 @@ from psycopg.rows import dict_row
 
 from . import config
 from .actions import appliquer_garde_fous, deduire, necessite_validation
+from .anonymize import (Anonymiseur, FuiteError, anonymiser, rehydrater,
+                        verifier_fuite)
 from .coherence import verifier
 from .llm import completion
 from .render import motifs_injection, rendre
@@ -127,6 +130,20 @@ def interroger(systeme: str, utilisateur: str) -> tuple[dict, dict]:
     return verdict, m
 
 
+def charger_map(conn, incident_id: int) -> dict:
+    r = conn.execute("SELECT mapping FROM anonymization_map WHERE incident_id = %s",
+                     (incident_id,)).fetchone()
+    return (r["mapping"] if r else {}) or {}
+
+
+def sauver_map(conn, incident_id: int, mapping: dict) -> None:
+    conn.execute(
+        "INSERT INTO anonymization_map (incident_id, mapping) VALUES (%s, %s) "
+        "ON CONFLICT (incident_id) DO UPDATE "
+        "SET mapping = EXCLUDED.mapping, updated_at = now()",
+        (incident_id, json.dumps(mapping, ensure_ascii=False)))
+
+
 INSERT_TRIAGE = """
 INSERT INTO triages (incident_id, verdict, confidence, mitre, actions, reason,
                      modele, prompt_sha, prompt_tokens, duree_ms, mode,
@@ -153,12 +170,26 @@ def trier(limite: int, un_seul: int | None, tous: bool,
 
         for inc in incidents:
             alertes = conn.execute(SELECT_ALERTES, (inc["id"],)).fetchall()
-            systeme, utilisateur = construire_prompt(inc, alertes)
+
+            # Pseudonymisation AVANT toute construction de prompt : rien de
+            # sensible ne doit atteindre le cloud. Jetons stables entre passages
+            # via la correspondance persistée.
+            anon = Anonymiseur(charger_map(conn, inc["id"]))
+            inc_a, alertes_a, interdits = anonymiser(anon, inc, alertes)
+            systeme, utilisateur = construire_prompt(inc_a, alertes_a)
 
             if afficher_prompt:
                 print("=" * 70)
                 print(utilisateur)
                 print("=" * 70)
+
+            # Garde-fou fail-closed : un identifiant interne qui aurait échappé
+            # à la pseudonymisation interdit l'envoi, on ne devine pas.
+            try:
+                verifier_fuite(systeme + utilisateur, interdits)
+            except FuiteError as e:
+                print(f"  #{inc['id']} IGNORÉ — fuite potentielle : {e}")
+                continue
 
             n_tokens = compter_tokens(systeme + utilisateur)
             if n_tokens > PLAFOND_TOKENS:
@@ -169,6 +200,10 @@ def trier(limite: int, un_seul: int | None, tous: bool,
                 continue
 
             verdict, m = interroger(systeme, utilisateur)
+            sauver_map(conn, inc["id"], anon.mapping)
+            # Réhydratation : l'analyste doit lire les vraies valeurs, pas les
+            # jetons. Seul DeepSeek a vu les pseudonymes.
+            verdict["reason"] = rehydrater(verdict["reason"], anon.mapping)
 
             # On relève l'incohérence, on ne la corrige pas : réécrire le
             # verdict du modèle masquerait le problème au lieu de le mesurer.

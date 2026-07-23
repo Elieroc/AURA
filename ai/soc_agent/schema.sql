@@ -166,3 +166,21 @@ CREATE INDEX IF NOT EXISTS whitelist_active ON whitelist_rules (active);
 -- Case IRIS créé pour l'incident (un par incident trié). NULL tant que non
 -- créé ; sert de garde anti-doublon au cycle.
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS iris_case_id bigint;
+
+-- ---------------------------------------------------------------------------
+-- Pseudonymisation avant envoi au LLM cloud (DeepSeek)
+-- ---------------------------------------------------------------------------
+
+-- Correspondance jeton -> valeur réelle, par incident. Les données SOC partent
+-- vers le cloud pseudonymisées ; cette table permet de RÉHYDRATER la réponse du
+-- modèle (l'analyste voit les vraies valeurs dans IRIS) et garantit des jetons
+-- STABLES au re-triage (comparabilité entre passages).
+--
+-- Contient des valeurs sensibles en clair — mais les mêmes que `alerts.raw`, et
+-- au même endroit (Postgres loopback) : aucune nouvelle exposition. Ne doit
+-- jamais quitter l'hôte.
+CREATE TABLE IF NOT EXISTS anonymization_map (
+    incident_id bigint PRIMARY KEY REFERENCES incidents(id) ON DELETE CASCADE,
+    mapping     jsonb NOT NULL DEFAULT '{}',
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
