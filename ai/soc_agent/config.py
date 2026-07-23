@@ -86,6 +86,31 @@ IRIS_VERIFY_TLS = os.environ.get("IRIS_VERIFY_TLS", "false").lower() == "true"
 # Client IRIS (dossier « customer ») rattaché aux cases. 1 = client par défaut.
 IRIS_CUSTOMER = int(os.environ.get("IRIS_CUSTOMER", "1"))
 
+# --- Remédiation (exécution des actions) ------------------------------------
+#
+# Passage de « proposer » à « exécuter ». Deux canaux d'écriture :
+#  - Shuffle SOAR (webhooks) pour l'isolation d'hôte et le kill de process :
+#    workflows existants, réversibles, Shuffle porte l'auth Wazuh.
+#  - API Wazuh directe pour le blocage d'IP et la désactivation de compte
+#    (pas de workflow Shuffle dédié). Active-response poussée sur 1514.
+#
+# MITIGATE_EXECUTE=false par défaut : DRY-RUN. Rien n'est réellement déclenché,
+# le module montre le payload et écrit des notes IRIS marquées [SIMULATION].
+# Une action à fort impact sur la prod ne doit pas s'armer par accident.
+MITIGATE_EXECUTE = os.environ.get("MITIGATE_EXECUTE", "false").lower() == "true"
+
+SHUFFLE_URL = os.environ.get("SHUFFLE_URL", "http://localhost:5001")
+SHUFFLE_WEBHOOK_ISOLATE = os.environ.get(
+    "SHUFFLE_WEBHOOK_ISOLATE", "webhook_00000000-0000-0000-0000-00000000a001")
+SHUFFLE_WEBHOOK_KILL = os.environ.get(
+    "SHUFFLE_WEBHOOK_KILL", "webhook_00000000-0000-0000-0000-00000000a002")
+
+# API Wazuh (user wazuh-wui). Même mot de passe que API_PASSWORD dans wazuh/.env.
+WAZUH_API_URL = os.environ.get("WAZUH_API_URL", "https://127.0.0.1:55000")
+WAZUH_API_USER = os.environ.get("WAZUH_API_USER", "wazuh-wui")
+WAZUH_API_PASSWORD = os.environ.get("WAZUH_API_PASSWORD", "")
+
+
 # --- Corrélation ------------------------------------------------------------
 #
 # Deux alertes du même agent séparées de moins de CORRELATION_GAP_MINUTES et
