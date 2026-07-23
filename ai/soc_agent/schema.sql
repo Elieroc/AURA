@@ -184,3 +184,29 @@ CREATE TABLE IF NOT EXISTS anonymization_map (
     mapping     jsonb NOT NULL DEFAULT '{}',
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
+
+-- ---------------------------------------------------------------------------
+-- Remédiation exécutée (mitigate.py)
+-- ---------------------------------------------------------------------------
+
+-- Trace de chaque action de remédiation tentée sur un incident. Sert à
+-- l'audit (qui/quoi/quand), à l'idempotence (ne pas ré-isoler un hôte déjà
+-- isolé) et à porter la procédure d'ANNULATION — chaque mitigation doit
+-- pouvoir être défaite.
+--
+-- Le couple (incident, action, cible) est unique : rejouer le cycle ne
+-- réapplique pas une remédiation déjà passée.
+CREATE TABLE IF NOT EXISTS mitigations (
+    id           bigserial PRIMARY KEY,
+    incident_id  bigint NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+    action       text NOT NULL,
+    cible        text,            -- agent_id, IP ou compte visé
+    statut       text NOT NULL,   -- exécuté | dry_run | échec | sans_canal | suspendu
+    details      text,
+    undo         text,            -- commande / procédure d'annulation
+    iris_note_id bigint,
+    executed_at  timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (incident_id, action, cible)
+);
+
+CREATE INDEX IF NOT EXISTS mitigations_incident ON mitigations (incident_id);
