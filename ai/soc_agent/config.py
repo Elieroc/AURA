@@ -30,6 +30,14 @@ INDEXER_PASSWORD = _requis("INDEXER_PASSWORD")
 INDEXER_VERIFY_TLS = os.environ.get("INDEXER_VERIFY_TLS", "false").lower() == "true"
 INDEXER_CA = os.environ.get("INDEXER_CA") or None
 
+# Indices interrogés pour l'ingestion. Un pipeline d'ingest indexer route les
+# alertes par type vers wazuh-linux-* / wazuh-web-* (et le reste dans
+# wazuh-alerts-*) : ne lire que wazuh-alerts-* rendait l'IA aveugle à la
+# quasi-totalité des alertes. On couvre donc les trois familles. Ajuster ici
+# si de nouveaux préfixes d'index apparaissent (ex. wazuh-windows-*).
+INDEXER_ALERT_INDICES = os.environ.get(
+    "INDEXER_ALERT_INDICES", "wazuh-alerts-*,wazuh-linux-*,wazuh-web-*")
+
 # --- Base du soc-agent ------------------------------------------------------
 PG_DSN = os.environ.get(
     "PG_DSN",

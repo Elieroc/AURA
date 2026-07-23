@@ -73,6 +73,7 @@ def _aplatir(src: dict, filtre: noise.NoiseFilter) -> dict:
     agent = src.get("agent", {})
     data = src.get("data", {})
     mitre = regle.get("mitre", {})
+    raison = filtre.raison_suppression(src)
 
     return {
         "id": src["id"],
@@ -102,7 +103,11 @@ def _aplatir(src: dict, filtre: noise.NoiseFilter) -> dict:
         "entity": _entite(src),
         # Suppression post-retrieval du noise filter : l'alerte est ingérée
         # mais marquée, pour rester relisible tout en sortant de la corrélation.
-        "suppress_reason": filtre.raison_suppression(src),
+        "suppress_reason": raison,
+        # Booléen dérivé calculé en Python : le passer en SQL via
+        # `%(...)s IS NOT NULL` rendait le type du paramètre indéterminable
+        # pour Postgres quand la raison est NULL (AmbiguousParameter).
+        "suppressed": raison is not None,
         "raw": json.dumps(src),
     }
 
@@ -114,7 +119,7 @@ INSERT INTO alerts (id, ts, agent_id, agent_name, rule_id, rule_level,
 VALUES (%(id)s, %(ts)s, %(agent_id)s, %(agent_name)s, %(rule_id)s,
         %(rule_level)s, %(rule_desc)s, %(rule_groups)s, %(mitre_ids)s,
         %(mitre_tactics)s, %(srcip)s, %(srcuser)s, %(entity)s,
-        %(suppress_reason)s IS NOT NULL, %(suppress_reason)s, %(raw)s)
+        %(suppressed)s, %(suppress_reason)s, %(raw)s)
 ON CONFLICT (id) DO NOTHING
 """
 
@@ -146,7 +151,7 @@ def _lot(depuis: str | None, apres: tuple | None, taille: int,
         corps["search_after"] = list(apres)
 
     rep = requests.post(
-        f"{config.INDEXER_URL}/wazuh-alerts-*/_search",
+        f"{config.INDEXER_URL}/{config.INDEXER_ALERT_INDICES}/_search",
         json=corps,
         auth=(config.INDEXER_USER, config.INDEXER_PASSWORD),
         verify=config.INDEXER_CA if config.INDEXER_VERIFY_TLS else False,
