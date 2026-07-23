@@ -7,9 +7,17 @@ set -u
 NFT="/usr/sbin/nft"
 TABLE="wazuh_isolation"
 LOG_FILE="/var/ossec/logs/active-responses.log"
+# Miroir du marqueur posé par host-isolate.sh. On le retire à la dé-isolation
+# pour que fichier local et table nftables restent cohérents.
+MARKER="/var/ossec/isolated"
 
 log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') host-unisolate: $1" >> "$LOG_FILE"
+}
+
+lever_marqueur() {
+    rm -f "$MARKER"
+    log "SOC-AI-ISOLATION-STATE=cleared (marqueur $MARKER retiré)"
 }
 
 read -r INPUT_JSON
@@ -25,11 +33,13 @@ case "$COMMAND" in
 esac
 
 if ! "$NFT" list table inet "$TABLE" >/dev/null 2>&1; then
+    lever_marqueur
     log "rien à faire (table $TABLE absente)"
     exit 0
 fi
 
 if "$NFT" delete table inet "$TABLE"; then
+    lever_marqueur
     log "hôte dé-isolé (table $TABLE supprimée)"
     exit 0
 else
