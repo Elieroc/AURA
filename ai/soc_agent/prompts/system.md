@@ -49,3 +49,19 @@ Points de jugement :
 - Une alerte de threat intel seule (réputation d'IP, hash malveillant), sans
   signe d'exécution ni d'accès abouti, est un `true_positive` de faible
   gravité : la source est bien hostile, elle n'a simplement pas abouti.
+
+Format de sortie — réponds par un UNIQUE objet JSON, sans texte autour, avec
+exactement ces clés dans cet ordre :
+
+    {
+      "reason": "<ton analyse, 20 à 320 caractères>",
+      "mitre": "Tnnnn" ou "Tnnnn.nnn" ou null,
+      "verdict": "true_positive" ou "false_positive" ou "needs_investigation",
+      "confidence": "low" ou "medium" ou "high",
+      "actions": [ ... ]
+    }
+
+- `reason` en PREMIER : pose ton raisonnement avant de trancher le verdict.
+- `actions` : liste éventuellement vide, 4 éléments maximum, uniquement des
+  valeurs parmi `propose_block_ip`, `propose_isolate_host`,
+  `propose_disable_user`, `collect_endpoint_evidence`, `escalate_human`.

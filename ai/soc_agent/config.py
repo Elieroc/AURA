@@ -55,10 +55,24 @@ MIN_LEVEL = int(os.environ.get("MIN_LEVEL", "12"))
 # les statistiques complètes ; monter à MIN_LEVEL une fois la mesure faite.
 INGEST_MIN_LEVEL = int(os.environ.get("INGEST_MIN_LEVEL", "0"))
 
-# --- Serveur d'inférence local ---------------------------------------------
+# --- Modèle : DeepSeek (API cloud, compatible OpenAI) -----------------------
 #
-# llama.cpp, sur la loopback exclusivement : le modèle ne doit jamais être
-# joignable depuis le réseau. Service systemd utilisateur, cf. ai/llm/.
+# Bascule depuis l'IA locale (llama.cpp) : cette machine n'a pas les ressources
+# pour un modèle local en continu. DeepSeek expose une API compatible OpenAI
+# (/chat/completions, Bearer token). Conséquence de sécurité MAJEURE : les
+# données SOC quittent l'hôte. Elles DOIVENT être anonymisées avant tout appel
+# (cf. sanitize.py — anonymisation à implémenter). Aucune donnée sensible en
+# clair vers le cloud tant que ce n'est pas fait.
+#
+# Perte par rapport au local : plus de GBNF (grammaire). DeepSeek garantit un
+# JSON valide (response_format), pas le respect du schéma ni de l'enum. La
+# barrière est donc dans le code : coercition/validation dans triage.py, en
+# plus des garde-fous déterministes d'actions.py.
+DEEPSEEK_API_KEY = _requis("DEEPSEEK_API_KEY")
+DEEPSEEK_URL = os.environ.get("DEEPSEEK_URL", "https://api.deepseek.com")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+
+# Conservé pour compat (tokenize éventuel) — plus utilisé pour l'inférence.
 LLM_URL = os.environ.get("LLM_URL", "http://127.0.0.1:8081")
 
 # --- DFIR-IRIS (case management) --------------------------------------------

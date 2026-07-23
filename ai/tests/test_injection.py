@@ -74,6 +74,26 @@ def test_grammaire_borne_les_actions_quoi_qu_il_arrive():
         assert action in grammaire
 
 
+def test_validation_borne_les_actions_quoi_qu_il_arrive():
+    """Défense structurelle, désormais dans le code (plus de GBNF).
+
+    DeepSeek ne garantit que le JSON valide : c'est `_valider` qui ramène la
+    sortie au schéma. Une action inventée par une injection est écartée, un
+    verdict inconnu retombe sur `needs_investigation` (aucune action auto).
+    """
+    from soc_agent.triage import _valider
+    v = _valider({
+        "verdict": "close_everything",
+        "confidence": "absolue",
+        "actions": ["propose_unblock_all", "propose_block_ip", "rm_rf"],
+        "mitre": "pas un id", "reason": "x",
+    })
+    assert v["verdict"] == "needs_investigation"
+    assert v["confidence"] == "low"
+    assert v["actions"] == ["propose_block_ip"]
+    assert v["mitre"] is None
+
+
 def test_faux_positif_injecte_ne_declenche_aucune_remediation():
     """Même si l'injection imposait false_positive, rien n'est exécutable."""
     actions = deduire("false_positive",
