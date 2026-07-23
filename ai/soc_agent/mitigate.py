@@ -59,6 +59,53 @@ def _shuffle(webhook: str, payload: dict) -> str:
     return r.text
 
 
+def fire_isolation(agent_id: str, isoler: bool, reason: str) -> str:
+    """Isole (ou désisole) un agent via le webhook Shuffle. Retourne la réponse.
+
+    Même workflow dans les deux sens, seule l'active-response change :
+    host-isolate.sh pose les règles nftables, host-unisolate.sh les retire.
+    """
+    cmd = "!host-isolate.sh" if isoler else "!host-unisolate.sh"
+    return _shuffle(config.SHUFFLE_WEBHOOK_ISOLATE,
+                    {"agent_id": agent_id, "ar_command": cmd, "reason": reason})
+
+
+def _tracer_isolation(agent_id: str, isoler: bool, reason: str) -> None:
+    """Trace une (dé)isolation manuelle sur les incidents ouverts de l'agent.
+
+    Pas d'incident rattaché -> pas de trace en base (la table `mitigations` est
+    indexée par incident) ; Shuffle et Wazuh gardent de toute façon le journal.
+    """
+    statut = "exécuté" if isoler else "annulé"
+    action, cible = "propose_isolate_host", agent_id
+    details = (f"Isolation réseau manuelle de l'agent {agent_id}." if isoler
+               else f"Levée manuelle de l'isolation de l'agent {agent_id}.")
+    undo = (f"Désisoler : python -m soc_agent.mitigate --desisoler {agent_id}"
+            if isoler else "—")
+    with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
+        incs = conn.execute(
+            "SELECT id FROM incidents WHERE agent_id = %s AND iris_case_id IS NOT NULL "
+            "ORDER BY id DESC LIMIT 1", (agent_id,)).fetchall()
+        for r in incs:
+            conn.execute(INSERT_MITIG, {
+                "incident_id": r["id"], "action": action, "cible": cible,
+                "statut": statut, "details": f"{details} Motif : {reason}",
+                "undo": undo, "iris_note_id": None})
+        conn.commit()
+
+
+def isoler(agent_id: str, reason: str = "isolation manuelle") -> None:
+    fire_isolation(agent_id, True, reason)
+    _tracer_isolation(agent_id, True, reason)
+    print(f"  agent {agent_id} : isolation demandée ({reason})")
+
+
+def desisoler(agent_id: str, reason: str = "désisolation manuelle") -> None:
+    fire_isolation(agent_id, False, reason)
+    _tracer_isolation(agent_id, False, reason)
+    print(f"  agent {agent_id} : levée d'isolation demandée ({reason})")
+
+
 def _wazuh_token() -> str:
     r = requests.post(
         f"{config.WAZUH_API_URL}/security/user/authenticate?raw=true",
@@ -96,9 +143,7 @@ def _isolate(cible: str, ctx: dict):
             f"-d '{{\"agent_id\": \"{cible}\", \"ar_command\": "
             f"\"!host-unisolate.sh\", \"reason\": \"incident clos\"}}'")
     if config.MITIGATE_EXECUTE:
-        _shuffle(config.SHUFFLE_WEBHOOK_ISOLATE,
-                 {"agent_id": cible, "ar_command": "!host-isolate.sh",
-                  "reason": ctx["reason_court"]})
+        fire_isolation(cible, True, ctx["reason_court"])
         return "exécuté", canal, details, undo
     return "dry_run", canal, details, undo
 
@@ -297,9 +342,26 @@ def executer(incident_id: int) -> list[dict]:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--incident", type=int, required=True)
+    g = ap.add_mutually_exclusive_group(required=True)
+    g.add_argument("--incident", type=int,
+                   help="exécute les remédiations décidées au triage de cet incident")
+    g.add_argument("--isoler", metavar="AGENT_ID",
+                   help="isole un agent du réseau (action opérateur, exécutée)")
+    g.add_argument("--desisoler", metavar="AGENT_ID",
+                   help="lève l'isolation d'un agent (action opérateur, exécutée)")
+    ap.add_argument("--motif", default="action opérateur",
+                    help="motif consigné avec l'(dé)isolation manuelle")
     args = ap.parse_args()
-    executer(args.incident)
+
+    # --isoler / --desisoler sont des commandes opérateur explicites : elles
+    # s'exécutent réellement, indépendamment de MITIGATE_EXECUTE (qui ne borne
+    # que l'exécution AUTOMATIQUE depuis un verdict).
+    if args.isoler:
+        isoler(args.isoler, args.motif)
+    elif args.desisoler:
+        desisoler(args.desisoler, args.motif)
+    else:
+        executer(args.incident)
 
 
 if __name__ == "__main__":
