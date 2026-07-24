@@ -125,7 +125,7 @@ def compter_tokens(texte: str) -> int:
 
 def interroger(systeme: str, utilisateur: str) -> tuple[dict, dict]:
     """Appelle le modèle (DeepSeek) et valide la sortie. Retourne (verdict, m)."""
-    brut, m = completion(systeme, utilisateur, max_tokens=400)
+    brut, m = completion(systeme, utilisateur, max_tokens=config.TRIAGE_MAX_TOKENS)
     verdict = _valider(brut)
     return verdict, m
 
