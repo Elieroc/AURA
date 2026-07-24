@@ -26,7 +26,6 @@ import urllib3
 from psycopg.rows import dict_row
 
 from . import config
-from .actions import necessite_validation
 from .anonymize import Anonymiseur, anonymiser, rehydrater, verifier_fuite
 from .llm import completion
 from .render import rendre
@@ -244,6 +243,56 @@ def _section_iocs(alertes: list[dict]) -> str:
     return "\n".join(lignes)
 
 
+# Rendu lisible du statut d'une remédiation exécutée.
+_STATUT_REMED = {
+    "exécuté": "✅ exécuté",
+    "dry_run": "🟡 simulé (dry-run)",
+    "sans_canal": "📄 documenté (manuel)",
+    "échec": "❌ échec",
+}
+
+
+def _section_remediations(conn, incident_id: int, triage: dict) -> str:
+    """Récapitulatif des remédiations RÉELLEMENT exécutées (table mitigations).
+
+    Remplace l'ancienne liste « proposée » : les actions sont désormais lancées
+    automatiquement à l'ouverture du case ; on rend compte de ce qui a été fait,
+    pas de ce qui pourrait l'être.
+    """
+    rows = conn.execute(
+        "SELECT action, cible, statut FROM mitigations WHERE incident_id = %s "
+        "ORDER BY id", (incident_id,)).fetchall()
+    lignes = ["## Remédiations exécutées"]
+
+    if not rows:
+        remed = [a for a in triage.get("actions", [])
+                 if a in LIBELLE_ACTION and a.startswith(("propose_", "collect_"))]
+        lignes.append("")
+        if remed:
+            lignes.append("Aucune remédiation automatique n'a pu s'appliquer "
+                          "(pas de cible exploitable). Actions décidées au "
+                          "triage :")
+            lignes += [f"- {LIBELLE_ACTION.get(a, a)}" for a in remed]
+        else:
+            lignes.append("Aucune remédiation à exécuter pour cet incident.")
+        return "\n".join(lignes)
+
+    lignes += [
+        "",
+        "Actions lancées automatiquement par le soc-agent à l'ouverture du "
+        "case. Procédures d'annulation détaillées dans le répertoire "
+        "« Remédiations ».",
+        "",
+        "| Action | Cible | Statut |",
+        "|:---|:---|:---:|",
+    ]
+    for r in rows:
+        libelle = LIBELLE_ACTION.get(r["action"], r["action"])
+        statut = _STATUT_REMED.get(r["statut"], r["statut"])
+        lignes.append(f"| {libelle} | `{r['cible']}` | {statut} |")
+    return "\n".join(lignes)
+
+
 def _note_fp(triage: dict, regle: dict | None) -> str:
     """Note d'analyse d'un faux positif, avec l'explication de whitelist.
 
@@ -320,10 +369,6 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
     for cle in ("resume", "analyse", "detection_suggestion"):
         rapport[cle] = rehydrater(rapport[cle], anon.mapping)
 
-    actions = [a for a in triage["actions"] if a not in
-               ("open_case", "close_false_positive")]
-    a_valider = set(necessite_validation(actions))
-
     lignes = [
         "# Rapport d'analyse — Vrai positif",
         "",
@@ -340,17 +385,10 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
         "",
         _section_iocs(alertes),
         "",
-        "## Remédiation proposée",
+        _section_remediations(conn, incident["id"], triage),
+        "",
+        "## Couverture de détection",
     ]
-    if actions:
-        for a in actions:
-            marque = "  ⚠️ validation humaine requise" if a in a_valider else ""
-            lignes.append(f"- {LIBELLE_ACTION.get(a, a)}{marque}")
-    else:
-        lignes.append("- Aucune action automatique ; suivi analyste.")
-
-    lignes.append("")
-    lignes.append("## Couverture de détection")
     if rapport.get("detection_gap") and rapport.get("detection_suggestion"):
         lignes += [
             "Un angle mort de détection a été identifié. Piste de règle Wazuh "
@@ -460,6 +498,14 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
         raise RuntimeError(f"création case échouée : {r.get_msg()}")
     case_id = r.get_data()["case_id"]
 
+    # Rattachement du case AVANT la remédiation : mitigate.executer ouvre sa
+    # propre connexion et lit iris_case_id pour y déposer ses notes. Commit
+    # immédiat pour qu'il le voie.
+    conn.execute(
+        "UPDATE incidents SET iris_case_id = %s, status = %s WHERE id = %s",
+        (case_id, "fp_classe" if fp else "case_ouvert", incident["id"]))
+    conn.commit()
+
     # IOC (best-effort : un type inconnu ne doit pas faire échouer le case).
     for valeur, type_ioc, description in _iocs(alertes):
         try:
@@ -468,7 +514,22 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
         except Exception as e:  # noqa: BLE001
             log.debug("IOC ignoré (%s/%s) : %s", type_ioc, valeur, e)
 
-    # Note d'analyse, dans un répertoire dédié.
+    # Remédiation AUTOMATIQUE, avant le rapport : les actions décidées au triage
+    # sont exécutées maintenant (isolation, blocage, désactivation de compte),
+    # tracées en table `mitigations` + notes IRIS dédiées. Le rapport en fait
+    # ensuite le récapitulatif. Barrières conservées dans mitigate.executer
+    # (dry-run si MITIGATE_EXECUTE=false, suspension si motifs d'injection).
+    # Import différé : mitigate importe iris, on casse le cycle à l'appel.
+    if not fp:
+        try:
+            from . import mitigate
+            mitigate.executer(incident["id"])
+        except Exception as e:  # noqa: BLE001 — une remédiation KO ne bloque
+            # pas la création du case ; elle est tracée en 'échec'.
+            log.warning("remédiation auto #%s : %s", incident["id"], e)
+
+    # Note d'analyse, dans un répertoire dédié. Après la remédiation : le récap
+    # des actions exécutées en dépend.
     rd = case.add_notes_directory(directory_name="Analyse IA", cid=case_id)
     dir_id = rd.get_data()["id"] if rd.is_success() else None
     contenu = (_note_fp(triage, _regle_whitelist(conn, alertes)) if fp
@@ -482,9 +543,6 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     if not fp:
         _timeline(case, case_id, alertes, incident["agent_id"])
 
-    conn.execute(
-        "UPDATE incidents SET iris_case_id = %s, status = %s WHERE id = %s",
-        (case_id, "fp_classe" if fp else "case_ouvert", incident["id"]))
     conn.commit()
     return case_id
 
