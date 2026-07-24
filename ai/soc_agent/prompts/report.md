@@ -18,19 +18,10 @@ Champs attendus :
   établie ? Évalue le vecteur d'accès initial. Distingue nettement ce qui est
   confirmé par les alertes de ce qui reste une hypothèse. Plusieurs paragraphes
   attendus si la chaîne est riche.
-- `detection_gap` : true si une étape de l'attaque n'a PAS déclenché de règle
-  Wazuh alors qu'elle aurait dû (angle mort de détection) ; false sinon.
-- `detection_suggestion` : si detection_gap est true, une piste de règle Wazuh
-  pour couvrir l'angle mort (champ visé, condition, niveau) — une PROPOSITION
-  rédigée pour l'analyste, pas une règle déployée. null si detection_gap est
-  false.
-
 Format de sortie — réponds par un UNIQUE objet JSON, sans texte autour, avec
 exactement ces clés dans cet ordre :
 
     {
       "resume": "<ce qui s'est passé, en clair>",
-      "analyse": "<déroulé, portée, confirmé vs supposé>",
-      "detection_gap": true ou false,
-      "detection_suggestion": "<piste de règle>" ou null
+      "analyse": "<déroulé, portée, confirmé vs supposé>"
     }

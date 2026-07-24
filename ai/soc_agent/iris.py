@@ -193,6 +193,79 @@ def _grouper_regles(alertes: list[dict]) -> list[tuple[str, dict]]:
     return sorted(par.items(), key=lambda kv: kv[1]["first"])
 
 
+def _uids_suspects(alertes: list[dict]) -> set[str]:
+    """UID sous lesquels l'activité malveillante a tiré (alertes >= MIN_LEVEL).
+
+    Sert à isoler les commandes de l'attaquant du bruit de fond. Une privesc par
+    SUID garde l'uid réel du compte compromis (seul l'euid passe à 0) : filtrer
+    sur cet uid capture donc TOUTE la chaîne, y compris les actions root.
+    """
+    uids: set[str] = set()
+    for a in alertes:
+        if a["rule_level"] < config.MIN_LEVEL:
+            continue
+        raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
+        uid = (raw.get("data", {}).get("audit", {}) or {}).get("uid")
+        if uid is not None:
+            uids.add(str(uid))
+    # Si un compte non-root est compromis (cas normal : service web, uid 33),
+    # on écarte root : une privesc par SUID garde l'uid réel du compte, donc
+    # les actions root de l'attaquant restent taguées à cet uid. Garder « 0 »
+    # ne ferait qu'aspirer tous les démons root et la réponse SOC elle-même.
+    non_root = uids - {"0"}
+    return non_root or uids
+
+
+def _section_commandes(alertes: list[dict]) -> str:
+    """Historique des commandes de l'attaquant, reconstitué depuis auditd.
+
+    Le proctitle (règle 80792, niv. 3) porte la ligne de commande complète. En
+    descendant ATTACH_MIN_LEVEL à 3, ces alertes entrent dans l'incident : on
+    déroule ici l'énumération et l'exploitation (find SUID, cat /etc/shadow,
+    useradd, systemctl…) que les seules règles HIGH ne montraient pas.
+
+    Filtré sur l'uid du compte compromis (déduit des alertes HIGH) pour écarter
+    le bruit de fond — sessions de login, démons, générateurs systemd. À défaut
+    d'uid identifié, on retombe sur le flux complet. Déterministe, note locale.
+    """
+    uids = _uids_suspects(alertes)
+    vus: set[str] = set()
+    cmds: list[tuple] = []
+    for a in sorted(alertes, key=lambda x: x["ts"]):
+        raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
+        audit = raw.get("data", {}).get("audit", {}) or {}
+        if uids and str(audit.get("uid")) not in uids:
+            continue
+        cmd = _decoder_proctitle(raw.get("full_log") or "").strip()
+        if not cmd:
+            cmd = str(audit.get("command") or "").strip()
+        if not cmd or cmd in vus:
+            continue
+        vus.add(cmd)
+        cmds.append((a["ts"], cmd))
+
+    if not cmds:
+        return ("## Commandes exécutées (auditd)\n\nAucune commande "
+                "reconstituée (pas d'alerte d'audit de commande dans le "
+                "périmètre).")
+    portee = (f"sous l'uid compromis {', '.join(sorted(uids))}" if uids
+              else "tous uids (compte compromis non identifié)")
+    lignes = [
+        "## Commandes exécutées (auditd)",
+        "",
+        f"{len(cmds)} commandes distinctes reconstituées depuis le proctitle "
+        f"auditd ({portee}), ordre chronologique :",
+        "",
+        "```",
+    ]
+    for ts, cmd in cmds[:80]:
+        lignes.append(f"{ts:%H:%M:%S}  {cmd[:200]}")
+    if len(cmds) > 80:
+        lignes.append(f"... (+{len(cmds) - 80} autres)")
+    lignes.append("```")
+    return "\n".join(lignes)
+
+
 def _section_alertes(alertes: list[dict], agent_id: str) -> str:
     """Tableau des alertes Wazuh du case (déterministe, valeurs réelles).
 
@@ -363,10 +436,8 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
     # DeepSeek ne garantit pas les clés (plus de GBNF) : on tolère les absences.
     rapport.setdefault("resume", triage["reason"])
     rapport.setdefault("analyse", triage["reason"])
-    rapport.setdefault("detection_gap", False)
-    rapport.setdefault("detection_suggestion", None)
     # Réhydratation : les jetons redeviennent les vraies valeurs pour l'analyste.
-    for cle in ("resume", "analyse", "detection_suggestion"):
+    for cle in ("resume", "analyse"):
         rapport[cle] = rehydrater(rapport[cle], anon.mapping)
 
     lignes = [
@@ -381,24 +452,14 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
         "## Analyse",
         rapport["analyse"],
         "",
+        _section_commandes(alertes),
+        "",
         _section_alertes(alertes, incident["agent_id"]),
         "",
         _section_iocs(alertes),
         "",
         _section_remediations(conn, incident["id"], triage),
-        "",
-        "## Couverture de détection",
     ]
-    if rapport.get("detection_gap") and rapport.get("detection_suggestion"):
-        lignes += [
-            "Un angle mort de détection a été identifié. Piste de règle Wazuh "
-            "(proposition, à valider en PR — jamais déployée automatiquement) :",
-            "",
-            f"> {rapport['detection_suggestion']}",
-        ]
-    else:
-        lignes.append("Les étapes observées ont bien déclenché des règles ; "
-                      "pas d'angle mort identifié.")
     return "\n".join(lignes)
 
 
