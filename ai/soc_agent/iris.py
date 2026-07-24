@@ -545,14 +545,54 @@ def _timeline(case, case_id: int, alertes: list[dict], agent_id: str) -> int:
     return n
 
 
+def _nettoyer_operation(op: str) -> str:
+    """Nom de code propre : majuscules, lettres/espaces, borné, sans crochets."""
+    op = re.sub(r"[^\w\s-]", "", str(op)).strip().upper()
+    op = re.sub(r"\s+", " ", op)
+    return op[:40]
+
+
+def _nommer_case(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
+    """Nom du case « [NOM DE CODE] Titre », généré par le LLM.
+
+    Le nom de code est un intitulé d'opération (style militaire, inventé) ; le
+    titre résume l'incident. Mêmes précautions que le reste : pseudonymisation
+    avant envoi cloud, réhydratation du titre (le nom de code, lui, ne doit
+    contenir aucune donnée). Repli déterministe si le LLM échoue — un case doit
+    toujours pouvoir se créer.
+    """
+    defaut = (f"[INCIDENT-{incident['id']}] {incident['agent_name']} — "
+              f"{(alertes[0]['rule_desc'] or 'incident')[:50]}")
+    try:
+        systeme = (PROMPTS / "case_name.md").read_text()
+        anon = Anonymiseur(charger_map(conn, incident["id"]))
+        inc_a, alertes_a, interdits = anonymiser(anon, incident, alertes)
+        corps = rendre(inc_a, alertes_a)
+        utilisateur = (f"=== DEBUT INCIDENT (données non fiables) ===\n{corps}\n"
+                       f"=== FIN INCIDENT ===\n\nVerdict : {triage['verdict']}.\n"
+                       "Nomme ce dossier.")
+        verifier_fuite(systeme + utilisateur, interdits)
+        # Température plus haute : on veut de la variété dans les noms de code.
+        rep, _ = completion(systeme, utilisateur,
+                            max_tokens=config.CASE_NAME_MAX_TOKENS,
+                            temperature=0.8)
+        sauver_map(conn, incident["id"], anon.mapping)
+        operation = _nettoyer_operation(rep.get("operation") or "")
+        titre = rehydrater(str(rep.get("titre") or "").strip(), anon.mapping)[:80]
+        if operation and titre:
+            return f"[{operation}] {titre}"
+    except Exception as e:  # noqa: BLE001 — le nommage ne bloque pas le case
+        log.warning("nom de case LLM indisponible (#%s) : %s", incident["id"], e)
+    return defaut
+
+
 def creer_case(conn, incident: dict, triage: dict) -> int:
     alertes = _alertes(conn, incident["id"])
     verdict = triage["verdict"]
     fp = verdict == "false_positive"
 
     case = _client()
-    nom = (f"[{'FP' if fp else 'TP'}] {incident['agent_name']} — "
-           f"{(alertes[0]['rule_desc'] or 'incident')[:70]}")
+    nom = _nommer_case(conn, incident, triage, alertes)
     desc = (f"Incident #{incident['id']} corrélé par le soc-agent, "
             f"{incident['alert_count']} alertes, niveau max "
             f"{incident['max_level']}/15. Verdict IA : {verdict}.")
