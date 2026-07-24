@@ -129,24 +129,103 @@ def _grouper(alertes: list[dict]) -> list[list[dict]]:
     return incidents
 
 
-def correler(min_level: int) -> tuple[int, int]:
+def _enrichir(incidents: list[list[dict]], candidats: list[dict]) -> int:
+    """Rattache les alertes de sévérité intermédiaire aux incidents formés.
+
+    Une graine HIGH a déjà confirmé l'incident ; on lui recolle les alertes
+    du même agent (ATTACH_MIN_LEVEL <= niveau < MIN_LEVEL) qui appartiennent
+    manifestement à la même intrusion — sinon le reverse shell est vu seul et
+    la privesc/persistence, plus discrètes, restent invisibles au triage.
+
+    Deux titres d'attachement, du plus fort au plus faible :
+      - inclusion dans la fenêtre [first, last] de l'incident élargie de la
+        marge de chaînage faible (± CORRELATION_GAP_MINUTES). Ce lien purement
+        temporel serait trop laxiste pour FORMER un incident (d'où son
+        interdiction comme graine), mais il est légitime pour ENRICHIR un
+        incident déjà avéré : sur un hôte au repos, une alerte de niveau >= 6
+        pile pendant (ou juste après) une intrusion confirmée en fait partie,
+        même si elle ne partage aucun objet nommable avec le pic (la privesc
+        et la persistence touchent d'autres binaires que le reverse shell) ;
+      - à défaut, un point commun nommable avec un membre (même IP/objet/
+        compte/tactique), qui étend la portée à la fenêtre forte : une même IP
+        hostile qui revient des heures plus tard reste le même incident.
+
+    Une alerte candidate qui ne trouve pas preneur reste non rattachée.
+    """
+    ecart_faible = timedelta(minutes=config.CORRELATION_GAP_MINUTES)
+    ecart_fort = timedelta(minutes=config.ENTITY_GAP_MINUTES)
+    rattaches = 0
+
+    for c in candidats:
+        meilleur = None
+        meilleur_dist = None
+        for inc in incidents:
+            if inc[0]["agent_id"] != c["agent_id"]:
+                continue
+            debut = min(m["ts"] for m in inc)
+            fin = max(m["ts"] for m in inc)
+
+            # Inclusion temporelle élargie de la marge faible.
+            titre = (debut - ecart_faible) <= c["ts"] <= (fin + ecart_faible)
+            if not titre:
+                for membre in inc:
+                    lien = point_commun(c, membre)
+                    if lien is None:
+                        continue
+                    _, fort = lien
+                    ecart = ecart_fort if fort else ecart_faible
+                    if min(abs(c["ts"] - debut), abs(c["ts"] - fin)) <= ecart:
+                        titre = True
+                        break
+            if not titre:
+                continue
+
+            # Départage : l'incident temporellement le plus proche.
+            if debut <= c["ts"] <= fin:
+                dist = timedelta(0)
+            else:
+                dist = min(abs(c["ts"] - debut), abs(c["ts"] - fin))
+            if meilleur_dist is None or dist < meilleur_dist:
+                meilleur, meilleur_dist = inc, dist
+
+        if meilleur is not None:
+            meilleur.append(c)
+            rattaches += 1
+
+    return rattaches
+
+
+def correler(min_level: int, attach_min_level: int | None = None) -> tuple[int, int]:
+    if attach_min_level is None:
+        attach_min_level = config.ATTACH_MIN_LEVEL
+    # On ne peut rattacher qu'en dessous du seuil de graine ; au-dessus,
+    # l'alerte est déjà une graine à part entière.
+    plancher = min(attach_min_level, min_level) if attach_min_level else min_level
+
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-        alertes = conn.execute(SELECT_NON_RATTACHEES, (min_level,)).fetchall()
+        alertes = conn.execute(SELECT_NON_RATTACHEES, (plancher,)).fetchall()
         if not alertes:
             return 0, 0
 
-        incidents = _grouper(alertes)
+        graines = [a for a in alertes if a["rule_level"] >= min_level]
+        candidats = [a for a in alertes if a["rule_level"] < min_level]
+
+        incidents = _grouper(graines)
+        if candidats and incidents:
+            _enrichir(incidents, candidats)
 
         # Une seule transaction : en cas d'échec, les alertes restent
         # simplement non rattachées et un nouveau passage reprend le travail.
         for groupe in incidents:
             tactiques = sorted({t for a in groupe for t in a["mitre_tactics"]})
             entites = sorted({a["entity"] for a in groupe if a["entity"]})
+            # min/max explicites : l'enrichissement ajoute des membres en fin
+            # de liste sans garantie d'ordre chronologique.
             inc_id = conn.execute(INSERT_INCIDENT, (
                 groupe[0]["agent_id"],
                 groupe[0]["agent_name"],
-                groupe[0]["ts"],
-                groupe[-1]["ts"],
+                min(a["ts"] for a in groupe),
+                max(a["ts"] for a in groupe),
                 len(groupe),
                 max(a["rule_level"] for a in groupe),
                 sorted({a["rule_id"] for a in groupe}),
@@ -160,7 +239,8 @@ def correler(min_level: int) -> tuple[int, int]:
             )
         conn.commit()
 
-    return len(incidents), len(alertes)
+    correlees = sum(len(g) for g in incidents)
+    return len(incidents), correlees
 
 
 def recommencer() -> None:
@@ -191,7 +271,10 @@ def recommencer() -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--min-level", type=int, default=config.MIN_LEVEL,
-                    help="niveau Wazuh minimal à corréler")
+                    help="niveau Wazuh minimal pour OUVRIR un incident (graine)")
+    ap.add_argument("--attach-min-level", type=int, default=config.ATTACH_MIN_LEVEL,
+                    help="niveau minimal des alertes rattachées à un incident "
+                         "existant (0 pour désactiver l'enrichissement)")
     ap.add_argument("--recommencer", action="store_true",
                     help="repart de zéro (conserve les alertes)")
     args = ap.parse_args()
@@ -199,7 +282,7 @@ def main() -> None:
     if args.recommencer:
         recommencer()
 
-    n_inc, n_alertes = correler(args.min_level)
+    n_inc, n_alertes = correler(args.min_level, args.attach_min_level)
     if n_alertes:
         print(f"{n_alertes} alertes -> {n_inc} incidents "
               f"(facteur {n_alertes / n_inc:.1f})")
