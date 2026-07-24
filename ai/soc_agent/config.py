@@ -51,23 +51,23 @@ PG_DSN = os.environ.get(
 
 # --- Filtrage ---------------------------------------------------------------
 #
-# Niveau Wazuh minimal traité. 12 = début du « high » dans l'échelle 0-15
-# (12-14 high, 15 critical). En dessous, l'alerte est stockée pour les
-# statistiques mais ne partira jamais au triage.
-#
-# Ce seuil est ce qui rend le système possible sur CPU : à ~20 s par triage,
-# traiter le niveau 3 (359 alertes sur 5 jours dans notre lab) n'a pas de sens.
-MIN_LEVEL = int(os.environ.get("MIN_LEVEL", "12"))
+# Niveau Wazuh minimal pour OUVRIR un incident (graine). 8 attrape déjà les
+# événements de sécurité nets (nouvel utilisateur, exec depuis /tmp, brute
+# force) sans se faire noyer par le bruit L3-L7 (audit de commande, FIM,
+# rootcheck) qui, en graine, créerait un incident par événement sur chaque
+# hôte. En dessous de MIN_LEVEL une alerte n'ouvre pas d'incident mais peut
+# être RATTACHÉE (cf. ATTACH_MIN_LEVEL).
+MIN_LEVEL = int(os.environ.get("MIN_LEVEL", "8"))
 
-# Enrichissement de périmètre : une fois un incident FORMÉ par une graine HIGH
-# (>= MIN_LEVEL), on lui rattache les alertes de sévérité intermédiaire
-# (ATTACH_MIN_LEVEL <= niveau < MIN_LEVEL) du même agent tombant dans sa
-# fenêtre. Sans ça, l'IA ne voit que le pic (le reverse shell) et rate la
-# privesc (SUID, niv. 10) et la persistence (niv. 8) — la partie la plus
-# dangereuse. Ces alertes NE créENT JAMAIS d'incident à elles seules : trop
-# fréquentes, elles feraient exploser le triage. Elles ne font que compléter un
-# incident déjà confirmé. 0 désactive l'enrichissement.
-ATTACH_MIN_LEVEL = int(os.environ.get("ATTACH_MIN_LEVEL", "6"))
+# Enrichissement de périmètre : une fois un incident FORMÉ par une graine
+# (>= MIN_LEVEL), on lui rattache TOUTES les alertes du même agent dans sa
+# fenêtre à partir de ce niveau. Descendu à 3 pour capter l'audit de commande
+# (règle 80792, niv. 3) : c'est là que vivent l'énumération et l'exploitation
+# (find SUID, chmod, cat /etc/shadow, useradd…). Le but est de reconstituer
+# TOUT ce qu'a fait l'attaquant sur la machine compromise, pas seulement les
+# pics. Ces alertes NE créENT JAMAIS d'incident seules (trop fréquentes) : elles
+# ne complètent qu'un incident déjà confirmé. 0 désactive l'enrichissement.
+ATTACH_MIN_LEVEL = int(os.environ.get("ATTACH_MIN_LEVEL", "3"))
 
 # Niveau en dessous duquel on n'ingère même pas. 0 = tout stocker, ce qui donne
 # les statistiques complètes ; monter à MIN_LEVEL une fois la mesure faite.
