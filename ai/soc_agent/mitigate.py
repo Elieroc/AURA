@@ -284,9 +284,21 @@ def _cibles(action: str, incident: dict, alertes: list[dict]) -> list[str]:
         return sorted({a["srcip"] for a in alertes
                        if a["srcip"] and not _est_interne(str(a["srcip"]))})
     if action == "propose_disable_user":
-        return sorted({a["srcuser"] for a in alertes if a["srcuser"]
-                       and str(a["srcuser"]).strip().lower()
-                       not in COMPTES_GENERIQUES})
+        comptes = {a["srcuser"] for a in alertes if a["srcuser"]
+                   and str(a["srcuser"]).strip().lower() not in COMPTES_GENERIQUES}
+        # Comptes CRÉÉS par l'attaquant (useradd : dstuser + home/shell). Ce
+        # sont les cibles les plus pertinentes d'une désactivation, et ils
+        # n'apparaissent jamais en srcuser.
+        for a in alertes:
+            raw = a.get("raw")
+            if not raw:
+                continue
+            data = (raw if isinstance(raw, dict) else json.loads(raw)).get("data", {})
+            du = data.get("dstuser")
+            if (du and str(du).strip().lower() not in COMPTES_GENERIQUES
+                    and (data.get("home") or data.get("shell"))):
+                comptes.add(du)
+        return sorted(comptes)
     return []
 
 
@@ -367,7 +379,7 @@ def executer(incident_id: int) -> list[dict]:
             return []
 
         alertes = conn.execute(
-            "SELECT srcip, srcuser FROM alerts WHERE incident_id = %s",
+            "SELECT srcip, srcuser, raw FROM alerts WHERE incident_id = %s",
             (incident_id,)).fetchall()
 
         case = _client() if inc["iris_case_id"] else None
