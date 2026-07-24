@@ -18,6 +18,7 @@ serveur MCP IRIS, lui, sert l'investigation interactive.
 import argparse
 import json
 import logging
+import re
 from datetime import timedelta, timezone
 
 import psycopg
@@ -79,25 +80,95 @@ def _classification(incident: dict, alertes: list[dict]) -> int:
     return CLASSIF_DEFAUT
 
 
+# Répertoires où un fichier signale une activité malveillante. Ailleurs
+# (/usr, /bin, /etc…), un chemin est un binaire/config légitime que
+# l'attaquant a seulement *utilisé* — pas un IOC. /etc/passwd n'est pas un
+# indicateur ; /dev/shm/.kworker en est un.
+_DIRS_SUSPECTS = ("/tmp/", "/var/tmp/", "/dev/shm/", "/run/shm/",
+                  "/root/.ssh", "/var/www/", "/usr/lib/cgi-bin/")
+# Comptes système : leur présence dans un log n'est pas un IOC.
+_COMPTES_SYSTEME = {"root", "www-data", "daemon", "nobody", "sync", "sys", "bin"}
+# Cible d'un reverse shell dans une redirection /dev/tcp|udp/<ip>/<port>.
+_RE_REVSHELL = re.compile(r"/dev/(?:tcp|udp)/(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,5})")
+# proctitle auditd : la ligne de commande complète, encodée en hex.
+_RE_PROCTITLE = re.compile(r"proctitle=([0-9A-Fa-f]{8,})")
+
+
+def _decoder_proctitle(full_log: str) -> str:
+    """Ligne de commande décodée depuis le proctitle hex d'un log auditd."""
+    m = _RE_PROCTITLE.search(full_log or "")
+    if not m:
+        return ""
+    try:
+        return bytes.fromhex(m.group(1)).replace(b"\x00", b" ").decode(
+            "utf-8", "replace")
+    except ValueError:
+        return ""
+
+
+def _chemin_suspect(p: str | None) -> bool:
+    if not p:
+        return False
+    if any(p.startswith(d) for d in _DIRS_SUSPECTS):
+        return True
+    base = p.rsplit("/", 1)[-1]
+    # Exécutable planqué (nom en point) hors des emplacements légitimes.
+    return base.startswith(".") and not p.startswith(("/etc", "/home", "/root/."))
+
+
 def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
-    """(valeur, type IRIS, description) dédupliqués. Best-effort."""
+    """Vrais indicateurs d'attaque, dédupliqués. Best-effort.
+
+    On ne remonte QUE ce qui caractérise l'attaquant : IP/port du C2, comptes
+    créés, fichiers déposés dans des emplacements suspects, hash de malware.
+    Les fichiers système simplement lus/modifiés (/etc/passwd, /usr/bin/cat)
+    ne sont PAS des IOC et sont écartés.
+    """
     vus: set[str] = set()
     out: list[tuple[str, str, str]] = []
 
     def ajouter(valeur, type_ioc, desc):
-        if valeur and valeur not in vus:
-            vus.add(valeur)
+        if valeur and str(valeur) not in vus:
+            vus.add(str(valeur))
             out.append((str(valeur), type_ioc, desc))
 
     for a in alertes:
         raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
         data = raw.get("data", {})
-        ajouter(a.get("srcip"), "ip-any", "IP source de l'alerte")
-        ajouter(a.get("entity"), "filename", "Objet concerné")
+        audit = data.get("audit", {})
+        full_log = raw.get("full_log") or ""
+
+        # C2 : cible d'un reverse shell, dans le log ou le proctitle décodé.
+        for texte in (full_log, _decoder_proctitle(full_log),
+                      a.get("rule_desc") or ""):
+            for ip, port in _RE_REVSHELL.findall(texte):
+                ajouter(ip, "ip-any", f"IP C2 — cible reverse shell (port {port})")
+
+        # IP source d'une attaque réseau (ex. web).
+        if a.get("srcip"):
+            ajouter(a["srcip"], "ip-any", "IP source de l'attaque")
+
+        # Compte créé/manipulé (useradd : dstuser + home/shell).
+        dstuser = data.get("dstuser")
+        if dstuser and dstuser not in _COMPTES_SYSTEME and (
+                data.get("home") or data.get("shell")):
+            home = (data.get("home") or "?").rstrip(",")
+            shell = (data.get("shell") or "?").rstrip(",")
+            ajouter(dstuser, "account",
+                    f"Compte créé par l'attaquant (home {home}, shell {shell})")
+
+        # Fichier déposé dans un emplacement suspect (binaire droppé, webshell).
+        fichier = (audit.get("file", {}) or {}).get("name") or a.get("entity")
+        if _chemin_suspect(fichier):
+            ajouter(fichier, "filename", "Fichier déposé (emplacement suspect)")
+
+        # Hash de malware (VT) ou de fichier suspect modifié (FIM).
         vt = data.get("virustotal", {}).get("source", {})
-        ajouter(vt.get("sha256"), "sha256", "Hash VirusTotal")
+        ajouter(vt.get("sha256"), "sha256", "Hash VirusTotal (malveillant)")
         sc = raw.get("syscheck", {})
-        ajouter(sc.get("sha256_after"), "sha256", "Hash fichier (FIM)")
+        if _chemin_suspect(sc.get("path")):
+            ajouter(sc.get("sha256_after"), "sha256",
+                    f"Hash FIM — {sc.get('path')}")
     return out
 
 
@@ -123,11 +194,13 @@ def _grouper_regles(alertes: list[dict]) -> list[tuple[str, dict]]:
     return sorted(par.items(), key=lambda kv: kv[1]["first"])
 
 
-def _section_alertes(alertes: list[dict]) -> str:
+def _section_alertes(alertes: list[dict], agent_id: str) -> str:
     """Tableau des alertes Wazuh du case (déterministe, valeurs réelles).
 
     Regroupées par règle et ordonnées par première occurrence : le tableau se
-    lit comme la chronologie de l'attaque.
+    lit comme la chronologie de l'attaque. Colonne « Log » = deep-link Discover
+    (référence markdown en bas de section : garde le tableau compact et évite
+    les parenthèses de l'URL dans une cellule).
     """
     lignes = [
         "## Alertes Wazuh impliquées",
@@ -135,15 +208,21 @@ def _section_alertes(alertes: list[dict]) -> str:
         f"{len(alertes)} alertes corrélées, regroupées par règle "
         "(ordre chronologique) :",
         "",
-        "| Niveau | Règle | Occ. | Fenêtre UTC | Description |",
-        "|:---:|:---:|:---:|:---|:---|",
+        "| Niveau | Règle | Occ. | Fenêtre UTC | Description | Log |",
+        "|:---:|:---:|:---:|:---|:---|:---:|",
     ]
+    refs = []
     for rid, e in _grouper_regles(alertes):
         fen = f"{e['first']:%H:%M:%S}"
         if e["last"] != e["first"]:
             fen += f" → {e['last']:%H:%M:%S}"
         desc = (e["desc"][:78] + "…") if len(e["desc"]) > 78 else e["desc"]
-        lignes.append(f"| {e['level']} | {rid} | {e['n']} | {fen} | {desc} |")
+        label = f"w-{rid}"
+        lignes.append(f"| {e['level']} | {rid} | {e['n']} | {fen} | {desc} "
+                      f"| [🔎][{label}] |")
+        refs.append(f"[{label}]: <{_lien_wazuh(agent_id, rid, e['first'], e['last'])}>")
+    lignes.append("")
+    lignes.extend(refs)          # définitions de référence des liens Discover
     return "\n".join(lignes)
 
 
@@ -257,7 +336,7 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
         "## Analyse",
         rapport["analyse"],
         "",
-        _section_alertes(alertes),
+        _section_alertes(alertes, incident["agent_id"]),
         "",
         _section_iocs(alertes),
         "",
