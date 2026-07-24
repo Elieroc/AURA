@@ -25,6 +25,7 @@ verdict de modèle. Trois barrières AVANT toute exécution :
 import argparse
 import json
 import logging
+import re
 import subprocess
 import time
 
@@ -275,6 +276,37 @@ EXECUTEURS = {
 }
 
 
+# Regex du suffixe "(uid=NNNN)" que certains décodeurs collent au nom de compte.
+_RE_UID_SUFFIXE = re.compile(r"\(uid=(\d+)\)")
+
+
+def _nom_compte(brut: str) -> str:
+    """Nom de compte nu, sans le suffixe (uid=NNNN) ni les espaces."""
+    return _RE_UID_SUFFIXE.sub("", str(brut)).strip()
+
+
+def _compte_protege(brut: str) -> bool:
+    """Un compte à ne JAMAIS désactiver automatiquement.
+
+    Garde-fou critique : en descendant les seuils, l'activité de comptes
+    légitimes (root, l'admin SOC, les sessions de login) entre dans l'incident
+    et se retrouvait ciblée par la désactivation — l'IA a réellement verrouillé
+    `wazuh-admin`. On protège :
+      - les comptes génériques/système (root, admin, system…) ;
+      - les comptes d'exploitation du SOC (SSH_USER, WAZUH_API_USER) ;
+      - tout compte dont l'uid embarqué est < 1000 (comptes système Linux).
+    Le suffixe (uid=NNNN) qui faisait passer `root(uid=0)` à travers le filtre
+    exact est désormais normalisé.
+    """
+    nom = _nom_compte(brut).lower()
+    if not nom or nom in COMPTES_GENERIQUES:
+        return True
+    if nom in {str(config.SSH_USER).lower(), str(config.WAZUH_API_USER).lower()}:
+        return True
+    m = _RE_UID_SUFFIXE.search(str(brut))
+    return bool(m and int(m.group(1)) < 1000)
+
+
 def _cibles(action: str, incident: dict, alertes: list[dict]) -> list[str]:
     """Cibles d'une action : agent pour l'isolation/collecte, IP externes pour
     le blocage, comptes nommés pour la désactivation."""
@@ -284,8 +316,9 @@ def _cibles(action: str, incident: dict, alertes: list[dict]) -> list[str]:
         return sorted({a["srcip"] for a in alertes
                        if a["srcip"] and not _est_interne(str(a["srcip"]))})
     if action == "propose_disable_user":
-        comptes = {a["srcuser"] for a in alertes if a["srcuser"]
-                   and str(a["srcuser"]).strip().lower() not in COMPTES_GENERIQUES}
+        # srcuser d'une activité malveillante, MOINS les comptes protégés.
+        comptes = {_nom_compte(a["srcuser"]) for a in alertes if a["srcuser"]
+                   and not _compte_protege(a["srcuser"])}
         # Comptes CRÉÉS par l'attaquant (useradd : dstuser + home/shell). Ce
         # sont les cibles les plus pertinentes d'une désactivation, et ils
         # n'apparaissent jamais en srcuser.
@@ -295,9 +328,9 @@ def _cibles(action: str, incident: dict, alertes: list[dict]) -> list[str]:
                 continue
             data = (raw if isinstance(raw, dict) else json.loads(raw)).get("data", {})
             du = data.get("dstuser")
-            if (du and str(du).strip().lower() not in COMPTES_GENERIQUES
-                    and (data.get("home") or data.get("shell"))):
-                comptes.add(du)
+            if du and not _compte_protege(du) and (data.get("home")
+                                                   or data.get("shell")):
+                comptes.add(_nom_compte(du))
         return sorted(comptes)
     return []
 
