@@ -116,6 +116,22 @@ IRIS_VERIFY_TLS = os.environ.get("IRIS_VERIFY_TLS", "false").lower() == "true"
 # Client IRIS (dossier « customer ») rattaché aux cases. 1 = client par défaut.
 IRIS_CUSTOMER = int(os.environ.get("IRIS_CUSTOMER", "1"))
 
+# --- Lien pivot vers le dashboard Wazuh -------------------------------------
+#
+# Chaque évènement de timeline IRIS porte un lien Discover filtré sur sa règle
+# et son agent : l'analyste passe du dossier au log Wazuh brut en un clic.
+# URL vue depuis le NAVIGATEUR de l'analyste (pas depuis cet hôte) — d'où un
+# défaut sur le nom d'hôte public plutôt que la loopback ; à ajuster.
+# Le chemin Discover dépend de la version du dashboard (OpenSearch Dashboards
+# 2.x sur Wazuh 4.9 = /app/data-explorer/discover) : surchargeable au besoin.
+WAZUH_DASHBOARD_URL = os.environ.get("WAZUH_DASHBOARD_URL", "https://localhost")
+WAZUH_DASHBOARD_DISCOVER_PATH = os.environ.get(
+    "WAZUH_DASHBOARD_DISCOVER_PATH", "/app/data-explorer/discover")
+# Index-pattern couvrant les indices réellement alimentés (cf. le routage
+# wazuh-linux/web). « soc-ai-all-alerts » existe déjà côté dashboard.
+WAZUH_DASHBOARD_INDEX_PATTERN = os.environ.get(
+    "WAZUH_DASHBOARD_INDEX_PATTERN", "soc-ai-all-alerts")
+
 # --- Remédiation (exécution des actions) ------------------------------------
 #
 # Passage de « proposer » à « exécuter ». Deux canaux d'écriture :
