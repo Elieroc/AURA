@@ -97,8 +97,13 @@ def motifs_injection(alertes: list[dict]) -> list[str]:
     return sorted(trouves)
 
 
-def rendre(incident: dict, alertes: list[dict]) -> str:
-    """Incident + ses alertes -> bloc de données non fiables pour le prompt."""
+def rendre(incident: dict, alertes: list[dict], max_regles: int = MAX_REGLES) -> str:
+    """Incident + ses alertes -> bloc de données non fiables pour le prompt.
+
+    `max_regles` borne le nombre de règles listées. Le triage sur CPU le garde
+    bas (prefill coûteux) ; le rapport, moins pressé, peut le relever pour que
+    l'analyse LLM voie toute la chaîne, pas seulement le pic.
+    """
     # Regroupement par règle : « x25 » porte l'information de répétition sans
     # payer 25 fois le prefill.
     par_regle: dict[str, dict[str, Any]] = {}
@@ -138,11 +143,11 @@ def rendre(incident: dict, alertes: list[dict]) -> str:
 
     lignes.append("")
     lignes.append("règles déclenchées :")
-    for rid, e in regles[:MAX_REGLES]:
+    for rid, e in regles[:max_regles]:
         lignes.append(f"  [{rid}] niveau {e['level']:2d}  "
                       f"x{e['n']:<3d} {neutraliser(e['desc'], 110)}")
-    if len(regles) > MAX_REGLES:
-        lignes.append(f"  (+{len(regles) - MAX_REGLES} autres règles)")
+    if len(regles) > max_regles:
+        lignes.append(f"  (+{len(regles) - max_regles} autres règles)")
 
     enrich = _enrichissement(alertes)
     if enrich:

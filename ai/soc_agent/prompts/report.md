@@ -10,8 +10,14 @@ Règles :
 
 Champs attendus :
 - `resume` : ce qui s'est passé, en quelques phrases claires.
-- `analyse` : le déroulé, la portée (hôte visé ? compromis ?), ce qui est
-  confirmé contre ce qui reste une hypothèse.
+- `analyse` : analyse détaillée et structurée. Reconstitue la chaîne d'attaque
+  étape par étape dans l'ordre chronologique ; pour chaque étape, relie l'action
+  observée à la règle Wazuh qui l'a détectée et à la technique MITRE ATT&CK
+  correspondante (ex. T1059.004, T1548.001, T1136). Précise la portée : l'hôte
+  est-il compromis, l'attaquant a-t-il obtenu root, une persistance est-elle
+  établie ? Évalue le vecteur d'accès initial. Distingue nettement ce qui est
+  confirmé par les alertes de ce qui reste une hypothèse. Plusieurs paragraphes
+  attendus si la chaîne est riche.
 - `detection_gap` : true si une étape de l'attaque n'a PAS déclenché de règle
   Wazuh alors qu'elle aurait dû (angle mort de détection) ; false sinon.
 - `detection_suggestion` : si detection_gap est true, une piste de règle Wazuh

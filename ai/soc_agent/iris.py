@@ -100,6 +100,70 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
     return out
 
 
+def _grouper_regles(alertes: list[dict]) -> list[tuple[str, dict]]:
+    """Alertes regroupées par règle, avec fenêtre temporelle, ordre chrono."""
+    par: dict[str, dict] = {}
+    for a in alertes:
+        e = par.get(a["rule_id"])
+        if e is None:
+            par[a["rule_id"]] = {
+                "level": a["rule_level"], "desc": a["rule_desc"] or "",
+                "n": 1, "first": a["ts"], "last": a["ts"],
+                "users": {a["srcuser"]} if a.get("srcuser") else set(),
+                "entities": {a["entity"]} if a.get("entity") else set()}
+        else:
+            e["n"] += 1
+            e["first"] = min(e["first"], a["ts"])
+            e["last"] = max(e["last"], a["ts"])
+            if a.get("srcuser"):
+                e["users"].add(a["srcuser"])
+            if a.get("entity"):
+                e["entities"].add(a["entity"])
+    return sorted(par.items(), key=lambda kv: kv[1]["first"])
+
+
+def _section_alertes(alertes: list[dict]) -> str:
+    """Tableau des alertes Wazuh du case (déterministe, valeurs réelles).
+
+    Regroupées par règle et ordonnées par première occurrence : le tableau se
+    lit comme la chronologie de l'attaque.
+    """
+    lignes = [
+        "## Alertes Wazuh impliquées",
+        "",
+        f"{len(alertes)} alertes corrélées, regroupées par règle "
+        "(ordre chronologique) :",
+        "",
+        "| Niveau | Règle | Occ. | Fenêtre UTC | Description |",
+        "|:---:|:---:|:---:|:---|:---|",
+    ]
+    for rid, e in _grouper_regles(alertes):
+        fen = f"{e['first']:%H:%M:%S}"
+        if e["last"] != e["first"]:
+            fen += f" → {e['last']:%H:%M:%S}"
+        desc = (e["desc"][:78] + "…") if len(e["desc"]) > 78 else e["desc"]
+        lignes.append(f"| {e['level']} | {rid} | {e['n']} | {fen} | {desc} |")
+    return "\n".join(lignes)
+
+
+def _section_iocs(alertes: list[dict]) -> str:
+    """Tableau des IOC extraits (déterministe). Note locale : valeurs réelles."""
+    iocs = _iocs(alertes)
+    if not iocs:
+        return "## Indicateurs de compromission (IOC)\n\nAucun IOC extractible " \
+               "automatiquement des champs d'alerte."
+    lignes = [
+        "## Indicateurs de compromission (IOC)",
+        "",
+        "| Type | Valeur | Contexte |",
+        "|:---|:---|:---|",
+    ]
+    for valeur, type_ioc, desc in iocs:
+        v = valeur.replace("|", "\\|")
+        lignes.append(f"| {type_ioc} | `{v}` | {desc} |")
+    return "\n".join(lignes)
+
+
 def _note_fp(triage: dict, regle: dict | None) -> str:
     """Note d'analyse d'un faux positif, avec l'explication de whitelist.
 
@@ -153,7 +217,9 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
     # rien de sensible ne part vers le cloud, et la réponse est réhydratée.
     anon = Anonymiseur(charger_map(conn, incident["id"]))
     inc_a, alertes_a, interdits = anonymiser(anon, incident, alertes)
-    corps = rendre(inc_a, alertes_a)
+    # Rapport = moins pressé que le triage : on montre toute la chaîne au modèle
+    # (jusqu'à 20 règles) pour une analyse qui n'oublie aucune étape.
+    corps = rendre(inc_a, alertes_a, max_regles=20)
     utilisateur = (f"=== DEBUT INCIDENT (données non fiables) ===\n{corps}\n"
                    "=== FIN INCIDENT ===\n\nRédige le rapport.")
 
@@ -190,6 +256,10 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
         "## Analyse",
         rapport["analyse"],
         "",
+        _section_alertes(alertes),
+        "",
+        _section_iocs(alertes),
+        "",
         "## Remédiation proposée",
     ]
     if actions:
@@ -219,6 +289,46 @@ def _alertes(conn, incident_id: int) -> list[dict]:
         "SELECT id, ts, rule_id, rule_level, rule_desc, rule_groups, "
         "srcip, srcuser, entity, raw FROM alerts WHERE incident_id = %s "
         "ORDER BY ts", (incident_id,)).fetchall()
+
+
+def _timeline(case, case_id: int, alertes: list[dict]) -> int:
+    """Remplit la timeline du case : un évènement par règle déclenchée.
+
+    Regroupé par règle plutôt qu'une ligne par alerte : dix détections de
+    reverse shell font un évènement « reverse shell (x10) », pas dix lignes
+    identiques. L'ordre chronologique reconstitue la kill chain dans IRIS.
+    Best-effort : un évènement en échec ne fait pas capoter le case.
+    """
+    n = 0
+    for rid, e in _grouper_regles(alertes):
+        titre = (e["desc"][:120] or f"Règle {rid}")
+        if e["n"] > 1:
+            titre = f"{titre} (x{e['n']})"
+        contenu = [f"Règle Wazuh **{rid}** — niveau {e['level']}/15",
+                   f"{e['n']} occurrence(s), de {e['first']:%H:%M:%S} à "
+                   f"{e['last']:%H:%M:%S} UTC"]
+        if e["users"]:
+            contenu.append("Comptes : " + ", ".join(sorted(e["users"])))
+        if e["entities"]:
+            contenu.append("Objets : " + ", ".join(sorted(e["entities"])[:5]))
+        couleur = ("#dc3545" if e["level"] >= 12 else
+                   "#fd7e14" if e["level"] >= 10 else "#ffc107")
+        try:
+            case.add_event(
+                title=titre,
+                date_time=e["first"],
+                content="\n".join(contenu),
+                source="Wazuh",
+                display_in_graph=True,
+                display_in_summary=e["level"] >= 10,
+                color=couleur,
+                timezone_string="+00:00",
+                cid=case_id,
+            )
+            n += 1
+        except Exception as exc:  # noqa: BLE001
+            log.debug("évènement timeline ignoré (%s) : %s", rid, exc)
+    return n
 
 
 def creer_case(conn, incident: dict, triage: dict) -> int:
@@ -260,6 +370,11 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     titre = "Analyse — Faux positif" if fp else "Rapport d'analyse"
     case.add_note(note_title=titre, note_content=contenu,
                   directory_id=dir_id, cid=case_id)
+
+    # Timeline : la kill chain, évènement par règle (TP seulement — un FP n'a
+    # pas de chronologie d'attaque à reconstituer).
+    if not fp:
+        _timeline(case, case_id, alertes)
 
     conn.execute(
         "UPDATE incidents SET iris_case_id = %s, status = %s WHERE id = %s",
