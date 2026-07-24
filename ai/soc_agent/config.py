@@ -59,6 +59,16 @@ PG_DSN = os.environ.get(
 # traiter le niveau 3 (359 alertes sur 5 jours dans notre lab) n'a pas de sens.
 MIN_LEVEL = int(os.environ.get("MIN_LEVEL", "12"))
 
+# Enrichissement de périmètre : une fois un incident FORMÉ par une graine HIGH
+# (>= MIN_LEVEL), on lui rattache les alertes de sévérité intermédiaire
+# (ATTACH_MIN_LEVEL <= niveau < MIN_LEVEL) du même agent tombant dans sa
+# fenêtre. Sans ça, l'IA ne voit que le pic (le reverse shell) et rate la
+# privesc (SUID, niv. 10) et la persistence (niv. 8) — la partie la plus
+# dangereuse. Ces alertes NE créENT JAMAIS d'incident à elles seules : trop
+# fréquentes, elles feraient exploser le triage. Elles ne font que compléter un
+# incident déjà confirmé. 0 désactive l'enrichissement.
+ATTACH_MIN_LEVEL = int(os.environ.get("ATTACH_MIN_LEVEL", "6"))
+
 # Niveau en dessous duquel on n'ingère même pas. 0 = tout stocker, ce qui donne
 # les statistiques complètes ; monter à MIN_LEVEL une fois la mesure faite.
 INGEST_MIN_LEVEL = int(os.environ.get("INGEST_MIN_LEVEL", "0"))
@@ -77,8 +87,20 @@ INGEST_MIN_LEVEL = int(os.environ.get("INGEST_MIN_LEVEL", "0"))
 # barrière est donc dans le code : coercition/validation dans triage.py, en
 # plus des garde-fous déterministes d'actions.py.
 DEEPSEEK_API_KEY = _requis("DEEPSEEK_API_KEY")
+# Les modèles v4 raisonnent : les tokens de raisonnement (reasoning_content)
+# sont décomptés de max_tokens AVANT le content. Un budget trop court (l'ancien
+# 400, calé sur le chat non raisonnant) est intégralement consommé par le
+# raisonnement → finish_reason=length et content VIDE. Il faut de la marge pour
+# le raisonnement + le JSON de verdict.
+TRIAGE_MAX_TOKENS = int(os.environ.get("TRIAGE_MAX_TOKENS", "3000"))
+# Le rapport TP est un récit markdown multi-sections, plus long que le verdict ;
+# avec le raisonnement en plus, il lui faut davantage de marge encore.
+REPORT_MAX_TOKENS = int(os.environ.get("REPORT_MAX_TOKENS", "4000"))
 DEEPSEEK_URL = os.environ.get("DEEPSEEK_URL", "https://api.deepseek.com")
-DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+# deepseek-chat déprécié (l'API ne l'accepte plus, 400). Tiers actuels :
+# deepseek-v4-flash (rapide/économique, équivalent le plus proche du chat sur
+# lequel le pipeline a été calé) et deepseek-v4-pro (verdict plus robuste).
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
 # Conservé pour compat (tokenize éventuel) — plus utilisé pour l'inférence.
 LLM_URL = os.environ.get("LLM_URL", "http://127.0.0.1:8081")
