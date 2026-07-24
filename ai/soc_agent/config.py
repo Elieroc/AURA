@@ -96,6 +96,9 @@ TRIAGE_MAX_TOKENS = int(os.environ.get("TRIAGE_MAX_TOKENS", "3000"))
 # Le rapport TP est un récit markdown multi-sections, plus long que le verdict ;
 # avec le raisonnement en plus, il lui faut davantage de marge encore.
 REPORT_MAX_TOKENS = int(os.environ.get("REPORT_MAX_TOKENS", "4000"))
+# Nom de case : sortie minuscule (nom de code + titre court) mais le modèle
+# raisonne quand même — il lui faut de quoi ne pas tronquer avant le JSON.
+CASE_NAME_MAX_TOKENS = int(os.environ.get("CASE_NAME_MAX_TOKENS", "1500"))
 DEEPSEEK_URL = os.environ.get("DEEPSEEK_URL", "https://api.deepseek.com")
 # deepseek-chat déprécié (l'API ne l'accepte plus, 400). Tiers actuels :
 # deepseek-v4-flash (rapide/économique, équivalent le plus proche du chat sur
