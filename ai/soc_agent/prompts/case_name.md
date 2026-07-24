@@ -8,11 +8,11 @@ Règles :
 
 Champs attendus :
 - `operation` : un nom de code évocateur, dans le style d'un nom d'opération
-  militaire (réel ou inventé, peu importe). 1 à 3 mots, en MAJUSCULES, sans
-  chiffres ni ponctuation. Exemples de style : « TONNERRE SILENCIEUX »,
-  « ORAGE POURPRE », « NIGHTFALL », « SENTINELLE DE FER ». Évocateur mais
-  neutre : ne PAS y mettre de nom de machine, d'IP, de compte ni d'autre
-  donnée de l'incident. Varie d'un incident à l'autre.
+  militaire (réel ou inventé, peu importe), TOUJOURS EN ANGLAIS. 1 à 3 mots,
+  en MAJUSCULES, sans chiffres ni ponctuation. Exemples de style : « SILENT
+  THUNDER », « CRIMSON STORM », « NIGHTFALL », « IRON SENTINEL », « BROKEN
+  HORIZON ». Évocateur mais neutre : ne PAS y mettre de nom de machine, d'IP,
+  de compte ni d'autre donnée de l'incident. Varie d'un incident à l'autre.
 - `titre` : un titre court (≤ 60 caractères), en français, factuel, qui résume
   l'incident d'après les alertes et le verdict (ex. « Reverse shell et
   persistance sur serveur web »). Pas de nom de code, pas de préfixe.
