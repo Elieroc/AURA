@@ -52,9 +52,20 @@ def completion(systeme: str, utilisateur: str, max_tokens: int = 500,
     corps = rep.json()
     duree_ms = int((time.monotonic() - debut) * 1000)
 
+    choix = corps["choices"][0]
+    contenu = choix["message"].get("content") or ""
+    # Modèles raisonnants (deepseek-v4-*) : le raisonnement est décompté de
+    # max_tokens. S'il l'épuise, finish_reason=length et content est VIDE — le
+    # verdict n'a jamais été écrit. Erreur explicite plutôt qu'un JSONDecodeError
+    # opaque : la correction est d'augmenter TRIAGE_MAX_TOKENS.
+    if not contenu.strip():
+        raise RuntimeError(
+            f"réponse sans content (finish_reason={choix.get('finish_reason')}, "
+            f"reasoning épuisant max_tokens={max_tokens} ?) — augmenter le budget")
+
     # json_object garantit un JSON valide : un JSONDecodeError ici signalerait
     # une panne côté API, pas une sortie mal formée du modèle. On laisse remonter.
-    obj = json.loads(corps["choices"][0]["message"]["content"])
+    obj = json.loads(contenu)
     usage = corps.get("usage", {})
     return obj, {"duree_ms": duree_ms,
                  "prompt_tokens": usage.get("prompt_tokens"),

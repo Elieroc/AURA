@@ -159,7 +159,8 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
 
     try:
         verifier_fuite(systeme + utilisateur, interdits)
-        rapport, _ = completion(systeme, utilisateur)
+        rapport, _ = completion(systeme, utilisateur,
+                                max_tokens=config.REPORT_MAX_TOKENS)
         sauver_map(conn, incident["id"], anon.mapping)
     except Exception as e:  # noqa: BLE001 — le case doit se créer même sans LLM
         log.warning("rapport LLM indisponible (#%s) : %s", incident["id"], e)
