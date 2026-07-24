@@ -51,13 +51,13 @@ PG_DSN = os.environ.get(
 
 # --- Filtrage ---------------------------------------------------------------
 #
-# Niveau Wazuh minimal pour OUVRIR un incident (graine). 8 attrape déjà les
-# événements de sécurité nets (nouvel utilisateur, exec depuis /tmp, brute
-# force) sans se faire noyer par le bruit L3-L7 (audit de commande, FIM,
-# rootcheck) qui, en graine, créerait un incident par événement sur chaque
-# hôte. En dessous de MIN_LEVEL une alerte n'ouvre pas d'incident mais peut
-# être RATTACHÉE (cf. ATTACH_MIN_LEVEL).
-MIN_LEVEL = int(os.environ.get("MIN_LEVEL", "8"))
+# Niveau Wazuh minimal pour OUVRIR un incident (graine). 12 = seuil HIGH de
+# l'échelle 0-15 (12-14 high, 15 critical) : un case IRIS + analyse IA ne se
+# déclenchent QUE sur une alerte HIGH/CRITICAL. En dessous, une alerte n'ouvre
+# jamais d'incident mais peut être RATTACHÉE à un incident déjà confirmé pour
+# l'enrichir (cf. ATTACH_MIN_LEVEL) — l'analyse voit tout, l'ouverture reste
+# réservée au signal fort.
+MIN_LEVEL = int(os.environ.get("MIN_LEVEL", "12"))
 
 # Enrichissement de périmètre : une fois un incident FORMÉ par une graine
 # (>= MIN_LEVEL), on lui rattache TOUTES les alertes du même agent dans sa
