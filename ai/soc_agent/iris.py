@@ -91,6 +91,8 @@ _COMPTES_SYSTEME = {"root", "www-data", "daemon", "nobody", "sync", "sys", "bin"
 _RE_REVSHELL = re.compile(r"/dev/(?:tcp|udp)/(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,5})")
 # proctitle auditd : la ligne de commande complète, encodée en hex.
 _RE_PROCTITLE = re.compile(r"proctitle=([0-9A-Fa-f]{8,})")
+# Création de compte dans une commande (dernier token = nom du compte).
+_RE_USERADD = re.compile(r"\b(?:useradd|adduser)\b.*?([A-Za-z_][\w-]*)\s*$")
 
 
 def _decoder_proctitle(full_log: str) -> str:
@@ -155,6 +157,13 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
             shell = (data.get("shell") or "?").rstrip(",")
             ajouter(dstuser, "account",
                     f"Compte créé par l'attaquant (home {home}, shell {shell})")
+
+        # Compte créé vu dans la commande auditd (useradd/adduser) : capte le
+        # backdoor account même quand l'alerte syslog 5902 (sans uid ni lien)
+        # n'entre pas dans l'incident. Le compte = dernier argument non-option.
+        m = _RE_USERADD.search(_decoder_proctitle(full_log))
+        if m and m.group(1) not in _COMPTES_SYSTEME:
+            ajouter(m.group(1), "account", "Compte créé par l'attaquant (useradd)")
 
         # Fichier déposé dans un emplacement suspect (binaire droppé, webshell).
         fichier = (audit.get("file", {}) or {}).get("name") or a.get("entity")
