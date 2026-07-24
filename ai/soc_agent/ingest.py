@@ -101,6 +101,11 @@ def _aplatir(src: dict, filtre: noise.NoiseFilter) -> dict:
             ("data", "win", "eventdata", "targetUserName"),
         ]),
         "entity": _entite(src),
+        # UID auditd de l'événement. Sert à la corrélation : les actions de
+        # l'attaquant (et de ses descendants privesc par SUID, qui gardent
+        # l'uid réel) partagent cet uid, ce qui distingue son activité du bruit
+        # de fond légitime de la même machine (démons, sessions de login).
+        "audit_uid": (data.get("audit", {}) or {}).get("uid"),
         # Suppression post-retrieval du noise filter : l'alerte est ingérée
         # mais marquée, pour rester relisible tout en sortant de la corrélation.
         "suppress_reason": raison,
@@ -115,10 +120,11 @@ def _aplatir(src: dict, filtre: noise.NoiseFilter) -> dict:
 INSERT = """
 INSERT INTO alerts (id, ts, agent_id, agent_name, rule_id, rule_level,
                     rule_desc, rule_groups, mitre_ids, mitre_tactics,
-                    srcip, srcuser, entity, suppressed, suppress_reason, raw)
+                    srcip, srcuser, entity, audit_uid, suppressed,
+                    suppress_reason, raw)
 VALUES (%(id)s, %(ts)s, %(agent_id)s, %(agent_name)s, %(rule_id)s,
         %(rule_level)s, %(rule_desc)s, %(rule_groups)s, %(mitre_ids)s,
-        %(mitre_tactics)s, %(srcip)s, %(srcuser)s, %(entity)s,
+        %(mitre_tactics)s, %(srcip)s, %(srcuser)s, %(entity)s, %(audit_uid)s,
         %(suppressed)s, %(suppress_reason)s, %(raw)s)
 ON CONFLICT (id) DO NOTHING
 """

@@ -27,6 +27,15 @@ GROUPES_GENERIQUES = {
     "pci_dss", "gdpr", "hipaa", "nist_800_53", "tsc", "gpg13",
 }
 
+# Binaires shell omniprésents : les retenir comme « même objet » fusionnerait
+# deux intrusions distinctes (ou une intrusion et de l'activité shell normale)
+# sur le simple fait qu'elles passent toutes par bash. L'uid et les vrais objets
+# (fichiers déposés, IP) restent des liens valides.
+ENTITES_GENERIQUES = {
+    "/usr/bin/bash", "/bin/bash", "/usr/bin/sh", "/bin/sh",
+    "/usr/bin/dash", "/bin/dash",
+}
+
 
 def point_commun(a: dict, b: dict) -> tuple[str, bool] | None:
     """Ce qui rattache deux alertes du même agent : (libellé, lien_fort).
@@ -45,7 +54,8 @@ def point_commun(a: dict, b: dict) -> tuple[str, bool] | None:
     """
     if a["srcip"] and a["srcip"] == b["srcip"]:
         return "même IP source", True
-    if a["entity"] and a["entity"] == b["entity"]:
+    if (a["entity"] and a["entity"] == b["entity"]
+            and a["entity"] not in ENTITES_GENERIQUES):
         return "même objet", True
     if a["srcuser"] and a["srcuser"] == b["srcuser"]:
         return "même compte", True
@@ -59,7 +69,7 @@ def point_commun(a: dict, b: dict) -> tuple[str, bool] | None:
 
 SELECT_NON_RATTACHEES = """
 SELECT id, ts, agent_id, agent_name, rule_id, rule_level, rule_groups,
-       mitre_tactics, srcip, srcuser, entity
+       mitre_tactics, srcip, srcuser, entity, audit_uid
   FROM alerts
  WHERE incident_id IS NULL AND rule_level >= %s AND NOT suppressed
  ORDER BY agent_id, ts, id
@@ -129,52 +139,72 @@ def _grouper(alertes: list[dict]) -> list[list[dict]]:
     return incidents
 
 
+def _uids_incident(inc: list[dict]) -> set[str]:
+    """UID auditd sous lesquels la graine de l'incident a tiré.
+
+    C'est l'uid du compte compromis. Une privesc par SUID garde l'uid réel du
+    compte (seul l'euid passe à 0), donc les actions root de l'attaquant restent
+    taguées à cet uid. On écarte root (0) si un compte non-root est présent :
+    garder 0 ferait rentrer tous les démons root et le bruit système.
+    """
+    uids = {str(m["audit_uid"]) for m in inc if m.get("audit_uid") is not None}
+    non_root = uids - {"0"}
+    return non_root or uids
+
+
 def _enrichir(incidents: list[list[dict]], candidats: list[dict]) -> int:
     """Rattache les alertes de sévérité intermédiaire aux incidents formés.
 
     Une graine HIGH a déjà confirmé l'incident ; on lui recolle les alertes
-    du même agent (ATTACH_MIN_LEVEL <= niveau < MIN_LEVEL) qui appartiennent
-    manifestement à la même intrusion — sinon le reverse shell est vu seul et
-    la privesc/persistence, plus discrètes, restent invisibles au triage.
+    du même agent qui appartiennent RÉELLEMENT à la même intrusion — sinon le
+    reverse shell est vu seul et la privesc/persistence restent invisibles.
 
-    Deux titres d'attachement, du plus fort au plus faible :
-      - inclusion dans la fenêtre [first, last] de l'incident élargie de la
-        marge de chaînage faible (± CORRELATION_GAP_MINUTES). Ce lien purement
-        temporel serait trop laxiste pour FORMER un incident (d'où son
-        interdiction comme graine), mais il est légitime pour ENRICHIR un
-        incident déjà avéré : sur un hôte au repos, une alerte de niveau >= 6
-        pile pendant (ou juste après) une intrusion confirmée en fait partie,
-        même si elle ne partage aucun objet nommable avec le pic (la privesc
-        et la persistence touchent d'autres binaires que le reverse shell) ;
-      - à défaut, un point commun nommable avec un membre (même IP/objet/
-        compte/tactique), qui étend la portée à la fenêtre forte : une même IP
-        hostile qui revient des heures plus tard reste le même incident.
+    Le rattachement exige un lien réel, jamais la seule coïncidence temporelle
+    (qui aspirerait le bruit légitime de l'hôte — démons, sessions de login,
+    activité admin). Deux titres, dans la fenêtre temporelle :
+      - MÊME UID auditd que la graine : le compte compromis et ses descendants
+        (privesc SUID compris) exécutent sous cet uid ; c'est ce qui isole
+        l'énumération/exploitation (audit niv. 3) du bruit de fond ;
+      - POINT COMMUN nommable avec un membre (même IP/objet/compte/tactique),
+        qui étend la portée à la fenêtre forte (une IP hostile qui revient des
+        heures plus tard reste le même incident).
 
-    Une alerte candidate qui ne trouve pas preneur reste non rattachée.
+    Une candidate sans lien reste non rattachée : le case ne contient que les
+    alertes de l'intrusion, pas les faux positifs légitimes de la machine.
     """
     ecart_faible = timedelta(minutes=config.CORRELATION_GAP_MINUTES)
     ecart_fort = timedelta(minutes=config.ENTITY_GAP_MINUTES)
     rattaches = 0
+    uids_par_inc = [_uids_incident(inc) for inc in incidents]
 
     for c in candidats:
         meilleur = None
         meilleur_dist = None
-        for inc in incidents:
+        for inc, uids in zip(incidents, uids_par_inc):
             if inc[0]["agent_id"] != c["agent_id"]:
                 continue
             debut = min(m["ts"] for m in inc)
             fin = max(m["ts"] for m in inc)
+            dans_fenetre = (debut - ecart_faible) <= c["ts"] <= (fin + ecart_faible)
 
-            # Inclusion temporelle élargie de la marge faible.
-            titre = (debut - ecart_faible) <= c["ts"] <= (fin + ecart_faible)
-            if not titre:
+            titre = False
+            # Lien par uid : dans la fenêtre et même compte compromis.
+            if (dans_fenetre and uids and c.get("audit_uid") is not None
+                    and str(c["audit_uid"]) in uids):
+                titre = True
+            # Lien par IDENTITÉ FORTE seulement (même IP source, ou même objet
+            # concret non générique — fichier déposé). On EXCLUT ici les liens
+            # faibles (tactique MITRE, groupe de règle) et le compte : ils
+            # chaînent l'activité légitime de l'hôte (sessions sudo de l'admin,
+            # règles partageant « Privilege Escalation »…) dans l'incident. Le
+            # case ne doit contenir que l'intrusion, pas les FP de la machine.
+            if not titre and min(abs(c["ts"] - debut),
+                                 abs(c["ts"] - fin)) <= ecart_fort:
                 for membre in inc:
-                    lien = point_commun(c, membre)
-                    if lien is None:
-                        continue
-                    _, fort = lien
-                    ecart = ecart_fort if fort else ecart_faible
-                    if min(abs(c["ts"] - debut), abs(c["ts"] - fin)) <= ecart:
+                    meme_ip = c["srcip"] and c["srcip"] == membre["srcip"]
+                    meme_objet = (c["entity"] and c["entity"] == membre["entity"]
+                                  and c["entity"] not in ENTITES_GENERIQUES)
+                    if meme_ip or meme_objet:
                         titre = True
                         break
             if not titre:
