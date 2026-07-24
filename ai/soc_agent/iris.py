@@ -18,6 +18,7 @@ serveur MCP IRIS, lui, sert l'investigation interactive.
 import argparse
 import json
 import logging
+from datetime import timedelta, timezone
 
 import psycopg
 import urllib3
@@ -291,7 +292,30 @@ def _alertes(conn, incident_id: int) -> list[dict]:
         "ORDER BY ts", (incident_id,)).fetchall()
 
 
-def _timeline(case, case_id: int, alertes: list[dict]) -> int:
+def _lien_wazuh(agent_id: str, rule_id: str, debut, fin) -> str:
+    """Deep-link Discover filtré sur (règle, agent) dans la fenêtre de l'évènement.
+
+    On vise la règle + l'agent plutôt qu'un _id d'alerte précis : l'évènement de
+    timeline regroupe plusieurs alertes de la même règle, et le lien retombe
+    exactement sur ce groupe. Rison laissé littéral (le fragment #... n'est pas
+    décodé par le navigateur avant lecture par l'appli) ; seuls les espaces sont
+    encodés, ce que OpenSearch Dashboards tolère.
+    """
+    marge = timedelta(minutes=5)
+    f0 = (debut - marge).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    f1 = (fin + marge).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    patt = config.WAZUH_DASHBOARD_INDEX_PATTERN
+    requete = f'rule.id:"{rule_id}" and agent.id:"{agent_id}"'
+    g = f"(time:(from:'{f0}',to:'{f1}'))"
+    a = (f"(discover:(columns:!(rule.level,rule.description,agent.name),"
+         f"sort:!(!('timestamp',desc))),"
+         f"metadata:(indexPattern:'{patt}',view:discover))")
+    q = f"(query:(language:kuery,query:'{requete}'))"
+    base = config.WAZUH_DASHBOARD_URL.rstrip("/") + config.WAZUH_DASHBOARD_DISCOVER_PATH
+    return f"{base}#?_g={g}&_a={a}&_q={q}".replace(" ", "%20")
+
+
+def _timeline(case, case_id: int, alertes: list[dict], agent_id: str) -> int:
     """Remplit la timeline du case : un évènement par règle déclenchée.
 
     Regroupé par règle plutôt qu'une ligne par alerte : dix détections de
@@ -311,6 +335,9 @@ def _timeline(case, case_id: int, alertes: list[dict]) -> int:
             contenu.append("Comptes : " + ", ".join(sorted(e["users"])))
         if e["entities"]:
             contenu.append("Objets : " + ", ".join(sorted(e["entities"])[:5]))
+        contenu.append("")
+        contenu.append("Log Wazuh : "
+                       + _lien_wazuh(agent_id, rid, e["first"], e["last"]))
         couleur = ("#dc3545" if e["level"] >= 12 else
                    "#fd7e14" if e["level"] >= 10 else "#ffc107")
         try:
@@ -374,7 +401,7 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     # Timeline : la kill chain, évènement par règle (TP seulement — un FP n'a
     # pas de chronologie d'attaque à reconstituer).
     if not fp:
-        _timeline(case, case_id, alertes)
+        _timeline(case, case_id, alertes, incident["agent_id"])
 
     conn.execute(
         "UPDATE incidents SET iris_case_id = %s, status = %s WHERE id = %s",
