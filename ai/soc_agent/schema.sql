@@ -154,7 +154,7 @@ CREATE TABLE IF NOT EXISTS whitelist_rules (
     signature        text UNIQUE NOT NULL,   -- forme canonique de match_all, anti-doublon
     match_all        jsonb NOT NULL,
     reason           text NOT NULL,
-    source           text NOT NULL DEFAULT 'auto',   -- 'auto' | 'humain'
+    source           text NOT NULL DEFAULT 'auto',   -- 'auto' | 'analyste' | 'humain'
     active           boolean NOT NULL DEFAULT true,
     origin_incidents bigint[] NOT NULL DEFAULT '{}',
     fp_count         integer NOT NULL DEFAULT 0,

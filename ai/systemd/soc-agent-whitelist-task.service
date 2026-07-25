@@ -1,0 +1,42 @@
+# Traitement des tâches IRIS WHITELIST passées en 'To do' par l'analyste.
+#
+# Repère les tâches WHITELIST en 'To do' (créées à l'ouverture de chaque case
+# par iris.creer_case), demande au LLM d'arbitrer une signature de whitelist à
+# partir des instructions de l'analyste, crée l'exception (whitelist_rules) ou
+# pose une question en commentaire. Découplé du cycle principal (soc-agent-
+# cycle) : léger, il tourne à une cadence courte pour que le dialogue avec
+# l'analyste reste réactif — mêmes raisons que soc-agent-reconcile.
+#
+# Service oneshot, déclenché par soc-agent-whitelist-task.timer. Ne pas
+# l'activer directement (enable) : c'est le timer qu'on active.
+#
+# Installation (service utilisateur, comme soc-agent-cycle) :
+#   cp ai/systemd/soc-agent-whitelist-task.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now soc-agent-whitelist-task.timer
+#
+# Suivi :
+#   systemctl --user list-timers soc-agent-whitelist-task.timer
+#   journalctl --user -u soc-agent-whitelist-task.service -f
+#   systemctl --user start soc-agent-whitelist-task.service   # forcer tout de suite
+
+[Unit]
+Description=SOC-AI — traite les tâches IRIS WHITELIST passées en 'To do'
+After=network-online.target
+
+[Service]
+Type=oneshot
+
+# Répertoire du paquet soc_agent, et son .env (secrets IRIS + DeepSeek + base).
+# %h = home de l'utilisateur. À adapter si le dépôt est ailleurs.
+WorkingDirectory=%h/Nextcloud/Documents/IT/Projets/SOC-AI/ai
+EnvironmentFile=%h/Nextcloud/Documents/IT/Projets/SOC-AI/ai/.env
+
+ExecStart=%h/.local/share/soc-ai/venv/bin/python -m soc_agent.whitelist_task
+
+# Un appel LLM par tâche à traiter : borné, mais pas instantané comme
+# reconcile (pas d'appel LLM). Au-delà, on tue et on retentera au prochain
+# déclenchement — le verrou consultatif évite un double traitement.
+TimeoutStartSec=180
+
+Nice=10
