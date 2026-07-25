@@ -18,7 +18,7 @@ import sys
 
 import psycopg
 
-from . import config, correlate, ingest, iris, triage, whitelist
+from . import config, correlate, ingest, iris, mitigate, triage, whitelist
 
 # Journalisé sur stderr -> capté par journald quand lancé en service systemd.
 logging.basicConfig(
@@ -81,6 +81,18 @@ def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
                     log.info("IRIS : %d case(s) créé(s)", len(cases))
             except Exception as e:  # noqa: BLE001 — IRIS down ne casse pas le cycle
                 log.warning("création de cases IRIS sautée : %s", e)
+
+            # Réconciliation : l'analyste peut défaire une remédiation en passant
+            # sa tâche IRIS en 'Canceled' — on rejoue alors le reverse (désisoler,
+            # débloquer, réactiver). Après la création des cases : les tâches
+            # doivent exister pour être annulées.
+            try:
+                defaits = mitigate.reconcilier()
+                if defaits:
+                    log.info("réconciliation : %d remédiation(s) défaite(s)",
+                             len(defaits))
+            except Exception as e:  # noqa: BLE001 — IRIS/canal KO ne casse pas le cycle
+                log.warning("réconciliation des remédiations sautée : %s", e)
 
             return 0
         finally:

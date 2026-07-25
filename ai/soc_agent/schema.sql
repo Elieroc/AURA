@@ -211,7 +211,10 @@ CREATE TABLE IF NOT EXISTS mitigations (
     incident_id  bigint NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
     action       text NOT NULL,
     cible        text,            -- agent_id, IP ou compte visé
-    statut       text NOT NULL,   -- exécuté | dry_run | échec | annulé | suspendu
+    statut       text NOT NULL,   -- exécuté | dry_run | échec | annulé |
+                                  -- annulation_impossible | suspendu
+                                  -- 'annulé' : action défaite (tâche IRIS passée
+                                  -- en Canceled → reverse rejoué, cf. reconcilier).
     details      text,
     undo         text,            -- commande / procédure d'annulation
     iris_note_id bigint,          -- legacy : remédiations autrefois en notes
