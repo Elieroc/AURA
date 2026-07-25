@@ -73,15 +73,44 @@ def vis(vid, title, vis_state, idx, query="", ui_state=None):
     }
 
 
+def saved_search(sid, title, description, columns, idx, query="", sort=None):
+    """Recherche sauvegardée — liste chronologique d'événements (panneau de dashboard)."""
+    return {
+        "attributes": {
+            "title": title,
+            "description": description,
+            "hits": 0,
+            "columns": columns,
+            "sort": sort or [["timestamp", "desc"]],
+            "version": 1,
+            "kibanaSavedObjectMeta": {"searchSourceJSON": json.dumps({
+                "query": {"query": query, "language": "kuery"},
+                "highlightAll": True,
+                "version": True,
+                "filter": [],
+                "indexRefName": "kibanaSavedObjectMeta.searchSourceJSON.index",
+            })},
+        },
+        "id": sid,
+        "references": [{"id": idx, "name": "kibanaSavedObjectMeta.searchSourceJSON.index",
+                        "type": "index-pattern"}],
+        "type": "search",
+        "version": "1",
+    }
+
+
 def dashboard(did, title, description, layout):
-    """layout: liste de (vis_id, x, y, w, h) — grille 48 colonnes"""
+    """layout: liste de (obj_id, x, y, w, h[, type]) — grille 48 colonnes.
+    type vaut "visualization" (défaut) ou "search"."""
     panels, refs = [], []
-    for i, (vid, x, y, w, h) in enumerate(layout, 1):
+    for i, item in enumerate(layout, 1):
+        vid, x, y, w, h = item[:5]
+        ptype = item[5] if len(item) > 5 else "visualization"
         panels.append({"version": "2.13.0",
                        "gridData": {"x": x, "y": y, "w": w, "h": h, "i": str(i)},
                        "panelIndex": str(i), "embeddableConfig": {},
                        "panelRefName": f"panel_{i}"})
-        refs.append({"id": vid, "name": f"panel_{i}", "type": "visualization"})
+        refs.append({"id": vid, "name": f"panel_{i}", "type": ptype})
     return {
         "attributes": {
             "title": title,
@@ -223,6 +252,11 @@ objs.append(vis("soc-ai-alerts-timeline", "Alertes par sévérité (timeline)", 
     ],
     "params": HIST_PARAMS,
 }, IDX_ALL, ui_state=SEV_COLORS))
+
+objs.append(saved_search("soc-ai-latest-alerts", "Dernières alertes (timeline)",
+    "Flux chronologique des alertes actionnables (sévérité ≥ Medium), plus récentes en tête.",
+    ["agent.name", "rule.severity", "rule.level", "rule.description", "data.srcip"],
+    IDX_ALL, query=SEV_ACTIONABLE))
 
 objs.append(vis("soc-ai-total-events", "Nombre d'événements global", {
     "title": "Nombre d'événements global",
@@ -439,10 +473,11 @@ objs.append(dashboard("soc-ai-threat-intel", "Threat Intel",
     ]))
 
 objs.append(dashboard("soc-ai-global", "Global",
-    "Vue globale : volume d'événements et répartition des alertes par sévérité.",
+    "Vue globale : volume d'événements, répartition par sévérité, flux des dernières alertes.",
     [
         ("soc-ai-total-events",     0,  0, 12, 15),
         ("soc-ai-alerts-timeline", 12,  0, 36, 15),
+        ("soc-ai-latest-alerts",    0, 15, 48, 20, "search"),
     ]))
 
 objs.append(dashboard("soc-ai-linux", "Linux",
