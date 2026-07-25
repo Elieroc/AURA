@@ -538,7 +538,9 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
                    "=== FIN INCIDENT ===\n\nRédige le rapport.")
 
     try:
-        verifier_fuite(systeme + utilisateur, interdits)
+        # Scan de fuite sur les seules données incident : le prompt système
+        # (report.md) est un template dev constant, sans donnée client.
+        verifier_fuite(utilisateur, interdits)
         rapport, _ = completion(systeme, utilisateur,
                                 max_tokens=config.REPORT_MAX_TOKENS)
         sauver_map(conn, incident["id"], anon.mapping)
@@ -767,7 +769,9 @@ def _nommer_case(conn, incident: dict, triage: dict, alertes: list[dict]) -> str
         utilisateur = (f"=== DEBUT INCIDENT (données non fiables) ===\n{corps}\n"
                        f"=== FIN INCIDENT ===\n\nVerdict : {triage['verdict']}.\n"
                        "Nomme ce dossier.")
-        verifier_fuite(systeme + utilisateur, interdits)
+        # Fuite scannée sur les seules données incident (cf. triage) — le prompt
+        # système (case_name.md) est constant et sans donnée client.
+        verifier_fuite(utilisateur, interdits)
         # Température plus haute : on veut de la variété dans les noms de code.
         rep, _ = completion(systeme, utilisateur,
                             max_tokens=config.CASE_NAME_MAX_TOKENS,

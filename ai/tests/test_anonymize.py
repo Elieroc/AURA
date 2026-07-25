@@ -98,6 +98,26 @@ def test_verifier_fuite_bloque_chemin_residuel():
     verifier_fuite("note dans /home/<FICHIER_1>.txt", [])
 
 
+def test_verifier_fuite_scanne_les_donnees_pas_le_prompt_systeme():
+    """Le scan ne porte que sur les données incident, pas le prompt système.
+
+    Le prompt système du triage est un template dev constant qui contient des
+    chemins d'exemple (/var/tmp, /dev/shm) : les scanner déclenchait un faux
+    positif de fuite qui bloquait tout triage (régression). Les appelants
+    passent donc `utilisateur` seul à verifier_fuite ; on documente ici que ces
+    chemins d'exemple SONT bien des motifs que le garde-fou refuserait dans les
+    données incident, d'où la nécessité de ne pas les lui soumettre.
+    """
+    from soc_agent.triage import PROMPTS
+    systeme = (PROMPTS / "system.md").read_text()
+    # Le prompt système contient bien un chemin qui piégerait le garde-fou…
+    with pytest.raises(FuiteError):
+        verifier_fuite(systeme, [])
+    # …mais les données incident pseudonymisées, elles, passent.
+    verifier_fuite("=== DEBUT INCIDENT ===\nNiveau 12/15, verdict attendu.\n"
+                   "Objet : /home/<FICHIER_1>.sh\n=== FIN INCIDENT ===", [])
+
+
 def test_reversible():
     inc, alertes = _incident()
     anon = Anonymiseur()
