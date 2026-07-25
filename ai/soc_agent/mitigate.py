@@ -658,6 +658,11 @@ SELECT m.id, m.incident_id, m.action, m.cible, m.details, m.iris_task_id,
 # re-commenter la tâche à chaque cycle (elle n'est plus sélectionnée).
 _STATUT_IRREVERSIBLE = "annulation_impossible"
 
+# Verrou consultatif dédié à la réconciliation. Son timer (1 min) est plus court
+# que celui du cycle : deux passages ne doivent pas se superposer et double-tirer
+# un reverse (fenêtre entre le SELECT et le commit du statut 'annulé').
+_VERROU_RECONCILE = 0x50CA2
+
 
 def reconcilier(incident_id: int | None = None) -> list[dict]:
     """Défait les remédiations dont la tâche IRIS est passée en 'Canceled'.
@@ -674,69 +679,85 @@ def reconcilier(incident_id: int | None = None) -> list[dict]:
     """
     resultats: list[dict] = []
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-        rows = conn.execute(SELECT_REVERSIBLES, {"inc": incident_id}).fetchall()
-        if not rows:
+        # Un seul reconcile à la fois (son timer est court) : sinon deux passages
+        # pourraient sélectionner puis double-défaire la même remédiation.
+        if not conn.execute("SELECT pg_try_advisory_lock(%s)",
+                            (_VERROU_RECONCILE,)).fetchone()["pg_try_advisory_lock"]:
+            log.info("réconciliation déjà en cours, on passe ce tour")
             return []
+        try:
+            rows = conn.execute(SELECT_REVERSIBLES,
+                                {"inc": incident_id}).fetchall()
+            if not rows:
+                return []
+            resultats = _reconcilier_rows(conn, rows)
+        finally:
+            conn.execute("SELECT pg_advisory_unlock(%s)", (_VERROU_RECONCILE,))
+    return resultats
 
-        case = _client()
-        annulees: dict[int, set[int]] = {}   # case_id -> {task_id Canceled}
-        for r in rows:
-            cid = r["iris_case_id"]
-            if cid not in annulees:
-                try:
-                    d = case.list_tasks(cid).get_data() or {}
-                    annulees[cid] = _taches_annulees(d.get("tasks"))
-                except Exception as e:  # noqa: BLE001 — IRIS KO ne casse rien
-                    log.warning("list_tasks case #%s : %s", cid, e)
-                    annulees[cid] = set()
-            if r["iris_task_id"] not in annulees[cid]:
-                continue   # tâche pas (encore) annulée par l'analyste
 
-            action, cible, task_id = r["action"], r["cible"], r["iris_task_id"]
-            reverseur = REVERSEURS.get(action)
-
-            # Action irréversible (kill) : documenter, marquer terminal, passer.
-            if reverseur is None:
-                _commenter_tache(case, cid, task_id,
-                    f"⚠️ Annulation demandée (tâche passée en {_TASK_CANCELED}) "
-                    f"mais l'action « {LIBELLE_ACTION.get(action, action)} » est "
-                    "irréversible (pas de reverse). Rien n'a été défait "
-                    "automatiquement.")
-                conn.execute("UPDATE mitigations SET statut = %s WHERE id = %s",
-                             (_STATUT_IRREVERSIBLE, r["id"]))
-                conn.commit()
-                resultats.append({"action": action, "cible": cible,
-                                  "statut": _STATUT_IRREVERSIBLE})
-                print(f"      {action} [{cible}] annulation impossible (kill)")
-                continue
-
-            ctx = {"agent_id": str(r["agent_id"]),
-                   "reason_court": f"tâche IRIS #{task_id} passée en {_TASK_CANCELED}"}
+def _reconcilier_rows(conn, rows: list[dict]) -> list[dict]:
+    """Cœur de la réconciliation, verrou déjà pris par l'appelant."""
+    resultats: list[dict] = []
+    case = _client()
+    annulees: dict[int, set[int]] = {}   # case_id -> {task_id Canceled}
+    for r in rows:
+        cid = r["iris_case_id"]
+        if cid not in annulees:
             try:
-                canal = reverseur(cible, ctx)
-            except Exception as e:  # noqa: BLE001 — reverse en échec : on garde
-                # le statut 'exécuté' pour retenter au cycle suivant, on trace.
-                log.warning("reverse %s [%s] échoué : %s", action, cible, e)
-                _commenter_tache(case, cid, task_id,
-                    f"❌ Tentative d'annulation automatique de « "
-                    f"{LIBELLE_ACTION.get(action, action)} » ({cible}) en échec : "
-                    f"{e}. Nouvelle tentative au prochain cycle.")
-                continue
+                d = case.list_tasks(cid).get_data() or {}
+                annulees[cid] = _taches_annulees(d.get("tasks"))
+            except Exception as e:  # noqa: BLE001 — IRIS KO ne casse rien
+                log.warning("list_tasks case #%s : %s", cid, e)
+                annulees[cid] = set()
+        if r["iris_task_id"] not in annulees[cid]:
+            continue   # tâche pas (encore) annulée par l'analyste
 
-            mode = "défait" if config.MITIGATE_EXECUTE else "défait (dry-run)"
-            conn.execute(
-                "UPDATE mitigations SET statut = 'annulé', "
-                "details = %s, executed_at = now() WHERE id = %s",
-                (f"{r['details'] or ''} — Annulé ({mode}) : tâche IRIS passée en "
-                 f"{_TASK_CANCELED}, action défaite via {canal}.", r["id"]))
-            conn.commit()
+        action, cible, task_id = r["action"], r["cible"], r["iris_task_id"]
+        reverseur = REVERSEURS.get(action)
+
+        # Action irréversible (kill) : documenter, marquer terminal, passer.
+        if reverseur is None:
             _commenter_tache(case, cid, task_id,
-                f"↩️ Remédiation défaite automatiquement ({mode}) suite au passage "
-                f"de la tâche en {_TASK_CANCELED} : « "
-                f"{LIBELLE_ACTION.get(action, action)} » ({cible}) annulée via "
-                f"{canal}.")
-            resultats.append({"action": action, "cible": cible, "statut": "annulé"})
-            print(f"      {action} [{cible}] -> annulé  ({canal})")
+                f"⚠️ Annulation demandée (tâche passée en {_TASK_CANCELED}) "
+                f"mais l'action « {LIBELLE_ACTION.get(action, action)} » est "
+                "irréversible (pas de reverse). Rien n'a été défait "
+                "automatiquement.")
+            conn.execute("UPDATE mitigations SET statut = %s WHERE id = %s",
+                         (_STATUT_IRREVERSIBLE, r["id"]))
+            conn.commit()
+            resultats.append({"action": action, "cible": cible,
+                              "statut": _STATUT_IRREVERSIBLE})
+            print(f"      {action} [{cible}] annulation impossible (kill)")
+            continue
+
+        ctx = {"agent_id": str(r["agent_id"]),
+               "reason_court": f"tâche IRIS #{task_id} passée en {_TASK_CANCELED}"}
+        try:
+            canal = reverseur(cible, ctx)
+        except Exception as e:  # noqa: BLE001 — reverse en échec : on garde le
+            # statut 'exécuté' pour retenter au prochain passage, on trace.
+            log.warning("reverse %s [%s] échoué : %s", action, cible, e)
+            _commenter_tache(case, cid, task_id,
+                f"❌ Tentative d'annulation automatique de « "
+                f"{LIBELLE_ACTION.get(action, action)} » ({cible}) en échec : "
+                f"{e}. Nouvelle tentative au prochain passage.")
+            continue
+
+        mode = "défait" if config.MITIGATE_EXECUTE else "défait (dry-run)"
+        conn.execute(
+            "UPDATE mitigations SET statut = 'annulé', "
+            "details = %s, executed_at = now() WHERE id = %s",
+            (f"{r['details'] or ''} — Annulé ({mode}) : tâche IRIS passée en "
+             f"{_TASK_CANCELED}, action défaite via {canal}.", r["id"]))
+        conn.commit()
+        _commenter_tache(case, cid, task_id,
+            f"↩️ Remédiation défaite automatiquement ({mode}) suite au passage "
+            f"de la tâche en {_TASK_CANCELED} : « "
+            f"{LIBELLE_ACTION.get(action, action)} » ({cible}) annulée via "
+            f"{canal}.")
+        resultats.append({"action": action, "cible": cible, "statut": "annulé"})
+        print(f"      {action} [{cible}] -> annulé  ({canal})")
     return resultats
 
 
