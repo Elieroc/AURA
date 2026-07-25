@@ -25,7 +25,7 @@ import psycopg
 import urllib3
 from psycopg.rows import dict_row
 
-from . import config
+from . import config, correlate
 from .anonymize import Anonymiseur, anonymiser, rehydrater, verifier_fuite
 from .llm import completion
 from .render import rendre
@@ -582,6 +582,99 @@ def _alertes(conn, incident_id: int) -> list[dict]:
         "ORDER BY ts", (incident_id,)).fetchall()
 
 
+def _traits(conn, incident_id: int) -> list[dict]:
+    """Champs de parenté/identité d'un incident (colonnes, sans parser le raw)."""
+    return conn.execute(
+        "SELECT srcip, srcuser, entity, mitre_tactics, rule_groups, audit_uid "
+        "FROM alerts WHERE incident_id = %s", (incident_id,)).fetchall()
+
+
+def _identite_forte(traits: list[dict]) -> tuple[set[str], set[str]]:
+    """Ce qui NOMME l'intrusion : comptes (uid) et IP compromis. Discriminant.
+
+    Root (uid 0) est écarté : une privesc SUID le fait apparaître partout, il ne
+    distingue pas deux intrusions. Deux incidents dont les identités fortes sont
+    non vides ET disjointes sont des attaques DIFFÉRENTES — jamais à fondre (deux
+    chaînes simultanées, uid 1001 vs uid 33/www-data, doivent rester deux cases).
+    """
+    uids = {str(t["audit_uid"]) for t in traits if t.get("audit_uid") is not None}
+    uids -= {"0"}
+    ips = {t["srcip"] for t in traits if t.get("srcip")}
+    return uids, ips
+
+
+def _distincts(a: list[dict], b: list[dict]) -> bool:
+    ua, ia = _identite_forte(a)
+    ub, ib = _identite_forte(b)
+    return bool(ua and ub and not (ua & ub)) or bool(ia and ib and not (ia & ib))
+
+
+def _apparentes(a: list[dict], b: list[dict]) -> bool:
+    """Deux incidents partagent-ils un trait de parenté (lien faible inclus) ?
+
+    Mêmes critères que correlate.point_commun, appliqués incident à incident :
+    IP/compte/objet concret, tactique MITRE ou groupe de règle non générique. La
+    fenêtre temporelle est déjà bornée en amont (± MAX_INCIDENT_HOURS).
+    """
+    def feats(al):
+        ips = {x["srcip"] for x in al if x.get("srcip")}
+        users = {x["srcuser"] for x in al if x.get("srcuser")}
+        ents = {x["entity"] for x in al if x.get("entity")
+                and x["entity"] not in correlate.ENTITES_GENERIQUES}
+        tacs = {t for x in al for t in (x.get("mitre_tactics") or [])}
+        grps = ({g for x in al for g in (x.get("rule_groups") or [])}
+                - correlate.GROUPES_GENERIQUES)
+        return ips, users, ents, tacs, grps
+    return any(x & y for x, y in zip(feats(a), feats(b)))
+
+
+def _fondre_si_doublon(conn, incident: dict) -> int | None:
+    """Dernier garde-fou anti-doublon : idempotence à la création de case.
+
+    _rattacher_existants (corrélation) recolle normalement une salve à son
+    incident ; s'il rate la fenêtre à cause du découpage en lots de cycle, deux
+    incidents distincts décrivent la MÊME intrusion et chacun ouvrirait un case.
+    Ici, à la création, les deux incidents et toutes leurs alertes sont en base :
+    si un incident-frère du même agent a DÉJÀ un case, chevauche la fenêtre
+    (± MAX_INCIDENT_HOURS), partage un trait de parenté et n'est pas séparé par
+    une identité forte contradictoire, on fond cet incident dans le frère et on
+    réutilise son case — jamais un doublon. Retourne le case_id adopté, ou None.
+    """
+    marge = timedelta(hours=config.MAX_INCIDENT_HOURS)
+    freres = conn.execute(
+        "SELECT id, iris_case_id FROM incidents WHERE agent_id = %s "
+        "AND id <> %s AND iris_case_id IS NOT NULL "
+        "AND last_seen >= %s AND first_seen <= %s ORDER BY id",
+        (incident["agent_id"], incident["id"],
+         incident["first_seen"] - marge, incident["last_seen"] + marge)).fetchall()
+    if not freres:
+        return None
+
+    traits_x = _traits(conn, incident["id"])
+    for f in freres:
+        traits_f = _traits(conn, f["id"])
+        if _distincts(traits_x, traits_f) or not _apparentes(traits_x, traits_f):
+            continue
+        # Fusion : les alertes rejoignent le frère, agrégats recalculés, case du
+        # frère marqué à rafraîchir, incident doublon supprimé (CASCADE triages/
+        # mitigations/anon_map ; alertes déjà déplacées).
+        conn.execute("UPDATE alerts SET incident_id = %s WHERE incident_id = %s",
+                     (f["id"], incident["id"]))
+        agg = conn.execute(
+            "SELECT count(*) n, min(ts) f, max(ts) l, max(rule_level) lvl, "
+            "array_agg(DISTINCT rule_id) r FROM alerts WHERE incident_id = %s",
+            (f["id"],)).fetchone()
+        conn.execute(
+            "UPDATE incidents SET alert_count = %s, first_seen = %s, "
+            "last_seen = %s, max_level = %s, rule_ids = %s, needs_refresh = true "
+            "WHERE id = %s",
+            (agg["n"], agg["f"], agg["l"], agg["lvl"], sorted(agg["r"]), f["id"]))
+        conn.execute("DELETE FROM incidents WHERE id = %s", (incident["id"],))
+        conn.commit()
+        return f["iris_case_id"]
+    return None
+
+
 def _lien_wazuh(agent_id: str, rule_id: str, debut, fin) -> str:
     """Deep-link Discover filtré sur (règle, agent) dans la fenêtre de l'évènement.
 
@@ -690,6 +783,15 @@ def _nommer_case(conn, incident: dict, triage: dict, alertes: list[dict]) -> str
 
 
 def creer_case(conn, incident: dict, triage: dict) -> int:
+    # Garde-fou d'idempotence : si cet incident double un frère déjà versé dans
+    # IRIS (raté de _rattacher_existants), on réutilise son case au lieu d'en
+    # ouvrir un second. L'incident doublon est fondu dans le frère.
+    adopte = _fondre_si_doublon(conn, incident)
+    if adopte is not None:
+        log.info("incident #%s doublon → fondu dans le case IRIS #%s "
+                 "(pas de nouveau case)", incident["id"], adopte)
+        return adopte
+
     alertes = _alertes(conn, incident["id"])
     verdict = triage["verdict"]
     fp = verdict == "false_positive"

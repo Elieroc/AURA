@@ -9,13 +9,69 @@ from soc_agent.iris import (
     CLASSIF_BRUTE,
     CLASSIF_DEFAUT,
     CLASSIF_RANSOMWARE,
+    _apparentes,
     _classification,
+    _distincts,
     _iocs,
     _note_fp,
     _note_tp,
     _poser_note,
     _taguer,
 )
+
+
+def _tr(**kw):
+    """Ligne de traits d'alerte pour le garde-fou anti-doublon."""
+    base = {"srcip": None, "srcuser": None, "entity": None,
+            "mitre_tactics": [], "rule_groups": []}
+    base.update(kw)
+    return base
+
+
+def test_distincts_uids_compromis_differents():
+    # Deux chaînes simultanées sur le même hôte (uid 1001 vs uid 33/www-data) :
+    # identités fortes disjointes -> incidents DISTINCTS, jamais à fondre.
+    a = [_tr(audit_uid=1001, mitre_tactics=["Execution"])]
+    b = [_tr(audit_uid=33, mitre_tactics=["Execution"])]
+    assert _distincts(a, b) is True
+
+
+def test_non_distincts_sans_identite_forte():
+    # Beacons reverse-shell : aucun uid/IP fort -> non distincts, donc éligibles
+    # à la fusion si apparentés.
+    a = [_tr(audit_uid=None, entity="/usr/bin/bash", mitre_tactics=["Execution"])]
+    b = [_tr(audit_uid=None, entity="/usr/bin/dash", mitre_tactics=["Execution"])]
+    assert _distincts(a, b) is False
+
+
+def test_root_ne_distingue_pas():
+    # uid 0 (privesc SUID) apparaît partout : ne doit pas séparer deux incidents.
+    a = [_tr(audit_uid=0, mitre_tactics=["Execution"])]
+    b = [_tr(audit_uid=0, mitre_tactics=["Execution"])]
+    assert _distincts(a, b) is False
+
+
+def test_apparentes_par_tactique_mitre():
+    # Lien faible (tactique commune) suffit à établir la parenté.
+    a = [_tr(entity="/usr/bin/bash", mitre_tactics=["Execution"],
+             rule_groups=["threat_hunting", "linux"])]
+    b = [_tr(entity="/usr/bin/dash", mitre_tactics=["Execution"],
+             rule_groups=["threat_hunting", "linux"])]
+    assert _apparentes(a, b) is True
+
+
+def test_non_apparentes_traits_disjoints():
+    a = [_tr(mitre_tactics=["Execution"], rule_groups=["threat_hunting"])]
+    b = [_tr(mitre_tactics=["Impact"], rule_groups=["syscheck_file"])]
+    assert _apparentes(a, b) is False
+
+
+def test_entite_generique_ne_lie_pas():
+    # bash/dash partagés ne créent PAS de parenté (sinon toute activité shell
+    # fusionnerait). Seuls les objets concrets non génériques comptent.
+    a = [_tr(entity="/usr/bin/bash")]
+    b = [_tr(entity="/usr/bin/bash")]
+    assert _apparentes(a, b) is False
 
 
 class _Rep:
