@@ -186,9 +186,13 @@ def trier(limite: int, un_seul: int | None, tous: bool,
                 print("=" * 70)
 
             # Garde-fou fail-closed : un identifiant interne qui aurait échappé
-            # à la pseudonymisation interdit l'envoi, on ne devine pas.
+            # à la pseudonymisation interdit l'envoi, on ne devine pas. On ne
+            # scanne QUE `utilisateur` (les données incident) : le prompt système
+            # est un template dev constant, sans donnée client, et contient des
+            # chemins d'exemple (/var/tmp, /dev/shm) qui déclenchaient un faux
+            # positif de fuite.
             try:
-                verifier_fuite(systeme + utilisateur, interdits)
+                verifier_fuite(utilisateur, interdits)
             except FuiteError as e:
                 print(f"  #{inc['id']} IGNORÉ — fuite potentielle : {e}")
                 continue
