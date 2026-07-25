@@ -4,7 +4,6 @@ Deux choses ici :
 
 - [`bench/`](bench/) — mesures llama.cpp sur CPU. Résultats et conclusions dans
   [`bench/RESULTS.md`](bench/RESULTS.md).
-- [`llm/`](llm/) — service systemd du serveur d'inférence local.
 - [`soc_agent/`](soc_agent/) — le pipeline. **Phase 1 : ingestion et
   corrélation, sans LLM. Phase 2 : triage LLM en mode shadow.**
 
@@ -189,7 +188,7 @@ incidents ──► render ──► [serveur llama.cpp] ──► deduire ─�
               ≤1500 tok   (GBNF, reason 1er)    déduites     déterministe
 ```
 
-Le serveur d'inférence tourne en service systemd utilisateur (voir `llm/`).
+Le triage appelle DeepSeek (API cloud) — plus de serveur d'inférence local.
 
 ```bash
 VENV=~/.local/share/soc-ai/venv/bin/python
@@ -245,31 +244,26 @@ n'écrase pas — c'est ce qui permet de comparer.
 ### Déclenchement périodique
 
 Le pipeline n'attend pas qu'on le lance. `soc_agent.cycle` enchaîne
-ingest → correlate → triage en une exécution, et un timer systemd le déclenche
-toutes les 5 minutes (unités dans [`systemd/`](systemd/)).
+ingest → correlate → triage en une exécution ; un conteneur dédié la
+redéclenche en boucle toutes les 5 minutes (`soc-agent-cycle` dans
+[`docker-compose.yml`](docker-compose.yml)). Même schéma pour
+`soc-agent-reconcile` et `soc-agent-whitelist-task` (1 minute chacun).
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp systemd/soc-agent-cycle.{service,timer} ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now soc-agent-cycle.timer
+docker compose up -d db soc-agent-cycle soc-agent-reconcile soc-agent-whitelist-task
 
-systemctl --user list-timers soc-agent-cycle.timer     # prochain passage
-journalctl --user -u soc-agent-cycle.service -f        # suivi
-systemctl --user start soc-agent-cycle.service         # forcer un cycle
+docker compose logs -f soc-agent-cycle       # suivi
+docker compose restart soc-agent-cycle       # forcer un cycle tout de suite
 ```
 
 Points de conception :
 
 - **Verrou consultatif Postgres** (`pg_try_advisory_lock`) : si un cycle
-  déborde sur l'intervalle du timer, le suivant passe son tour au lieu de se
-  superposer. Le triage sature déjà le CPU, deux cycles en parallèle ne
+  déborde sur l'intervalle de la boucle, le suivant passe son tour au lieu de
+  se superposer. Le triage sature déjà le CPU, deux cycles en parallèle ne
   gagneraient rien.
 - **Idempotent** : chaque étape reprend où elle en est (curseur, alertes non
   corrélées, incidents non triés). Rejouer un cycle ne duplique rien.
-- **Le triage est facultatif au cycle** : `Wants=soc-llm.service`, pas
-  `Requires`. Serveur LLM absent → ingest et correlate tournent quand même, le
-  triage est sauté et repris au tour suivant.
 - **Plafond par cycle** (`--limite-triage`, 50) : garde-fou contre un afflux
   qui saturerait le CPU d'un coup.
 
@@ -364,7 +358,6 @@ par un `DELETE`.
 ## Reste à faire
 
 - Golden set (~200 alertes labellisées) — le vrai prochain jalon.
-- Réingestion + triage périodiques (timer systemd ou cron).
 - Le seuil `MIN_LEVEL=12` mérite d'être confronté au terrain : certaines
   attaques n'émettent que du niveau 10-11.
 - Rétention : la table `alerts` grossit sans limite.

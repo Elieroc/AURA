@@ -49,11 +49,11 @@ Phase 1 en place : ingestion + corrélation, **sans LLM**. Détail et justificat
 - Mesuré sur données réelles : 680 alertes → 36 retenues (niveau ≥ 12) → 4 incidents, facteur 9.
 - Piège : `TRUNCATE incidents CASCADE` vide aussi `alerts`. Utiliser `correlate --recommencer`.
 
-Phase 2 en place : triage LLM en **mode shadow** (verdict enregistré, rien de déclenché). Serveur llama.cpp en service systemd utilisateur (`ai/llm/`), loopback strict.
+Phase 2 en place : triage LLM en **mode shadow** (verdict enregistré, rien de déclenché).
 
 **Whitelist automatique** (`soc_agent.whitelist`) : les FP récurrents jugés par l'IA (même signature, ≥ `WHITELIST_MIN_FP`) deviennent des exceptions dans `whitelist_rules` (table distincte du YAML humain, lue par `noise.py`). Toujours composite + post-retrieval. Signature = champs constants parmi `rule_id`/`src_user`/`command`/`file` (`file` virtuel : whitelister `/tmp/eicar.com` sans aveugler la règle VT). Garde-fous : signature précise obligatoire (rule_id seul refusé), jamais au-dessus de niveau 14, jamais une signature vue en TP.
 
-Déclenchement **périodique** : `soc_agent.cycle` enchaîne ingest → correlate → triage → whitelist → cases IRIS ; timer systemd utilisateur toutes les 5 min (`ai/systemd/soc-agent-cycle.{service,timer}`). Verrou consultatif Postgres anti-chevauchement. Triage facultatif au cycle (`Wants` soc-llm, pas `Requires`). Plus lancé à la main.
+Déclenchement **périodique** : `soc_agent.cycle` enchaîne ingest → correlate → triage → whitelist → cases IRIS ; conteneur `soc-agent-cycle` (boucle shell, `ai/docker-compose.yml`) toutes les 5 min. Verrou consultatif Postgres anti-chevauchement. Plus lancé à la main. Même schéma (conteneur + boucle + verrou) pour `soc-agent-reconcile` (1 min, annule une remédiation dont la tâche IRIS passe en `Canceled`) et `soc-agent-whitelist-task` (1 min, traite les tâches IRIS WHITELIST passées en `To do`).
 
 - Le modèle ne rend qu'un **jugement** (verdict, confiance, remédiations). L'ouverture/clôture du dossier est déduite du verdict (`actions.py`), pas demandée au modèle — il oubliait `open_case` une fois sur deux.
 - Cohérence verdict/actions vérifiée après coup (`coherence.py`) : mesurable sans jeu labellisé, signale un prompt dégradé.
