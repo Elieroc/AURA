@@ -1,0 +1,42 @@
+# Réconciliation des remédiations annulées par l'analyste.
+#
+# Défait toute remédiation dont la tâche IRIS est passée en 'Canceled' :
+# désisolation de l'hôte, déblocage d'IP, réactivation de compte (le kill de
+# process n'a pas de reverse et est marqué comme tel). Découplé du cycle
+# principal (soc-agent-cycle) : léger (list_tasks IRIS + reverse), il tourne à
+# une cadence plus courte pour que l'annulation soit réactive sans attendre le
+# triage qui sature le CPU.
+#
+# Service oneshot, déclenché par soc-agent-reconcile.timer. Ne pas l'activer
+# directement (enable) : c'est le timer qu'on active.
+#
+# Installation (service utilisateur, comme soc-agent-cycle) :
+#   cp ai/systemd/soc-agent-reconcile.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now soc-agent-reconcile.timer
+#
+# Suivi :
+#   systemctl --user list-timers soc-agent-reconcile.timer
+#   journalctl --user -u soc-agent-reconcile.service -f
+#   systemctl --user start soc-agent-reconcile.service   # forcer tout de suite
+
+[Unit]
+Description=SOC-AI — annule les remédiations dont la tâche IRIS est 'Canceled'
+After=network-online.target
+
+[Service]
+Type=oneshot
+
+# Répertoire du paquet soc_agent, et son .env (secrets IRIS + API Wazuh + base).
+# %h = home de l'utilisateur. À adapter si le dépôt est ailleurs.
+WorkingDirectory=%h/Nextcloud/Documents/IT/Projets/SOC-AI/ai
+EnvironmentFile=%h/Nextcloud/Documents/IT/Projets/SOC-AI/ai/.env
+
+ExecStart=%h/.local/share/soc-ai/venv/bin/python -m soc_agent.mitigate --reconcilier
+
+# La réconciliation ne doit pas traîner (IRIS ou canal de reverse qui pend).
+# Au-delà, on tue et on retentera au prochain déclenchement — le verrou
+# consultatif garantit qu'aucun reverse n'est double-tiré entre-temps.
+TimeoutStartSec=120
+
+Nice=10

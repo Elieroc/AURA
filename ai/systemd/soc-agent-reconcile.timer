@@ -1,0 +1,24 @@
+# Déclenche la réconciliation des remédiations annulées toutes les minutes.
+#
+# 1 min : l'annulation d'une action de réponse doit être réactive — un analyste
+# qui passe une tâche en 'Canceled' veut que l'hôte soit désisolé vite, pas au
+# prochain cycle de triage (5 min). Le passage est bon marché quand il n'y a
+# rien à défaire (un SELECT + un list_tasks IRIS par case concerné). Le verrou
+# consultatif dans mitigate.reconcilier empêche deux passages de se superposer.
+#
+# Pour changer la cadence : éditer OnUnitActiveSec, puis
+#   systemctl --user daemon-reload && systemctl --user restart soc-agent-reconcile.timer
+
+[Unit]
+Description=SOC-AI — déclenche la réconciliation des remédiations périodiquement
+
+[Timer]
+# Premier passage 1 min après le démarrage de session, puis toutes les minutes.
+OnStartupSec=1min
+OnUnitActiveSec=1min
+# Rattrape un déclenchement manqué (machine en veille) dès le réveil.
+Persistent=true
+RandomizedDelaySec=5
+
+[Install]
+WantedBy=timers.target
