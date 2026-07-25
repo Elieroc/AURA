@@ -2,7 +2,31 @@
 
 import json
 
-from soc_agent.mitigate import REMEDIATIONS, _cibles, _desc_tache, _interpreter
+from soc_agent.mitigate import (REMEDIATIONS, _cibles, _comptes_crees,
+                                _desc_tache, _interpreter)
+
+
+def _alerte_proctitle(cmd: str) -> dict:
+    """Alerte auditd portant `cmd` dans son proctitle hex (args nul-séparés)."""
+    hexp = cmd.replace(" ", "\x00").encode().hex()
+    return {"srcip": None, "srcuser": None, "entity": None,
+            "raw": json.dumps({"full_log": f"type=PROCTITLE proctitle={hexp}"})}
+
+
+def test_comptes_crees_extrait_backdoor_du_proctitle():
+    """Le compte créé par useradd est capté depuis le proctitle auditd (niv. 3),
+    sans l'alerte syslog 5902 — c'est ce qui permet de bloquer le backdoor sans
+    monter le niveau de l'alerte d'ajout d'utilisateur."""
+    al = [_alerte_proctitle("useradd -m -s /bin/bash svcbackup")]
+    assert _comptes_crees(al) == ["svcbackup"]
+    # …et devient une cible de désactivation.
+    cibles = _cibles("propose_disable_user", {"agent_id": "001"}, al)
+    assert "svcbackup" in cibles
+
+
+def test_comptes_crees_exclut_comptes_proteges():
+    # root / comptes système ne sont jamais des cibles de désactivation auto.
+    assert _comptes_crees([_alerte_proctitle("useradd -m root")]) == []
 
 
 def test_interpreter_etat_isolation():

@@ -44,7 +44,7 @@ from psycopg.rows import dict_row
 from . import config
 from .anonymize import _est_interne
 from .anonymize import COMPTES_GENERIQUES
-from .iris import LIBELLE_ACTION, _client
+from .iris import LIBELLE_ACTION, _client, _iocs
 
 log = logging.getLogger("mitigate")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -315,6 +315,19 @@ def _nom_compte(brut: str) -> str:
     return _RE_UID_SUFFIXE.sub("", str(brut)).strip()
 
 
+def _comptes_crees(alertes: list[dict]) -> list[str]:
+    """Comptes CRÉÉS par l'attaquant (useradd/adduser), non protégés.
+
+    Réutilise l'extraction d'IOC d'iris (`_iocs`, type « account ») : elle
+    décode la ligne de commande depuis le proctitle auditd (règle 80792, niv. 3)
+    et capte le backdoor account MÊME quand l'alerte syslog 5902 « new user »
+    (qui porte dstuser/home/shell) n'est pas ingérée. C'est le point de vérité
+    unique pour « quel compte l'attaquant a-t-il créé ». Comptes protégés exclus.
+    """
+    return sorted({v for v, t, _ in _iocs(alertes)
+                   if t == "account" and not _compte_protege(v)})
+
+
 def _compte_protege(brut: str) -> bool:
     """Un compte à ne JAMAIS désactiver automatiquement.
 
@@ -367,18 +380,10 @@ def _cibles(action: str, incident: dict, alertes: list[dict]) -> list[str]:
         # srcuser d'une activité malveillante, MOINS les comptes protégés.
         comptes = {_nom_compte(a["srcuser"]) for a in alertes if a["srcuser"]
                    and not _compte_protege(a["srcuser"])}
-        # Comptes CRÉÉS par l'attaquant (useradd : dstuser + home/shell). Ce
-        # sont les cibles les plus pertinentes d'une désactivation, et ils
-        # n'apparaissent jamais en srcuser.
-        for a in alertes:
-            raw = a.get("raw")
-            if not raw:
-                continue
-            data = (raw if isinstance(raw, dict) else json.loads(raw)).get("data", {})
-            du = data.get("dstuser")
-            if du and not _compte_protege(du) and (data.get("home")
-                                                   or data.get("shell")):
-                comptes.add(_nom_compte(du))
+        # Comptes CRÉÉS par l'attaquant (useradd) : cibles les plus pertinentes
+        # d'une désactivation, jamais en srcuser. Extraits via _comptes_crees
+        # (proctitle auditd inclus — capte le backdoor sans l'alerte 5902).
+        comptes |= set(_comptes_crees(alertes))
         return sorted(comptes)
     return []
 
@@ -501,15 +506,29 @@ def executer(incident_id: int) -> list[dict]:
                   f"{', '.join(triage['injection_motifs'])}. Aucune exécution.")
             return []
 
+        alertes = conn.execute(
+            "SELECT srcip, srcuser, entity, raw FROM alerts WHERE incident_id = %s",
+            (incident_id,)).fetchall()
+
         remed = [a for a in triage["actions"] if a in REMEDIATIONS]
+
+        # Garde-fou déterministe : un compte CRÉÉ par l'attaquant sur un vrai
+        # positif doit être désactivé même si le LLM n'a pas proposé l'action.
+        # Le triage ne voit que les alertes HIGH ; la création de compte remonte
+        # d'une alerte auditd bas niveau (proctitle, niv. 3) rattachée à
+        # l'incident — visible dans le case, mais absente du prompt de décision.
+        # On complète l'action ici, sans jamais toucher au niveau de l'alerte.
+        if (triage["verdict"] == "true_positive"
+                and "propose_disable_user" not in remed
+                and _comptes_crees(alertes)):
+            remed.append("propose_disable_user")
+            print(f"  #{incident_id} + propose_disable_user (déterministe : "
+                  f"compte créé par l'attaquant — {', '.join(_comptes_crees(alertes))})")
+
         if not remed:
             print(f"  #{incident_id} aucune remédiation à exécuter "
                   f"(verdict {triage['verdict']}).")
             return []
-
-        alertes = conn.execute(
-            "SELECT srcip, srcuser, entity, raw FROM alerts WHERE incident_id = %s",
-            (incident_id,)).fetchall()
 
         case = _client() if inc["iris_case_id"] else None
         # Assets (onglet Assets) : hôte + comptes, une fois, avant les actions.
