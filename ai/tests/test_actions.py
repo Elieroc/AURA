@@ -24,8 +24,9 @@ def test_faux_positif_ecarte_toute_remediation():
     assert actions == ["close_false_positive"]
 
 
-def test_doute_demande_de_quoi_lever_le_doute():
-    assert deduire("needs_investigation", []) == ["collect_endpoint_evidence"]
+def test_doute_escalade_a_un_humain():
+    """La collecte forensique n'est pas une action de l'IA : le doute escalade."""
+    assert deduire("needs_investigation", []) == ["escalate_human"]
 
 
 def test_doute_ne_cloture_jamais():
@@ -33,23 +34,23 @@ def test_doute_ne_cloture_jamais():
     assert "close_false_positive" not in actions
 
 
-def test_isolation_passe_en_premier():
-    """Ordre d'urgence : isoler arrête l'attaque, le reste vient après."""
+def test_kill_process_passe_avant_isolation():
+    """Ordre d'urgence : tuer le process prime (chirurgical), isoler ensuite."""
     actions = deduire("true_positive",
-                      ["collect_endpoint_evidence", "propose_block_ip",
-                       "propose_isolate_host"])
-    assert actions[0] == "propose_isolate_host"
+                      ["propose_block_ip", "propose_isolate_host",
+                       "propose_kill_process"])
+    assert actions[0] == "propose_kill_process"
+    assert actions.index("propose_kill_process") < actions.index("propose_isolate_host")
 
 
 def test_actions_a_fort_impact_signalees():
     actions = deduire("true_positive",
-                      ["propose_isolate_host", "collect_endpoint_evidence"])
-    a_valider = actions_fort_impact(actions)
-    assert "propose_isolate_host" in a_valider
-    # La collecte est en lecture seule et l'ouverture d'un case sans effet sur
-    # la production : ni l'une ni l'autre n'a à passer par une validation.
-    assert "collect_endpoint_evidence" not in a_valider
-    assert "open_case" not in a_valider
+                      ["propose_isolate_host", "propose_kill_process"])
+    fort = actions_fort_impact(actions)
+    assert "propose_isolate_host" in fort
+    assert "propose_kill_process" in fort          # tuer un process = fort impact
+    # open_case est sans effet sur la production : pas une action à fort impact.
+    assert "open_case" not in fort
 
 
 # --- cohérence --------------------------------------------------------------
@@ -64,10 +65,12 @@ def test_faux_positif_sans_action_est_coherent():
     assert verifier("false_positive", []) == []
 
 
-def test_isolation_sur_doute_sans_collecte_est_incoherente():
+def test_couper_sur_doute_est_incoherent():
+    """Sur un simple doute, aucune action irréversible ne se justifie."""
     assert verifier("needs_investigation", ["propose_isolate_host"])
-    assert verifier("needs_investigation",
-                    ["propose_isolate_host", "collect_endpoint_evidence"]) == []
+    assert verifier("needs_investigation", ["propose_kill_process"])
+    # Escalader (pas une coupure) reste cohérent sur un doute.
+    assert verifier("needs_investigation", ["escalate_human"]) == []
 
 
 def test_vrai_positif_sans_action_est_signale():

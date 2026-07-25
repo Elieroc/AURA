@@ -211,10 +211,13 @@ CREATE TABLE IF NOT EXISTS mitigations (
     incident_id  bigint NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
     action       text NOT NULL,
     cible        text,            -- agent_id, IP ou compte visé
-    statut       text NOT NULL,   -- exécuté | dry_run | échec | sans_canal | suspendu
+    statut       text NOT NULL,   -- exécuté | dry_run | échec | annulé | suspendu
     details      text,
     undo         text,            -- commande / procédure d'annulation
-    iris_note_id bigint,
+    iris_note_id bigint,          -- legacy : remédiations autrefois en notes
+    -- Tâche IRIS (onglet Tasks) portant cette remédiation. Les remédiations ne
+    -- sont plus des notes : chaque action est une task, ses cibles des assets.
+    iris_task_id bigint,
     executed_at  timestamptz NOT NULL DEFAULT now(),
     UNIQUE (incident_id, action, cible)
 );

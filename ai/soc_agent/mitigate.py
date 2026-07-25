@@ -50,14 +50,20 @@ log = logging.getLogger("mitigate")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Actions réellement exécutables (remédiations). Le reste (open_case,
-# close_false_positive, escalate_human) n'est pas une action machine.
+# close_false_positive, escalate_human) n'est pas une action machine. La
+# collecte forensique n'en fait PAS partie : elle n'est pas pilotée par l'IA.
 REMEDIATIONS = {"propose_isolate_host", "propose_block_ip",
-                "propose_disable_user", "collect_endpoint_evidence"}
+                "propose_disable_user", "propose_kill_process"}
 
-# Ordre d'exécution : collecter les preuves AVANT de couper quoi que ce soit,
-# isoler EN DERNIER (l'isolation coupe les canaux dont dépendent les autres).
-ORDRE_EXEC = ["collect_endpoint_evidence", "propose_block_ip",
+# Ordre d'exécution : tuer le process malveillant et couper les flux/comptes
+# AVANT d'isoler ; isoler EN DERNIER (l'isolation coupe les canaux — API Wazuh,
+# Shuffle — dont dépendent les autres remédiations).
+ORDRE_EXEC = ["propose_kill_process", "propose_block_ip",
               "propose_disable_user", "propose_isolate_host"]
+
+# Répertoires d'où un exécutable est un implant à tuer (jamais un binaire
+# système légitime). Sert à cibler le process malveillant, pas un shell normal.
+_DIRS_SUSPECTS = ("/tmp/", "/var/tmp/", "/dev/shm/", "/run/shm/")
 
 
 # --- canaux d'exécution -----------------------------------------------------
@@ -80,6 +86,19 @@ def fire_isolation(agent_id: str, isoler: bool, reason: str) -> str:
                     {"agent_id": agent_id, "ar_command": cmd, "reason": reason})
 
 
+def fire_kill(agent_id: str, process: str, reason: str) -> str:
+    """Tue un process par nom exact (comm) sur l'agent, via le webhook Shuffle.
+
+    `extra_args` = le nom EXACT du process (pkill -x côté AR) ; la safelist de
+    `kill-process.sh` refuse déjà les process critiques (sshd, agent Wazuh,
+    systemd). Chaîne simple : le body Shuffle l'encapsule dans le tableau
+    attendu par l'API Wazuh.
+    """
+    return _shuffle(config.SHUFFLE_WEBHOOK_KILL,
+                    {"agent_id": agent_id, "ar_command": "!kill-process.sh",
+                     "extra_args": process, "reason": reason})
+
+
 def _tracer_isolation(agent_id: str, isoler: bool, reason: str) -> None:
     """Trace une (dé)isolation manuelle sur les incidents ouverts de l'agent.
 
@@ -100,7 +119,7 @@ def _tracer_isolation(agent_id: str, isoler: bool, reason: str) -> None:
             conn.execute(INSERT_MITIG, {
                 "incident_id": r["id"], "action": action, "cible": cible,
                 "statut": statut, "details": f"{details} Motif : {reason}",
-                "undo": undo, "iris_note_id": None})
+                "undo": undo, "iris_task_id": None})
         conn.commit()
 
 
@@ -266,20 +285,24 @@ def _disable_user(cible: str, ctx: dict):
     return "dry_run", canal, details, undo
 
 
-def _collect(cible: str, ctx: dict):
-    canal = "Forensique — scripts/forensic-pull.sh (manuel)"
-    details = ("Collecte RAM + image disque de l'agent. NON automatisée ici : "
-               "lourde, et tirée par SSH (manager→agent) que l'isolation coupe. "
-               "À lancer AVANT toute isolation si des preuves sont nécessaires.")
-    undo = "Sans objet — collecte en lecture seule, rien à annuler."
-    return "sans_canal", canal, details, undo
+def _kill_process(cible: str, ctx: dict):
+    canal = "Shuffle → active-response kill-process.sh (pkill -x)"
+    details = (f"Arrêt du process malveillant « {cible} » sur l'agent "
+               f"{ctx['agent_id']} (pkill -x, nom exact). La safelist de l'AR "
+               "protège les process critiques (sshd, agent Wazuh, systemd).")
+    undo = ("Action irréversible (pas d'« unkill »). Si le process était "
+            "légitime, le relancer manuellement sur l'hôte.")
+    if config.MITIGATE_EXECUTE:
+        fire_kill(ctx["agent_id"], cible, ctx["reason_court"])
+        return "exécuté", canal, details, undo
+    return "dry_run", canal, details, undo
 
 
 EXECUTEURS = {
+    "propose_kill_process": _kill_process,
     "propose_isolate_host": _isolate,
     "propose_block_ip": _block_ip,
     "propose_disable_user": _disable_user,
-    "collect_endpoint_evidence": _collect,
 }
 
 
@@ -315,10 +338,28 @@ def _compte_protege(brut: str) -> bool:
 
 
 def _cibles(action: str, incident: dict, alertes: list[dict]) -> list[str]:
-    """Cibles d'une action : agent pour l'isolation/collecte, IP externes pour
-    le blocage, comptes nommés pour la désactivation."""
-    if action in ("propose_isolate_host", "collect_endpoint_evidence"):
+    """Cibles d'une action : agent pour l'isolation, IP externes pour le
+    blocage, comptes nommés pour la désactivation, process malveillants
+    (basename) pour le kill."""
+    if action == "propose_isolate_host":
         return [str(incident["agent_id"])]
+    if action == "propose_kill_process":
+        # Nom exact (comm) des exécutables lancés depuis un répertoire suspect :
+        # l'implant, jamais un shell système. pkill -x matchera ce nom.
+        noms: set[str] = set()
+        for a in alertes:
+            raw = a.get("raw")
+            if not raw:
+                continue
+            data = (raw if isinstance(raw, dict) else json.loads(raw)).get("data", {})
+            audit = data.get("audit", {}) or {}
+            for chemin in (audit.get("exe"), a.get("entity")):
+                p = str(chemin or "")
+                if p.startswith(_DIRS_SUSPECTS):
+                    base = p.rsplit("/", 1)[-1]
+                    if base:
+                        noms.add(base[:15])   # comm est plafonné à 15 caractères
+        return sorted(noms)
     if action == "propose_block_ip":
         return sorted({a["srcip"] for a in alertes
                        if a["srcip"] and not _est_interne(str(a["srcip"]))})
@@ -342,15 +383,25 @@ def _cibles(action: str, incident: dict, alertes: list[dict]) -> list[str]:
     return []
 
 
-# --- note IRIS + persistance ------------------------------------------------
+# --- assets / tasks IRIS + persistance --------------------------------------
+#
+# Les remédiations ne vont PLUS dans l'onglet Notes : chaque action devient une
+# TASK (onglet Tasks) et les cibles concrètes (hôte, comptes) des ASSETS
+# (onglet Assets). L'onglet Notes reste réservé à l'analyse (rapport LLM).
 
-def _note(triage: dict, action: str, cible: str, statut: str,
-          canal: str, details: str, undo: str) -> str:
-    libelle = LIBELLE_ACTION.get(action, action)
-    sim = "[SIMULATION] " if statut == "dry_run" else ""
+# Statut de remédiation -> statut de tâche IRIS.
+_STATUT_TASK = {
+    "exécuté": "Done",
+    "dry_run": "To do",        # simulé : l'action réelle reste à faire
+    "échec": "Canceled",
+    "annulé": "Canceled",
+}
+
+
+def _desc_tache(triage: dict, cible: str, statut: str, canal: str,
+                details: str, undo: str) -> str:
+    """Corps (markdown) de la tâche de remédiation."""
     return "\n".join([
-        f"# {sim}Remédiation — {libelle}",
-        "",
         f"**Cible** : {cible}",
         f"**Statut** : {statut}",
         f"**Canal** : {canal}",
@@ -367,14 +418,52 @@ def _note(triage: dict, action: str, cible: str, statut: str,
     ])
 
 
+def _assets_existants(case, case_id: int) -> set[str]:
+    try:
+        d = case.list_assets(case_id).get_data() or {}
+        items = d.get("assets") if isinstance(d, dict) else d
+        return {a.get("asset_name") for a in (items or [])}
+    except Exception as e:  # noqa: BLE001
+        log.debug("liste assets case #%s : %s", case_id, e)
+        return set()
+
+
+def _poser_assets(case, case_id: int, inc: dict, alertes: list[dict]) -> None:
+    """Renseigne l'onglet Assets : l'hôte touché et les comptes compromis.
+
+    Best-effort et idempotent (dédup sur le nom déjà présent). Les IP/hash/
+    fichiers restent des IOC (onglet IOC, posé par iris.py) ; ici on ne met que
+    les entités sur lesquelles on AGIT et qui ont un type d'asset propre.
+    """
+    existants = _assets_existants(case, case_id)
+
+    def ajouter(name: str, atype: str, desc: str) -> None:
+        if not name or name in existants:
+            return
+        try:
+            case.add_asset(name=name, asset_type=atype,
+                           analysis_status="Started",
+                           compromise_status="Compromised",
+                           description=desc, cid=case_id)
+            existants.add(name)
+        except Exception as e:  # noqa: BLE001
+            log.debug("asset ignoré (%s) : %s", name, e)
+
+    ajouter(inc.get("agent_name") or str(inc["agent_id"]), "Linux - Server",
+            "Hôte touché par l'incident (cible d'isolation / kill de process).")
+    for compte in _cibles("propose_disable_user", inc, alertes):
+        ajouter(compte, "Linux Account",
+                "Compte compromis ou créé par l'attaquant (cible de désactivation).")
+
+
 INSERT_MITIG = """
 INSERT INTO mitigations (incident_id, action, cible, statut, details, undo,
-                         iris_note_id)
+                         iris_task_id)
 VALUES (%(incident_id)s, %(action)s, %(cible)s, %(statut)s, %(details)s,
-        %(undo)s, %(iris_note_id)s)
+        %(undo)s, %(iris_task_id)s)
 ON CONFLICT (incident_id, action, cible) DO UPDATE
 SET statut = EXCLUDED.statut, details = EXCLUDED.details, undo = EXCLUDED.undo,
-    iris_note_id = EXCLUDED.iris_note_id, executed_at = now()
+    iris_task_id = EXCLUDED.iris_task_id, executed_at = now()
 RETURNING id
 """
 
@@ -419,15 +508,13 @@ def executer(incident_id: int) -> list[dict]:
             return []
 
         alertes = conn.execute(
-            "SELECT srcip, srcuser, raw FROM alerts WHERE incident_id = %s",
+            "SELECT srcip, srcuser, entity, raw FROM alerts WHERE incident_id = %s",
             (incident_id,)).fetchall()
 
         case = _client() if inc["iris_case_id"] else None
-        dir_id = None
+        # Assets (onglet Assets) : hôte + comptes, une fois, avant les actions.
         if case:
-            rd = case.add_notes_directory(directory_name="Remédiations",
-                                          cid=inc["iris_case_id"])
-            dir_id = rd.get_data()["id"] if rd.is_success() else None
+            _poser_assets(case, inc["iris_case_id"], inc, alertes)
 
         mode = "EXÉCUTION" if config.MITIGATE_EXECUTE else "DRY-RUN"
         print(f"  #{incident_id} {inc['agent_name']} — {mode} — "
@@ -451,22 +538,26 @@ def executer(incident_id: int) -> list[dict]:
                     details, undo = f"Échec du canal : {e}", "—"
                     log.warning("échec %s [%s] : %s", action, cible, e)
 
-                note_id = None
-                if case and dir_id is not None:
-                    contenu = _note(triage, action, cible, statut, canal,
-                                    details, undo)
+                # Chaque remédiation = une TASK (onglet Tasks), pas une note.
+                task_id = None
+                if case:
                     titre = ("[SIMULATION] " if statut == "dry_run" else "") + \
                         f"Remédiation — {LIBELLE_ACTION.get(action, action)} ({cible})"
-                    rn = case.add_note(note_title=titre, note_content=contenu,
-                                       directory_id=dir_id,
-                                       cid=inc["iris_case_id"])
-                    if rn.is_success():
-                        note_id = rn.get_data().get("note_id")
+                    rt = case.add_task(
+                        title=titre,
+                        status=_STATUT_TASK.get(statut, "To do"),
+                        assignees=[],
+                        description=_desc_tache(triage, cible, statut, canal,
+                                                details, undo),
+                        tags=["remediation", "auto"],
+                        cid=inc["iris_case_id"])
+                    if rt.is_success():
+                        task_id = rt.get_data().get("id")
 
                 conn.execute(INSERT_MITIG, {
                     "incident_id": incident_id, "action": action, "cible": cible,
                     "statut": statut, "details": details, "undo": undo,
-                    "iris_note_id": note_id})
+                    "iris_task_id": task_id})
                 conn.commit()
 
                 resultats.append({"action": action, "cible": cible,

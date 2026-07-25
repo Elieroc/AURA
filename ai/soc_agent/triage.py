@@ -37,7 +37,7 @@ PLAFOND_TOKENS = 1500
 VERDICTS_OK = {"true_positive", "false_positive", "needs_investigation"}
 CONFIANCES_OK = {"low", "medium", "high"}
 ACTIONS_OK = {"propose_block_ip", "propose_isolate_host",
-              "propose_disable_user", "collect_endpoint_evidence",
+              "propose_disable_user", "propose_kill_process",
               "escalate_human"}
 
 
