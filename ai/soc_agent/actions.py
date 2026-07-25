@@ -14,18 +14,22 @@ confiance, et les remédiations qui s'appliquent.
 # humain, mais à les SIGNALER comme telles dans le rapport et à les ordonner
 # par urgence. Leur sûreté tient à des garde-fous déterministes, pas à un clic.
 ACTIONS_A_FORT_IMPACT = {
+    "propose_kill_process",     # tue un process en cours
     "propose_isolate_host",     # coupe l'hôte du réseau
     "propose_disable_user",     # verrouille un compte
     "propose_block_ip",         # coupe un flux réseau
 }
 
-# Ordre d'urgence pour la présentation à l'analyste. Isoler prime : c'est la
-# seule action qui arrête une attaque en cours sur la machine.
+# Ordre d'urgence pour la présentation à l'analyste. Tuer le process malveillant
+# prime (le plus chirurgical : stoppe l'exécution sans couper la machine) ;
+# isoler vient juste après (arrête tout mais coupe aussi l'investigation).
+# La collecte forensique n'est PAS une action de l'IA (trop lourde, tirée en
+# SSH par le manager, hors périmètre du triage automatique).
 ORDRE = [
+    "propose_kill_process",
     "propose_isolate_host",
     "propose_disable_user",
     "propose_block_ip",
-    "collect_endpoint_evidence",
     "escalate_human",
     "open_case",
     "close_false_positive",
@@ -45,9 +49,10 @@ def deduire(verdict: str, actions_modele: list[str]) -> list[str]:
         # produit une sortie exploitable.
         actions = {"close_false_positive"}
     elif verdict == "needs_investigation":
-        # Le doute appelle au minimum de quoi lever le doute.
+        # Le doute appelle un humain : la collecte forensique n'est pas une
+        # action de l'IA, et on ne coupe rien sur un simple doute.
         if not actions:
-            actions.add("collect_endpoint_evidence")
+            actions.add("escalate_human")
 
     return sorted(actions, key=lambda a: ORDRE.index(a) if a in ORDRE else 99)
 

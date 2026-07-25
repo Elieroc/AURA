@@ -10,9 +10,10 @@
 # de commande) : évite de tuer un process dont la commande contient le nom
 # cible en sous-chaîne (ex: cibler "app" ne doit pas tuer "backup-app-monitor").
 #
-# Garde-fou : refuse de killer les process critiques (safelist) pour éviter
-# de couper l'agent Wazuh lui-même, sshd, ou le système (cf. CLAUDE.md —
-# décision humaine, jamais d'action automatique non validée).
+# Garde-fou déterministe : refuse de killer les process critiques (safelist)
+# pour éviter de couper l'agent Wazuh lui-même, sshd, ou le système. C'est ce
+# garde-fou EN CODE qui borne l'action autonome (cf. CLAUDE.md — XDR autonome),
+# pas une validation humaine.
 
 set -u
 

@@ -51,10 +51,10 @@ CLASSIF_DEFAUT = CLASSIF_INTRUSION
 
 # Descriptions courtes des actions, pour un rapport lisible par un humain.
 LIBELLE_ACTION = {
+    "propose_kill_process": "Tuer le process malveillant",
     "propose_isolate_host": "Isoler l'hôte du réseau",
     "propose_disable_user": "Désactiver le compte compromis",
     "propose_block_ip": "Bloquer l'IP source",
-    "collect_endpoint_evidence": "Collecter des preuves sur l'endpoint",
     "escalate_human": "Escalade analyste",
     "open_case": "Ouvrir un dossier",
     "close_false_positive": "Clôturer en faux positif",
@@ -451,7 +451,7 @@ def _section_remediations(conn, incident_id: int, triage: dict) -> str:
 
     if not rows:
         remed = [a for a in triage.get("actions", [])
-                 if a in LIBELLE_ACTION and a.startswith(("propose_", "collect_"))]
+                 if a in LIBELLE_ACTION and a.startswith("propose_")]
         lignes.append("")
         if remed:
             lignes.append("Aucune remédiation automatique n'a pu s'appliquer "

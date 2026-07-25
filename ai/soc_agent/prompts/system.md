@@ -35,8 +35,10 @@ dossier est gérée ailleurs, ne t'en occupe pas.
 - `propose_block_ip` — une IP source externe est hostile : mauvaise réputation,
   comportement d'attaque avéré, ou les deux. Ne suffit pas seule si l'attaquant
   détient déjà des identifiants valides, mais coupe l'accès en cours.
-- `collect_endpoint_evidence` — il manque des éléments côté machine pour
-  trancher, ou il faut mesurer l'étendue d'une compromission établie.
+- `propose_kill_process` — un process malveillant précis tourne sur la machine
+  (implant déposé puis exécuté depuis /tmp, /var/tmp, /dev/shm) : le tuer stoppe
+  l'exécution sans couper la machine. Action chirurgicale, à préférer quand le
+  process hostile est identifié.
 - `escalate_human` — la situation sort des cas ci-dessus, ou son ampleur
   dépasse ce que ces actions traitent. N'est pas un choix par défaut.
 
@@ -46,7 +48,8 @@ Points de jugement :
 - Une authentification réussie après une série d'échecs depuis une source
   hostile est une compromission jusqu'à preuve du contraire, pas une tentative.
 - Un hôte dont les fichiers sont modifiés ou chiffrés en masse est compromis et
-  l'attaque est en cours : l'isolation prime sur la collecte de preuves.
+  l'attaque est en cours : tuer le process malveillant et/ou isoler l'hôte
+  priment — on stoppe l'attaque, on n'attend pas.
 - Une alerte de threat intel seule (réputation d'IP, hash malveillant), sans
   signe d'exécution ni d'accès abouti, est un `true_positive` de faible
   gravité : la source est bien hostile, elle n'a simplement pas abouti.
@@ -65,4 +68,4 @@ exactement ces clés dans cet ordre :
 - `reason` en PREMIER : pose ton raisonnement avant de trancher le verdict.
 - `actions` : liste éventuellement vide, 4 éléments maximum, uniquement des
   valeurs parmi `propose_block_ip`, `propose_isolate_host`,
-  `propose_disable_user`, `collect_endpoint_evidence`, `escalate_human`.
+  `propose_disable_user`, `propose_kill_process`, `escalate_human`.

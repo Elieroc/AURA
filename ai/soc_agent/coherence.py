@@ -24,18 +24,21 @@ def verifier(verdict: str, actions_modele: list[str]) -> list[str]:
     jeu = set(actions_modele)
 
     if verdict == "false_positive":
-        # Si l'activité est légitime, il n'y a rien à couper ni à collecter.
-        # Proposer une remédiation contredit le verdict.
+        # Si l'activité est légitime, il n'y a rien à couper. Proposer une
+        # remédiation contredit le verdict.
         fort = jeu & ACTIONS_A_FORT_IMPACT
         if fort:
             problemes.append(
                 "false_positive propose " + ", ".join(sorted(fort)))
-        if "collect_endpoint_evidence" in jeu:
-            problemes.append("false_positive demande une collecte de preuves")
 
     if verdict == "needs_investigation":
-        if "propose_isolate_host" in jeu and "collect_endpoint_evidence" not in jeu:
-            problemes.append("needs_investigation isole sans collecter")
+        # Sur un simple doute, on ne coupe rien de façon irréversible : couper
+        # (isolation, kill, désactivation, blocage) sans certitude est incohérent.
+        fort = jeu & ACTIONS_A_FORT_IMPACT
+        if fort:
+            problemes.append(
+                "needs_investigation coupe sans certitude : "
+                + ", ".join(sorted(fort)))
 
     if verdict == "true_positive" and not jeu:
         # Légitime pour un vrai positif sans suite possible, mais assez rare
