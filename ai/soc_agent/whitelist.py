@@ -151,6 +151,33 @@ def analyser(min_fp: int, simulation: bool) -> list[dict]:
     return decisions
 
 
+def signatures_vues_tp(conn) -> set[str]:
+    """Signatures (forme canonique) vues au moins une fois en true_positive.
+
+    Réutilisé par whitelist_task.py : une whitelist demandée manuellement par
+    l'analyste obéit au même garde-fou qu'une whitelist automatique — jamais
+    sur une signature contredite par un vrai positif.
+    """
+    return _incidents_par_verdict(conn)[1]
+
+
+def valider_signature(signature: dict, niveau: int, sig_tp: set[str]) -> str | None:
+    """Garde-fous déterministes avant toute création de whitelist_rules.
+
+    Retourne la raison de refus, ou None si la signature est acceptable. Le
+    LLM (auto ou tâche manuelle) PROPOSE ; ce garde-fou DÉCIDE — mêmes trois
+    règles que `analyser()` : signature précise, niveau borné, jamais vue en
+    true_positive.
+    """
+    if not any(c in signature for c in CHAMPS_DISCRIMINANTS):
+        return "signature trop large : rule_id seul ne suffit pas"
+    if niveau >= config.WHITELIST_MAX_LEVEL:
+        return f"niveau {niveau} >= {config.WHITELIST_MAX_LEVEL} (whitelist auto interdite)"
+    if _canonique(signature) in sig_tp:
+        return "signature déjà vue en true_positive"
+    return None
+
+
 def lister() -> None:
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         lignes = conn.execute("""

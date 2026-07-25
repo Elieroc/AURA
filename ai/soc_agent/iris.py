@@ -846,6 +846,26 @@ def _nommer_case(conn, incident: dict, triage: dict, alertes: list[dict]) -> str
     return defaut
 
 
+def _poser_tache_whitelist(case, case_id: int) -> None:
+    try:
+        case.add_task(
+            title="WHITELIST — demande d'exception",
+            status="On hold",
+            assignees=[],
+            description=(
+                "Remplir avec les instructions de whitelist souhaitées (quel "
+                "champ — compte / commande / fichier / rule_id — et pourquoi) "
+                "puis passer cette tâche en 'To do'. L'IA tentera de créer "
+                "l'exception automatiquement (soc_agent.whitelist_task) et "
+                "commentera ici le résultat, ou posera une question si les "
+                "instructions sont insuffisantes."
+            ),
+            tags=["whitelist", "auto"],
+            cid=case_id)
+    except Exception as e:  # noqa: BLE001 — le case doit se créer sans elle
+        log.warning("tâche whitelist non créée (case #%s) : %s", case_id, e)
+
+
 def creer_case(conn, incident: dict, triage: dict) -> int:
     # Garde-fou d'idempotence : si cet incident double un frère déjà versé dans
     # IRIS (raté de _rattacher_existants), on réutilise son case au lieu d'en
@@ -892,6 +912,12 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
 
     # IOC (best-effort : un type inconnu ne doit pas faire échouer le case).
     _poser_iocs(case, case_id, alertes)
+
+    # Tâche WHITELIST « On hold » : l'analyste la remplit et la passe en
+    # 'To do' quand il veut une exception ; soc_agent.whitelist_task la
+    # traite alors de façon cyclique. Best-effort : un échec ne bloque pas
+    # la création du case.
+    _poser_tache_whitelist(case, case_id)
 
     # Remédiation AUTOMATIQUE, avant le rapport : les actions décidées au triage
     # sont exécutées maintenant (isolation, blocage, désactivation de compte),
