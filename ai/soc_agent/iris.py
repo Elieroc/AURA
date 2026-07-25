@@ -69,6 +69,109 @@ def _client():
     return Case(session)
 
 
+# Répertoire de notes où atterrit l'analyse IA (créé au besoin).
+DIR_ANALYSE = "Analyse IA"
+
+
+def _taguer(case, case_id: int, agent_name: str | None) -> None:
+    """Ajoute le hostname de la machine touchée aux tags du case (union).
+
+    Un analyste retrouve ainsi tous les cases d'une même machine par le tag.
+    Union avec l'existant : on n'écrase pas les tags posés à la main. add_case
+    n'accepte pas de tags — d'où le update_case juste après la création.
+    """
+    if not agent_name:
+        return
+    tags: set[str] = set()
+    try:
+        gc = case.get_case(case_id)
+        if gc.is_success():
+            brut = gc.get_data().get("case_tags") or ""
+            tags = {t.strip() for t in brut.split(",") if t.strip()}
+    except Exception as e:  # noqa: BLE001 — le tag ne bloque pas le case
+        log.debug("lecture tags case #%s : %s", case_id, e)
+    if agent_name in tags:
+        return
+    tags.add(agent_name)
+    try:
+        case.update_case(case_id=case_id, case_tags=sorted(tags))
+    except Exception as e:  # noqa: BLE001
+        log.debug("tag case #%s : %s", case_id, e)
+
+
+def _poser_iocs(case, case_id: int, alertes: list[dict]) -> None:
+    """Ajoute les IOC manquants du case (dédup sur la valeur déjà présente)."""
+    existants: set[str] = set()
+    try:
+        d = case.list_iocs(case_id).get_data() or {}
+        existants = {i.get("ioc_value") for i in (d.get("ioc") or [])}
+    except Exception as e:  # noqa: BLE001
+        log.debug("liste IOC case #%s : %s", case_id, e)
+    for valeur, type_ioc, description in _iocs(alertes):
+        if valeur in existants:
+            continue
+        try:
+            case.add_ioc(value=valeur, ioc_type=type_ioc,
+                         description=description, cid=case_id)
+        except Exception as e:  # noqa: BLE001
+            log.debug("IOC ignoré (%s/%s) : %s", type_ioc, valeur, e)
+
+
+def _poser_note(case, case_id: int, titre: str, contenu: str) -> None:
+    """Crée ou MET À JOUR la note d'analyse dans le répertoire « Analyse IA ».
+
+    Au rafraîchissement d'un case, on remplace le contenu de la note existante
+    plutôt que d'en empiler une deuxième : le dossier reste lisible.
+    """
+    dir_id = None
+    note_id = None
+    try:
+        for d in case.list_notes_directories(cid=case_id).get_data() or []:
+            if d.get("name") == DIR_ANALYSE:
+                dir_id = d["id"]
+                for n in d.get("notes") or []:
+                    if n.get("title") == titre:
+                        note_id = n["id"]
+                        break
+                break
+    except Exception as e:  # noqa: BLE001
+        log.debug("liste notes case #%s : %s", case_id, e)
+    if note_id is not None:
+        try:
+            case.update_note(note_id=note_id, note_content=contenu, cid=case_id)
+            return
+        except Exception as e:  # noqa: BLE001
+            log.debug("maj note %s : %s", note_id, e)
+    if dir_id is None:
+        rd = case.add_notes_directory(directory_name=DIR_ANALYSE, cid=case_id)
+        dir_id = rd.get_data()["id"] if rd.is_success() else None
+    case.add_note(note_title=titre, note_content=contenu,
+                  directory_id=dir_id, cid=case_id)
+
+
+def _reconstruire_timeline(case, case_id: int, alertes: list[dict],
+                           agent_id: str) -> None:
+    """Efface les évènements auto (source Wazuh) et les reconstruit.
+
+    Une salve rattachée allonge un groupe de règle ou en crée un ; re-poser
+    tout en l'état dupliquerait. On supprime donc les évènements posés par le
+    soc-agent (source « Wazuh »), jamais ceux saisis par un analyste, puis on
+    les recrée depuis l'état courant.
+    """
+    try:
+        tl = case.list_events(cid=case_id).get_data().get("timeline") or []
+    except Exception as e:  # noqa: BLE001
+        log.debug("liste timeline case #%s : %s", case_id, e)
+        tl = []
+    for ev in tl:
+        if (ev.get("event_source") or "") == "Wazuh":
+            try:
+                case.delete_event(ev["event_id"], cid=case_id)
+            except Exception as e:  # noqa: BLE001
+                log.debug("suppr évènement %s : %s", ev.get("event_id"), e)
+    _timeline(case, case_id, alertes, agent_id)
+
+
 def _classification(incident: dict, alertes: list[dict]) -> int:
     groups = {g for a in alertes for g in (a.get("rule_groups") or [])}
     tactics = set(incident.get("mitre_tactics") or [])
@@ -610,19 +713,19 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
 
     # Rattachement du case AVANT la remédiation : mitigate.executer ouvre sa
     # propre connexion et lit iris_case_id pour y déposer ses notes. Commit
-    # immédiat pour qu'il le voie.
+    # immédiat pour qu'il le voie. needs_refresh remis à false : le case reflète
+    # l'incident dans son état courant.
     conn.execute(
-        "UPDATE incidents SET iris_case_id = %s, status = %s WHERE id = %s",
+        "UPDATE incidents SET iris_case_id = %s, status = %s, "
+        "needs_refresh = false WHERE id = %s",
         (case_id, "fp_classe" if fp else "case_ouvert", incident["id"]))
     conn.commit()
 
+    # Tag = hostname de la machine touchée (add_case ne prend pas de tags).
+    _taguer(case, case_id, incident.get("agent_name"))
+
     # IOC (best-effort : un type inconnu ne doit pas faire échouer le case).
-    for valeur, type_ioc, description in _iocs(alertes):
-        try:
-            case.add_ioc(value=valeur, ioc_type=type_ioc,
-                         description=description, cid=case_id)
-        except Exception as e:  # noqa: BLE001
-            log.debug("IOC ignoré (%s/%s) : %s", type_ioc, valeur, e)
+    _poser_iocs(case, case_id, alertes)
 
     # Remédiation AUTOMATIQUE, avant le rapport : les actions décidées au triage
     # sont exécutées maintenant (isolation, blocage, désactivation de compte),
@@ -640,13 +743,10 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
 
     # Note d'analyse, dans un répertoire dédié. Après la remédiation : le récap
     # des actions exécutées en dépend.
-    rd = case.add_notes_directory(directory_name="Analyse IA", cid=case_id)
-    dir_id = rd.get_data()["id"] if rd.is_success() else None
     contenu = (_note_fp(triage, _regle_whitelist(conn, alertes)) if fp
                else _note_tp(conn, incident, triage, alertes))
     titre = "Analyse — Faux positif" if fp else "Rapport d'analyse"
-    case.add_note(note_title=titre, note_content=contenu,
-                  directory_id=dir_id, cid=case_id)
+    _poser_note(case, case_id, titre, contenu)
 
     # Timeline : la kill chain, évènement par règle (TP seulement — un FP n'a
     # pas de chronologie d'attaque à reconstituer).
@@ -657,32 +757,103 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     return case_id
 
 
-SELECT_A_TRAITER = """
+def rafraichir_case(conn, incident: dict, triage: dict) -> int:
+    """Met à jour le case existant d'un incident enrichi de nouvelles alertes.
+
+    C'est l'autre moitié du correctif anti-doublon : quand une salve d'une
+    intrusion en cours est rattachée à un incident qui a DÉJÀ un case (cf.
+    correlate._rattacher_existants + needs_refresh), on complète ce case au
+    lieu d'en ouvrir un second. IOC manquants ajoutés, timeline reconstruite,
+    note d'analyse et description remises à jour, tag hostname réaffirmé.
+    """
+    case_id = incident["iris_case_id"]
+    alertes = _alertes(conn, incident["id"])
+    fp = triage["verdict"] == "false_positive"
+
+    case = _client()
+    desc = (f"Incident #{incident['id']} corrélé par le soc-agent, "
+            f"{incident['alert_count']} alertes, niveau max "
+            f"{incident['max_level']}/15. Verdict IA : {triage['verdict']}. "
+            "(mis à jour — nouvelles alertes rattachées)")
+    try:
+        case.update_case(case_id=case_id, case_description=desc)
+    except Exception as e:  # noqa: BLE001
+        log.debug("maj description case #%s : %s", case_id, e)
+
+    _taguer(case, case_id, incident.get("agent_name"))
+    _poser_iocs(case, case_id, alertes)
+
+    # Remédiation rejouée : idempotente (clé unique incident/action/cible), elle
+    # ne couvre que d'éventuelles nouvelles cibles apparues avec la salve.
+    if not fp:
+        try:
+            from . import mitigate
+            mitigate.executer(incident["id"])
+        except Exception as e:  # noqa: BLE001
+            log.warning("remédiation refresh #%s : %s", incident["id"], e)
+
+    contenu = (_note_fp(triage, _regle_whitelist(conn, alertes)) if fp
+               else _note_tp(conn, incident, triage, alertes))
+    titre = "Analyse — Faux positif" if fp else "Rapport d'analyse"
+    _poser_note(case, case_id, titre, contenu)
+
+    if not fp:
+        _reconstruire_timeline(case, case_id, alertes, incident["agent_id"])
+
+    conn.execute(
+        "UPDATE incidents SET needs_refresh = false, status = %s WHERE id = %s",
+        ("fp_classe" if fp else "case_ouvert", incident["id"]))
+    conn.commit()
+    return case_id
+
+
+# Deux populations : les incidents SANS case (à créer) et ceux qui ont un case
+# mais ont gagné des alertes depuis (needs_refresh → à mettre à jour, pas à
+# dupliquer). Même forme de ligne pour les deux, on ajoute iris_case_id.
+_SELECT_BASE = """
 SELECT DISTINCT ON (i.id)
        i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
-       i.alert_count, i.max_level, i.mitre_tactics, i.entities,
+       i.alert_count, i.max_level, i.mitre_tactics, i.entities, i.iris_case_id,
        t.verdict, t.confidence, t.mitre, t.actions, t.reason
   FROM incidents i
   JOIN triages t ON t.incident_id = i.id
- WHERE i.iris_case_id IS NULL
+ WHERE {filtre}
    AND (%(un_seul)s::bigint IS NULL OR i.id = %(un_seul)s)
  ORDER BY i.id, t.created_at DESC
 """
+SELECT_A_TRAITER = _SELECT_BASE.format(filtre="i.iris_case_id IS NULL")
+SELECT_A_RAFRAICHIR = _SELECT_BASE.format(
+    filtre="i.iris_case_id IS NOT NULL AND i.needs_refresh")
 
 
 def creer_cases(un_seul: int | None = None) -> list[tuple[int, int, str]]:
-    """Crée les cases manquants. Retourne (incident_id, case_id, verdict)."""
-    crees: list[tuple[int, int, str]] = []
+    """Crée les cases manquants ET met à jour ceux des incidents enrichis.
+
+    Retourne (incident_id, case_id, verdict). Un incident déjà versé dans IRIS
+    qui a gagné des alertes (needs_refresh) voit son case COMPLÉTÉ, jamais
+    dupliqué.
+    """
+    faits: list[tuple[int, int, str]] = []
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-        lignes = conn.execute(SELECT_A_TRAITER, {"un_seul": un_seul}).fetchall()
-        for inc in lignes:
+        a_creer = conn.execute(SELECT_A_TRAITER, {"un_seul": un_seul}).fetchall()
+        for inc in a_creer:
             triage = {k: inc[k] for k in
                       ("verdict", "confidence", "mitre", "actions", "reason")}
             case_id = creer_case(conn, inc, triage)
-            crees.append((inc["id"], case_id, inc["verdict"]))
+            faits.append((inc["id"], case_id, inc["verdict"]))
             print(f"  incident #{inc['id']} -> case IRIS #{case_id} "
                   f"({inc['verdict']})")
-    return crees
+
+        a_rafraichir = conn.execute(
+            SELECT_A_RAFRAICHIR, {"un_seul": un_seul}).fetchall()
+        for inc in a_rafraichir:
+            triage = {k: inc[k] for k in
+                      ("verdict", "confidence", "mitre", "actions", "reason")}
+            case_id = rafraichir_case(conn, inc, triage)
+            faits.append((inc["id"], case_id, inc["verdict"]))
+            print(f"  incident #{inc['id']} -> case IRIS #{case_id} MAJ "
+                  f"({inc['verdict']}, {inc['alert_count']} alertes)")
+    return faits
 
 
 def main() -> None:

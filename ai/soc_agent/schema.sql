@@ -167,6 +167,16 @@ CREATE INDEX IF NOT EXISTS whitelist_active ON whitelist_rules (active);
 -- créé ; sert de garde anti-doublon au cycle.
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS iris_case_id bigint;
 
+-- Marqueur « l'incident a gagné de nouvelles alertes depuis son dernier
+-- traitement ». Posé par la corrélation quand une salve d'une intrusion EN
+-- COURS est rattachée à un incident déjà formé (le découpage en lots du cycle
+-- ne doit pas rouvrir un incident neuf par salve). Consommé par le triage (on
+-- rejoue le verdict) puis par IRIS (on MET À JOUR le case existant au lieu
+-- d'en créer un doublon), qui le remet à false.
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS needs_refresh boolean NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS incidents_needs_refresh
+    ON incidents (needs_refresh) WHERE needs_refresh;
+
 -- ---------------------------------------------------------------------------
 -- Pseudonymisation avant envoi au LLM cloud (DeepSeek)
 -- ---------------------------------------------------------------------------

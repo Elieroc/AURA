@@ -10,7 +10,7 @@ le plus cher, et elle doit rester vérifiable sans infrastructure.
 
 from datetime import datetime, timedelta, timezone
 
-from soc_agent.correlate import _grouper, point_commun
+from soc_agent.correlate import _graine_valide, _grouper, point_commun
 
 T0 = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
 
@@ -114,3 +114,34 @@ def test_lien_fort_prioritaire_sur_lien_faible():
     a = alerte(srcip="1.2.3.4")
     b = alerte(minutes=1, srcip="1.2.3.4")
     assert point_commun(a, b) == ("même IP source", True)
+
+
+# --- Filtrage des graines : le bruit structurel n'ouvre pas d'incident -------
+
+def test_graine_bruit_sca_refusee():
+    """Un check de conformité CIS/SCA ne fonde jamais un case, même remonté."""
+    a = alerte(rule="19001", level=12, groups=("sca",), tactics=(),
+               entity=None)
+    a["rule_desc"] = "CIS Debian benchmark: ensure X"
+    assert _graine_valide(a) is False
+
+
+def test_graine_bruit_statut_agent_refusee():
+    a = alerte(rule="503", level=12, groups=("ossec",), tactics=())
+    a["rule_desc"] = "Wazuh agent stopped."
+    assert _graine_valide(a) is False
+
+
+def test_graine_bruit_login_reussi_refusee():
+    a = alerte(rule="5715", level=12, groups=("authentication_success",),
+               tactics=())
+    a["rule_desc"] = "sshd: authentication success."
+    assert _graine_valide(a) is False
+
+
+def test_graine_intrusion_reelle_acceptee():
+    """Un vrai signal d'intrusion (reverse shell) reste une graine valide."""
+    a = alerte(rule="100721", level=12, groups=("attack",),
+               tactics=("Execution",))
+    a["rule_desc"] = "Reverse shell probable : /dev/tcp"
+    assert _graine_valide(a) is True
