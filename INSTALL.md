@@ -61,30 +61,3 @@ cp .env.example .env
 $EDITOR .env
 docker compose up -d --build db soc-agent-cycle soc-agent-reconcile soc-agent-whitelist-task
 ```
-
-## 6. Serveur MCP Wazuh (optionnel, investigation Claude Code)
-
-```bash
-cd mcp
-git clone https://github.com/gensecaihq/Wazuh-MCP-Server.git wazuh-mcp-server
-cd wazuh-mcp-server
-git checkout $(cat ../patches/UPSTREAM_COMMIT)
-git apply ../patches/ar-command-name.patch
-cp ../compose.override.yml .
-cp ../env.example .env
-$EDITOR .env
-docker compose up -d --build
-```
-
-```bash
-docker compose exec -T wazuh-main-server python -c "
-import os,jwt,datetime
-sk=os.environ['AUTH_SECRET_KEY']
-now=datetime.datetime.now(datetime.timezone.utc)
-print(jwt.encode({'sub':'claude-code','iat':now.timestamp(),
-  'exp':(now+datetime.timedelta(days=365)).timestamp(),
-  'scope':'wazuh:read wazuh:write'},sk,algorithm='HS256'))
-"
-claude mcp add --scope local --transport http wazuh http://127.0.0.1:3000/mcp \
-  --header "Authorization: Bearer <jeton>"
-```
