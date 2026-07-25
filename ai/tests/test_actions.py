@@ -5,7 +5,7 @@ la production. Ils doivent être vérifiables sans modèle ni base — c'est
 précisément ce qui les rend fiables.
 """
 
-from soc_agent.actions import deduire, necessite_validation
+from soc_agent.actions import deduire, actions_fort_impact
 from soc_agent.coherence import verifier
 
 
@@ -44,7 +44,7 @@ def test_isolation_passe_en_premier():
 def test_actions_a_fort_impact_signalees():
     actions = deduire("true_positive",
                       ["propose_isolate_host", "collect_endpoint_evidence"])
-    a_valider = necessite_validation(actions)
+    a_valider = actions_fort_impact(actions)
     assert "propose_isolate_host" in a_valider
     # La collecte est en lecture seule et l'ouverture d'un case sans effet sur
     # la production : ni l'une ni l'autre n'a à passer par une validation.

@@ -330,10 +330,12 @@ note d'analyse, selon le verdict :
 - **Faux positif** → note expliquant pourquoi, et l'**exception de whitelist**
   si le pipeline en a créé une pour cette signature (état, `match_all`, motif).
 - **Vrai positif** → **rapport généré par le LLM** (`prompts/report.gbnf`) :
-  résumé, analyse, puis les **actions de remédiation** proposées (celles à fort
-  impact marquées « validation humaine requise »), et une **piste de règle
-  Wazuh** si le modèle repère un angle mort de détection — une proposition pour
-  l'analyste, jamais une règle déployée.
+  résumé, analyse, puis les **actions de remédiation** exécutées automatiquement
+  (celles à fort impact — isolation, blocage, désactivation — signalées comme
+  telles dans le rapport, mais bien **exécutées** : XDR autonome, garde-fous
+  déterministes et non validation humaine), et une **piste de règle Wazuh** si
+  le modèle repère un angle mort de détection — la règle, elle, ne se déploie
+  jamais seule : PR git + merge humain.
 
 `incidents.iris_case_id` garde le lien et évite les doublons. Si le LLM est
 injoignable, le case se crée quand même, avec la justification du triage en
@@ -348,8 +350,10 @@ guise de rapport.
 
 `evaluate.py` refuse de conclure sous 30 incidents labellisés : un « 100 % »
 sur quatre cas n'a pas de sens. Le golden set d'environ 200 alertes reste le
-prérequis. Et même une justesse suffisante n'autorise pas l'automatisation
-seule : c'est une décision humaine, par niveau d'autonomie.
+prérequis. Une justesse suffisante permet d'**activer l'automatisation**, par
+niveau d'autonomie configurable ; une fois un niveau actif, les actions
+correspondantes partent seules — ce qui gouverne, c'est la justesse mesurée,
+pas une validation humaine par action.
 
 ## Attention
 

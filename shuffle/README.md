@@ -24,7 +24,7 @@ Webhook ──► auth_wazuh (POST /security/user/authenticate?raw=true)
 
 Workflow id `a1697bc2-596d-4f87-ac9b-4b3fa1ab6c9c`, webhook `webhook_00000000-0000-0000-0000-00000000a001`.
 
-Déclenchement (décision humaine — jamais automatique, cf. CLAUDE.md) :
+Déclenchement : **automatique** par le soc-agent (`mitigate.py`) sur verdict vrai positif (XDR autonome, cf. CLAUDE.md), ou manuellement par un opérateur pour test/urgence :
 
 ```bash
 # Isoler l'agent 001
