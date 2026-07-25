@@ -1,15 +1,15 @@
 """Un cycle complet du pipeline : ingest -> correlate -> triage.
 
-Point d'entrée du déclenchement périodique (timer systemd, cf. ai/llm/ et le
-service soc-agent-cycle). Enchaîne les trois étapes déjà écrites, dans une
-seule exécution, avec un verrou pour qu'un cycle lent ne se superpose pas au
-suivant.
+Point d'entrée du déclenchement périodique (conteneur soc-agent-cycle, cf.
+ai/docker-compose.yml — boucle shell toutes les 5 min). Enchaîne les trois
+étapes déjà écrites, dans une seule exécution, avec un verrou pour qu'un cycle
+lent ne se superpose pas au suivant.
 
     python -m soc_agent.cycle
 
-Conçu pour être lancé en boucle par un timer : chaque étape reprend là où elle
-en est (curseur d'ingestion, alertes non corrélées, incidents non triés), donc
-rejouer le cycle ne duplique rien.
+Conçu pour être lancé en boucle : chaque étape reprend là où elle en est
+(curseur d'ingestion, alertes non corrélées, incidents non triés), donc rejouer
+le cycle ne duplique rien.
 """
 
 import argparse
@@ -20,7 +20,7 @@ import psycopg
 
 from . import config, correlate, ingest, iris, triage, whitelist
 
-# Journalisé sur stderr -> capté par journald quand lancé en service systemd.
+# Journalisé sur stderr -> capté par `docker compose logs` du conteneur.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",

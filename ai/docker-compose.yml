@@ -8,6 +8,27 @@
 # Wazuh ; on tire depuis l'indexer, donc le curseur en base joue déjà le rôle
 # de tampon et rien ne se perd si le soc-agent est arrêté. Redis reviendra
 # quand il y aura plusieurs workers à alimenter.
+#
+# Jobs périodiques (cycle/reconcile/whitelist-task) : un conteneur par job,
+# boucle shell (`while true; do ...; sleep N; done`) — remplace les anciens
+# timers systemd utilisateur, même cadence, même verrou consultatif Postgres
+# anti-chevauchement (déjà dans chaque module). network_mode: host car
+# Postgres/indexer Wazuh/API Wazuh/IRIS/Shuffle sont tous publiés sur la
+# loopback de l'hôte par leurs stacks docker respectives (wazuh/, iris/,
+# shuffle/, compose séparés) : évite de rejoindre 3 networks externes et de
+# réécrire .env.
+x-soc-agent: &soc-agent
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: soc-agent:latest
+  env_file: .env
+  network_mode: host
+  restart: unless-stopped
+  depends_on:
+    db:
+      condition: service_healthy
+
 services:
   db:
     image: postgres:16-alpine
@@ -29,6 +50,29 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # ingest -> correlate -> triage -> whitelist auto -> cases IRIS, en une
+  # exécution. Cadence identique à l'ancien soc-agent-cycle.timer (5 min).
+  soc-agent-cycle:
+    <<: *soc-agent
+    container_name: soc-agent-cycle
+    command: sh -c "while true; do python -m soc_agent.cycle; sleep 300; done"
+
+  # Défait les remédiations dont la tâche IRIS est passée en 'Canceled'.
+  # Cadence courte (1 min, comme l'ancien soc-agent-reconcile.timer) : une
+  # désisolation/déblocage demandée par l'analyste doit être réactive.
+  soc-agent-reconcile:
+    <<: *soc-agent
+    container_name: soc-agent-reconcile
+    command: >
+      sh -c "while true; do python -m soc_agent.mitigate --reconcilier; sleep 60; done"
+
+  # Traite les tâches IRIS WHITELIST passées en 'To do'. Même cadence courte
+  # que reconcile (ancien soc-agent-whitelist-task.timer).
+  soc-agent-whitelist-task:
+    <<: *soc-agent
+    container_name: soc-agent-whitelist-task
+    command: sh -c "while true; do python -m soc_agent.whitelist_task; sleep 60; done"
 
 volumes:
   socagent_db:
