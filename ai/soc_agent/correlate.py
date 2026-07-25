@@ -13,6 +13,7 @@ un analyste et qu'il peut contester.
 """
 
 import argparse
+import re
 from datetime import timedelta
 
 import psycopg
@@ -26,6 +27,38 @@ GROUPES_GENERIQUES = {
     "syscheck", "ossec", "linux", "windows", "syslog", "authentication_failed",
     "pci_dss", "gdpr", "hipaa", "nist_800_53", "tsc", "gpg13",
 }
+
+# Groupes qui ne caractérisent JAMAIS une intrusion à eux seuls : posture de
+# conformité (SCA/CIS), vérif d'intégrité de l'hôte (rootcheck), inventaire de
+# vulnérabilités, login réussi. Une alerte purement de ce type ne doit pas
+# OUVRIR un incident — même si un passage bas niveau la remonte au-dessus du
+# seuil de graine. Elle reste éligible comme alerte RATTACHÉE (contexte d'une
+# intrusion réelle : un login réussi au milieu d'un reverse shell compte).
+GROUPES_NON_GRAINE = {
+    "sca", "rootcheck", "vulnerability-detector", "cis",
+    "authentication_success", "policy_monitoring",
+}
+# Changements d'état d'un agent Wazuh (connecté/démarré/arrêté/déconnecté) :
+# opérationnel, jamais une graine d'incident. Repéré sur la description, les
+# groupes de ces règles étant trop génériques (« ossec ») pour discriminer.
+_RE_STATUT_AGENT = re.compile(
+    r"\bagent (?:connected|started|stopped|disconnected|removed|restarted)\b",
+    re.I)
+
+
+def _graine_valide(a: dict) -> bool:
+    """Une alerte peut-elle OUVRIR un incident (être une graine) ?
+
+    Faux pour le bruit structurel (SCA/CIS, rootcheck, inventaire de vulns,
+    login réussi, statut d'agent) : ces alertes ne sont pas des intrusions,
+    elles ne doivent pas fonder un case. Elles restent rattachables à un
+    incident réel voisin (contexte), mais ne l'amorcent pas.
+    """
+    if set(a.get("rule_groups") or []) & GROUPES_NON_GRAINE:
+        return False
+    if _RE_STATUT_AGENT.search(a.get("rule_desc") or ""):
+        return False
+    return True
 
 # Binaires shell omniprésents : les retenir comme « même objet » fusionnerait
 # deux intrusions distinctes (ou une intrusion et de l'activité shell normale)
@@ -68,11 +101,28 @@ def point_commun(a: dict, b: dict) -> tuple[str, bool] | None:
 
 
 SELECT_NON_RATTACHEES = """
-SELECT id, ts, agent_id, agent_name, rule_id, rule_level, rule_groups,
-       mitre_tactics, srcip, srcuser, entity, audit_uid
+SELECT id, ts, agent_id, agent_name, rule_id, rule_level, rule_desc,
+       rule_groups, mitre_tactics, srcip, srcuser, entity, audit_uid
   FROM alerts
  WHERE incident_id IS NULL AND rule_level >= %s AND NOT suppressed
  ORDER BY agent_id, ts, id
+"""
+
+# Incidents encore « ouvrables » d'un agent : leur dernière alerte n'est pas
+# trop ancienne pour accueillir une nouvelle salve. On charge aussi leurs
+# agrégats, mis à jour en Python au rattachement.
+SELECT_INCIDENTS_OUVRABLES = """
+SELECT id, agent_id, first_seen, last_seen, alert_count, max_level,
+       rule_ids, mitre_tactics, entities
+  FROM incidents
+ WHERE agent_id = ANY(%s) AND last_seen >= %s
+ ORDER BY last_seen DESC
+"""
+
+SELECT_MEMBRES = """
+SELECT id, ts, agent_id, rule_id, rule_level, rule_groups, mitre_tactics,
+       srcip, srcuser, entity, audit_uid, incident_id
+  FROM alerts WHERE incident_id = ANY(%s) ORDER BY ts
 """
 
 INSERT_INCIDENT = """
@@ -225,6 +275,102 @@ def _enrichir(incidents: list[list[dict]], candidats: list[dict]) -> int:
     return rattaches
 
 
+def _rattacher_existants(conn, alertes: list[dict]) -> tuple[list[dict], dict[int, list[dict]]]:
+    """Recolle les alertes non rattachées aux incidents DÉJÀ en base.
+
+    C'est le correctif du doublon de case. Le cycle tourne toutes les 5 min et
+    ne voit à chaque tour que les alertes fraîchement ingérées : sans ce
+    rattrapage, chaque salve d'une intrusion EN COURS rouvre un incident neuf,
+    donc un case IRIS de plus — neuf cases « reverse shell » pour une seule
+    attaque. On rattache donc d'abord chaque nouvelle alerte à un incident
+    récent du même agent, avec EXACTEMENT les règles de proximité de `_grouper`
+    (le seul écart entre les deux, c'était la frontière de lot).
+
+    Retourne (restantes, {incident_id: [alertes ajoutées]}, {incident_id: inc}).
+    Ne persiste rien : l'appelant écrit dans la même transaction que le reste.
+    """
+    if not alertes:
+        return alertes, {}, {}
+
+    ecart_faible = timedelta(minutes=config.CORRELATION_GAP_MINUTES)
+    ecart_fort = timedelta(minutes=config.ENTITY_GAP_MINUTES)
+    duree_max = timedelta(hours=config.MAX_INCIDENT_HOURS)
+    fenetre_max = max(ecart_fort, ecart_faible)
+
+    agents = list({a["agent_id"] for a in alertes})
+    ts_min = min(a["ts"] for a in alertes)
+    incs = conn.execute(SELECT_INCIDENTS_OUVRABLES,
+                        (agents, ts_min - fenetre_max)).fetchall()
+    incs_par_id = {i["id"]: i for i in incs}
+    if not incs:
+        return alertes, {}, incs_par_id
+
+    membres = conn.execute(SELECT_MEMBRES, ([i["id"] for i in incs],)).fetchall()
+    par_inc: dict[int, dict] = {i["id"]: {"inc": i, "membres": []} for i in incs}
+    for m in membres:
+        par_inc[m["incident_id"]]["membres"].append(m)
+
+    restantes: list[dict] = []
+    ajouts: dict[int, list[dict]] = {}
+    # Ordre chronologique : une alerte rattachée devient membre pour la
+    # suivante, ce qui chaîne une salve de proche en proche à travers le lot.
+    for a in sorted(alertes, key=lambda x: (x["ts"], x["id"])):
+        cible = None
+        cible_dist = None
+        for iid, e in par_inc.items():
+            if e["inc"]["agent_id"] != a["agent_id"] or not e["membres"]:
+                continue
+            debut = e["membres"][0]["ts"]
+            last = e["membres"][-1]["ts"]
+            if a["ts"] - debut > duree_max:
+                continue
+            depuis = abs(a["ts"] - last)
+            for m in e["membres"][-20:]:
+                lien = point_commun(a, m)
+                if lien is None:
+                    continue
+                _, fort = lien
+                if depuis <= (ecart_fort if fort else ecart_faible):
+                    if cible_dist is None or depuis < cible_dist:
+                        cible, cible_dist = iid, depuis
+                    break
+        if cible is None:
+            restantes.append(a)
+        else:
+            par_inc[cible]["membres"].append(a)
+            ajouts.setdefault(cible, []).append(a)
+
+    return restantes, ajouts, incs_par_id
+
+
+def _appliquer_ajouts(conn, incs_par_id: dict[int, dict],
+                      ajouts: dict[int, list[dict]]) -> None:
+    """Persiste les rattachements aux incidents existants et pose needs_refresh.
+
+    Met à jour les agrégats de l'incident (fenêtre, compte, niveau max, unions
+    de règles/tactiques/objets) et marque `needs_refresh` : le triage rejouera
+    le verdict et IRIS mettra à jour le case au lieu d'en créer un doublon.
+    """
+    for iid, nouvelles in ajouts.items():
+        inc = incs_par_id[iid]
+        conn.execute("UPDATE alerts SET incident_id = %s WHERE id = ANY(%s)",
+                     (iid, [a["id"] for a in nouvelles]))
+        rules = sorted(set(inc["rule_ids"]) | {a["rule_id"] for a in nouvelles})
+        tacs = sorted(set(inc["mitre_tactics"])
+                      | {t for a in nouvelles for t in (a["mitre_tactics"] or [])})
+        ents = sorted(set(inc["entities"])
+                      | {a["entity"] for a in nouvelles if a["entity"]})[:50]
+        conn.execute(
+            "UPDATE incidents SET last_seen = %s, first_seen = %s, "
+            "alert_count = alert_count + %s, max_level = %s, rule_ids = %s, "
+            "mitre_tactics = %s, entities = %s, needs_refresh = true WHERE id = %s",
+            (max([inc["last_seen"]] + [a["ts"] for a in nouvelles]),
+             min([inc["first_seen"]] + [a["ts"] for a in nouvelles]),
+             len(nouvelles),
+             max([inc["max_level"]] + [a["rule_level"] for a in nouvelles]),
+             rules, tacs, ents, iid))
+
+
 def correler(min_level: int, attach_min_level: int | None = None) -> tuple[int, int]:
     if attach_min_level is None:
         attach_min_level = config.ATTACH_MIN_LEVEL
@@ -237,8 +383,18 @@ def correler(min_level: int, attach_min_level: int | None = None) -> tuple[int, 
         if not alertes:
             return 0, 0
 
-        graines = [a for a in alertes if a["rule_level"] >= min_level]
-        candidats = [a for a in alertes if a["rule_level"] < min_level]
+        # 1) Rattrapage : recoller aux incidents déjà en base (anti-doublon de
+        # case). Ce qui reste sera groupé en incidents neufs ci-dessous.
+        alertes, ajouts, incs_par_id = _rattacher_existants(conn, alertes)
+        _appliquer_ajouts(conn, incs_par_id, ajouts)
+
+        # 2) Nouveaux incidents à partir du reste. Le bruit structurel
+        # (SCA/rootcheck/statut d'agent/login réussi) ne peut PAS être une
+        # graine, même remonté au-dessus du seuil : il n'ouvre pas de case.
+        graines_ids = {a["id"] for a in alertes
+                       if a["rule_level"] >= min_level and _graine_valide(a)}
+        graines = [a for a in alertes if a["id"] in graines_ids]
+        candidats = [a for a in alertes if a["id"] not in graines_ids]
 
         incidents = _grouper(graines)
         if candidats and incidents:
@@ -269,7 +425,8 @@ def correler(min_level: int, attach_min_level: int | None = None) -> tuple[int, 
             )
         conn.commit()
 
-    correlees = sum(len(g) for g in incidents)
+    rattachees = sum(len(v) for v in ajouts.values())
+    correlees = sum(len(g) for g in incidents) + rattachees
     return len(incidents), correlees
 
 
@@ -313,9 +470,12 @@ def main() -> None:
         recommencer()
 
     n_inc, n_alertes = correler(args.min_level, args.attach_min_level)
-    if n_alertes:
-        print(f"{n_alertes} alertes -> {n_inc} incidents "
-              f"(facteur {n_alertes / n_inc:.1f})")
+    if n_alertes and n_inc:
+        print(f"{n_alertes} alertes -> {n_inc} incidents neufs "
+              f"(facteur {n_alertes / n_inc:.1f}), rattachements aux existants inclus")
+    elif n_alertes:
+        print(f"{n_alertes} alertes rattachées à des incidents existants, "
+              "aucun incident neuf.")
     else:
         print("Aucune alerte à corréler.")
 

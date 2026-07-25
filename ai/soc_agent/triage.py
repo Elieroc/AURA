@@ -81,7 +81,9 @@ SELECT_INCIDENTS = """
 SELECT i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
        i.alert_count, i.max_level, i.rule_ids, i.mitre_tactics, i.entities
   FROM incidents i
- WHERE (%(tous)s OR NOT EXISTS (SELECT 1 FROM triages t WHERE t.incident_id = i.id))
+ WHERE (%(tous)s
+        OR NOT EXISTS (SELECT 1 FROM triages t WHERE t.incident_id = i.id)
+        OR i.needs_refresh)          -- incident enrichi depuis son dernier triage
    AND (%(un_seul)s::bigint IS NULL OR i.id = %(un_seul)s)
    AND i.max_level >= %(min_level)s
  ORDER BY i.max_level DESC, i.first_seen DESC
