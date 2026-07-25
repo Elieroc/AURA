@@ -328,6 +328,50 @@ def _uids_suspects(alertes: list[dict]) -> set[str]:
     return non_root or uids
 
 
+# Commandes émises par la machinerie de session/login (systemd --user, gpg-agent,
+# dbus), jamais par un shell d'attaquant. Le même uid porte la session légitime
+# ET l'attaque : ce filtre écarte le résidu de bruit de login qui tomberait dans
+# la fenêtre d'attaque. Best-effort, ancré sur le binaire (pas une simple
+# mention) pour ne pas masquer une commande d'attaquant qui les nommerait.
+_RE_BRUIT_SESSION = re.compile(
+    r"\b(?:gpgconf|gpg-agent|dbus-launch|dbus-update-activation-environment|"
+    r"systemd-xdg-autostart-generator)\b"
+    r"|/usr/lib/systemd/"
+    r"|systemctl\s+--user\s+set-environment"
+    r"|enable-ssh-support"       # probe de config gpg-agent (ssh), bruit de login
+    r"|^(?:systemd|30-systemd-envi)$",
+    re.I)
+
+
+def _clusters_lies_attaque(occ: list[tuple], anchors: list, gap) -> list[tuple]:
+    """Ne garde que les commandes rattachées à l'attaque.
+
+    `occ` : (ts, cmd) triés par ts. On segmente en clusters séparés par un
+    silence > `gap`, et on ne conserve que ceux qui touchent (à moins de `gap`)
+    une alerte malveillante (`anchors`, timestamps des alertes HIGH). Le bruit
+    de session sous le même uid, isolé par un silence plus long, est écarté.
+    Sans anchor, on ne filtre pas (on ne sait pas où est l'attaque).
+    """
+    if not occ or not anchors:
+        return occ
+
+    def touche(cluster: list[tuple]) -> bool:
+        return any(min(abs(t - a) for a in anchors) <= gap for t, _ in cluster)
+
+    gardees: list[tuple] = []
+    cluster = [occ[0]]
+    for prec, cur in zip(occ, occ[1:]):
+        if cur[0] - prec[0] <= gap:
+            cluster.append(cur)
+        else:
+            if touche(cluster):
+                gardees += cluster
+            cluster = [cur]
+    if touche(cluster):
+        gardees += cluster
+    return gardees
+
+
 def _section_commandes(alertes: list[dict]) -> str:
     """Historique des commandes de l'attaquant, reconstitué depuis auditd.
 
@@ -336,13 +380,19 @@ def _section_commandes(alertes: list[dict]) -> str:
     déroule ici l'énumération et l'exploitation (find SUID, cat /etc/shadow,
     useradd, systemctl…) que les seules règles HIGH ne montraient pas.
 
-    Filtré sur l'uid du compte compromis (déduit des alertes HIGH) pour écarter
-    le bruit de fond — sessions de login, démons, générateurs systemd. À défaut
-    d'uid identifié, on retombe sur le flux complet. Déterministe, note locale.
+    Deux filtres pour ne montrer QUE l'attaque, pas la session légitime du même
+    compte : (1) rattachement temporel — on ne garde que les commandes formant
+    un cluster contigu autour d'une alerte malveillante (`_clusters_lies_attaque`),
+    ce qui écarte le burst d'init de login (gpg-agent, générateurs systemd) ;
+    (2) filtre catégoriel — les commandes de la machinerie de session résiduelles
+    tombées dans la fenêtre (`_RE_BRUIT_SESSION`). L'uid du compte compromis borne
+    déjà le périmètre. Déterministe, note locale.
     """
     uids = _uids_suspects(alertes)
-    vus: set[str] = set()
-    cmds: list[tuple] = []
+    anchors = [a["ts"] for a in alertes if a["rule_level"] >= config.MIN_LEVEL]
+    gap = timedelta(seconds=config.COMMAND_CLUSTER_GAP_S)
+
+    occ: list[tuple] = []
     for a in sorted(alertes, key=lambda x: x["ts"]):
         raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
         audit = raw.get("data", {}).get("audit", {}) or {}
@@ -351,10 +401,20 @@ def _section_commandes(alertes: list[dict]) -> str:
         cmd = _decoder_proctitle(raw.get("full_log") or "").strip()
         if not cmd:
             cmd = str(audit.get("command") or "").strip()
-        if not cmd or cmd in vus:
+        if not cmd or _RE_BRUIT_SESSION.search(cmd):
+            continue
+        occ.append((a["ts"], cmd))
+
+    # Rattachement à l'attaque, PUIS dédup (une commande vue dans le bruit ET
+    # dans l'attaque doit être conservée avec son ts d'attaque).
+    occ = _clusters_lies_attaque(occ, anchors, gap)
+    vus: set[str] = set()
+    cmds: list[tuple] = []
+    for ts, cmd in occ:
+        if cmd in vus:
             continue
         vus.add(cmd)
-        cmds.append((a["ts"], cmd))
+        cmds.append((ts, cmd))
 
     if not cmds:
         return ("## Commandes exécutées (auditd)\n\nAucune commande "
@@ -366,7 +426,7 @@ def _section_commandes(alertes: list[dict]) -> str:
         "## Commandes exécutées (auditd)",
         "",
         f"{len(cmds)} commandes distinctes reconstituées depuis le proctitle "
-        f"auditd ({portee}), ordre chronologique :",
+        f"auditd ({portee}), rattachées à l'attaque, ordre chronologique :",
         "",
         "```",
     ]

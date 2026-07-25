@@ -187,6 +187,15 @@ ENTITY_GAP_MINUTES = int(os.environ.get("ENTITY_GAP_MINUTES", "360"))
 # les 25 minutes fusionnerait une semaine entière en un seul incident illisible.
 MAX_INCIDENT_HOURS = int(os.environ.get("MAX_INCIDENT_HOURS", "6"))
 
+# Reconstruction des commandes (rapport IRIS) : le compte compromis est souvent
+# aussi une session légitime (le même uid génère du bruit de login — gpg-agent,
+# générateurs systemd). On ne montre que les commandes RATTACHÉES à l'attaque :
+# celles qui forment un cluster temporel (gap max ci-dessous) touchant une
+# alerte malveillante. Le bruit de session, séparé par un silence plus long,
+# est écarté. Assez large pour garder une chaîne recon→exploit→persistance
+# contiguë, assez court pour couper le burst d'init de session.
+COMMAND_CLUSTER_GAP_S = int(os.environ.get("COMMAND_CLUSTER_GAP_S", "60"))
+
 # --- Whitelist automatique --------------------------------------------------
 #
 # Nombre d'incidents distincts jugés false_positive, sur une même signature,
