@@ -10,13 +10,20 @@ incident vrai positif, on :
 3. la trace en base (`mitigations`) : audit + idempotence.
 
 Sécurité — ceci exécute des actions à fort impact sur la prod à partir d'un
-verdict de modèle. Trois barrières AVANT toute exécution :
+verdict de modèle, DE FAÇON AUTONOME (but du projet : XDR autonome). Les
+barrières ne sont pas un accord humain a priori, mais des garde-fous
+déterministes :
 
-- `MITIGATE_EXECUTE=false` par défaut : dry-run, rien n'est déclenché.
+- `MITIGATE_EXECUTE=true` : les remédiations sont réellement déclenchées, y
+  compris les actions à fort impact (isolation, blocage, désactivation). Mettre
+  à `false` pour un dry-run global (bac à sable), pas pour exiger un humain.
 - Un incident dont le triage a relevé des motifs d'injection est SUSPENDU :
   un verdict rendu sur un contexte manipulé ne commande pas d'action réelle.
-- Seules les actions de remédiation de l'énumération fermée sont exécutables ;
-  open_case / close / escalate ne passent pas par ici.
+- Comptes protégés (`_compte_protege`) jamais désactivés, niveau de clôture
+  plafonné, cibles internes exclues du blocage : la sûreté tient à des règles
+  vérifiables dans le code, pas à une revue humaine.
+- Seules les actions de l'énumération fermée sont exécutables ; open_case /
+  close / escalate ne passent pas par ici.
 
     python -m soc_agent.mitigate --incident 15
     MITIGATE_EXECUTE=true python -m soc_agent.mitigate --incident 15

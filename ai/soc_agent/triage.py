@@ -17,7 +17,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from . import config
-from .actions import appliquer_garde_fous, deduire, necessite_validation
+from .actions import appliquer_garde_fous, deduire, actions_fort_impact
 from .anonymize import (Anonymiseur, FuiteError, anonymiser, rehydrater,
                         verifier_fuite)
 from .coherence import verifier
@@ -247,9 +247,10 @@ def trier(limite: int, un_seul: int | None, tous: bool,
                 print(f"      /!\\ motifs d'injection : {', '.join(injections)}")
             for g in garde_fous:
                 print(f"      GARDE-FOU {g}")
-            a_valider = necessite_validation(actions)
-            if a_valider:
-                print(f"      validation humaine requise : {', '.join(a_valider)}")
+            fort_impact = actions_fort_impact(actions)
+            if fort_impact:
+                print(f"      actions à fort impact (exécutées, autonomes) : "
+                      f"{', '.join(fort_impact)}")
             print(f"      {verdict['reason'][:160]}")
             if incoherences:
                 print(f"      /!\\ incohérence : {'; '.join(incoherences)}")

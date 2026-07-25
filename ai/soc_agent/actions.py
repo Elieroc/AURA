@@ -9,8 +9,10 @@ Le modèle ne juge donc que ce qui demande un jugement : le verdict, la
 confiance, et les remédiations qui s'appliquent.
 """
 
-# Actions qui touchent la production. Aucune n'est exécutable sans validation
-# humaine ; la liste sert à savoir ce qu'il faut faire valider.
+# Actions qui touchent la production. Elles sont exécutées de façon AUTONOME
+# (XDR autonome, cf. mitigate.py) ; la liste ne sert pas à réclamer un accord
+# humain, mais à les SIGNALER comme telles dans le rapport et à les ordonner
+# par urgence. Leur sûreté tient à des garde-fous déterministes, pas à un clic.
 ACTIONS_A_FORT_IMPACT = {
     "propose_isolate_host",     # coupe l'hôte du réseau
     "propose_disable_user",     # verrouille un compte
@@ -50,8 +52,12 @@ def deduire(verdict: str, actions_modele: list[str]) -> list[str]:
     return sorted(actions, key=lambda a: ORDRE.index(a) if a in ORDRE else 99)
 
 
-def necessite_validation(actions: list[str]) -> list[str]:
-    """Actions qui ne partiront jamais sans accord humain explicite."""
+def actions_fort_impact(actions: list[str]) -> list[str]:
+    """Actions à fort impact présentes, pour les SIGNALER dans le rapport.
+
+    Elles sont exécutées automatiquement (pas de validation humaine) ; ce filtre
+    sert seulement à les mettre en évidence pour l'analyste qui lit le case.
+    """
     return [a for a in actions if a in ACTIONS_A_FORT_IMPACT]
 
 

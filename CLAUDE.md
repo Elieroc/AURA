@@ -8,7 +8,7 @@ SOC piloté par IA locale. Détection Wazuh + enrichissement threat intel + auto
   - **GeoIP** — enrichissement géoloc des IP sources (module Wazuh GeoIP / MaxMind GeoLite2).
   - **VirusTotal (VT)** — enrichissement réputation fichiers/hash/IP via API VT.
   - **AbuseIPDB** — enrichissement réputation IP (score abus, historique reports).
-- **Shuffle** — SOAR pour l'orchestration des remédiations (`shuffle/`). Workflow "Wazuh - Host Isolation" : webhook → API Wazuh → active response `host-isolate.sh`/`host-unisolate.sh` (nftables) sur l'agent. Déclenchement manuel uniquement.
+- **Shuffle** — SOAR pour l'orchestration des remédiations (`shuffle/`). Workflow "Wazuh - Host Isolation" : webhook → API Wazuh → active response `host-isolate.sh`/`host-unisolate.sh` (nftables) sur l'agent. Déclenché **automatiquement** par le soc-agent (`mitigate.py`) sur verdict vrai positif — pas de validation humaine (XDR autonome, cf. plus bas). Un déclenchement opérateur manuel reste possible (`mitigate --isoler`).
 - **DFIR-IRIS** (`iris/`) — case management. Un case par incident trié (`soc_agent.iris`, en `dfir-iris-client` direct) : IOC + note d'analyse. FP → explication + exception whitelist ; TP → rapport LLM (résumé, analyse, remédiation, piste de règle si angle mort). Retenu contre TheHive 5 (partiellement sous licence commerciale, et 6–8 Go de RAM contre ~650 Mo). API « legacy » `/manage/*` — **pas de `/api/v2` en v2.4.27**. Serveur **MCP IRIS** (`iris/mcp/`, srozb/iris-mcp, stdio) pour l'investigation interactive — distinct de la création auto.
 - **IA locale** — **pas de GPU sur cet hôte** (Ryzen 8c/16t AVX-512, 30 Go RAM partagés avec toute la stack). Conséquences structurantes :
   - Runtime : **llama.cpp** (et pas vLLM, dont le backend CPU est faible). Grammaires GBNF pour garantir le JSON, prefix caching par slots.
@@ -20,21 +20,21 @@ SOC piloté par IA locale. Détection Wazuh + enrichissement threat intel + auto
   - **L'IA ne traite que les alertes de niveau HIGH/CRITICAL.**
   - **Rules creator** — génère/propose règles Wazuh (decoders/rules XML). Jamais d'écriture directe : validation `wazuh-logtest` + rejeu de régression → PR git → merge humain.
   - **Whitelist** — propose/gère exceptions (faux positifs récurrents, IP/hosts de confiance), même flux PR.
-  - **Mitigation** — propose actions de remédiation (blocage IP, isolation host, etc.) — décision finale reste humaine sauf si explicitement automatisée.
+  - **Mitigation** — exécute les actions de remédiation (blocage IP, isolation host, désactivation de compte) **de façon autonome** dès le verdict vrai positif (`MITIGATE_EXECUTE=true`), y compris les actions à fort impact. C'est le but du projet : un XDR autonome, pas un assistant qui attend un clic. La sûreté ne vient pas d'un accord humain a priori mais de **garde-fous déterministes** dans le code (`actions.appliquer_garde_fous`, comptes protégés, cibles internes exclues, suspension sur injection).
 
 ## Investigation sur les endpoints par l'IA
 
 L'IA doit pouvoir aller chercher des infos sur la machine d'un agent (FP ou pas, contexte d'un événement). Le choix est arrêté : **collecteurs read-only en active response Wazuh, exposés comme outils MCP typés** — ni accès SSH piloté par le LLM, ni un workflow Shuffle par question.
 
 - Pas de SSH : `host-isolate.sh` ne laisse joignable que le manager, donc le SSH tombe précisément quand on veut investiguer. Le canal Wazuh 1514 survit. Et une clé SSH sur le soc-agent, qui lit des logs contrôlés par l'attaquant, transformerait une prompt injection en shell root sur l'endpoint.
-- Pas de workflow Shuffle par question : l'IA a besoin d'itérer. Shuffle reste réservé aux **actions d'écriture** avec gate humain.
+- Pas de workflow Shuffle par question : l'IA a besoin d'itérer. Shuffle reste réservé aux **actions d'écriture** (remédiations), exécutées automatiquement — la séparation lecture/écriture est architecturale (investigation en MCP read-only), pas un gate humain.
 - Le LLM choisit dans une **enum fermée** d'outils, avec des paramètres validés (Pydantic + allowlist). Jamais de shell arbitraire. Budget borné d'appels d'investigation par alerte.
 - SSH reste réservé au forensique lourd (RAM, image disque), en pull manager→agent, comme déjà implémenté dans `scripts/forensic-*.sh`.
 
 ## Contraintes de sécurité
 
 - Toute donnée SOC (logs, alertes, IOC) reste locale. Pas d'envoi vers API LLM cloud.
-- Actions de mitigation à fort impact (blocage, isolation, changement de règle en prod) : proposer, ne jamais exécuter automatiquement sans validation explicite.
+- Actions de mitigation à fort impact (blocage, isolation, désactivation de compte) : **exécutées automatiquement** dès le verdict vrai positif — c'est le but (XDR autonome). Ce qui les borne n'est pas un accord humain mais des garde-fous déterministes dans le code (comptes protégés, cibles internes exclues, suspension sur motif d'injection, idempotence). Exception : un **changement de règle Wazuh en prod** passe encore par PR git + merge humain (le rules creator ne pousse jamais en direct) — c'est un garde-fou de code, pas une revue d'action de réponse.
 - Clés API (VT, AbuseIPDB) et secrets Wazuh : jamais en clair dans le repo — utiliser `.env` (gitignored) ou secrets manager.
 - **Le LLM n'est pas une frontière de sécurité.** Mesuré : sur un ransomware avéré, 3 injections sur 4 dans les logs retournent le verdict du modèle en `false_positive`. La grammaire GBNF garantit la forme et l'enum d'actions, pas le verdict. Toute conséquence dangereuse (clôture d'un incident grave) est bloquée par une **barrière déterministe** dans le code (`actions.appliquer_garde_fous`), jamais par le prompt. Le texte non fiable est neutralisé avant le modèle (`sanitize.py`), mais ce n'est qu'une défense secondaire.
 
@@ -58,7 +58,7 @@ Déclenchement **périodique** : `soc_agent.cycle` enchaîne ingest → correlat
 - Le modèle ne rend qu'un **jugement** (verdict, confiance, remédiations). L'ouverture/clôture du dossier est déduite du verdict (`actions.py`), pas demandée au modèle — il oubliait `open_case` une fois sur deux.
 - Cohérence verdict/actions vérifiée après coup (`coherence.py`) : mesurable sans jeu labellisé, signale un prompt dégradé.
 - Température 0,2 + seed fixe = verdict reproductible. `triages` est à historique (on ajoute, on n'écrase pas) pour comparer deux prompts. `prompt_sha` tracé.
-- Sortie du mode shadow : `evaluate.py` refuse de conclure sous 30 incidents labellisés. Golden set (~200) requis, et même alors l'automatisation reste une décision humaine par niveau d'autonomie.
+- Sortie du mode shadow : `evaluate.py` refuse de conclure sous 30 incidents labellisés. Golden set (~200) requis. L'automatisation s'active par **niveau d'autonomie configurable** — une fois un niveau activé, les actions correspondantes partent seules, sans validation humaine par action ; ce qui gouverne, c'est la justesse mesurée, pas un clic.
 
 ## État du projet
 

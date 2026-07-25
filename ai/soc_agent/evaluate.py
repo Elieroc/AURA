@@ -115,8 +115,9 @@ def main() -> None:
             print("  Justesse en dessous de 90 % : rester en mode shadow.")
         else:
             print("  Justesse suffisante sur un échantillon utilisable.")
-            print("  Une sortie du mode shadow reste une décision humaine, "
-                  "et par niveau d'autonomie.")
+            print("  L'automatisation peut être activée, par niveau "
+                  "d'autonomie configurable — une fois active, les actions "
+                  "partent seules (pas de validation humaine par action).")
 
 
 if __name__ == "__main__":
