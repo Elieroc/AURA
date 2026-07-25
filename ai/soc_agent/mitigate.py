@@ -306,6 +306,43 @@ EXECUTEURS = {
 }
 
 
+# --- reverse par action (annulation d'une remédiation) ----------------------
+#
+# Toute remédiation doit être défaisable : quand l'analyste passe la tâche IRIS
+# d'une action en 'Canceled', `reconcilier` rejoue le reverse correspondant.
+# Chacun défait l'action par le MÊME canal que l'aller (Shuffle pour l'hôte, API
+# Wazuh pour l'IP/compte), via l'active-response inverse. En dry-run, ne fait
+# rien (comme les exécuteurs). Retourne le libellé du canal utilisé.
+
+def _revert_isolate(cible: str, ctx: dict) -> str:
+    canal = "Shuffle → active-response host-unisolate.sh (nftables)"
+    if config.MITIGATE_EXECUTE:
+        fire_isolation(cible, False, ctx["reason_court"])
+    return canal
+
+
+def _revert_block_ip(cible: str, ctx: dict) -> str:
+    canal = "API Wazuh → active-response firewall-allow"
+    if config.MITIGATE_EXECUTE:
+        _wazuh_ar(ctx["agent_id"], "!firewall-allow0", [cible])
+    return canal
+
+
+def _revert_disable_user(cible: str, ctx: dict) -> str:
+    canal = "API Wazuh → active-response enable-account"
+    if config.MITIGATE_EXECUTE:
+        _wazuh_ar(ctx["agent_id"], "!enable-account", [cible])
+    return canal
+
+
+# Pas de propose_kill_process : un process tué n'a pas de reverse (« unkill »).
+REVERSEURS = {
+    "propose_isolate_host": _revert_isolate,
+    "propose_block_ip": _revert_block_ip,
+    "propose_disable_user": _revert_disable_user,
+}
+
+
 # Regex du suffixe "(uid=NNNN)" que certains décodeurs collent au nom de compte.
 _RE_UID_SUFFIXE = re.compile(r"\(uid=(\d+)\)")
 
@@ -585,6 +622,124 @@ def executer(incident_id: int) -> list[dict]:
     return resultats
 
 
+# --- réconciliation : annuler ce que l'analyste a passé en 'Canceled' -------
+
+# Statut de tâche IRIS qui déclenche l'annulation de la remédiation.
+_TASK_CANCELED = "Canceled"
+
+
+def _taches_annulees(tasks: list[dict]) -> set[int]:
+    """IDs des tâches en statut 'Canceled' (lecture pure d'un list_tasks IRIS)."""
+    return {t["task_id"] for t in (tasks or [])
+            if (t.get("status_name") or "") == _TASK_CANCELED}
+
+
+def _commenter_tache(case, case_id: int, task_id: int, texte: str) -> None:
+    """Ajoute un commentaire à la tâche (best-effort : ne bloque pas le reste)."""
+    try:
+        case.add_task_comment(task_id=task_id, comment=texte, cid=case_id)
+    except Exception as e:  # noqa: BLE001
+        log.debug("commentaire tâche %s : %s", task_id, e)
+
+
+SELECT_REVERSIBLES = """
+SELECT m.id, m.incident_id, m.action, m.cible, m.details, m.iris_task_id,
+       i.agent_id, i.iris_case_id
+  FROM mitigations m
+  JOIN incidents i ON i.id = m.incident_id
+ WHERE m.statut = 'exécuté'
+   AND m.iris_task_id IS NOT NULL
+   AND i.iris_case_id IS NOT NULL
+   AND (%(inc)s::bigint IS NULL OR m.incident_id = %(inc)s)
+ ORDER BY i.iris_case_id, m.id
+"""
+
+# Marque terminale d'une action tuée qu'on ne peut pas défaire : évite de
+# re-commenter la tâche à chaque cycle (elle n'est plus sélectionnée).
+_STATUT_IRREVERSIBLE = "annulation_impossible"
+
+
+def reconcilier(incident_id: int | None = None) -> list[dict]:
+    """Défait les remédiations dont la tâche IRIS est passée en 'Canceled'.
+
+    L'analyste garde la main a posteriori : mettre une tâche de remédiation en
+    'Canceled' dans IRIS demande au soc-agent de DÉFAIRE l'action — désisoler
+    l'hôte, débloquer l'IP, réactiver le compte. Boucle fermée : la tâche IRIS
+    est le signal, la table `mitigations` la mémoire (statut 'exécuté' = à
+    surveiller ; 'annulé' = déjà défait, plus repris). Le kill de process n'a
+    pas de reverse : on le documente une fois et on le marque terminal.
+
+    Idempotent : une remédiation déjà annulée n'est plus sélectionnée ; un
+    reverse en échec reste 'exécuté' et sera retenté au cycle suivant.
+    """
+    resultats: list[dict] = []
+    with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
+        rows = conn.execute(SELECT_REVERSIBLES, {"inc": incident_id}).fetchall()
+        if not rows:
+            return []
+
+        case = _client()
+        annulees: dict[int, set[int]] = {}   # case_id -> {task_id Canceled}
+        for r in rows:
+            cid = r["iris_case_id"]
+            if cid not in annulees:
+                try:
+                    d = case.list_tasks(cid).get_data() or {}
+                    annulees[cid] = _taches_annulees(d.get("tasks"))
+                except Exception as e:  # noqa: BLE001 — IRIS KO ne casse rien
+                    log.warning("list_tasks case #%s : %s", cid, e)
+                    annulees[cid] = set()
+            if r["iris_task_id"] not in annulees[cid]:
+                continue   # tâche pas (encore) annulée par l'analyste
+
+            action, cible, task_id = r["action"], r["cible"], r["iris_task_id"]
+            reverseur = REVERSEURS.get(action)
+
+            # Action irréversible (kill) : documenter, marquer terminal, passer.
+            if reverseur is None:
+                _commenter_tache(case, cid, task_id,
+                    f"⚠️ Annulation demandée (tâche passée en {_TASK_CANCELED}) "
+                    f"mais l'action « {LIBELLE_ACTION.get(action, action)} » est "
+                    "irréversible (pas de reverse). Rien n'a été défait "
+                    "automatiquement.")
+                conn.execute("UPDATE mitigations SET statut = %s WHERE id = %s",
+                             (_STATUT_IRREVERSIBLE, r["id"]))
+                conn.commit()
+                resultats.append({"action": action, "cible": cible,
+                                  "statut": _STATUT_IRREVERSIBLE})
+                print(f"      {action} [{cible}] annulation impossible (kill)")
+                continue
+
+            ctx = {"agent_id": str(r["agent_id"]),
+                   "reason_court": f"tâche IRIS #{task_id} passée en {_TASK_CANCELED}"}
+            try:
+                canal = reverseur(cible, ctx)
+            except Exception as e:  # noqa: BLE001 — reverse en échec : on garde
+                # le statut 'exécuté' pour retenter au cycle suivant, on trace.
+                log.warning("reverse %s [%s] échoué : %s", action, cible, e)
+                _commenter_tache(case, cid, task_id,
+                    f"❌ Tentative d'annulation automatique de « "
+                    f"{LIBELLE_ACTION.get(action, action)} » ({cible}) en échec : "
+                    f"{e}. Nouvelle tentative au prochain cycle.")
+                continue
+
+            mode = "défait" if config.MITIGATE_EXECUTE else "défait (dry-run)"
+            conn.execute(
+                "UPDATE mitigations SET statut = 'annulé', "
+                "details = %s, executed_at = now() WHERE id = %s",
+                (f"{r['details'] or ''} — Annulé ({mode}) : tâche IRIS passée en "
+                 f"{_TASK_CANCELED}, action défaite via {canal}.", r["id"]))
+            conn.commit()
+            _commenter_tache(case, cid, task_id,
+                f"↩️ Remédiation défaite automatiquement ({mode}) suite au passage "
+                f"de la tâche en {_TASK_CANCELED} : « "
+                f"{LIBELLE_ACTION.get(action, action)} » ({cible}) annulée via "
+                f"{canal}.")
+            resultats.append({"action": action, "cible": cible, "statut": "annulé"})
+            print(f"      {action} [{cible}] -> annulé  ({canal})")
+    return resultats
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     ap = argparse.ArgumentParser(description=__doc__)
@@ -597,6 +752,9 @@ def main() -> None:
                    help="lève l'isolation d'un agent (action opérateur, exécutée)")
     g.add_argument("--etat", metavar="AGENT_ID",
                    help="lit l'état d'isolation d'un agent (marqueur, SSH)")
+    g.add_argument("--reconcilier", action="store_true",
+                   help="défait les remédiations dont la tâche IRIS est passée "
+                        "en 'Canceled' (desisolation, deblocage, reactivation)")
     ap.add_argument("--motif", default="action opérateur",
                     help="motif consigné avec l'(dé)isolation manuelle")
     args = ap.parse_args()
@@ -610,6 +768,8 @@ def main() -> None:
         desisoler(args.desisoler, args.motif)
     elif args.etat:
         _afficher_etat(etat_isolation(args.etat))
+    elif args.reconcilier:
+        reconcilier()
     else:
         executer(args.incident)
 

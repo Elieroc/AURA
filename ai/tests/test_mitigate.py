@@ -2,8 +2,9 @@
 
 import json
 
-from soc_agent.mitigate import (REMEDIATIONS, _cibles, _comptes_crees,
-                                _desc_tache, _interpreter)
+from soc_agent.mitigate import (REMEDIATIONS, REVERSEURS, _cibles,
+                                _comptes_crees, _desc_tache, _interpreter,
+                                _taches_annulees)
 
 
 def _alerte_proctitle(cmd: str) -> dict:
@@ -76,6 +77,27 @@ def test_open_case_et_escalade_hors_remediation():
     assert "open_case" not in REMEDIATIONS
     assert "close_false_positive" not in REMEDIATIONS
     assert "escalate_human" not in REMEDIATIONS
+
+
+def test_taches_annulees_ne_garde_que_canceled():
+    """Réconciliation : seules les tâches en 'Canceled' déclenchent un reverse."""
+    tasks = [
+        {"task_id": 1, "status_name": "Done"},
+        {"task_id": 2, "status_name": "Canceled"},
+        {"task_id": 3, "status_name": "To do"},
+        {"task_id": 4, "status_name": "Canceled"},
+    ]
+    assert _taches_annulees(tasks) == {2, 4}
+    assert _taches_annulees([]) == set()
+    assert _taches_annulees(None) == set()
+
+
+def test_reverse_pour_actions_reversibles_pas_pour_kill():
+    """Isolation, blocage IP et désactivation ont un reverse ; le kill non
+    (un process tué ne se « unkill » pas)."""
+    assert set(REVERSEURS) == {"propose_isolate_host", "propose_block_ip",
+                               "propose_disable_user"}
+    assert "propose_kill_process" not in REVERSEURS
 
 
 def test_desc_tache_contient_quoi_pourquoi_annulation():
