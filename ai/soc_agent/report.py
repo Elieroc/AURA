@@ -12,9 +12,7 @@ from psycopg.rows import dict_row
 
 from . import config
 
-# 15 à 25 s par triage mesurées sur DeepSeek (le chiffre tient : la latence
-# réseau + raisonnement a remplacé le prefill CPU, cf. ai/bench/RESULTS.md pour
-# l'époque du modèle local). On prend le haut de la fourchette.
+# 15 à 25 s par triage, mesurées sur DeepSeek. On prend le haut de la fourchette.
 SECONDES_PAR_TRIAGE = 25
 
 

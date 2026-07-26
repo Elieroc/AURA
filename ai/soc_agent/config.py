@@ -101,8 +101,8 @@ INGEST_SWEEP_INTERVAL_MINUTES = int(
 
 # --- Modèle : DeepSeek (API cloud, compatible OpenAI) -----------------------
 #
-# Bascule depuis l'IA locale (llama.cpp) : cette machine n'a pas les ressources
-# pour un modèle local en continu. DeepSeek expose une API compatible OpenAI
+# Seul chemin d'inférence : cette machine n'a ni GPU ni la RAM pour un modèle en
+# continu, et il n'y a pas de repli local. DeepSeek expose une API compatible OpenAI
 # (/chat/completions, Bearer token). Conséquence de sécurité MAJEURE : les
 # données SOC quittent l'hôte. La pseudonymisation est EN PLACE et obligatoire
 # (`anonymize.py`) : jetons stables par incident, `verifier_fuite` refuse l'appel
@@ -110,8 +110,8 @@ INGEST_SWEEP_INTERVAL_MINUTES = int(
 # voie les vraies valeurs dans IRIS. Ne pas confondre avec `sanitize.py`, qui
 # neutralise le texte hostile — autre problème, autre module.
 #
-# Perte par rapport au local : plus de GBNF (grammaire). DeepSeek garantit un
-# JSON valide (response_format), pas le respect du schéma ni de l'enum. La
+# Aucune contrainte de grammaire possible : DeepSeek garantit un JSON valide
+# (response_format), pas le respect du schéma ni de l'enum. La
 # barrière est donc dans le code : coercition/validation dans triage.py, en
 # plus des garde-fous déterministes d'actions.py.
 DEEPSEEK_API_KEY = _requis("DEEPSEEK_API_KEY")

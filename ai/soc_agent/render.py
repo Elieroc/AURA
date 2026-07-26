@@ -1,9 +1,9 @@
 """Rendu d'un incident en texte pour le LLM.
 
-Toute la difficulté est là. Le prefill coûte ~50 t/s sur ce CPU : chaque tranche
-de 100 tokens ajoutée au prompt, c'est 2 s de plus par incident. Un incident
-ransomware regroupe 31 alertes ; les donner brutes ferait 15 000 tokens, soit
-cinq minutes de prefill pour un seul verdict.
+Toute la difficulté est là. Un incident ransomware regroupe 31 alertes ; les
+donner brutes ferait 15 000 tokens pour un seul verdict. C'est payé au token, et
+surtout noyé : plus le contexte est long, moins le modèle distingue ce qui
+tranche.
 
 On résume donc agressivement, en gardant ce qui sert à décider : quelles règles
 ont tiré et combien de fois, sur quel hôte, contre quels objets, avec quel
@@ -17,7 +17,7 @@ from typing import Any
 from .sanitize import detecter, neutraliser
 
 # Plafonds de rendu. Au-delà, on n'ajoute plus d'information utile à la
-# décision, seulement du prefill.
+# décision, seulement du volume.
 MAX_REGLES = 6
 MAX_OBJETS = 5
 MAX_IPS = 3
@@ -100,12 +100,12 @@ def motifs_injection(alertes: list[dict]) -> list[str]:
 def rendre(incident: dict, alertes: list[dict], max_regles: int = MAX_REGLES) -> str:
     """Incident + ses alertes -> bloc de données non fiables pour le prompt.
 
-    `max_regles` borne le nombre de règles listées. Le triage sur CPU le garde
-    bas (prefill coûteux) ; le rapport, moins pressé, peut le relever pour que
-    l'analyse LLM voie toute la chaîne, pas seulement le pic.
+    `max_regles` borne le nombre de règles listées. Le triage le garde bas — il
+    n'a besoin que de quoi trancher ; le rapport peut le relever pour que
+    l'analyse voie toute la chaîne, pas seulement le pic.
     """
     # Regroupement par règle : « x25 » porte l'information de répétition sans
-    # payer 25 fois le prefill.
+    # payer 25 fois les mêmes tokens.
     par_regle: dict[str, dict[str, Any]] = {}
     for a in alertes:
         e = par_regle.setdefault(a["rule_id"], {

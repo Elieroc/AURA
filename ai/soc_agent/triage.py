@@ -26,12 +26,11 @@ from .render import motifs_injection, rendre
 
 PROMPTS = Path(__file__).parent / "prompts"
 
-# Plafond de taille de prompt. À l'époque du local, c'était un budget de temps
-# (~50 tokens/s de prefill). En cloud, c'est un budget de coût et une borne
-# contre un prompt qui déraille. On garde la limite.
+# Plafond de taille de prompt : un budget de coût, et une borne contre un prompt
+# qui déraille (un incident à 500 alertes ne doit pas partir tel quel).
 PLAFOND_TOKENS = 1500
 
-# Enums de sortie. La GBNF les garantissait à l'échantillonnage ; DeepSeek ne
+# Enums de sortie. Rien ne les garantit à l'échantillonnage : DeepSeek ne
 # garantit que le JSON valide. On revalide donc ici — c'est la place correcte
 # pour la barrière (le modèle n'est pas une frontière de sécurité).
 VERDICTS_OK = {"true_positive", "false_positive", "needs_investigation"}
@@ -46,7 +45,7 @@ def _valider(brut: dict) -> dict:
 
     Toute valeur hors enum est ramenée à une valeur sûre plutôt que propagée :
     un verdict inconnu devient `needs_investigation` (n'entraîne aucune action
-    automatique), une action inconnue est écartée. Sans la GBNF, c'est ici
+    automatique), une action inconnue est écartée. C'est ici
     qu'on garantit la forme.
     """
     verdict = brut.get("verdict")

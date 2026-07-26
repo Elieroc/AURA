@@ -1,10 +1,5 @@
 # Couche IA du SOC
 
-Deux choses ici :
-
-- [`bench/`](bench/) — **archive** : mesures llama.cpp sur CPU, de l'époque du
-  modèle local. Conservé pour l'historique des choix
-  ([`bench/RESULTS.md`](bench/RESULTS.md)) ; ne décrit plus la config courante.
 - [`soc_agent/`](soc_agent/) — le pipeline. **Phase 1 : ingestion et
   corrélation, sans LLM. Phase 2 : triage LLM en mode shadow.**
 
@@ -235,8 +230,8 @@ Deux réponses, dans cet ordre d'importance :
 
 La validation de sortie (`triage._valider`), elle, garantit la forme et l'enum
 d'actions, mais **pas le verdict** : ne jamais compter dessus pour la justesse.
-C'est là que la grammaire GBNF du modèle local a été remplacée par du code —
-DeepSeek ne promet qu'un JSON syntaxiquement valide.
+DeepSeek ne promet qu'un JSON syntaxiquement valide : tout le reste du schéma
+est tenu par du code.
 
 ### Reproductibilité
 

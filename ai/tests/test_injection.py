@@ -59,7 +59,7 @@ def _incident_piege(charge: str) -> tuple[dict, list[dict]]:
 
 
 def test_validation_borne_les_actions_quoi_qu_il_arrive():
-    """Défense structurelle, désormais dans le code (plus de GBNF).
+    """Défense structurelle, tenue par le code.
 
     DeepSeek ne garantit que le JSON valide : c'est `_valider` qui ramène la
     sortie au schéma. Une action inventée par une injection est écartée, un
@@ -89,8 +89,7 @@ def test_faux_positif_injecte_ne_declenche_aucune_remediation():
 def _appel_reel_autorise() -> bool:
     """Opt-in explicite pour le seul test qui interroge vraiment le modèle.
 
-    Interrogeait `/health` du serveur llama.cpp local, disparu au pivot DeepSeek :
-    le test ci-dessous était donc TOUJOURS sauté, sans que rien ne le signale.
+    Le garde précédent sondait un serveur d'inférence local qui n'existe plus.
     On n'accepte pas non plus « une clé est présente » comme feu vert — `conftest`
     en pose une factice pour que la suite collecte, et DeepSeek est facturé. Il
     faut le demander : `SOC_AI_TEST_LLM=1 pytest -m llm`.

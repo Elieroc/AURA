@@ -34,7 +34,7 @@ _COMPILES = [(re.compile(m, re.IGNORECASE | re.MULTILINE), nom)
 
 # Longueur au-delà de laquelle un champ de log ne porte plus d'information
 # utile au verdict. Une injection a besoin de place ; la tronquer la casse
-# souvent, et fait gagner du prefill.
+# souvent, et fait gagner des tokens.
 LONGUEUR_MAX = 160
 
 
