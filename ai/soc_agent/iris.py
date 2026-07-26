@@ -714,7 +714,7 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
     except Exception as e:  # noqa: BLE001 — le case doit se créer même sans LLM
         log.warning("rapport LLM indisponible (#%s) : %s", incident["id"], e)
         rapport = {}
-    # DeepSeek ne garantit pas les clés (plus de GBNF) : on tolère les absences.
+    # DeepSeek ne garantit pas les clés du schéma : on tolère les absences.
     rapport.setdefault("resume", triage["reason"])
     rapport.setdefault("analyse", triage["reason"])
     # Réhydratation : les jetons redeviennent les vraies valeurs pour l'analyste.

@@ -1,6 +1,6 @@
 """Appel générique au modèle — DeepSeek (API cloud, compatible OpenAI).
 
-Bascule depuis llama.cpp local. DeepSeek n'accepte pas de grammaire GBNF ;
+DeepSeek n'accepte aucune contrainte de grammaire ;
 on force un JSON valide via `response_format={"type": "json_object"}`. Cela
 garantit un JSON *syntaxiquement* valide, PAS le respect du schéma ni de
 l'enum — cette garantie-là est reportée dans le code appelant (coercition
@@ -10,7 +10,7 @@ Note sécurité : tout ce qui passe ici part vers le cloud. Le texte doit être
 anonymisé en amont (sanitize.py). Le LLM n'est pas une frontière de sécurité.
 
 Toujours `/chat/completions` (template de chat), jamais un endpoint brut : le
-template change le verdict (mesuré au bench).
+template change le verdict (mesuré).
 """
 
 import json

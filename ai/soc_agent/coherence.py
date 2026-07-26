@@ -1,9 +1,9 @@
 """Contrôle de cohérence entre le verdict et les actions du modèle.
 
-La grammaire GBNF garantit la *forme* de la sortie — champs présents, valeurs
-dans l'enum. Elle ne peut rien garantir *entre* les champs : rien n'empêche le
-modèle de rendre `false_positive` tout en proposant de bloquer une IP. C'est
-arrivé sur deux incidents sur quatre au premier passage réel.
+La validation de sortie (`triage._valider`) garantit la *forme* — champs
+présents, valeurs dans l'enum. Elle ne peut rien garantir *entre* les champs :
+rien n'empêche le modèle de rendre `false_positive` tout en proposant de bloquer
+une IP. C'est arrivé sur deux incidents sur quatre au premier passage réel.
 
 Ce contrôle est déterministe et tourne après chaque triage. Il ne corrige rien
 — réécrire le verdict du modèle masquerait le problème au lieu de le mesurer —

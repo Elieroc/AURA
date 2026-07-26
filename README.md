@@ -2,7 +2,7 @@
 
 XDR autonome. Détection avec Wazuh, enrichissement threat intel (VirusTotal, AbuseIPDB, GeoIP), puis triage, whitelist et remédiation pilotés par un LLM — l'action part sur le verdict, sans validation humaine par action.
 
-Le modèle tourne sur l'**API DeepSeek** et non en local : cet hôte n'a pas de GPU et pas les ressources pour un modèle en continu (l'historique de ce choix est dans [`ai/bench/RESULTS.md`](ai/bench/RESULTS.md)). Conséquence assumée : **le contexte d'alerte quitte l'hôte**, pseudonymisé au préalable (`ai/soc_agent/anonymize.py`, refus d'appel si une valeur réelle survit).
+Le modèle tourne sur l'**API DeepSeek** et non en local : cet hôte n'a pas de GPU et pas les ressources pour un modèle en continu. Conséquence assumée : **le contexte d'alerte quitte l'hôte**, pseudonymisé au préalable (`ai/soc_agent/anonymize.py`, refus d'appel si une valeur réelle survit).
 
 ## Architecture
 
@@ -50,7 +50,6 @@ Le modèle tourne sur l'**API DeepSeek** et non en local : cet hôte n'a pas de 
 | Remédiation — isolation hôte | Active response nftables via workflow Shuffle ([`shuffle/README.md`](shuffle/README.md)) | ✅ Testé E2E |
 | [`iris/`](iris/) | DFIR-IRIS — case management, un case par incident trié (IOC + rapport IA) | ✅ Boucle fermée |
 | [`iris/mcp/`](iris/mcp/) | Serveur MCP IRIS (srozb/iris-mcp) — investigation interactive | ✅ Connecté |
-| [`ai/bench/`](ai/bench/) | Bench llama.cpp CPU — archive de l'époque du modèle local | 📚 Historique |
 | [`ai/soc_agent/`](ai/soc_agent/) | Pipeline : ingest + corrélation (ph.1), triage LLM + remédiation (ph.2) | ✅ Sur données réelles |
 | IA — Rules creator | Génération de règles/decoders Wazuh à partir des alertes | 🔜 À venir |
 | IA — Whitelist | Exceptions auto sur FP récurrents jugés par l'IA | ✅ Boucle fermée |
