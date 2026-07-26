@@ -22,8 +22,10 @@ node_modules/
 .claude/
 graphify-out/
 
-# Clone upstream du serveur MCP (voir mcp/README.md)
-mcp/wazuh-mcp-server/
+# Serveur MCP Wazuh : entièrement hors dépôt (clone upstream + notre recette de
+# déploiement et le patch d'active response). Ancré avec « / » : un motif « mcp/ »
+# non ancré matcherait aussi iris/mcp/, qui reste versionné.
+/mcp/
 
 # Modèles GGUF et build llama.cpp : hors dépôt (~/.local/share/soc-ai/),
 # le dépôt est synchronisé Nextcloud.

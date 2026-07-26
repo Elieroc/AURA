@@ -70,6 +70,8 @@ Déclenchement **périodique** : `soc_agent.cycle` enchaîne ingest → correlat
 
 Infra en place : Wazuh (manager, indexer, dashboard, agents, intégrations VT/AbuseIPDB/GeoIP), Shuffle, serveur MCP Wazuh, DFIR-IRIS, pipeline soc_agent (phases 1 et 2).
 
+`mcp/` (serveur MCP Wazuh) est **entièrement hors dépôt** — clone upstream, recette de déploiement et patch d'active response compris. Le dossier existe en local mais git l'ignore : ne pas s'étonner de son absence sur un clone neuf, et ne pas tenter de l'y remettre sans en reparler. Son contenu d'avant le 2026-07-26 reste dans l'historique git.
+
 Reste à faire, dans l'ordre : golden set (~200 alertes labellisées) → mesure de justesse → RAG → rules creator (PR). La remédiation est faite et vérifiée de bout en bout sur l'agent (isolation nftables, blocage IP, désactivation de compte) ; ce qui manque n'est plus le mécanisme mais la mesure qui justifie de le laisser agir.
 
 ## Conventions
