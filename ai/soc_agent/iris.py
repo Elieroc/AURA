@@ -72,6 +72,10 @@ def _client():
 # Répertoire de notes où atterrit l'analyse IA (créé au besoin).
 DIR_ANALYSE = "Analyse IA"
 
+# Tag posé sur les évènements de timeline créés par le soc-agent : c'est à ça
+# qu'on les reconnaît pour les remplacer au rafraîchissement.
+TAG_AUTO = "soc-agent"
+
 
 def _taguer(case, case_id: int, agent_name: str | None) -> None:
     """Ajoute le hostname de la machine touchée aux tags du case (union).
@@ -99,22 +103,99 @@ def _taguer(case, case_id: int, agent_name: str | None) -> None:
         log.debug("tag case #%s : %s", case_id, e)
 
 
-def _poser_iocs(case, case_id: int, alertes: list[dict]) -> None:
-    """Ajoute les IOC manquants du case (dédup sur la valeur déjà présente)."""
-    existants: set[str] = set()
+def _poser_iocs(case, case_id: int, alertes: list[dict]) -> dict[str, int]:
+    """Ajoute les IOC manquants du case (dédup sur la valeur déjà présente).
+
+    Renvoie la table valeur → ioc_id de TOUS les IOC du case (existants
+    compris) : la timeline s'en sert pour rattacher chaque évènement à ses
+    indicateurs, ce qui est la condition pour que l'onglet Graph d'IRIS ait
+    quelque chose à dessiner (il ne lit que `case_events_ioc`).
+    """
+    ids: dict[str, int] = {}
     try:
         d = case.list_iocs(case_id).get_data() or {}
-        existants = {i.get("ioc_value") for i in (d.get("ioc") or [])}
+        for i in d.get("ioc") or []:
+            if i.get("ioc_value") and i.get("ioc_id"):
+                ids[i["ioc_value"]] = i["ioc_id"]
     except Exception as e:  # noqa: BLE001
         log.debug("liste IOC case #%s : %s", case_id, e)
     for valeur, type_ioc, description in _iocs(alertes):
-        if valeur in existants:
+        if valeur in ids:
             continue
         try:
-            case.add_ioc(value=valeur, ioc_type=type_ioc,
-                         description=description, cid=case_id)
+            r = case.add_ioc(value=valeur, ioc_type=type_ioc,
+                             description=description, cid=case_id)
+            if r.is_success():
+                ids[valeur] = (r.get_data() or {}).get("ioc_id")
         except Exception as e:  # noqa: BLE001
             log.debug("IOC ignoré (%s/%s) : %s", type_ioc, valeur, e)
+    return {v: i for v, i in ids.items() if i}
+
+
+def _type_asset(alertes: list[dict]) -> str:
+    """Type d'asset IRIS de la machine touchée, déduit des alertes."""
+    for a in alertes:
+        raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
+        groupes = (raw.get("rule", {}) or {}).get("groups") or []
+        if any("windows" in str(g).lower() for g in groupes) or \
+                "win" in (raw.get("data", {}) or {}):
+            return "Windows - Computer"
+    return "Linux - Server"
+
+
+def _assets_case(case, case_id: int) -> dict[str, int]:
+    """Table nom → asset_id des assets du case (dont ceux posés par mitigate)."""
+    out: dict[str, int] = {}
+    try:
+        d = case.list_assets(cid=case_id).get_data() or {}
+        items = d.get("assets") if isinstance(d, dict) else d
+        for a in items or []:
+            if a.get("asset_name") and a.get("asset_id"):
+                out[a["asset_name"]] = a["asset_id"]
+    except Exception as e:  # noqa: BLE001
+        log.debug("liste assets case #%s : %s", case_id, e)
+    return out
+
+
+def _poser_asset_machine(case, case_id: int, incident: dict,
+                         alertes: list[dict], compromis: bool) -> list[int]:
+    """Crée (ou retrouve) l'asset « machine touchée » du case.
+
+    C'est le nœud pivot du graphe : chaque évènement de timeline lui est
+    rattaché, les IOC de l'évènement s'y accrochent en étoile. Sans au moins
+    un asset lié à un évènement, l'onglet Graph reste vide même avec des IOC.
+    """
+    nom = incident.get("agent_name") or str(incident["agent_id"])
+    existants = _assets_case(case, case_id)
+    if nom in existants:
+        return [existants[nom]]
+
+    ip = None
+    for a in alertes:
+        raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
+        ip = (raw.get("agent", {}) or {}).get("ip")
+        if ip:
+            break
+    try:
+        r = case.add_asset(
+            name=nom,
+            asset_type=_type_asset(alertes),
+            analysis_status="Started",
+            # 1 = compromised, 0 = to be determined. En dur plutôt qu'en nom :
+            # le graphe teste `asset_compromise_status_id == 1` pour choisir
+            # l'icône, et on évite un aller-retour de lookup par case.
+            compromise_status=1 if compromis else 0,
+            description=(f"Endpoint Wazuh {incident['agent_id']} — "
+                         f"{incident['alert_count']} alertes corrélées, "
+                         f"niveau max {incident['max_level']}/15."),
+            ip=ip,
+            cid=case_id)
+        if r.is_success():
+            return [(r.get_data() or {})["asset_id"]]
+        log.debug("asset machine non créé (case #%s) : %s", case_id, r.get_msg())
+    except Exception as e:  # noqa: BLE001 — l'asset ne bloque pas le case
+        log.debug("asset machine case #%s : %s", case_id, e)
+    return []
 
 
 def _poser_note(case, case_id: int, titre: str, contenu: str) -> None:
@@ -149,14 +230,35 @@ def _poser_note(case, case_id: int, titre: str, contenu: str) -> None:
                   directory_id=dir_id, cid=case_id)
 
 
+def _est_auto_legacy(case, case_id: int, ev: dict) -> bool:
+    """Évènement posé par une version antérieure du soc-agent (sans tag).
+
+    Rattrapage : ces évènements-là n'ont que `event_source = "Wazuh"`, absent
+    de la liste de timeline — il faut relire l'évènement pour trancher. Un
+    appel par évènement non taggé, qui disparaît dès le premier nettoyage.
+    """
+    try:
+        d = case.get_event(ev["event_id"], cid=case_id).get_data() or {}
+        return (d.get("event_source") or "") == "Wazuh"
+    except Exception as e:  # noqa: BLE001
+        log.debug("lecture évènement %s : %s", ev.get("event_id"), e)
+        return False
+
+
 def _reconstruire_timeline(case, case_id: int, alertes: list[dict],
-                           agent_id: str) -> None:
-    """Efface les évènements auto (source Wazuh) et les reconstruit.
+                           agent_id: str, asset_ids: list[int] | None = None,
+                           ioc_ids: dict[str, int] | None = None,
+                           assets_nom: dict[str, int] | None = None) -> None:
+    """Efface les évènements auto (tag `soc-agent`) et les reconstruit.
 
     Une salve rattachée allonge un groupe de règle ou en crée un ; re-poser
     tout en l'état dupliquerait. On supprime donc les évènements posés par le
-    soc-agent (source « Wazuh »), jamais ceux saisis par un analyste, puis on
-    les recrée depuis l'état courant.
+    soc-agent, jamais ceux saisis par un analyste, puis on les recrée depuis
+    l'état courant.
+
+    Le repère est le **tag** `soc-agent`, pas `event_source` : la liste de
+    timeline d'IRIS ne renvoie pas ce champ, donc filtrer dessus ne supprimait
+    jamais rien et empilait les doublons à chaque rafraîchissement.
     """
     try:
         tl = case.list_events(cid=case_id).get_data().get("timeline") or []
@@ -164,12 +266,14 @@ def _reconstruire_timeline(case, case_id: int, alertes: list[dict],
         log.debug("liste timeline case #%s : %s", case_id, e)
         tl = []
     for ev in tl:
-        if (ev.get("event_source") or "") == "Wazuh":
-            try:
-                case.delete_event(ev["event_id"], cid=case_id)
-            except Exception as e:  # noqa: BLE001
-                log.debug("suppr évènement %s : %s", ev.get("event_id"), e)
-    _timeline(case, case_id, alertes, agent_id)
+        tags = {t.strip() for t in (ev.get("event_tags") or "").split(",")}
+        if TAG_AUTO not in tags and not _est_auto_legacy(case, case_id, ev):
+            continue
+        try:
+            case.delete_event(ev["event_id"], cid=case_id)
+        except Exception as e:  # noqa: BLE001
+            log.debug("suppr évènement %s : %s", ev.get("event_id"), e)
+    _timeline(case, case_id, alertes, agent_id, asset_ids, ioc_ids, assets_nom)
 
 
 def _classification(incident: dict, alertes: list[dict]) -> int:
@@ -293,9 +397,13 @@ def _grouper_regles(alertes: list[dict]) -> list[tuple[str, dict]]:
                 "level": a["rule_level"], "desc": a["rule_desc"] or "",
                 "n": 1, "first": a["ts"], "last": a["ts"],
                 "users": {a["srcuser"]} if a.get("srcuser") else set(),
-                "entities": {a["entity"]} if a.get("entity") else set()}
+                "entities": {a["entity"]} if a.get("entity") else set(),
+                # Alertes du groupe : la timeline en réextrait les IOC pour
+                # relier chaque évènement à ses indicateurs (onglet Graph).
+                "alertes": [a]}
         else:
             e["n"] += 1
+            e["alertes"].append(a)
             e["first"] = min(e["first"], a["ts"])
             e["last"] = max(e["last"], a["ts"])
             if a.get("srcuser"):
@@ -760,14 +868,28 @@ def _lien_wazuh(agent_id: str, rule_id: str, debut, fin) -> str:
     return f"{base}#?_g={g}&_a={a}&_q={q}".replace(" ", "%20")
 
 
-def _timeline(case, case_id: int, alertes: list[dict], agent_id: str) -> int:
+def _timeline(case, case_id: int, alertes: list[dict], agent_id: str,
+              asset_ids: list[int] | None = None,
+              ioc_ids: dict[str, int] | None = None,
+              assets_nom: dict[str, int] | None = None) -> int:
     """Remplit la timeline du case : un évènement par règle déclenchée.
 
     Regroupé par règle plutôt qu'une ligne par alerte : dix détections de
     reverse shell font un évènement « reverse shell (x10) », pas dix lignes
     identiques. L'ordre chronologique reconstitue la kill chain dans IRIS.
     Best-effort : un évènement en échec ne fait pas capoter le case.
+
+    Chaque évènement est lié à la machine touchée (`asset_ids`), aux comptes
+    impliqués (`assets_nom`, assets posés par mitigate) et aux IOC qu'il fait
+    apparaître (`ioc_ids`) : c'est **uniquement** de ces liens que l'onglet
+    Graph tire ses nœuds et ses arêtes (`case_events_assets` /
+    `case_events_ioc`, filtrés sur `event_in_graph`). Un case avec des IOC et
+    une timeline mais sans ces liens affiche un graphe vide. La machine est
+    dans tous les évènements : elle sert de nœud pivot, le reste rayonne.
     """
+    asset_ids = asset_ids or []
+    ioc_ids = ioc_ids or {}
+    assets_nom = assets_nom or {}
     n = 0
     for rid, e in _grouper_regles(alertes):
         titre = (e["desc"][:120] or f"Règle {rid}")
@@ -785,12 +907,22 @@ def _timeline(case, case_id: int, alertes: list[dict], agent_id: str) -> int:
                        + _lien_wazuh(agent_id, rid, e["first"], e["last"]))
         couleur = ("#dc3545" if e["level"] >= 12 else
                    "#fd7e14" if e["level"] >= 10 else "#ffc107")
+        # IOC portés par CE groupe de règle, réextraits de ses seules alertes.
+        liens_iocs = [ioc_ids[v] for v, _t, _d in _iocs(e["alertes"])
+                      if v in ioc_ids]
+        # Comptes cités par le groupe et connus comme assets (cf. mitigate).
+        liens_assets = list(asset_ids) + [
+            assets_nom[n] for n in (e["users"] | e["entities"])
+            if n in assets_nom and assets_nom[n] not in asset_ids]
         try:
             case.add_event(
                 title=titre,
                 date_time=e["first"],
                 content="\n".join(contenu),
                 source="Wazuh",
+                tags=[TAG_AUTO],
+                linked_assets=liens_assets,
+                linked_iocs=liens_iocs,
                 display_in_graph=True,
                 display_in_summary=e["level"] >= 10,
                 color=couleur,
@@ -910,8 +1042,12 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     # Tag = hostname de la machine touchée (add_case ne prend pas de tags).
     _taguer(case, case_id, incident.get("agent_name"))
 
-    # IOC (best-effort : un type inconnu ne doit pas faire échouer le case).
-    _poser_iocs(case, case_id, alertes)
+    # IOC (best-effort : un type inconnu ne doit pas faire échouer le case) et
+    # asset « machine touchée ». Les ids récupérés servent à lier la timeline :
+    # sans ces liens, l'onglet Graph d'IRIS reste vide.
+    ioc_ids = _poser_iocs(case, case_id, alertes)
+    asset_ids = _poser_asset_machine(case, case_id, incident, alertes,
+                                     compromis=not fp)
 
     # Tâche WHITELIST « On hold » : l'analyste la remplit et la passe en
     # 'To do' quand il veut une exception ; soc_agent.whitelist_task la
@@ -942,8 +1078,11 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
 
     # Timeline : la kill chain, évènement par règle (TP seulement — un FP n'a
     # pas de chronologie d'attaque à reconstituer).
+    # Relu APRÈS la remédiation : mitigate y a posé les comptes visés comme
+    # assets, qu'on veut voir apparaître dans le graphe.
     if not fp:
-        _timeline(case, case_id, alertes, incident["agent_id"])
+        _timeline(case, case_id, alertes, incident["agent_id"],
+                  asset_ids, ioc_ids, _assets_case(case, case_id))
 
     conn.commit()
     return case_id
@@ -973,7 +1112,9 @@ def rafraichir_case(conn, incident: dict, triage: dict) -> int:
         log.debug("maj description case #%s : %s", case_id, e)
 
     _taguer(case, case_id, incident.get("agent_name"))
-    _poser_iocs(case, case_id, alertes)
+    ioc_ids = _poser_iocs(case, case_id, alertes)
+    asset_ids = _poser_asset_machine(case, case_id, incident, alertes,
+                                     compromis=not fp)
 
     # Remédiation rejouée : idempotente (clé unique incident/action/cible), elle
     # ne couvre que d'éventuelles nouvelles cibles apparues avec la salve.
@@ -990,7 +1131,8 @@ def rafraichir_case(conn, incident: dict, triage: dict) -> int:
     _poser_note(case, case_id, titre, contenu)
 
     if not fp:
-        _reconstruire_timeline(case, case_id, alertes, incident["agent_id"])
+        _reconstruire_timeline(case, case_id, alertes, incident["agent_id"],
+                               asset_ids, ioc_ids, _assets_case(case, case_id))
 
     conn.execute(
         "UPDATE incidents SET needs_refresh = false, status = %s WHERE id = %s",
