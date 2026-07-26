@@ -226,3 +226,14 @@ CREATE TABLE IF NOT EXISTS mitigations (
 );
 
 CREATE INDEX IF NOT EXISTS mitigations_incident ON mitigations (incident_id);
+
+-- ---------------------------------------------------------------------------
+-- Rattrapage des alertes indexées en retard
+-- ---------------------------------------------------------------------------
+
+-- Date du dernier balayage complet de rattrapage (cf. ingest._sweep_du). Le
+-- curseur avance sur la date de l'ÉVÉNEMENT, pas sur celle de son indexation :
+-- une alerte rejouée par un agent reconnecté porte un horodatage que le curseur
+-- a déjà dépassé, donc `search_after` ne la renverra jamais. Le balayage
+-- périodique la récupère ; cette colonne en porte la cadence.
+ALTER TABLE ingest_cursor ADD COLUMN IF NOT EXISTS last_sweep_at timestamptz;
