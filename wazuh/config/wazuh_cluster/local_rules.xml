@@ -534,3 +534,80 @@
   </rule>
 
 </group>
+
+<!-- ==========================================================================
+     Détection attaques web : web shells, injections/RCE HTTP, reverse shells.
+     Sources de données mesurées sur cet hôte (debian-vm, Apache + auditd) :
+       - access.log décodé par Wazuh (base rule 31100, champ `url`). Les
+         injections classiques (LFI/SQLi/XSS) remontent en 31103-31106 (niveau 6)
+         mais l'injection de commande (?cmd=id) et l'accès web shell restent en
+         niveau 0 : angle mort comblé ici.
+       - auditd execve : champs `audit.command`, `audit.euid`, et `full_log`
+         complet. Piège : les arguments contenant des espaces (one-liners de
+         reverse shell passés à `sh -c`) sont encodés en HEXA dans EXECVE/
+         PROCTITLE (ex. /dev/tcp/ -> 2F6465762F7463702F). On matche donc le
+         `full_log` en clair ET en hexa. Cf. mémoire wazuh-auditd-exe-hex-encoding.
+     Recherche : blog officiel Wazuh "Web shell attack detection" (FIM 100500-
+     100502 + audit.key), et patterns reverse shell communautaires (/dev/tcp,
+     nc -e, socket).
+     ========================================================================== -->
+
+<group name="web,attack,web_attack_soc,">
+
+  <!-- Injection de commande / RCE via paramètres de requête HTTP.
+       Angle mort mesuré : shell.cgi?cmd=id -> 31100 niveau 0 (non élevé). -->
+  <rule id="100700" level="12">
+    <if_sid>31100</if_sid>
+    <url type="pcre2">(?i)(cmd|exec|command|run|shell|query|q|arg|param|c)=[^&amp;]*\b(id|whoami|uname|cat|ls|nc|ncat|bash|sh|curl|wget|python|perl|ping|chmod|dir)\b|(;|%3b|\||%7c|`|%60|\$\(|%24%28|&amp;&amp;|%26%26)|/bin/(ba)?sh|%2fbin%2f</url>
+    <description>Injection de commande / RCE via HTTP : $(url)</description>
+    <mitre>
+      <id>T1190</id>
+      <id>T1059</id>
+    </mitre>
+    <group>web_attack,command_injection,</group>
+  </rule>
+
+  <!-- Accès à un web shell : script exécutable dans un répertoire d'upload /
+       temporaire / statique, ou nom de web shell connu. -->
+  <rule id="100701" level="12">
+    <if_sid>31100,31108</if_sid>
+    <url type="pcre2">(?i)/(uploads?|tmp|temp|images?|img|files?|media|data|cache|static|assets)/[^ ?]*\.(php[0-9]?|phtml|phar|cgi|pl|py|sh|asp|aspx|jsp|jspx)\b|/(c99|r57|wso|b374k|weevely|antsword|chopper|cmd|shell|backdoor|webshell|up|upload)\.(php[0-9]?|asp|aspx|jsp|cgi|pl|py|sh)\b</url>
+    <description>Accès à un web shell probable : $(url)</description>
+    <mitre>
+      <id>T1505.003</id>
+    </mitre>
+    <group>web_attack,web_shell,</group>
+  </rule>
+
+  <!-- Élève les attaques web déjà décodées (LFI/SQLi/XSS, 31103-31106) quand la
+       charge est clairement malveillante : + MITRE, niveau 10. -->
+  <rule id="100702" level="10">
+    <if_sid>31103,31104,31105,31106</if_sid>
+    <url type="pcre2">(?i)(\.\./|\.\.%2f|%2e%2e%2f|/etc/(passwd|shadow)|union(\s|%20|\+)+select|%27|%22|\bor(\s|%20|\+)+1=1|&lt;script|%3cscript|base64_decode|/proc/self/|passthru|shell_exec)</url>
+    <description>Attaque web confirmée (LFI/SQLi/XSS) : $(url)</description>
+    <mitre>
+      <id>T1190</id>
+    </mitre>
+    <group>web_attack,</group>
+  </rule>
+
+</group>
+
+<group name="audit,web_attack,web_shell,">
+
+  <!-- Exécution de commande par l'utilisateur du serveur web (www-data, euid=33).
+       Sur cet hôte (Apache statique) www-data ne lance rien en temps normal :
+       toute execve en euid=33 = exécution CGI / web shell. Mesuré : shell.cgi
+       tourne en euid=33 (perl, id, whoami, cat...). -->
+  <rule id="100710" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.euid">^33$</field>
+    <description>Exécution de commande par le serveur web ($(audit.exe)) - web shell probable (euid=33/www-data)</description>
+    <mitre>
+      <id>T1505.003</id>
+      <id>T1059</id>
+    </mitre>
+    <group>web_shell,command_execution,</group>
+  </rule>
+
+</group>
