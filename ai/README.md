@@ -2,8 +2,9 @@
 
 Deux choses ici :
 
-- [`bench/`](bench/) — mesures llama.cpp sur CPU. Résultats et conclusions dans
-  [`bench/RESULTS.md`](bench/RESULTS.md).
+- [`bench/`](bench/) — **archive** : mesures llama.cpp sur CPU, de l'époque du
+  modèle local. Conservé pour l'historique des choix
+  ([`bench/RESULTS.md`](bench/RESULTS.md)) ; ne décrit plus la config courante.
 - [`soc_agent/`](soc_agent/) — le pipeline. **Phase 1 : ingestion et
   corrélation, sans LLM. Phase 2 : triage LLM en mode shadow.**
 
@@ -183,12 +184,14 @@ verdicts sont enregistrés, comparés au jugement humain, et c'est tout — tant
 que la justesse n'est pas mesurée, agir dessus serait un pari.
 
 ```
-incidents ──► render ──► [serveur llama.cpp] ──► deduire ──► garde_fous ──► triages
-              résumé      verdict + actions     actions      barrière       (shadow)
-              ≤1500 tok   (GBNF, reason 1er)    déduites     déterministe
+incidents ──► render ──► anonymize ──► DeepSeek ──► deduire ──► garde_fous ──► triages
+              résumé      pseudonymes   verdict     actions      barrière       (shadow)
+              ≤1500 tok   + anti-fuite  reason 1er  déduites     déterministe
 ```
 
-Le triage appelle DeepSeek (API cloud) — plus de serveur d'inférence local.
+Le triage appelle l'API DeepSeek : le contexte quitte l'hôte, donc il passe
+d'abord par `anonymize.py` (jetons stables par incident, appel refusé si une
+valeur réelle a survécu, réhydratation à la réponse).
 
 ```bash
 VENV=~/.local/share/soc-ai/venv/bin/python
@@ -206,7 +209,7 @@ $VENV -m soc_agent.evaluate                   # justesse + cohérence
 ### Ce que le modèle décide, et ce qu'il ne décide pas
 
 Le modèle ne rend qu'un **jugement** : verdict, confiance, et les remédiations
-qui s'appliquent (`triage.gbnf`). Il ne choisit pas l'ouverture ou la clôture
+qui s'appliquent. Il ne choisit pas l'ouverture ou la clôture
 du dossier — ce sont des conséquences mécaniques du verdict, déduites par
 `actions.py`. Au premier passage réel, le modèle oubliait `open_case` deux fois
 sur quatre : on ne lui demande plus de tenir la comptabilité.
@@ -230,8 +233,10 @@ Deux réponses, dans cet ordre d'importance :
    caractères de contrôle retirés, champs tronqués et encadrés. Réduit la
    surface — 3/4 → 1/4 dans nos essais — sans la fermer. Défense secondaire.
 
-La grammaire GBNF, elle, garantit la forme et l'enum d'actions, mais **pas le
-verdict** : ne jamais compter dessus pour la justesse.
+La validation de sortie (`triage._valider`), elle, garantit la forme et l'enum
+d'actions, mais **pas le verdict** : ne jamais compter dessus pour la justesse.
+C'est là que la grammaire GBNF du modèle local a été remplacée par du code —
+DeepSeek ne promet qu'un JSON syntaxiquement valide.
 
 ### Reproductibilité
 
@@ -323,7 +328,7 @@ note d'analyse, selon le verdict :
 
 - **Faux positif** → note expliquant pourquoi, et l'**exception de whitelist**
   si le pipeline en a créé une pour cette signature (état, `match_all`, motif).
-- **Vrai positif** → **rapport généré par le LLM** (`prompts/report.gbnf`) :
+- **Vrai positif** → **rapport généré par le LLM** (`prompts/report.md`) :
   résumé, analyse, puis les **actions de remédiation** exécutées automatiquement
   (celles à fort impact — isolation, blocage, désactivation — signalées comme
   telles dans le rapport, mais bien **exécutées** : XDR autonome, garde-fous

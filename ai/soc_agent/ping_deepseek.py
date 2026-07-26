@@ -1,10 +1,15 @@
-"""Test de connexion à l'API DeepSeek.
+"""Ping de l'API DeepSeek.
+
+Nommée `ping_` et non `test_` : sous le préfixe `test_`, pytest ramassait ce
+module, dont l'import charge `config` — donc `SystemExit` sur toute machine sans
+`.env` complet, et la collecte de TOUTE la suite partait en INTERNALERROR. Ce
+n'est de toute façon pas un test : ça consomme du crédit et ça sort du réseau.
 
 Sonde minimale, hors pipeline : vérifie que la clé, l'URL et le modèle
 répondent, et mesure la latence d'un aller-retour. Aucune donnée SOC ici —
 un simple ping applicatif.
 
-    python -m soc_agent.test_deepseek
+    python -m soc_agent.ping_deepseek
 
 Lit DEEPSEEK_API_KEY depuis l'environnement (ou ai/.env, chargé au préalable).
 DeepSeek expose une API compatible OpenAI : /chat/completions, Bearer token.

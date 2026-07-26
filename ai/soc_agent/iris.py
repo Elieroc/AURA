@@ -20,6 +20,7 @@ import json
 import logging
 import re
 from datetime import timedelta, timezone
+from pathlib import Path
 
 import psycopg
 import urllib3
@@ -36,8 +37,6 @@ log = logging.getLogger("iris")
 
 if not config.IRIS_VERIFY_TLS:
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-from pathlib import Path  # noqa: E402
 
 PROMPTS = Path(__file__).parent / "prompts"
 

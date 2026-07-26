@@ -1,6 +1,8 @@
 # SOC-AI
 
-SOC piloté par une IA locale. Détection avec Wazuh, enrichissement threat intel (VirusTotal, AbuseIPDB, GeoIP), et automatisation de la création de règles, de la gestion de whitelist et des propositions de mitigation par un LLM local — aucune donnée SOC n'est envoyée vers un LLM cloud.
+XDR autonome. Détection avec Wazuh, enrichissement threat intel (VirusTotal, AbuseIPDB, GeoIP), puis triage, whitelist et remédiation pilotés par un LLM — l'action part sur le verdict, sans validation humaine par action.
+
+Le modèle tourne sur l'**API DeepSeek** et non en local : cet hôte n'a pas de GPU et pas les ressources pour un modèle en continu (l'historique de ce choix est dans [`ai/bench/RESULTS.md`](ai/bench/RESULTS.md)). Conséquence assumée : **le contexte d'alerte quitte l'hôte**, pseudonymisé au préalable (`ai/soc_agent/anonymize.py`, refus d'appel si une valeur réelle survit).
 
 ## Architecture
 
@@ -20,8 +22,8 @@ SOC piloté par une IA locale. Détection avec Wazuh, enrichissement threat inte
                           └──────┬───────────────┬──────┘
                                  │               │
                   ┌──────────────▼──────┐   ┌────▼─────────────────┐
-                  │   Wazuh Dashboard   │   │      IA locale       │
-                  │   https://localhost │   │  (llama.cpp, CPU)    │
+                  │   Wazuh Dashboard   │   │  soc-agent (IA)      │
+                  │   https://localhost │   │  API DeepSeek        │
                   └─────────────────────┘   │  • Triage HIGH/CRIT  │
                                             │  • Rules creator     │
                                             │  • Whitelist         │
@@ -48,11 +50,11 @@ SOC piloté par une IA locale. Détection avec Wazuh, enrichissement threat inte
 | Remédiation — isolation hôte | Active response nftables via workflow Shuffle ([`shuffle/README.md`](shuffle/README.md)) | ✅ Testé E2E |
 | [`iris/`](iris/) | DFIR-IRIS — case management, un case par incident trié (IOC + rapport IA) | ✅ Boucle fermée |
 | [`iris/mcp/`](iris/mcp/) | Serveur MCP IRIS (srozb/iris-mcp) — investigation interactive | ✅ Connecté |
-| [`ai/bench/`](ai/bench/) | Bench llama.cpp CPU — modèle, quantification, prompts | ✅ Mesuré |
-| [`ai/soc_agent/`](ai/soc_agent/) | Pipeline : ingest + corrélation (ph.1), triage LLM shadow (ph.2) | ✅ Sur données réelles |
+| [`ai/bench/`](ai/bench/) | Bench llama.cpp CPU — archive de l'époque du modèle local | 📚 Historique |
+| [`ai/soc_agent/`](ai/soc_agent/) | Pipeline : ingest + corrélation (ph.1), triage LLM + remédiation (ph.2) | ✅ Sur données réelles |
 | IA — Rules creator | Génération de règles/decoders Wazuh à partir des alertes | 🔜 À venir |
 | IA — Whitelist | Exceptions auto sur FP récurrents jugés par l'IA | ✅ Boucle fermée |
-| IA — Mitigation | Propositions d'actions de remédiation | 🔜 À venir |
+| IA — Mitigation | Isolation d'hôte, blocage IP, désactivation de compte — **exécutées automatiquement** sur verdict vrai positif | ✅ Testé E2E |
 
 ## Démarrage rapide
 
@@ -71,8 +73,9 @@ Détail complet (setup, intégrations, tests manuels) : [`wazuh/README.md`](wazu
 
 ## Principes de sécurité
 
-- **Données locales** : logs, alertes et IOC ne quittent jamais l'infra locale (exception : hash/IP envoyés aux API VT/AbuseIPDB pour enrichissement).
-- **Humain dans la boucle** : les actions à fort impact (blocage IP, isolation d'hôte, modification de règles en prod) sont proposées par l'IA, jamais exécutées sans validation explicite.
+- **Ce qui sort de l'hôte** : le contexte des incidents part vers l'API DeepSeek, **pseudonymisé** (`anonymize.py` : jetons stables par incident, appel refusé si une valeur réelle a survécu, réhydratation à la réponse). Hash et IP partent aussi aux API VT/AbuseIPDB pour l'enrichissement. Le reste (logs bruts, base) ne quitte pas l'infra.
+- **Pas d'humain dans la boucle, des garde-fous dans le code** : les actions à fort impact (isolation d'hôte, blocage IP, désactivation de compte) s'exécutent **seules** sur un verdict vrai positif — c'est le but du projet. Ce qui les borne est déterministe et vérifiable : comptes protégés, cibles internes exclues, clôture d'un incident grave impossible, suspension sur motif d'injection (`actions.appliquer_garde_fous`), plus des refus locaux dans les scripts d'active response. **Le LLM n'est pas une frontière de sécurité** : mesuré, 3 injections sur 4 dans les logs retournent son verdict.
+- **Seule exception encore sous revue humaine** : un changement de règle Wazuh en prod passe par PR git + merge (le rules creator ne pousse jamais en direct).
 - **Secrets hors dépôt** : clés API, mots de passe et certificats gitignorés ; seuls des `.example` avec placeholders sont versionnés.
 
 ## Structure du dépôt
@@ -81,14 +84,14 @@ Détail complet (setup, intégrations, tests manuels) : [`wazuh/README.md`](wazu
 SOC-AI/
 ├── CLAUDE.md            # contexte projet pour Claude Code
 ├── README.md
-├── ai/                  # couche IA : bench llama.cpp + soc_agent (ingest, corrélation)
+├── ai/                  # couche IA : soc_agent (ingest, corrélation, triage, remédiation)
 ├── iris/                # DFIR-IRIS (case management)
 ├── scripts/             # install-agent.sh (agent + user d'admin distante)
 ├── shuffle/             # SOAR Shuffle (remédiation, workflow isolation d'hôte)
 └── wazuh/               # stack Wazuh dockerisée
     ├── docker-compose.yml
     ├── generate-indexer-certs.yml
-    ├── active-response/ # scripts AR custom (isolation nftables)
+    ├── active-response/ # scripts AR custom (isolation nftables, comptes, firewall)
     ├── config/          # configs bind-mountées (manager, indexer, dashboard)
     └── integrations/    # scripts d'intégration custom (AbuseIPDB)
 ```

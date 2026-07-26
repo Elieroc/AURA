@@ -42,7 +42,7 @@ def _incident():
 def test_actifs_internes_pseudonymises():
     inc, alertes = _incident()
     anon = Anonymiseur()
-    inc_a, alertes_a, interdits = anonymiser(anon, inc, alertes)
+    inc_a, alertes_a, _ = anonymiser(anon, inc, alertes)
 
     assert inc_a["agent_name"].startswith("<HOTE_")
     assert alertes_a[0]["srcuser"].startswith("<COMPTE_")

@@ -100,8 +100,9 @@ def construire_prompt(incident: dict, alertes: list[dict]) -> tuple[str, str]:
     """(système, utilisateur).
 
     Le système est strictement constant — consignes et politique de décision.
-    C'est ce qui permet au prefix caching de llama.cpp de ne le prefiller
-    qu'une fois : ~8,8 s économisées par incident au-delà du premier.
+    Deux raisons de ne jamais y glisser de variable : le cache de contexte de
+    DeepSeek ne s'amorce que sur un préfixe identique au token près, et un
+    système qui bouge rend deux triages incomparables (`prompt_sha`).
     """
     systeme = (PROMPTS / "system.md").read_text()
     corps = rendre(incident, alertes)
