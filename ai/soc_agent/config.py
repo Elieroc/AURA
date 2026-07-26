@@ -73,6 +73,32 @@ ATTACH_MIN_LEVEL = int(os.environ.get("ATTACH_MIN_LEVEL", "3"))
 # les statistiques complètes ; monter à MIN_LEVEL une fois la mesure faite.
 INGEST_MIN_LEVEL = int(os.environ.get("INGEST_MIN_LEVEL", "0"))
 
+# --- Rattrapage des alertes indexées en retard ------------------------------
+#
+# Le curseur d'ingestion avance sur `@timestamp`, la date de l'ÉVÉNEMENT, pas
+# celle de son indexation. Toute alerte qui devient visible à la recherche APRÈS
+# que le curseur a dépassé son horodatage est définitivement sautée. Deux
+# échelles de retard, deux parades.
+#
+# 1. Skew d'indexation (secondes à minutes) : transit agent -> manager ->
+#    indexer + refresh de l'index. On reprend l'ingestion un peu avant la
+#    position enregistrée. Le recouvrement est gratuit, l'insertion étant
+#    idempotente (ON CONFLICT DO NOTHING sur l'id natif Wazuh).
+INGEST_LOOKBACK_MINUTES = int(os.environ.get("INGEST_LOOKBACK_MINUTES", "15"))
+
+# 2. Rejeu d'un agent (heures à jours) : un agent coupé du manager bufferise ses
+#    logs et les rejoue à la reconnexion AVEC leur horodatage d'origine. Le
+#    lookback ci-dessus ne va pas assez loin. D'où un balayage périodique et
+#    complet de cette fenêtre, indépendant du curseur, qui ne récupère que ce
+#    qui manque. 48 h couvre une coupure de week-end.
+INGEST_SWEEP_HOURS = int(os.environ.get("INGEST_SWEEP_HOURS", "48"))
+
+# Cadence du balayage. Le cycle tourne toutes les 5 min ; sweeper à chaque tour
+# serait du gâchis, une heure de latence sur des alertes déjà en retard de
+# plusieurs heures ne change rien.
+INGEST_SWEEP_INTERVAL_MINUTES = int(
+    os.environ.get("INGEST_SWEEP_INTERVAL_MINUTES", "60"))
+
 # --- Modèle : DeepSeek (API cloud, compatible OpenAI) -----------------------
 #
 # Bascule depuis l'IA locale (llama.cpp) : cette machine n'a pas les ressources

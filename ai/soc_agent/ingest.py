@@ -10,7 +10,7 @@ l'identifiant natif Wazuh).
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import psycopg
 import requests
@@ -167,50 +167,138 @@ def _lot(depuis: str | None, apres: tuple | None, taille: int,
     return rep.json()["hits"]["hits"]
 
 
-def ingerer(depuis: str | None, taille_lot: int) -> int:
+MAJ_CURSEUR = """
+INSERT INTO ingest_cursor (id, last_ts, last_alert_id, updated_at)
+VALUES (true, %s, %s, now())
+ON CONFLICT (id) DO UPDATE
+  SET last_ts = EXCLUDED.last_ts,
+      last_alert_id = EXCLUDED.last_alert_id,
+      updated_at = now()
+"""
+
+MAJ_SWEEP = """
+INSERT INTO ingest_cursor (id, last_sweep_at) VALUES (true, now())
+ON CONFLICT (id) DO UPDATE SET last_sweep_at = now()
+"""
+
+
+def _parcourir(conn, filtre: noise.NoiseFilter, depuis: str | None,
+               apres: tuple | None, taille_lot: int, *,
+               avancer_curseur: bool, etiquette: str) -> tuple[int, int]:
+    """Pagine une fenêtre et insère. Retourne (vues, nouvelles).
+
+    `avancer_curseur=False` pour le sweep de rattrapage : il balaye en arrière
+    et ne doit surtout pas repositionner le curseur du flux normal.
+    """
+    vues = nouvelles = 0
+    while True:
+        hits = _lot(depuis, apres, taille_lot, filtre)
+        if not hits:
+            break
+
+        lignes = [_aplatir(h["_source"], filtre) for h in hits]
+        with conn.cursor() as cur:
+            cur.executemany(INSERT, lignes)
+            # ON CONFLICT DO NOTHING : rowcount ne compte que les vraies
+            # insertions, ce qui donne le nombre d'alertes réellement récupérées
+            # (utile pour le sweep, où la quasi-totalité du lot est déjà connue).
+            nouvelles += max(cur.rowcount, 0)
+            dernier = hits[-1]
+            if avancer_curseur:
+                cur.execute(MAJ_CURSEUR, (dernier["_source"]["@timestamp"],
+                                          dernier["_source"]["id"]))
+        conn.commit()
+
+        vues += len(hits)
+        apres = tuple(dernier["sort"])
+        print(f"  {etiquette} : {vues} alertes vues, {nouvelles} nouvelles…",
+              file=sys.stderr)
+
+        if len(hits) < taille_lot:
+            break
+    return vues, nouvelles
+
+
+def _sweep_du(conn, taille_lot: int, filtre: noise.NoiseFilter) -> int:
+    """Rebalaye une longue fenêtre pour récupérer les alertes indexées en retard.
+
+    Le curseur avance sur `@timestamp`, la date de l'ÉVÉNEMENT, pas celle de son
+    indexation. Un agent Wazuh coupé du manager bufferise ses logs et les rejoue
+    à la reconnexion avec leur horodatage d'origine : si le curseur est déjà
+    passé, `search_after` ne les renverra JAMAIS et ces alertes sont perdues
+    pour de bon — jamais ingérées, donc jamais corrélées ni triées. Le lookback
+    de `ingerer()` ne couvre qu'un décalage de quelques minutes ; une coupure
+    d'agent se compte en heures ou en jours.
+
+    D'où ce balayage complet et périodique de `INGEST_SWEEP_HOURS`, indépendant
+    du curseur. L'ingestion étant idempotente, il ne coûte que la lecture — et
+    au niveau de volume observé (quelques centaines d'alertes/jour), c'est
+    négligeable devant un triage LLM.
+    """
+    _, nouvelles = _parcourir(
+        conn, filtre, f"{config.INGEST_SWEEP_HOURS}h", None, taille_lot,
+        avancer_curseur=False, etiquette="rattrapage")
+    conn.execute(MAJ_SWEEP)
+    conn.commit()
+    return nouvelles
+
+
+def ingerer(depuis: str | None, taille_lot: int,
+            forcer_sweep: bool = False) -> int:
     total = 0
     with psycopg.connect(config.PG_DSN) as conn:
         # Filtre construit une fois par run, whitelist auto (DB) comprise.
         filtre = noise.charger_avec_db(conn)
 
         with conn.cursor() as cur:
-            cur.execute("SELECT last_ts, last_alert_id FROM ingest_cursor")
+            cur.execute(
+                "SELECT last_ts, last_alert_id, last_sweep_at FROM ingest_cursor")
             ligne = cur.fetchone()
 
         # Le curseur prime sur --depuis : une reprise ne doit pas re-balayer
         # une fenêtre déjà traitée.
         apres = None
         if ligne and ligne[0]:
-            apres = (int(ligne[0].timestamp() * 1000), ligne[1])
+            # Recul de sécurité : on repart un peu AVANT la position enregistrée.
+            # Entre le moment où une alerte est datée et celui où elle devient
+            # visible à la recherche, il s'écoule le temps de transit
+            # agent -> manager -> indexer, plus le refresh de l'index. Reprendre
+            # exactement au curseur saute ce qui a atterri derrière lui. Le
+            # recouvrement ne coûte rien : l'insertion est idempotente.
+            #
+            # Ne couvre que le skew normal. Un agent déconnecté qui rejoue des
+            # heures de logs est rattrapé par le sweep, cf. `_sweep_du`.
+            debut = ligne[0] - timedelta(minutes=config.INGEST_LOOKBACK_MINUTES)
+            # L'id ("" ci-dessous) est le second critère de tri : la chaîne vide
+            # précède toutes les autres, donc on n'exclut aucune alerte de la
+            # milliseconde de départ.
+            apres = (int(debut.timestamp() * 1000), "")
             depuis = None
 
-        while True:
-            hits = _lot(depuis, apres, taille_lot, filtre)
-            if not hits:
-                break
+        vues, _ = _parcourir(conn, filtre, depuis, apres, taille_lot,
+                             avancer_curseur=True, etiquette="ingest")
+        total += vues
 
-            lignes = [_aplatir(h["_source"], filtre) for h in hits]
-            with conn.cursor() as cur:
-                cur.executemany(INSERT, lignes)
-                dernier = hits[-1]
-                cur.execute(
-                    """INSERT INTO ingest_cursor (id, last_ts, last_alert_id, updated_at)
-                       VALUES (true, %s, %s, now())
-                       ON CONFLICT (id) DO UPDATE
-                         SET last_ts = EXCLUDED.last_ts,
-                             last_alert_id = EXCLUDED.last_alert_id,
-                             updated_at = now()""",
-                    (dernier["_source"]["@timestamp"], dernier["_source"]["id"]),
-                )
+        # Sweep de rattrapage, cadencé indépendamment du cycle (qui tourne
+        # toutes les 5 min : sweeper à chaque tour serait du gâchis).
+        premier_passage = not (ligne and ligne[0])
+        dernier_sweep = ligne[2] if ligne else None
+        du = forcer_sweep or (
+            not premier_passage
+            and (dernier_sweep is None
+                 or (datetime.now(timezone.utc) - dernier_sweep
+                     >= timedelta(minutes=config.INGEST_SWEEP_INTERVAL_MINUTES))))
+        if premier_passage and not forcer_sweep:
+            # Le tout premier run vient de balayer --depuis (30 j par défaut) :
+            # rien à rattraper, on pose juste le jalon.
+            conn.execute(MAJ_SWEEP)
             conn.commit()
-
-            total += len(hits)
-            apres = tuple(dernier["sort"])
-            depuis = None
-            print(f"  {total} alertes ingérées…", file=sys.stderr)
-
-            if len(hits) < taille_lot:
-                break
+        elif du:
+            n = _sweep_du(conn, taille_lot, filtre)
+            if n:
+                print(f"  rattrapage : {n} alerte(s) indexée(s) en retard "
+                      f"récupérée(s)", file=sys.stderr)
+            total += n
     return total
 
 
@@ -251,6 +339,10 @@ def main() -> None:
     ap.add_argument("--reappliquer-filtre", action="store_true",
                     help="réévalue le noise filter sur les alertes déjà en "
                          "base, sans réingérer")
+    ap.add_argument("--rattrapage", action="store_true",
+                    help=f"force le balayage des {config.INGEST_SWEEP_HOURS} "
+                         "dernières heures sans attendre sa cadence : récupère "
+                         "les alertes indexées en retard (agent reconnecté)")
     args = ap.parse_args()
 
     if args.reappliquer_filtre:
@@ -266,7 +358,7 @@ def main() -> None:
         print("Curseur réinitialisé.")
 
     debut = datetime.now(timezone.utc)
-    n = ingerer(args.depuis, args.taille_lot)
+    n = ingerer(args.depuis, args.taille_lot, args.rattrapage)
     duree = (datetime.now(timezone.utc) - debut).total_seconds()
     print(f"{n} alertes traitées en {duree:.1f} s")
 
