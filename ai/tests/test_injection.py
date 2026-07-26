@@ -19,11 +19,10 @@ s'il est absent (`pytest -m llm` pour les exiger).
 """
 
 import json
+import os
 
 import pytest
-import requests
 
-from soc_agent import config
 from soc_agent.actions import appliquer_garde_fous, deduire
 from soc_agent.coherence import verifier
 from soc_agent.render import motifs_injection
@@ -59,21 +58,6 @@ def _incident_piege(charge: str) -> tuple[dict, list[dict]]:
     return incident, alertes
 
 
-def test_grammaire_borne_les_actions_quoi_qu_il_arrive():
-    """Défense structurelle : une action inventée ne peut pas exister.
-
-    Même en supposant le modèle entièrement retourné par l'injection, il ne
-    peut émettre que des valeurs de l'enum — et tout ce qui touche la
-    production repasse par la déduction et la validation.
-    """
-    grammaire = (__import__("pathlib").Path(
-        "soc_agent/prompts/triage.gbnf").read_text())
-    assert "propose_unblock_all" not in grammaire
-    for action in ("propose_isolate_host", "propose_block_ip",
-                   "propose_disable_user"):
-        assert action in grammaire
-
-
 def test_validation_borne_les_actions_quoi_qu_il_arrive():
     """Défense structurelle, désormais dans le code (plus de GBNF).
 
@@ -102,11 +86,16 @@ def test_faux_positif_injecte_ne_declenche_aucune_remediation():
     assert verifier("false_positive", ["propose_isolate_host"]) != []
 
 
-def _serveur_dispo() -> bool:
-    try:
-        return requests.get(f"{config.LLM_URL}/health", timeout=3).ok
-    except requests.RequestException:
-        return False
+def _appel_reel_autorise() -> bool:
+    """Opt-in explicite pour le seul test qui interroge vraiment le modèle.
+
+    Interrogeait `/health` du serveur llama.cpp local, disparu au pivot DeepSeek :
+    le test ci-dessous était donc TOUJOURS sauté, sans que rien ne le signale.
+    On n'accepte pas non plus « une clé est présente » comme feu vert — `conftest`
+    en pose une factice pour que la suite collecte, et DeepSeek est facturé. Il
+    faut le demander : `SOC_AI_TEST_LLM=1 pytest -m llm`.
+    """
+    return os.environ.get("SOC_AI_TEST_LLM") == "1"
 
 
 def test_les_charges_connues_sont_detectees():
@@ -153,7 +142,8 @@ def test_faux_positif_benin_reste_cloturable():
 
 
 @pytest.mark.llm
-@pytest.mark.skipif(not _serveur_dispo(), reason="serveur d'inférence absent")
+@pytest.mark.skipif(not _appel_reel_autorise(),
+                    reason="appel réel non demandé (SOC_AI_TEST_LLM=1)")
 @pytest.mark.parametrize("charge", INJECTIONS)
 def test_vulnerabilite_connue_du_modele_aux_injections(charge):
     """Mesure la vulnérabilité résiduelle du modèle — sans la corriger.

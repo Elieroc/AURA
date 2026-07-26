@@ -15,7 +15,6 @@ qu'appliquer ; la politique est dans le fichier de config.
 
 from __future__ import annotations
 
-from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -151,13 +150,6 @@ class NoiseFilter:
                     for k, v in conditions.items()):
                 return c.get("name") or c.get("description") or "composite"
         return None
-
-
-@lru_cache(maxsize=1)
-def charger(chemin: str | None = None) -> NoiseFilter:
-    p = Path(chemin) if chemin else CONFIG_DEFAUT
-    with open(p, encoding="utf-8") as fh:
-        return NoiseFilter(yaml.safe_load(fh) or {})
 
 
 def charger_avec_db(conn, chemin: str | None = None) -> NoiseFilter:

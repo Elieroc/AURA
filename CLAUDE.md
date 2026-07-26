@@ -1,6 +1,6 @@
 # SOC-AI
 
-SOC piloté par IA locale. Détection Wazuh + enrichissement threat intel + automatisation règles/whitelist/mitigation via IA locale (pas de cloud LLM sur données SOC).
+XDR autonome. Détection Wazuh + enrichissement threat intel + triage/whitelist/remédiation pilotés par LLM, exécutés sans validation humaine par action.
 
 ## Stack
 
@@ -10,17 +10,18 @@ SOC piloté par IA locale. Détection Wazuh + enrichissement threat intel + auto
   - **AbuseIPDB** — enrichissement réputation IP (score abus, historique reports).
 - **Shuffle** — SOAR pour l'orchestration des remédiations (`shuffle/`). Workflow "Wazuh - Host Isolation" : webhook → API Wazuh → active response `host-isolate.sh`/`host-unisolate.sh` (nftables) sur l'agent. Déclenché **automatiquement** par le soc-agent (`mitigate.py`) sur verdict vrai positif — pas de validation humaine (XDR autonome, cf. plus bas). Un déclenchement opérateur manuel reste possible (`mitigate --isoler`).
 - **DFIR-IRIS** (`iris/`) — case management. Un case par incident trié (`soc_agent.iris`, en `dfir-iris-client` direct) : IOC + note d'analyse. FP → explication + exception whitelist ; TP → rapport LLM (résumé, analyse, remédiation, piste de règle si angle mort). Retenu contre TheHive 5 (partiellement sous licence commerciale, et 6–8 Go de RAM contre ~650 Mo). API « legacy » `/manage/*` — **pas de `/api/v2` en v2.4.27**. Serveur **MCP IRIS** (`iris/mcp/`, srozb/iris-mcp, stdio) pour l'investigation interactive — distinct de la création auto.
-- **IA locale** — **pas de GPU sur cet hôte** (Ryzen 8c/16t AVX-512, 30 Go RAM partagés avec toute la stack). Conséquences structurantes :
-  - Runtime : **llama.cpp** (et pas vLLM, dont le backend CPU est faible). Grammaires GBNF pour garantir le JSON, prefix caching par slots.
-  - **Un seul modèle : Qwen3-8B Q4_K_M**, pour sa robustesse au prompt. Mesuré (`ai/bench/RESULTS.md`) : le **Q4_K prefill plus vite que le Q5_K** malgré plus de paramètres (repacking AVX-512). Ne jamais prendre autre chose que du Q4_K_M sur cette machine ; repli éventuel sur un 4B, en Q4_K_M.
-  - Toujours `/v1/chat/completions`, jamais `/completion` : le template de chat change le verdict.
+- **Modèle : API DeepSeek** (`llm.py`, compatible OpenAI). L'IA locale (llama.cpp) a été abandonnée : pas de GPU sur cet hôte et pas les ressources pour un modèle en continu. `ai/bench/` reste l'archive de cette époque — utile pour l'historique des choix, plus pour la config courante.
+  - **Le contexte SOC quitte l'hôte**, donc pseudonymisation OBLIGATOIRE avant tout appel (`anonymize.py`) : jetons stables par incident (comparabilité entre triages), `verifier_fuite` refuse l'appel si une valeur réelle a survécu, réhydratation à la réponse pour qu'IRIS montre les vraies valeurs. Ne pas confondre avec `sanitize.py`, qui neutralise le texte hostile.
+  - **Plus de grammaire GBNF** : DeepSeek ne garantit qu'un JSON syntaxiquement valide (`response_format`), ni le schéma ni les enums. La contrainte est passée dans le code — `triage._valider` coerce et écarte, `actions.py` borne ensuite.
+  - Toujours `/chat/completions` : le template de chat change le verdict.
   - Dans tout schéma de sortie, **`reason` avant `verdict`** : sinon le modèle tranche sans un token de raisonnement, et se trompe.
   - **Une politique de décision explicite pèse plus que la taille du modèle** (`ai/bench/policy.md`). Sans critères de choix des actions, le modèle retombe sur `escalate_human` — sûr et inutile. Le champ d'actions doit être une liste : une compromission réelle appelle plusieurs propositions.
-  - Le prefill est le goulot (~50 t/s mesurés, pas les 100-150 estimés). Contexte visé **500–800 tokens, plafond dur 1500**. Préfiltrage déterministe avant tout appel LLM. Traitement asynchrone, ~15-25 s par alerte.
+  - Les modèles v4 **raisonnent**, et les tokens de raisonnement sont décomptés de `max_tokens` AVANT le contenu : un budget trop court rend `finish_reason=length` avec un content VIDE. D'où les plafonds larges de `config.py` (3000 pour le verdict, 4000 pour le rapport).
+  - Contexte visé **500–800 tokens, plafond dur 1500** : ce n'est plus le prefill CPU qui l'impose mais le coût et la précision. Préfiltrage déterministe avant tout appel. ~15-25 s par incident.
   - **L'IA ne traite que les alertes de niveau HIGH/CRITICAL.**
   - **Rules creator** — génère/propose règles Wazuh (decoders/rules XML). Jamais d'écriture directe : validation `wazuh-logtest` + rejeu de régression → PR git → merge humain.
   - **Whitelist** — propose/gère exceptions (faux positifs récurrents, IP/hosts de confiance), même flux PR.
-  - **Mitigation** — exécute les actions de remédiation (blocage IP, isolation host, désactivation de compte) **de façon autonome** dès le verdict vrai positif (`MITIGATE_EXECUTE=true`), y compris les actions à fort impact. C'est le but du projet : un XDR autonome, pas un assistant qui attend un clic. La sûreté ne vient pas d'un accord humain a priori mais de **garde-fous déterministes** dans le code (`actions.appliquer_garde_fous`, comptes protégés, cibles internes exclues, suspension sur injection).
+  - **Mitigation** — exécute les actions de remédiation (blocage IP, isolation host, désactivation de compte) **de façon autonome** dès le verdict vrai positif (`MITIGATE_EXECUTE=true`), y compris les actions à fort impact. C'est le but du projet : un XDR autonome, pas un assistant qui attend un clic. La sûreté ne vient pas d'un accord humain a priori mais de **garde-fous déterministes** dans le code (`actions.appliquer_garde_fous`, comptes protégés, cibles internes exclues, suspension sur injection) ET dans les scripts d'active response eux-mêmes (refus de root/wazuh, de la loopback, du manager) — l'AR est aussi joignable par l'API et le MCP, qui ne passent pas par le code Python. Une action annulée par l'analyste (tâche IRIS `Canceled`) ne repart jamais seule : `_deja_exec` fige aussi `annulé`.
 
 ## Investigation sur les endpoints par l'IA
 
@@ -49,7 +50,12 @@ Phase 1 en place : ingestion + corrélation, **sans LLM**. Détail et justificat
 - Mesuré sur données réelles : 680 alertes → 36 retenues (niveau ≥ 12) → 4 incidents, facteur 9.
 - Piège : `TRUNCATE incidents CASCADE` vide aussi `alerts`. Utiliser `correlate --recommencer`.
 
-Phase 2 en place : triage LLM en **mode shadow** (verdict enregistré, rien de déclenché).
+Phase 2 en place : triage LLM. Attention au vocabulaire, il a dérivé — `triages.mode`
+vaut toujours `'shadow'` et les docs parlent de « mode shadow », mais **la
+remédiation, elle, s'exécute réellement** (`MITIGATE_EXECUTE=true`, appelée par
+`iris.creer_cases`). Ce qui reste « shadow » est le seuil de justesse : aucun
+verdict n'a encore été validé contre un golden set. Le système agit sans que sa
+justesse soit mesurée — c'est le POC assumé, pas un oubli.
 
 **Whitelist automatique** (`soc_agent.whitelist`) : les FP récurrents jugés par l'IA (même signature, ≥ `WHITELIST_MIN_FP`) deviennent des exceptions dans `whitelist_rules` (table distincte du YAML humain, lue par `noise.py`). Toujours composite + post-retrieval. Signature = champs constants parmi `rule_id`/`src_user`/`command`/`file` (`file` virtuel : whitelister `/tmp/eicar.com` sans aveugler la règle VT). Garde-fous : signature précise obligatoire (rule_id seul refusé), jamais au-dessus de niveau 14, jamais une signature vue en TP.
 
@@ -64,7 +70,7 @@ Déclenchement **périodique** : `soc_agent.cycle` enchaîne ingest → correlat
 
 Infra en place : Wazuh (manager, indexer, dashboard, agents, intégrations VT/AbuseIPDB/GeoIP), Shuffle, serveur MCP Wazuh, DFIR-IRIS, pipeline soc_agent (phases 1 et 2).
 
-Reste à faire, dans l'ordre : golden set (~200 alertes labellisées) → mesure de justesse → RAG → rules creator (PR) → remédiation (autonomie configurable).
+Reste à faire, dans l'ordre : golden set (~200 alertes labellisées) → mesure de justesse → RAG → rules creator (PR). La remédiation est faite et vérifiée de bout en bout sur l'agent (isolation nftables, blocage IP, désactivation de compte) ; ce qui manque n'est plus le mécanisme mais la mesure qui justifie de le laisser agir.
 
 ## Conventions
 

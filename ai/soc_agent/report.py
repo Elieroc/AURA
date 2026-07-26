@@ -12,8 +12,9 @@ from psycopg.rows import dict_row
 
 from . import config
 
-# Mesuré sur cet hôte (cf. ai/bench/RESULTS.md) : 15 à 25 s par triage avec
-# Qwen3-8B Q4_K_M. On prend le haut de la fourchette.
+# 15 à 25 s par triage mesurées sur DeepSeek (le chiffre tient : la latence
+# réseau + raisonnement a remplacé le prefill CPU, cf. ai/bench/RESULTS.md pour
+# l'époque du modèle local). On prend le haut de la fourchette.
 SECONDES_PAR_TRIAGE = 25
 
 

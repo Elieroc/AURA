@@ -104,9 +104,11 @@ INGEST_SWEEP_INTERVAL_MINUTES = int(
 # Bascule depuis l'IA locale (llama.cpp) : cette machine n'a pas les ressources
 # pour un modèle local en continu. DeepSeek expose une API compatible OpenAI
 # (/chat/completions, Bearer token). Conséquence de sécurité MAJEURE : les
-# données SOC quittent l'hôte. Elles DOIVENT être anonymisées avant tout appel
-# (cf. sanitize.py — anonymisation à implémenter). Aucune donnée sensible en
-# clair vers le cloud tant que ce n'est pas fait.
+# données SOC quittent l'hôte. La pseudonymisation est EN PLACE et obligatoire
+# (`anonymize.py`) : jetons stables par incident, `verifier_fuite` refuse l'appel
+# si une valeur réelle a survécu, réhydratation à la réponse pour que l'analyste
+# voie les vraies valeurs dans IRIS. Ne pas confondre avec `sanitize.py`, qui
+# neutralise le texte hostile — autre problème, autre module.
 #
 # Perte par rapport au local : plus de GBNF (grammaire). DeepSeek garantit un
 # JSON valide (response_format), pas le respect du schéma ni de l'enum. La
@@ -134,8 +136,6 @@ DEEPSEEK_URL = os.environ.get("DEEPSEEK_URL", "https://api.deepseek.com")
 # lequel le pipeline a été calé) et deepseek-v4-pro (verdict plus robuste).
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
-# Conservé pour compat (tokenize éventuel) — plus utilisé pour l'inférence.
-LLM_URL = os.environ.get("LLM_URL", "http://127.0.0.1:8081")
 
 # --- DFIR-IRIS (case management) --------------------------------------------
 #
