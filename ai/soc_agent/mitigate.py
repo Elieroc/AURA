@@ -158,7 +158,19 @@ def _wazuh_token() -> str:
 
 
 def _wazuh_ar(agent_id: str, command: str, arguments: list[str]) -> dict:
-    """Déclenche une active-response Wazuh sur un agent (API directe)."""
+    """Déclenche une active-response Wazuh sur un agent (API directe).
+
+    Lève si l'API n'a pas retenu l'agent. Un 200 ne suffit pas : l'API répond
+    200 avec l'agent dans `failed_items` quand il est déconnecté ou inconnu, et
+    l'appelant marquait alors la remédiation 'exécuté' alors que rien n'était
+    parti.
+
+    Reste hors de portée : le RÉSULTAT du script côté agent. L'API est
+    fire-and-forget, l'AR ne renvoie rien — un script qui refuse la cible ne
+    remonte que dans `active-responses.log` de l'agent. D'où l'importance que le
+    script lui-même soit correct (cf. wazuh/active-response/), la vérification
+    de bout en bout ne pouvant se faire qu'en lisant l'état réel de l'hôte.
+    """
     tok = _wazuh_token()
     r = requests.put(
         f"{config.WAZUH_API_URL}/active-response",
@@ -167,7 +179,14 @@ def _wazuh_ar(agent_id: str, command: str, arguments: list[str]) -> dict:
         json={"command": command, "arguments": arguments},
         verify=False, timeout=20)
     r.raise_for_status()
-    return r.json()
+    rep = r.json()
+    donnees = rep.get("data", {}) or {}
+    echecs = donnees.get("failed_items") or []
+    if echecs or not (donnees.get("affected_items") or []):
+        raise RuntimeError(
+            f"l'API Wazuh n'a pas transmis {command} à l'agent {agent_id} : "
+            f"{rep.get('message') or ''} {echecs}".strip())
+    return rep
 
 
 # --- lecture de l'état d'isolation (marqueur, via SSH) ----------------------
@@ -268,7 +287,7 @@ def _block_ip(cible: str, ctx: dict):
             f"retrait immédiat : supprimer la règle visant {cible} dans le "
             f"pare-feu de l'agent {ctx['agent_id']}.")
     if config.MITIGATE_EXECUTE:
-        _wazuh_ar(ctx["agent_id"], "!firewall-drop0", [cible])
+        _wazuh_ar(ctx["agent_id"], "!firewall-drop.sh", [cible])
         return "exécuté", canal, details, undo
     return "dry_run", canal, details, undo
 
@@ -280,7 +299,7 @@ def _disable_user(cible: str, ctx: dict):
     undo = (f"Réactiver le compte {cible} sur l'agent {ctx['agent_id']} "
             f"(passwd -u {cible} sous Linux, ou enable-account).")
     if config.MITIGATE_EXECUTE:
-        _wazuh_ar(ctx["agent_id"], "!disable-account", [cible])
+        _wazuh_ar(ctx["agent_id"], "!disable-account.sh", [cible])
         return "exécuté", canal, details, undo
     return "dry_run", canal, details, undo
 
@@ -311,28 +330,33 @@ EXECUTEURS = {
 # Toute remédiation doit être défaisable : quand l'analyste passe la tâche IRIS
 # d'une action en 'Canceled', `reconcilier` rejoue le reverse correspondant.
 # Chacun défait l'action par le MÊME canal que l'aller (Shuffle pour l'hôte, API
-# Wazuh pour l'IP/compte), via l'active-response inverse. En dry-run, ne fait
-# rien (comme les exécuteurs). Retourne le libellé du canal utilisé.
+# Wazuh pour l'IP/compte), via l'active-response inverse. Retourne le libellé du
+# canal utilisé, et LÈVE si le canal échoue (l'appelant garde alors le statut
+# 'exécuté' et retentera).
+#
+# Un reverse s'exécute TOUJOURS, indépendamment de MITIGATE_EXECUTE — même
+# logique que --isoler/--desisoler : ce drapeau ne borne que l'exécution
+# AUTOMATIQUE depuis un verdict, jamais la restauration. Le gater était un piège
+# de sûreté : `reconcilier` marque 'annulé' dès que le reverse rend la main, donc
+# couper l'exécution puis annuler ne défaisait RIEN tout en sortant la ligne de
+# la sélection `statut='exécuté'` — l'annulation était perdue en silence, sans
+# nouvelle tentative possible. Et il n'y a rien à protéger : seules les actions
+# réellement parties portent le statut 'exécuté' (une action en dry-run reste en
+# 'dry_run'), donc un reverse ne touche que ce qui a vraiment été appliqué.
 
 def _revert_isolate(cible: str, ctx: dict) -> str:
-    canal = "Shuffle → active-response host-unisolate.sh (nftables)"
-    if config.MITIGATE_EXECUTE:
-        fire_isolation(cible, False, ctx["reason_court"])
-    return canal
+    fire_isolation(cible, False, ctx["reason_court"])
+    return "Shuffle → active-response host-unisolate.sh (nftables)"
 
 
 def _revert_block_ip(cible: str, ctx: dict) -> str:
-    canal = "API Wazuh → active-response firewall-allow"
-    if config.MITIGATE_EXECUTE:
-        _wazuh_ar(ctx["agent_id"], "!firewall-allow0", [cible])
-    return canal
+    _wazuh_ar(ctx["agent_id"], "!firewall-allow.sh", [cible])
+    return "API Wazuh → active-response firewall-allow"
 
 
 def _revert_disable_user(cible: str, ctx: dict) -> str:
-    canal = "API Wazuh → active-response enable-account"
-    if config.MITIGATE_EXECUTE:
-        _wazuh_ar(ctx["agent_id"], "!enable-account", [cible])
-    return canal
+    _wazuh_ar(ctx["agent_id"], "!enable-account.sh", [cible])
+    return "API Wazuh → active-response enable-account"
 
 
 # Pas de propose_kill_process : un process tué n'a pas de reverse (« unkill »).
@@ -510,11 +534,26 @@ RETURNING id
 """
 
 
+# Statuts qui interdisent de rejouer une action sur le même couple
+# (incident, cible). 'exécuté' pour l'idempotence évidente ; 'annulé' et
+# 'annulation_impossible' parce qu'une action ANNULÉE ne doit pas revenir : un
+# incident gagne de nouvelles alertes en continu (needs_refresh), donc le triage
+# est rejoué, donc la remédiation aussi — l'analyste qui passe la tâche IRIS en
+# 'Canceled' verrait l'hôte se réisoler au cycle suivant, en boucle contre sa
+# décision. Une annulation est un ordre, pas une suggestion.
+#
+# Contrepartie assumée : si l'incident s'aggrave vraiment après une annulation,
+# rien ne repart tout seul. C'est le bon défaut (l'analyste a tranché en
+# connaissance de cause) et il reste rattrapable à la main :
+# `mitigate --isoler <agent>`, ou suppression de la ligne pour rouvrir le droit.
+_STATUTS_FIGES = ("exécuté", "annulé", "annulation_impossible")
+
+
 def _deja_exec(conn, incident_id: int, action: str, cible: str) -> bool:
     r = conn.execute(
         "SELECT statut FROM mitigations WHERE incident_id=%s AND action=%s "
         "AND cible=%s", (incident_id, action, cible)).fetchone()
-    return bool(r and r["statut"] == "exécuté")
+    return bool(r and r["statut"] in _STATUTS_FIGES)
 
 
 SELECT_TRIAGE = """
@@ -744,15 +783,14 @@ def _reconcilier_rows(conn, rows: list[dict]) -> list[dict]:
                 f"{e}. Nouvelle tentative au prochain passage.")
             continue
 
-        mode = "défait" if config.MITIGATE_EXECUTE else "défait (dry-run)"
         conn.execute(
             "UPDATE mitigations SET statut = 'annulé', "
             "details = %s, executed_at = now() WHERE id = %s",
-            (f"{r['details'] or ''} — Annulé ({mode}) : tâche IRIS passée en "
+            (f"{r['details'] or ''} — Annulé : tâche IRIS passée en "
              f"{_TASK_CANCELED}, action défaite via {canal}.", r["id"]))
         conn.commit()
         _commenter_tache(case, cid, task_id,
-            f"↩️ Remédiation défaite automatiquement ({mode}) suite au passage "
+            f"↩️ Remédiation défaite automatiquement suite au passage "
             f"de la tâche en {_TASK_CANCELED} : « "
             f"{LIBELLE_ACTION.get(action, action)} » ({cible}) annulée via "
             f"{canal}.")

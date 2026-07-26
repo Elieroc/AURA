@@ -180,10 +180,19 @@
     <white_list>^localhost.localdomain$</white_list>
   </global>
 
+  <!--
+    Script maison et non le binaire natif `disable-account` : le natif lit le
+    compte dans alert.data.dstuser, donc tout appel piloté (soc-agent, serveur
+    MCP), qui passe le compte en extra_args, échouait sur « Cannot read
+    'dstuser' from data » sans jamais désactiver personne. Symétrique de
+    enable-account.sh : usermod -L / chage -E 1 à l'aller, -U / -E -1 au retour.
+    timeout_allowed=no : une désactivation de compte ne se lève pas à
+    l'expiration d'un timer, seul enable-account la défait.
+  -->
   <command>
     <name>disable-account</name>
-    <executable>disable-account</executable>
-    <timeout_allowed>yes</timeout_allowed>
+    <executable>disable-account.sh</executable>
+    <timeout_allowed>no</timeout_allowed>
   </command>
 
   <command>
@@ -191,10 +200,18 @@
     <executable>restart-wazuh</executable>
   </command>
 
+  <!--
+    Script maison et non le binaire natif `firewall-drop` : même défaut que
+    disable-account, le natif lit l'IP dans alert.data.srcip et échoue sur tout
+    appel piloté (« Cannot read 'srcip' from data »). Symétrique de
+    firewall-allow.sh, qui retire exactement la règle posée ici.
+    timeout_allowed=no : un blocage ne se lève pas à l'expiration d'un timer,
+    seul firewall-allow le défait.
+  -->
   <command>
     <name>firewall-drop</name>
-    <executable>firewall-drop</executable>
-    <timeout_allowed>yes</timeout_allowed>
+    <executable>firewall-drop.sh</executable>
+    <timeout_allowed>no</timeout_allowed>
   </command>
 
   <command>
