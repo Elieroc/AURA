@@ -2,7 +2,8 @@
 
 Expose DFIR-IRIS comme outils MCP, pour l'investigation interactive (Claude
 Code, LLM) : lister/créer des cases, ajouter notes, IOC, assets, tâches,
-événements. Pendant du serveur MCP Wazuh (`mcp/`), côté case management.
+événements. Pendant du serveur MCP Wazuh (hors dépôt, cf. `.gitignore`), côté
+case management.
 
 Serveur retenu : **[srozb/iris-mcp](https://github.com/srozb/iris-mcp)**.
 Comparé à `bunnyiesart/mcp-iris` (lecture seule) et `lc-cbot/dfir-iris-mcp`
@@ -16,8 +17,9 @@ bibliothèque officielle `dfir-iris-client` et FastMCP.
 
 ## Installation
 
-Le code upstream est cloné localement et **gitignoré** (comme le MCP Wazuh) :
-on ne versionne pas une dépendance externe, on épingle sa version.
+Le code upstream est cloné localement et **gitignoré** : on ne versionne pas une
+dépendance externe, on épingle sa version. Ici seul ce README est suivi ; le
+serveur MCP Wazuh, lui, est entièrement hors dépôt (`/mcp/` dans `.gitignore`).
 
 ```bash
 git clone https://github.com/srozb/iris-mcp.git iris/mcp/iris-mcp
