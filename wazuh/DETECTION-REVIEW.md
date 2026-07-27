@@ -90,7 +90,7 @@ sur des événements présents. D'où deux mécanismes complémentaires.
   (`op=set audit_enabled=0`, `op=remove_rule`). Immédiat et porteur de l'`auid`.
   Ne remplace pas le heartbeat : si l'audit est coupé avant le démarrage de
   l'agent, seul un signal périodique révèle l'état courant.
-- **100803/100804** — promotion des règles natives 506 (agent arrêté → 12) et
+- **100803/100804** — promotion des règles natives 506 (agent arrêté → 10) et
   504 (déconnecté → 10, sous le seuil de triage IA : trop ambigu pour armer une
   remédiation autonome).
 
