@@ -1,20 +1,38 @@
-# WireGuard — agent Wazuh + wg-monitor (pas de log natif)
+# WireGuard — agent Wazuh + wg-monitor (via la base WGDashboard)
 
 WireGuard (module noyau) n'a **aucun audit natif** : pas de log par pair, pas
-d'événement connect/disconnect — seul `wg show` donne un état instantané
-(dernier handshake, compteurs). Le `dynamic_debug` noyau (qui journalise
-chaque handshake) n'est pas non plus une option ici : `/sys/kernel/debug`
-inaccessible même en root sur wireguard.lab (LXC Proxmox — même contrainte
-que le manager SOC-AI et sa capture réseau, cf. `wazuh/README.md`).
+d'événement connect/disconnect — seul `wg show` donne un état instantané.
+`dynamic_debug` noyau (qui journaliserait chaque handshake) n'est pas non
+plus une option ici : `/sys/kernel/debug` inaccessible même en root sur
+wireguard.lab (LXC Proxmox — même contrainte que le manager SOC-AI et sa
+capture réseau, cf. `wazuh/README.md`).
 
-Solution : `wg-monitor.py`, un script qui interroge `wg show wg0 dump`
-périodiquement (systemd timer, 30s), compare à l'état précédent, et loggue
-les **transitions** actif/inactif par pair — pas un flot périodique bruyant.
+**wireguard.lab tourne avec [WGDashboard](https://github.com/donaldzou/WGDashboard)**,
+qui suit déjà l'état des pairs en continu dans une base SQLite
+(`/etc/wgdashboard/src/db/wgdashboard.db`) — inutile de réinventer un second
+poller de `wg show` : `wg-monitor.py` lit cette base (lecture seule,
+WGDashboard reste l'unique écrivain) plutôt que d'interroger l'interface
+directement. Deux tables :
 
-**"Actif"** = dernier handshake dans les 200 dernières secondes (WireGuard
-rekey sous trafic toutes les 120-180s ; un pair sans handshake récent n'a
-simplement pas de trafic, ce qui n'est pas une "déconnexion" formelle —
-WireGuard est sans état de connexion — mais un proxy raisonnable).
+- **`<iface>`** (ex `wg0`) : état courant par pair — `name` (alias lisible,
+  ex `yoga-slim-7`), `status` (`running`/`stopped`, **calculé par WGDashboard
+  lui-même**, plus fiable qu'un seuil de handshake maison), `endpoint`,
+  `allowed_ip`.
+- **`<iface>_history_endpoint`** : chaque changement d'IP source d'un pair
+  (roaming wifi↔4G, nouvelle session) — signal plus précis qu'un simple
+  "handshake récent", WGDashboard l'enregistre nativement dès qu'il change.
+
+`wg-monitor.py` tourne en systemd timer (30s), compare l'état lu à l'appel
+précédent (fichier d'état local), et loggue les **transitions** dans
+`/var/log/wireguard-events.log` — pas un flot périodique bruyant. Au premier
+run, se cale sur l'historique déjà présent sans rien rejouer.
+
+**Piège rencontré en la testant** : lancer le script à la main
+(`python3 wg-monitor.py`) pour un test n'écrit RIEN dans le fichier de log —
+la redirection stdout -> fichier est posée par `wg-monitor.service`
+(`StandardOutput=append:...`), pas par le script lui-même. Toujours tester
+via `systemctl start wg-monitor.service`, jamais en invoquant le script
+directement.
 
 ## 1. wg-monitor sur l'hôte WireGuard
 
@@ -34,6 +52,18 @@ ssh root@<wireguard> '
 `/var/log/wireguard-events.log` (0644 root:root, `/var/log` traversable par
 défaut) — pas d'ACL nécessaire, contrairement aux logs sous `/root/*` des
 autres agents (NPM, BookStack...).
+
+Variables d'environnement du script (défauts adaptés à un déploiement
+WGDashboard standard, à surcharger dans `wg-monitor.service` si besoin) :
+`WG_IFACE` (`wg0`), `WG_DASHBOARD_DB`
+(`/etc/wgdashboard/src/db/wgdashboard.db`), `WG_STATE_FILE`.
+
+**Si WGDashboard n'est pas installé** sur un futur hôte WireGuard : ce script
+ne fonctionne pas tel quel (table SQLite absente). Revenir à une variante
+interrogeant `wg show wg0 dump` directement — plus pauvre (pas de nom de
+pair, seuil de handshake maison au lieu du `status` calculé par
+WGDashboard) mais autonome. Pas conservée dans le repo : si ce cas se
+présente, la réécrire à partir de ce fichier.
 
 ## 2. Installer et enrôler l'agent Wazuh
 
@@ -57,9 +87,11 @@ Insérer `localfile-snippet.xml` dans `/var/ossec/etc/ossec.conf` (avant
 ## 4. Décodeur + règles (déjà dans le repo)
 
 - `wazuh/config/wazuh_cluster/decoders/wireguard.xml`
-- `wazuh/config/wazuh_cluster/rules/100840-wireguard-rules.xml` : grouped,
-  `peer_connected`/`peer_disconnected` (level 3), reconnexions répétées d'un
-  même pair en moins de 2 min (level 7, lien instable ou anomalie).
+- `wazuh/config/wazuh_cluster/rules/100840-wireguard-rules.xml` : grouped ;
+  `peer_connected`/`peer_disconnected`/`endpoint_changed` (level 3) ;
+  reconnexions répétées d'un même pair en level 7 (lien instable) ;
+  changements d'IP source répétés en level 7 (roaming ou clé partagée entre
+  plusieurs machines).
 
 Index de destination : `wazuh-vpn-*` (routage dans `alerts-pipeline.json` sur
 `decoder.name=='wg-monitor'`).
@@ -67,9 +99,24 @@ Index de destination : `wazuh-vpn-*` (routage dans `alerts-pipeline.json` sur
 ## Vérification
 
 ```bash
-# forcer un cycle de test SANS couper les tunnels actifs (reset du state,
-# les pairs déjà actifs sont traités comme une "nouvelle connexion")
-ssh root@<wireguard> 'rm -f /var/lib/wg-monitor/state.json && systemctl start wg-monitor.service'
+# forcer un cycle de test SANS couper les tunnels actifs : marquer un pair
+# actif comme "stopped" dans l'état local force sa prochaine lecture à
+# ressortir en "connecté" (transition détectée), sans toucher wg0 ni
+# WGDashboard.
+ssh root@<wireguard> '
+  systemctl stop wg-monitor.timer
+  python3 -c "
+import json
+p = \"/var/lib/wg-monitor/state.json\"
+s = json.load(open(p))
+k = next(iter(s[\"peers\"]))
+s[\"peers\"][k] = \"stopped\"
+json.dump(s, open(p, \"w\"))
+"
+  systemctl start wg-monitor.service   # PAS python3 wg-monitor.py en direct, cf. piège plus haut
+  cat /var/log/wireguard-events.log
+  systemctl start wg-monitor.timer
+'
 
 docker exec wazuh-wazuh.manager-1 grep wg-monitor /var/ossec/logs/alerts/alerts.json | tail -1
 ```
@@ -77,5 +124,5 @@ docker exec wazuh-wazuh.manager-1 grep wg-monitor /var/ossec/logs/alerts/alerts.
 ## Pas de remédiation automatisée
 
 Rien de branché ici — visibilité seule. Couper un pair WireGuard (retirer sa
-clé de `wg0.conf` + `wg syncconf`) serait faisable en AR mais hors scope de
-cette demande.
+clé de `wg0.conf` + `wg syncconf`, ou via l'API WGDashboard) serait faisable
+en AR mais hors scope de cette demande.

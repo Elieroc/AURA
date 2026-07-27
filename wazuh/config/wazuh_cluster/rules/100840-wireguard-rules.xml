@@ -1,8 +1,14 @@
 <!--
-  WireGuard n'a pas d'audit natif (module noyau, pas de journal par pair) —
-  wg-monitor.py (déployé en systemd timer 30s sur l'agent) diffuse l'état
-  `wg show` et loggue les transitions actif/inactif dans
-  /var/log/wireguard-events.log, décodé par decoders/wireguard.xml.
+  WireGuard n'a pas d'audit natif (module noyau, pas de journal par pair).
+  wg-monitor.py (systemd timer 30s sur l'agent, wazuh/agents/wireguard/) lit
+  la base SQLite de WGDashboard — déjà installé sur wireguard.lab, déjà en
+  train de suivre l'état des pairs, pas de raison d'interroger `wg show`
+  nous-mêmes en parallèle. Deux sources dans cette base :
+    - table <iface> : status running/stopped par pair (calcul WGDashboard).
+    - table <iface>_history_endpoint : changement d'IP source d'un pair
+      (roaming/nouvelle session), même si le statut running n'a pas bougé.
+  Décodé par decoders/wireguard.xml, événements dans
+  /var/log/wireguard-events.log.
 -->
 <group name="local,vpn,">
   <rule id="100840" level="0">
@@ -13,13 +19,19 @@
   <rule id="100841" level="3">
     <if_sid>100840</if_sid>
     <field name="event">^peer_connected$</field>
-    <description>WireGuard: peer $(peer_ip) connected from $(endpoint).</description>
+    <description>WireGuard: peer $(peer_name) ($(peer_ip)) connected from $(endpoint).</description>
   </rule>
 
   <rule id="100842" level="3">
     <if_sid>100840</if_sid>
     <field name="event">^peer_disconnected$</field>
-    <description>WireGuard: peer $(peer_ip) disconnected ($(endpoint)).</description>
+    <description>WireGuard: peer $(peer_name) ($(peer_ip)) disconnected ($(endpoint)).</description>
+  </rule>
+
+  <rule id="100844" level="3">
+    <if_sid>100840</if_sid>
+    <field name="event">^endpoint_changed$</field>
+    <description>WireGuard: peer $(peer_name) ($(peer_ip)) reconnecté depuis une nouvelle IP $(endpoint).</description>
   </rule>
 
   <!-- Nouveau pair (jamais vu avant) qui se connecte : plus intéressant qu'une
@@ -30,6 +42,15 @@
   <rule id="100843" level="7" frequency="6" timeframe="120" ignore="300">
     <if_matched_sid>100841</if_matched_sid>
     <same_field>peer_ip</same_field>
-    <description>WireGuard: reconnexions répétées du pair $(peer_ip) (lien instable ou anomalie).</description>
+    <description>WireGuard: reconnexions répétées du pair $(peer_name) ($(peer_ip)) (lien instable ou anomalie).</description>
+  </rule>
+
+  <!-- Changements d'IP source répétés et rapprochés du même pair : roaming
+       normal (wifi <-> 4G) ou un signe qu'une clé privée circule sur
+       plusieurs machines/réseaux à la fois. -->
+  <rule id="100845" level="7" frequency="4" timeframe="120" ignore="300">
+    <if_matched_sid>100844</if_matched_sid>
+    <same_field>peer_ip</same_field>
+    <description>WireGuard: changements d'IP source répétés pour le pair $(peer_name) ($(peer_ip)) (roaming ou clé partagée).</description>
   </rule>
 </group>
