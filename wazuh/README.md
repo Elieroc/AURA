@@ -383,19 +383,23 @@ access log). Décodeur `decoders/jellyfin.xml` extrait `level`
 `rules/100830-jellyfin-rules.xml` (WRN=5, ERR=7, FTL=12). Détail :
 `wazuh/agents/jellyfin/`.
 
-### WireGuard — agent Wazuh + wg-monitor (pas de log natif)
+### WireGuard — agent Wazuh + wg-monitor (via la base WGDashboard)
 
 WireGuard (module noyau) n'a **aucun audit natif** : pas de log par pair,
 seul `wg show` donne un état instantané. `dynamic_debug` noyau (journalise
 chaque handshake) indisponible sur wireguard.lab — `/sys/kernel/debug`
 inaccessible même en root (LXC Proxmox, même contrainte que le manager
-SOC-AI). `wg-monitor.py` interroge `wg show wg0 dump` en systemd timer
-(30s), compare à l'état précédent, et loggue les **transitions**
-actif/inactif par pair dans `/var/log/wireguard-events.log` (actif = dernier
-handshake < 200s). Décodeur `decoders/wireguard.xml` ; règles
-`rules/100840-wireguard-rules.xml` (connect/disconnect level 3, reconnexions
-répétées d'un même pair en level 7). Index `wazuh-vpn-*`. Détail (script,
-unités systemd) : `wazuh/agents/wireguard/`.
+SOC-AI). wireguard.lab tourne avec **WGDashboard**, qui suit déjà l'état des
+pairs dans une base SQLite (status running/stopped calculé par WGDashboard,
+historique des IP source par pair, noms de pairs) — `wg-monitor.py` lit
+cette base en lecture seule plutôt que de réinterroger `wg show` en
+parallèle. Systemd timer (30s), compare à l'état précédent, loggue les
+**transitions** (connect/disconnect/roaming) dans
+`/var/log/wireguard-events.log`. Décodeur `decoders/wireguard.xml` ; règles
+`rules/100840-wireguard-rules.xml` (connect/disconnect/endpoint changé level
+3, reconnexions ou changements d'IP répétés en level 7). Index
+`wazuh-vpn-*`. Détail (script, unités systemd, piège du test en direct sans
+passer par systemd) : `wazuh/agents/wireguard/`.
 
 - Modif du routage : éditer le script dans `alerts-pipeline.json` puis recréer le manager
   (`docker compose up -d --force-recreate wazuh.manager`).

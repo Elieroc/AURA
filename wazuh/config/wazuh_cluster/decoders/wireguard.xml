@@ -1,15 +1,18 @@
 <!--
-  WireGuard (module noyau) n'a pas d'audit natif : pas de log par pair, `wg
-  show` donne seulement un état instantané. Pas de dynamic_debug noyau
-  disponible non plus sur wireguard.lab (LXC Proxmox, /sys/kernel/debug
-  inaccessible même en root — même contrainte que le manager SOC-AI).
+  WireGuard (module noyau) n'a pas d'audit natif — pas de log par pair, `wg
+  show` donne seulement un état instantané. `dynamic_debug` noyau
+  indisponible sur wireguard.lab (LXC Proxmox, /sys/kernel/debug inaccessible
+  même root — même contrainte que le manager SOC-AI).
 
-  wg-monitor.py (wazuh/agents/wireguard/) tourne en systemd timer (30s),
-  diffuse `wg show wg0 dump` et loggue les TRANSITIONS actif/inactif par pair
-  dans /var/log/wireguard-events.log — décodé ici.
+  wg-monitor.py (wazuh/agents/wireguard/) lit la base SQLite de WGDashboard —
+  déjà installé sur cet hôte, déjà en train de suivre l'état des pairs
+  (status running/stopped calculé par WGDashboard, historique des IP source
+  par pair) : pas de raison d'interroger `wg show` nous-mêmes en parallèle
+  quand ces données existent déjà, avec en prime les noms de pairs.
+  Événements dans /var/log/wireguard-events.log, décodés ici.
 -->
 <decoder name="wg-monitor">
   <prematch>wg-monitor: event=</prematch>
-  <regex offset="after_prematch">^(\S+) peer_ip=(\S+) pubkey=(\S+) endpoint=(\S+)</regex>
-  <order>event,peer_ip,pubkey,endpoint</order>
+  <regex offset="after_prematch">^(\S+) peer_name=(\S+) peer_ip=(\S+) pubkey=(\S+) endpoint=(\S+)</regex>
+  <order>event,peer_name,peer_ip,pubkey,endpoint</order>
 </decoder>

@@ -1,55 +1,45 @@
 #!/usr/bin/env python3
-"""Émet des événements connect/disconnect pour les pairs WireGuard.
+"""Émet des événements connect/disconnect/endpoint-changed pour les pairs
+WireGuard, à partir de la base SQLite de WGDashboard (déjà installé sur
+l'hôte, déjà en train de suivre l'état des pairs — pas de raison de
+réinventer un second poller de `wg show`).
 
-WireGuard (module noyau) ne journalise rien par défaut : pas d'audit trail,
-seul `wg show` donne un état instantané (dernier handshake, compteurs). Ce
-script compare cet état d'un run à l'autre et loggue les TRANSITIONS
-(connexion active <-> inactive), pas un snapshot périodique bruyant.
-
-"Actif" = dernier handshake dans les WG_THRESHOLD_S dernières secondes.
-WireGuard rekey sous trafic toutes les 120-180s ; un pair réellement inactif
-(pas de trafic) n'a simplement pas de handshake récent, ce qui n'est PAS une
-déconnexion explicite (WireGuard est sans état de connexion) mais un proxy
-raisonnable pour "pair actuellement en train de causer avec nous".
+Tables lues (lecture seule, WGDashboard reste seul écrivain) :
+  - `<iface>` (ex "wg0") : état courant par pair (name, status, endpoint,
+    allowed_ip) — status "running"/"stopped" est le calcul de WGDashboard
+    lui-même (plus fiable qu'un seuil de handshake maison).
+  - `<iface>_history_endpoint` : chaque changement d'IP source d'un pair
+    (roaming, nouvelle session) — signal plus précis qu'un simple
+    "handshake récent", WGDashboard l'enregistre nativement dès qu'il change.
 
 Usage : appelé périodiquement (systemd timer, cf. wg-monitor.timer),
-écrit une ligne par transition sur stdout -> redirigé vers WG_LOG_FILE.
-Idempotent entre les runs via WG_STATE_FILE (pas de dépendance à un
-démon qui tournerait en continu).
+écrit une ligne par événement sur stdout -> redirigé vers WG_LOG_FILE.
+État de suivi dans WG_STATE_FILE, pour ne loguer que les transitions.
+
+Premier run (pas de WG_STATE_FILE) : se cale sur l'historique déjà présent
+sans rien rejouer — seuls les changements POSTÉRIEURS au démarrage du
+monitoring produisent une ligne.
 """
-import ipaddress
 import json
 import os
-import subprocess
-import sys
+import sqlite3
 import time
 
 WG_IFACE = os.environ.get("WG_IFACE", "wg0")
-WG_THRESHOLD_S = int(os.environ.get("WG_THRESHOLD_S", "200"))
+DB_PATH = os.environ.get("WG_DASHBOARD_DB", "/etc/wgdashboard/src/db/wgdashboard.db")
 STATE_FILE = os.environ.get("WG_STATE_FILE", "/var/lib/wg-monitor/state.json")
-LOG_FILE = os.environ.get("WG_LOG_FILE", "/var/log/wireguard-events.log")
 
 
-def peer_ip(allowed_ips):
-    # AllowedIPs peut lister plusieurs réseaux ; on garde la première IP hôte
-    # (/32) comme identifiant lisible du pair.
-    for net in allowed_ips.split(","):
-        net = net.strip()
-        try:
-            n = ipaddress.ip_network(net, strict=False)
-            if n.num_addresses == 1:
-                return str(n.network_address)
-        except ValueError:
-            continue
-    return allowed_ips
-
-
-def load_state():
+def load_state(conn):
     try:
         with open(STATE_FILE) as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        # Premier run : se cale sur le dernier changement déjà connu, pour ne
+        # pas rejouer tout l'historique d'un coup.
+        row = conn.execute(
+            f'SELECT MAX(time) AS t FROM "{WG_IFACE}_history_endpoint"').fetchone()
+        return {"peers": {}, "last_endpoint_change": row["t"] or ""}
 
 
 def save_state(state):
@@ -61,39 +51,50 @@ def save_state(state):
 
 
 def main():
-    out = subprocess.run(["wg", "show", WG_IFACE, "dump"],
-                          capture_output=True, text=True, check=True).stdout
-    lines = out.strip().splitlines()
-    if not lines:
-        return
+    # Lecture seule : WGDashboard reste l'unique écrivain de ce fichier.
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
 
-    now = int(time.time())
-    prev_state = load_state()
-    new_state = {}
+    state = load_state(conn)
+    peers_state = state.get("peers", {})
+    last_change = state.get("last_endpoint_change", "")
 
-    # Première ligne = l'interface elle-même (privkey, port, fwmark) : ignorée.
-    for line in lines[1:]:
-        fields = line.split("\t")
-        if len(fields) < 5:
-            continue
-        pubkey, _psk, endpoint, allowed_ips, latest_handshake = fields[:5]
-        latest_handshake = int(latest_handshake)
-        active = latest_handshake > 0 and (now - latest_handshake) < WG_THRESHOLD_S
-        ip = peer_ip(allowed_ips)
+    peers = {r["id"]: r for r in
+             conn.execute(f'SELECT id, name, status, endpoint, allowed_ip FROM "{WG_IFACE}"')}
 
-        was_active = prev_state.get(pubkey, {}).get("active", False)
-        new_state[pubkey] = {"active": active, "last_handshake": latest_handshake}
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    lines = []
 
-        if active and not was_active:
-            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
-            print(f"[{ts}] wg-monitor: event=peer_connected peer_ip={ip} "
-                  f"pubkey={pubkey} endpoint={endpoint}")
-        elif was_active and not active:
-            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
-            print(f"[{ts}] wg-monitor: event=peer_disconnected peer_ip={ip} "
-                  f"pubkey={pubkey} endpoint={endpoint}")
+    # 1) Transitions running/stopped, au sens de WGDashboard.
+    for pubkey, row in peers.items():
+        name = row["name"] or pubkey[:8]
+        prev = peers_state.get(pubkey)
+        if prev is not None and prev != row["status"]:
+            event = "peer_connected" if row["status"] == "running" else "peer_disconnected"
+            lines.append(f"[{ts}] wg-monitor: event={event} peer_name={name} "
+                         f"peer_ip={row['allowed_ip']} pubkey={pubkey} endpoint={row['endpoint']}")
+        peers_state[pubkey] = row["status"]
 
-    save_state(new_state)
+    # 2) Changements d'IP source (roaming / nouvelle session), même si le
+    #    statut running/stopped n'a pas bougé entre deux checks.
+    new_last_change = last_change
+    for row in conn.execute(
+            f'SELECT id, endpoint, time FROM "{WG_IFACE}_history_endpoint" '
+            f'WHERE time > ? ORDER BY time ASC', (last_change,)):
+        pubkey, endpoint, t = row["id"], row["endpoint"], row["time"]
+        peer = peers.get(pubkey)
+        name = (peer["name"] if peer and peer["name"] else pubkey[:8])
+        allowed_ip = peer["allowed_ip"] if peer else "?"
+        lines.append(f"[{ts}] wg-monitor: event=endpoint_changed peer_name={name} "
+                     f"peer_ip={allowed_ip} pubkey={pubkey} endpoint={endpoint}")
+        new_last_change = t
+
+    conn.close()
+
+    for line in lines:
+        print(line)
+
+    save_state({"peers": peers_state, "last_endpoint_change": new_last_change})
 
 
 if __name__ == "__main__":
