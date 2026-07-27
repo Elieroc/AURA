@@ -1,0 +1,34 @@
+<!--
+  Nginx Proxy Manager (jc21/nginx-proxy-manager) — format d'access log custom,
+  pas le combined log format standard nginx :
+    [27/Jul/2026:17:26:34 +0000] - 200 200 - GET https pve.example.lab "/uri" [Client 1.2.3.4] [Length 582] [Gzip -] [Sent-to 10.0.0.1] "UA" "referer"
+  Le décodeur natif nginx (program_name) ne matche pas ce format ; pire, le
+  format coïncide avec le prematch du décodeur natif "zeus"
+  (0390-zeus_decoders.xml : `^[\d\d/\w\w\w/\d\d\d\d:\d\d:\d\d:\d\d \S+] `,
+  qui matche n'importe quelle ligne commençant par un timestamp entre
+  crochets, quel que soit ce qui suit) — zeus la capture EN PREMIER (chargé
+  depuis ruleset/decoders, avant tout decoder local dans etc/decoders, quel
+  que soit l'ordre des <decoder_dir> dans wazuh_manager.conf : testé, l'ordre
+  de déclaration n'a aucun effet sur la priorité de matching).
+
+  Solution : exclure zeus (decoder ET rules, sinon les rules zeus natives
+  plantent le chargement en référençant un decoder qui n'existe plus) via
+  <decoder_exclude>/<rule_exclude> dans wazuh_manager.conf. Zeus (panel C2
+  historique, cf. commentaire natif) n'a aucun usage réel dans cet
+  environnement — perte acceptée pour débloquer NPM.
+
+  Piège regex (même moteur limité que pfsense-nohostname.xml, cf. son
+  commentaire) : `[^"]*` (classe négative) casse le decoder silencieusement
+  (aucune erreur au chargement, juste 0 champ extrait) — les crochets sont
+  TOUJOURS des caractères littéraux ici, jamais des classes de caractères.
+  `\S*` fait le travail pour capturer l'URI (pas d'espace dans une URL de
+  toute façon).
+
+  `status` est un nom de champ Wazuh statique réservé (erreur au chargement :
+  "Field 'status' is static") — renommé `http_status`.
+-->
+<decoder name="npm-access">
+  <prematch>[\d+/\S+/\d+:\d+:\d+:\d+ \S+] - </prematch>
+  <regex offset="after_prematch">^(\d+) \d+ - (\S+) \S+ (\S+) "(\S*)" [Client (\S+)]</regex>
+  <order>http_status,method,server,uri,srcip</order>
+</decoder>
