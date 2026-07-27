@@ -39,3 +39,7 @@ ai/bench/.bench-stderr.log
 
 # Clone upstream du serveur MCP DFIR-IRIS (voir iris/mcp/README.md)
 iris/mcp/iris-mcp/
+
+# Overrides locaux à un hôte (ex: LXC Proxmox, limites memlock/nofile) —
+# jamais versionnés, docker compose les merge automatiquement s'ils existent.
+docker-compose.override.yml
