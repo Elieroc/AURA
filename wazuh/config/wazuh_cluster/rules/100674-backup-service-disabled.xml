@@ -1,0 +1,18 @@
+<!-- SOC-AI - rule 100674 (level 12). Domain: ransomware,threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="ransomware,threat_hunting,linux,">
+
+  <!-- R5 T1490 - disabling a backup service. Distinct from 100654
+       (security/logging services), same logic, same constraint on the auditd
+       argument format. -->
+
+  <rule id="100674" level="12">
+    <if_group>audit</if_group>
+    <regex type="pcre2">a0="(?:[^"]*/)?systemctl" a\d+="(?i:disable|stop|mask)"(?: a\d+="[^"]*")*? a\d+="[^"]*(?i:borgmatic|restic|duplicity|bacula|amanda|urbackup|timeshift|rsnapshot|veeam|backup)[^"]*"</regex>
+    <description>Inhibit system recovery: backup service stopped or disabled</description>
+    <mitre>
+      <id>T1490</id>
+    </mitre>
+  </rule>
+
+</group>

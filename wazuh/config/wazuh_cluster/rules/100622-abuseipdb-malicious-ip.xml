@@ -1,0 +1,13 @@
+<!-- SOC-AI - rule 100622 (level 12). Domain: abuseipdb,threat_intel,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="abuseipdb,threat_intel,">
+
+  <!-- Malicious IP: score >= 80 -->
+
+  <rule id="100622" level="12">
+    <if_sid>100621</if_sid>
+    <field name="abuseipdb.abuse_confidence_score" type="pcre2">^(100|[89][0-9])$</field>
+    <description>AbuseIPDB - malicious IP detected: $(abuseipdb.srcip) (score $(abuseipdb.abuse_confidence_score)/100, ISP $(abuseipdb.isp), country $(abuseipdb.country_code))</description>
+  </rule>
+
+</group>

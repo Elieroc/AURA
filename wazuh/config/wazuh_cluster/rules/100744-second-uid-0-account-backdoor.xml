@@ -1,0 +1,30 @@
+<!-- SOC-AI - rule 100744 (level 14). Domain: persistence,threat_hunting,linux,syscheck,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="persistence,threat_hunting,linux,syscheck,">
+
+  <!-- T1136.001 / T1078.003 - UID 0 BACKDOOR. Highest priority: a second uid 0
+       account is permanent root that does not look like root in the login logs.
+
+       The `changed_content` field is the diff produced by `report_changes="yes"`
+       on /etc/passwd (without that option in agent.conf the rule CANNOT fire).
+       Diff format: added lines are prefixed with "> ". So we match an added line
+       shaped like `name:x:0:0:`. The `\+?` covers the unified format should the
+       Wazuh version change it.
+
+       NOT VALIDATED LIVE: during testing, real-time FIM on /etc/passwd proved
+       intermittent and never produced a usable addition diff. The scenario is
+       covered by two other paths that were verified: 100762 (`useradd -o -u 0`)
+       and 100770 (write to /etc/passwd seen by the auditd watch). Treat this rule
+       as a bonus, not as the primary control. -->
+
+  <rule id="100744" level="14">
+    <if_sid>100743</if_sid>
+    <field name="changed_content" type="pcre2">(?:^|\n)\s*(?:&gt;|\+)\s*[A-Za-z0-9_.-]+:[^:]*:0+:0+:</field>
+    <description>Backdoor: second UID 0 account added to /etc/passwd</description>
+    <mitre>
+      <id>T1136.001</id>
+      <id>T1078.003</id>
+    </mitre>
+  </rule>
+
+</group>

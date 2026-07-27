@@ -1,0 +1,21 @@
+<!-- SOC-AI - rule 100650 (level 12). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- R1 T1059.004 - reverse shell / network redirection through
+       /dev/tcp|/dev/udp (bash).
+       IMPORTANT (validated live): the payload of a `bash -c '...'` contains a
+       space, so auditd HEX-encodes the whole argument -> /dev/tcp does NOT show
+       up in clear text. We therefore also match the hex signature:
+       2F6465762F746370 = "/dev/tcp", ...756470 = "/dev/udp".
+       (The clear-text case stays useful when /dev/tcp/... is a standalone
+       argument with no space.) -->
+
+  <rule id="100650" level="12">
+    <if_group>audit</if_group>
+    <regex type="pcre2">(?i)/dev/(tcp|udp)/|2F6465762F(746370|756470)</regex>
+    <description>Probable reverse shell: network redirection through /dev/tcp|/dev/udp</description>
+    <mitre><id>T1059.004</id></mitre>
+  </rule>
+
+</group>

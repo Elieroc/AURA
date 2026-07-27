@@ -1,0 +1,21 @@
+<!-- SOC-AI - rule 100802 (level 13). Domain: soc_selfcheck,wazuh,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="soc_selfcheck,wazuh,">
+
+  <!-- auditd rules purged (`auditctl -D`) or never loaded. The versioned rule
+       set (wazuh/config/agent/zz-audit-wazuh.rules) loads 21 of them, so a
+       single-digit count means a purge, not normal variation.
+       Distinct from 100801: here the kernel is still auditing, but nothing is
+       instrumented any more - same blindness, different cause, different
+       remediation. -->
+
+  <rule id="100802" level="13">
+    <if_sid>100800</if_sid>
+    <match type="pcre2">audit_rules=[0-9]\b</match>
+    <description>Blind sensor: fewer than 10 auditd rules loaded - likely purge (auditctl -D)</description>
+    <mitre>
+      <id>T1562.001</id>
+    </mitre>
+  </rule>
+
+</group>

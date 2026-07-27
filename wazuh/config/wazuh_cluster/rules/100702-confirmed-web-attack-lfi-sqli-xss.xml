@@ -1,0 +1,18 @@
+<!-- SOC-AI - rule 100702 (level 10). Domain: web,attack,web_attack_soc,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="web,attack,web_attack_soc,">
+
+  <!-- Raises the already decoded web attacks (LFI/SQLi/XSS, 31103-31106) when the
+       payload is clearly malicious: adds MITRE mapping, level 10. -->
+
+  <rule id="100702" level="10">
+    <if_sid>31103,31104,31105,31106</if_sid>
+    <url type="pcre2">(?i)(\.\./|\.\.%2f|%2e%2e%2f|/etc/(passwd|shadow)|union(\s|%20|\+)+select|%27|%22|\bor(\s|%20|\+)+1=1|&lt;script|%3cscript|base64_decode|/proc/self/|passthru|shell_exec)</url>
+    <description>Confirmed web attack (LFI/SQLi/XSS): $(url)</description>
+    <mitre>
+      <id>T1190</id>
+    </mitre>
+    <group>web_attack,</group>
+  </rule>
+
+</group>

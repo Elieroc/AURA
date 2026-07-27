@@ -1,0 +1,18 @@
+<!-- SOC-AI - rule 100647 (level 13). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- T1562.001 - tampering with the auditd configuration itself, caught by the
+       `-w /etc/audit -p wa` watch. Complements 100654 (which sees the COMMAND):
+       here we see the WRITE, even when it goes through an editor, a `tee`, a
+       shell redirection or any arbitrary binary. Level 13: this is the
+       preparatory move towards blinding the SOC entirely. -->
+
+  <rule id="100647" level="13">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-tamper$</field>
+    <description>Defense evasion: auditd configuration modified ($(audit.file.name)) by $(audit.exe)</description>
+    <mitre><id>T1562.001</id></mitre>
+  </rule>
+
+</group>

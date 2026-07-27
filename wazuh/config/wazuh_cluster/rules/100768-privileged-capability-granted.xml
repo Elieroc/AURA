@@ -1,0 +1,18 @@
+<!-- SOC-AI - rule 100768 (level 12). Domain: threat_hunting,linux,post_exploitation,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1548.001 - a dangerous Linux capability being granted. The modern
+       alternative to the setuid bit, and far less watched:
+       `setcap cap_setuid+ep /usr/bin/python3` grants instant root without any
+       file ever becoming SUID. -->
+
+  <rule id="100768" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:setcap)"[^\n]*?a\d+="[^"]*(?i:cap_setuid|cap_setgid|cap_sys_admin|cap_sys_ptrace|cap_sys_module|cap_dac_override|cap_dac_read_search|cap_chown)[^"]*"</regex>
+    <description>Privilege escalation: privileged Linux capability granted ($(audit.command))</description>
+    <mitre><id>T1548.001</id></mitre>
+  </rule>
+
+</group>

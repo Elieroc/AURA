@@ -1,0 +1,20 @@
+<!-- SOC-AI - rule 100644 (level 0). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- Exclusion for 100643: the normal authentication chain. unix_chkpwd is the
+       PAM helper called on every `sudo`/`su`/login; sshd, login, passwd, chage,
+       useradd/usermod/groupadd and vipw open shadow by design. systemd-*
+       (sysusers, machine-id) reads it at boot.
+       `^/var/ossec/`: measured live, wazuh-syscheckd reads /etc/shadow on every
+       FIM scan to compute its hashes - the very FIM coverage we just extended to
+       /etc/shadow. Without this exclusion our own monitoring raises a credential
+       theft alert on every pass. -->
+
+  <rule id="100644" level="0">
+    <if_sid>100643</if_sid>
+    <field name="audit.exe" type="pcre2">^/var/ossec/|/(?:unix_chkpwd|unix_update|sshd|login|su|sudo|passwd|chpasswd|chage|gpasswd|useradd|usermod|userdel|groupadd|groupmod|groupdel|newusers|vipw|vigr|pwck|grpck|pwconv|grpconv|cron|systemd(?:-\w+)?|nscd|sss_cache)$</field>
+    <description>Exclusion 100643: /etc/shadow read by the legitimate authentication chain or by the FIM</description>
+  </rule>
+
+</group>

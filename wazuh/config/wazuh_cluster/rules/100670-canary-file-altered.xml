@@ -1,0 +1,18 @@
+<!-- SOC-AI - rule 100670 (level 15). Domain: ransomware,threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="ransomware,threat_hunting,linux,">
+
+  <!-- R1 T1486 - canary file modified/encrypted/renamed. Level 15: there is no
+       legitimate reason for a canary file to change. `if_group syscheck` covers
+       rules 550 (modified), 553 (deleted) and 554 (added). -->
+
+  <rule id="100670" level="15">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">CANARY_SOC_NE_PAS_TOUCHER</field>
+    <description>Probable ransomware: canary file altered ($(file)) - encryption in progress</description>
+    <mitre>
+      <id>T1486</id>
+    </mitre>
+  </rule>
+
+</group>

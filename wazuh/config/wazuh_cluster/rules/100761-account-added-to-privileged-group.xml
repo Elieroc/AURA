@@ -1,0 +1,21 @@
+<!-- SOC-AI - rule 100761 (level 12). Domain: threat_hunting,linux,post_exploitation,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1136.001 / T1098 - account creation or addition to a privileged group.
+       The built-in rule 5902 covers the case through syslog; this one adds the
+       auditd context (originating user, full command) and above all still works
+       when the account is created without going through the journal. -->
+
+  <rule id="100761" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:useradd|adduser|usermod|gpasswd|newusers)"[^\n]*?a\d+="[^"]*(?i:sudo|wheel|admin|docker|adm|shadow|root)[^"]*"</regex>
+    <description>Privilege escalation: account added to a privileged group ($(audit.command))</description>
+    <mitre>
+      <id>T1136.001</id>
+      <id>T1098</id>
+    </mitre>
+  </rule>
+
+</group>

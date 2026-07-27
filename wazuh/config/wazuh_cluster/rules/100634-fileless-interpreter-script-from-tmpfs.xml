@@ -1,0 +1,36 @@
+<!-- SOC-AI - rule 100634 (level 12). Domain: threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,">
+
+  <!-- Fileless execution from a memory-backed tmpfs (/dev/shm, /run/shm).
+       /dev/shm is a tmpfs (RAM): dropping then running an implant there is a
+       fileless technique (T1620), stronger than plain drop-and-execute in /tmp
+       (100625, level 8). Two cases, because auditd fills audit.exe with the
+       BINARY actually loaded by the kernel:
+       - native ELF: exe = /dev/shm/... -> 100625 fires (level 8); 100635 raises it.
+       - SCRIPT (#!/bin/sh): exe = the INTERPRETER (/bin/dash, python...), the
+         script path sits in the argv -> 100625 does NOT fire. 100634 catches it
+         through exe=interpreter + tmpfs path in the argv, in clear text or hex
+         (2F6465762F73686D2F = "/dev/shm/", 2F72756E2F73686D2F = "/run/shm/").
+
+       REVISION 2026-07-26: interpreter and tmpfs lists widened.
+       Added on the exe side: awk/gawk/mawk (`awk 'BEGIN{system(...)}'` is a full
+       interpreter), env / nohup / setsid / xargs / timeout (wrappers that become
+       the real execve exe and used to hide the script), Rscript.
+       Added on the path side: /run/user/<uid> (per-session tmpfs, world-writable
+       for its owner - a vector equivalent to /dev/shm and until now uncovered)
+       and /dev/mqueue (also a tmpfs, mounted by default).
+         2F72756E2F75736572 = "/run/user", 2F6465762F6D7175657565 = "/dev/mqueue" -->
+
+  <rule id="100634" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.exe" type="pcre2">/(?:sh|bash|dash|zsh|ksh|ash|busybox|python[0-9.]*|perl|php|ruby|node|lua|tclsh|awk|gawk|mawk|env|nohup|setsid|xargs|timeout|Rscript)$</field>
+    <regex type="pcre2">(?i)/(?:dev/shm|run/shm|run/user/\d+|dev/mqueue)/|2F(?:646576|72756E)2F73686D2F|2F72756E2F757365722F|2F6465762F6D7175657565</regex>
+    <description>Fileless execution: interpreter running a script from a memory tmpfs (/dev/shm) - $(audit.command)</description>
+    <mitre>
+      <id>T1620</id>
+      <id>T1059</id>
+    </mitre>
+  </rule>
+
+</group>

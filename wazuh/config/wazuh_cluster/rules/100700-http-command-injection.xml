@@ -1,0 +1,38 @@
+<!-- SOC-AI - rule 100700 (level 12). Domain: web,attack,web_attack_soc,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="web,attack,web_attack_soc,">
+
+  <!-- Command injection / RCE through HTTP query parameters.
+       Measured blind spot: shell.cgi?cmd=id -> 31100 at level 0 (not raised).
+
+       REVISION 2026-07-26. Two findings about the former version:
+       1. The first alternative enumerated PARAMETER NAMES
+          (cmd|exec|command|run|shell|query|q|arg|param|c). Useless: the parameter
+          name is chosen by the vulnerable application, not by the SOC. It is kept
+          (it catches the cases with no metacharacter at all, e.g. ?cmd=id) but no
+          longer carries the detection.
+       2. The second alternative (metacharacters) carried everything, and the
+          common evasions were missing. Added:
+          - %0a / %0d: newline injection, the number one evasion when `;` is
+            filtered by the application.
+          - $IFS / ${IFS} / %24%7bIFS%7d / $'\t': separator substitution when the
+            space character is filtered.
+          - %2527 / %255c: double encoding, to get through a filter that decodes
+            only once.
+          - ${jndi: / %24%7bjndi: Log4Shell (T1190) - absent from the whole ruleset.
+          - |base64 / base64%20-d: one-line exfiltration/obfuscation.
+          - python -c / perl -e / php -r: execution one-liners.
+          The pipe character stays covered. -->
+
+  <rule id="100700" level="12">
+    <if_sid>31100</if_sid>
+    <url type="pcre2">(?i)(cmd|exec|command|run|shell|query|q|arg|param|c)=[^&amp;]*\b(id|whoami|uname|cat|ls|nc|ncat|bash|sh|curl|wget|python|perl|ping|chmod|dir)\b|(;|%3b|\||%7c|`|%60|\$\(|%24%28|&amp;&amp;|%26%26|%0a|%0d|%250a)|/bin/(ba)?sh|%2fbin%2f|\$\{?IFS|%24%7bifs|%2527|%255c|\$\{jndi:|%24%7bjndi|\|\s*base64|base64(%20|\+)-d|(python[0-9.]*|perl|php|ruby)(%20|\+)-(c|e|r)\b</url>
+    <description>Command injection / RCE over HTTP: $(url)</description>
+    <mitre>
+      <id>T1190</id>
+      <id>T1059</id>
+    </mitre>
+    <group>web_attack,command_injection,</group>
+  </rule>
+
+</group>

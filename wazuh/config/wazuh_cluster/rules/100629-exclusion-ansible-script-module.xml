@@ -1,0 +1,24 @@
+<!-- SOC-AI - rule 100629 (level 0). Domain: threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,">
+
+  <!-- Exclusion for /tmp/ansible-tmp-*: guard for the ansible.builtin.script
+       module (it pushes and runs a raw binary) - suppressed through a level 0
+       child rule.
+       Two Wazuh decoder traps found while testing:
+       1. A negative PCRE2 lookahead is NOT honoured by the rule engine (tested:
+          it matched anyway, hence the level 0 child workaround).
+       2. Wazuh's built-in auditd decoder truncates audit.exe at the first dash
+          (e.g. "/tmp/ansible-tmp-123/x" -> "/tmp/ansible", "/tmp/mal-ware" ->
+          "/tmp/mal") - hence the match below on the truncated form, not on the
+          full path. Normal Ansible module execution (Python) never triggers
+          100625 anyway: audit.exe resolves to the interpreter
+          (/usr/bin/python3.x), never to the /tmp path (verified). -->
+
+  <rule id="100629" level="0">
+    <if_sid>100625</if_sid>
+    <field name="audit.exe" type="pcre2">^/tmp/ansible$</field>
+    <description>Exclusion 100625: execution through the ansible.builtin.script module (known noise)</description>
+  </rule>
+
+</group>

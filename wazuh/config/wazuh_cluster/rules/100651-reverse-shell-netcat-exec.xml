@@ -1,0 +1,15 @@
+<!-- SOC-AI - rule 100651 (level 12). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- R2 T1059.004 - netcat/ncat with an exec option (-e / -c). -->
+
+  <rule id="100651" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.exe" type="pcre2">/(nc|ncat|netcat)(\.\w+)?$</field>
+    <regex type="pcre2">a\d+=\"-(e|c)\"</regex>
+    <description>Probable reverse shell: netcat with an execution option (-e/-c)</description>
+    <mitre><id>T1059.004</id></mitre>
+  </rule>
+
+</group>

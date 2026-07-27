@@ -1,0 +1,21 @@
+<!-- SOC-AI - rule 100763 (level 12). Domain: threat_hunting,linux,post_exploitation,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1070.003 - clearing shell traces. Three forms: in-memory purge
+       (`history -c`), neutralising the file (HISTFILE=/dev/null, unset HISTFILE,
+       `ln -sf /dev/null ~/.bash_history`) and deleting the file.
+       These commands contain spaces, so they arrive hex-encoded:
+         686973746F7279202D63       = "history -c"
+         4849535446494C45           = "HISTFILE"
+         2E626173685F686973746F7279 = ".bash_history" -->
+
+  <rule id="100763" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">(?i)history\s+-c|unset\s+HISTFILE|HISTFILE=/dev/null|HISTSIZE=0|\.bash_history|686973746F7279202D63|4849535446494C45|2E626173685F686973746F7279</regex>
+    <description>Indicator removal: shell history tampered with ($(audit.command))</description>
+    <mitre><id>T1070.003</id></mitre>
+  </rule>
+
+</group>

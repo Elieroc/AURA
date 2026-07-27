@@ -1,0 +1,15 @@
+<!-- SOC-AI - rule 100663 (level 8). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- R12 T1595/T1082 - public enumeration / privilege-escalation tools
+       (post-access recon). -->
+
+  <rule id="100663" level="8">
+    <if_group>audit</if_group>
+    <regex type="pcre2">(?i)[/"._-](linpeas|linenum|lse\.sh|les\.sh|linux[_-]?exploit[_-]?suggester|unix[_-]?privesc[_-]?check|pspy\d*|traitor|deepce|kernelpop|gtfo)([/"._-]|$)</regex>
+    <description>Probable post-exploitation: public enumeration/privesc tool executed ($(audit.command))</description>
+    <mitre><id>T1082</id></mitre>
+  </rule>
+
+</group>

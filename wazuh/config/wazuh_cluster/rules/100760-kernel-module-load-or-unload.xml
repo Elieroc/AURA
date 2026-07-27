@@ -1,0 +1,25 @@
+<!-- SOC-AI - rule 100760 (level 13). Domain: threat_hunting,linux,post_exploitation,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1014 / T1547.006 - kernel module load or unload, captured by the
+       init_module/finit_module/delete_module syscall rules. Complements command
+       observation (insmod/modprobe already are execve events): a rootkit calling
+       finit_module() from its own binary runs no command at all.
+
+       KNOWN NOISE: a reboot loads several dozen modules and will therefore
+       produce a burst of alerts. That is accepted - a one-off, explainable burst
+       is preferable to being blind to a malicious LKM being loaded, which is the
+       hardest form of compromise to detect once installed. -->
+
+  <rule id="100760" level="13">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-module$</field>
+    <description>Probable rootkit: kernel module loaded/unloaded by $(audit.exe)</description>
+    <mitre>
+      <id>T1014</id>
+      <id>T1547.006</id>
+    </mitre>
+  </rule>
+
+</group>

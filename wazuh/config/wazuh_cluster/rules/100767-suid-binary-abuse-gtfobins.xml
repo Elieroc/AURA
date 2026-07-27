@@ -1,0 +1,31 @@
+<!-- SOC-AI - rule 100767 (level 13). Domain: threat_hunting,linux,post_exploitation,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1548.001 - SUID BINARY ABUSE (GTFOBins). Structural detection, not
+       signature-based: a process whose REAL uid belongs to a normal user but
+       whose euid is 0 runs with root privileges through the setuid bit. Combined
+       with a list of binaries known to offer a shell escape, that is the exact
+       signature of GTFOBins privilege escalation.
+
+       Why it is reliable: `sudo find ...` does NOT match - sudo has already
+       switched the real uid to 0 by the time `find` executes, so uid=0. Only the
+       "setuid binary launched by a non-root user" case satisfies uid!=0 AND
+       euid=0. The system's legitimate SUID binaries (sudo, su, passwd, pkexec,
+       ping, chsh, newgrp, mount.nfs) are kept out of the list.
+
+       `^[1-9][0-9]*$` rather than a negative lookahead `^(?!0$)`: the rule engine
+       does not honour lookaheads inside field patterns (trap documented on
+       100629). -->
+
+  <rule id="100767" level="13">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <field name="audit.euid" type="pcre2">^0$</field>
+    <field name="audit.uid" type="pcre2">^[1-9][0-9]*$</field>
+    <field name="audit.exe" type="pcre2">/(?:find|vim|vi|nano|less|more|awk|gawk|mawk|nmap|python[0-9.]*|perl|ruby|env|tar|zip|unzip|git|ftp|man|sed|ed|cp|mv|dd|nice|flock|watch|xargs|make|gdb|strace|ltrace|busybox|tee|rsync|systemctl|apt|apt-get|dpkg|mount|umount|nsenter|capsh|socat|php|node|lua|expect|screen|tmux|bash|sh|dash|zsh|ksh)$</field>
+    <description>Privilege escalation: SUID binary abused ($(audit.exe), uid=$(audit.uid) euid=0) - GTFOBins technique</description>
+    <mitre><id>T1548.001</id></mitre>
+  </rule>
+
+</group>

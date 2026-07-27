@@ -1,0 +1,18 @@
+<!-- SOC-AI - rule 100632 (level 0). Domain: threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,">
+
+  <!-- Exclusion for 100630: runc/crun/containerd copy themselves into a memfd
+       before every container exec (CVE-2019-5736 mitigation, /proc/self/exe
+       cloned) -> 100630 would fire on every container start. "runc_cloned" is a
+       fixed string set by runc.
+       HEX signature: 2F6D656D66643A72756E635F636C6F6E6564 = "/memfd:runc_cloned".
+       Tested: an exe=...runc_cloned... line does fall to level 0. -->
+
+  <rule id="100632" level="0">
+    <if_sid>100630</if_sid>
+    <regex type="pcre2">exe=\w*2F6D656D66643A72756E635F636C6F6E6564</regex>
+    <description>Exclusion 100630: runc/crun re-exec through memfd (known container noise)</description>
+  </rule>
+
+</group>

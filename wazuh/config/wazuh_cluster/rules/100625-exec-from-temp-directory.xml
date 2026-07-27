@@ -1,0 +1,18 @@
+<!-- SOC-AI - rule 100625 (level 8). Domain: threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,">
+
+  <!-- Execution of a binary from a world-writable temporary directory
+       (/tmp, /var/tmp, /dev/shm).
+       Requires Linux audit (auditd) configured on the agent to watch execve. -->
+
+  <rule id="100625" level="8">
+    <if_group>audit</if_group>
+    <field name="audit.exe" type="pcre2">^(/tmp/|/var/tmp/|/dev/shm/)</field>
+    <description>Binary executed from a temporary directory ($(audit.exe)) - classic drop-and-execute</description>
+    <mitre>
+      <id>T1204.002</id>
+    </mitre>
+  </rule>
+
+</group>

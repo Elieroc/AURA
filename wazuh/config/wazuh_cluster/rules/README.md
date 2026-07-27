@@ -204,28 +204,58 @@ Règles : 100710, 100711, 100712
 
 ## Convention
 
-Un fichier par règle, nommé `<id>-<slug>.xml`. Le fichier rejoue le `<group
-name="…">` d'origine — les groupes ne sont pas décoratifs, ils portent le routage
-(`if_group`) et les tags MITRE/PCI. Le commentaire qui explique la règle vit avec
-elle ; l'exclusion de niveau 0 associée a son propre fichier, immédiatement voisin
-par numérotation (`100643` / `100644`).
+Un fichier par règle, nommé `<id>-<slug>.xml`. **Tout est en anglais** dans ces
+fichiers — descriptions comme commentaires. Les descriptions ne sont pas de la
+documentation : elles partent dans les alertes, dans les cases DFIR-IRIS et dans
+le contexte envoyé au LLM de triage.
 
-Le montage se fait au niveau du **répertoire** (`docker-compose.yml`), pas du
-fichier.
+Le fichier rejoue le `<group name="…">` d'origine — les groupes ne sont pas
+décoratifs, ils portent le routage (`if_group`) et les tags MITRE/PCI. Le
+commentaire qui explique la règle vit avec elle ; l'exclusion de niveau 0
+associée a son propre fichier, immédiatement voisin par numérotation
+(`100643` / `100644`).
 
-## Migration depuis local_rules.xml (piège)
+### Piège : renommer une description touche le pipeline
 
-Le montage de configuration Wazuh **ajoute** des fichiers dans `/var/ossec/etc/`,
-il n'en retire jamais. Sur un manager qui a déjà tourné avec l'ancien
-`local_rules.xml`, ce fichier **persiste dans le volume** après la bascule : les
-82 règles sont alors définies **deux fois**, sans que `wazuh-analysisd` ne
-signale quoi que ce soit au démarrage. Vérification et nettoyage :
+`ai/soc_agent/correlate.py` écarte des graines d'incident toute alerte dont la
+description matche `\bagent (connected|started|stopped|disconnected|…)\b` — un
+filtre visant le bruit de statut du ruleset natif, écrit en anglais. Depuis que
+nos règles le sont aussi, `100803` (« SOC tampering: Wazuh agent stopped »)
+tombait dedans et ne pouvait plus ouvrir de case, **sans rien signaler**. D'où la
+liste d'exception `SIDS_STATUT_AGENT_GRAINE`, par identifiant et non par texte.
+
+Avant de reformuler une description, vérifier qu'aucun code ne la matche :
+
+```sh
+grep -rn "rule_desc" ai/soc_agent/
+```
+
+## Déploiement
+
+`docker-compose.yml` monte ce répertoire **directement** sur
+`/var/ossec/etc/rules` du manager. C'est délibéré : le mécanisme
+`/wazuh-config-mount` utilisé pour les autres fichiers de configuration **copie**
+et ne supprime jamais. Une règle renommée ou supprimée dans le dépôt survivait
+donc dans le volume, et le manager chargeait l'ancienne **et** la nouvelle.
+
+Mesuré lors du passage des règles en anglais : 164 fichiers chargés au lieu de
+82, chaque règle définie deux fois, et `wazuh-analysisd` démarrant sans la
+moindre erreur. Le montage direct fait du dépôt la seule source de vérité.
+
+Vérification après tout changement :
 
 ```sh
 docker exec wazuh-wazuh.manager-1 sh -c \
-  'grep -h "<rule id=" /var/ossec/etc/rules/*.xml | grep -oE "id=\"[0-9]+\"" | sort | uniq -d'
-docker exec wazuh-wazuh.manager-1 rm -f /var/ossec/etc/rules/local_rules.xml
-docker compose restart wazuh.manager
+  'ls /var/ossec/etc/rules/*.xml | wc -l;
+   grep -h "<rule id=" /var/ossec/etc/rules/*.xml | grep -oE "id=\"[0-9]+\"" | sort | uniq -d'
 ```
 
-La commande de détection des doublons doit ressortir **vide**.
+Le compte doit égaler le nombre de fichiers du dépôt, et la liste des doublons
+ressortir **vide**. Puis rejouer `scripts/test-detection-rules.sh`.
+
+Si un manager a déjà tourné avec l'ancien `local_rules.xml` ou avec le montage
+`/wazuh-config-mount`, purger une fois le résidu du volume :
+
+```sh
+docker exec wazuh-wazuh.manager-1 rm -f /var/ossec/etc/rules/local_rules.xml
+```

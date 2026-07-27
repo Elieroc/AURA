@@ -1,0 +1,27 @@
+<!-- SOC-AI - rule 100803 (level 12). Domain: soc_selfcheck,wazuh,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="soc_selfcheck,wazuh,">
+
+  <!-- Promotion of the built-in rule 506 (level 3). Stopping the agent is THE
+       first move of an attacker who just got root, and it is a DELIBERATE
+       action (unlike a network drop): level 12 so the pipeline processes it.
+       Accepted side effect: agent maintenance raises a HIGH alert. That is the
+       price for not missing the opposite case, and the automatic whitelist will
+       absorb the recurrence if one shows up.
+
+       NOTE for soc_agent: correlate.py drops any alert whose description
+       matches `\bagent (connected|started|stopped|...)\b` from being an incident
+       seed - a filter aimed at the built-in ossec status noise. This rule and
+       100804 are explicitly exempted there by rule id (SIDS_STATUT_AGENT_GRAINE),
+       otherwise the English wording below would silently make them unable to
+       open a case. -->
+
+  <rule id="100803" level="12">
+    <if_sid>506</if_sid>
+    <description>SOC tampering: Wazuh agent stopped</description>
+    <mitre>
+      <id>T1562.001</id>
+    </mitre>
+  </rule>
+
+</group>

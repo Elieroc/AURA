@@ -1,0 +1,20 @@
+<!-- SOC-AI - rule 100741 (level 13). Domain: persistence,threat_hunting,linux,syscheck,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="persistence,threat_hunting,linux,syscheck,">
+
+  <!-- T1098.004 - SSH key dropped. Level 13: this is permanent remote access
+       that survives a password change and the closing of the web shell.
+       Covers /root/.ssh and /home/*/.ssh thanks to the `authorized_keys` pattern
+       added to the `restrict` attribute of the matching FIM blocks. -->
+
+  <rule id="100741" level="13">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">/\.ssh/authorized_keys</field>
+    <description>Persistence: authorized SSH key added or modified ($(file))</description>
+    <mitre>
+      <id>T1098.004</id>
+      <id>T1021.004</id>
+    </mitre>
+  </rule>
+
+</group>

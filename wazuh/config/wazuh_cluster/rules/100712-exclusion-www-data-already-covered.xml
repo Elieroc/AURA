@@ -1,0 +1,14 @@
+<!-- SOC-AI - rule 100712 (level 0). Domain: audit,web_attack,web_shell,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="audit,web_attack,web_shell,">
+
+  <!-- Exclusion for 100711: euid 33 is already covered more precisely by 100710,
+       which carries the web shell context. We neutralise the duplicate. -->
+
+  <rule id="100712" level="0">
+    <if_sid>100711</if_sid>
+    <field name="audit.euid">^33$</field>
+    <description>Exclusion 100711: www-data case already covered by 100710</description>
+  </rule>
+
+</group>

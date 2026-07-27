@@ -1,0 +1,59 @@
+<!-- SOC-AI - rule 100654 (level 12). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- R5 T1562.001 - stopping/disabling a security or logging service, purging
+       auditd rules, disabling SELinux/AppArmor.
+
+       REVISION 2026-07-26 - the former regex required the verb BEFORE the
+       service name:
+         (stop|disable|mask)\b.{0,60}(auditd|wazuh|...)
+       But both SysV syntaxes put the verb last:
+         service auditd stop        -> a0="service"    a1="auditd" a2="stop"
+         rc-service auditd stop     -> same
+       Those commands therefore did NOT match: the bypass was simply to use
+       `service` instead of `systemctl`. The regex is now bidirectional (verb
+       before OR after the service name).
+
+       SECOND DEFECT, measured live: the constraint was on `audit.exe`, with
+       `/service$` in the list. But /usr/sbin/service is a SHELL SCRIPT - the
+       kernel therefore loads /usr/bin/dash and `audit.exe` is "/usr/bin/dash",
+       never "/usr/sbin/service". The condition could not be satisfied. Same trap
+       for any manager shipped as a script (ufw is a Python script, service a
+       shell script).
+
+       THIRD DEFECT, found while fixing the second: anchoring on `a0=` is not
+       enough either. For a shebang script the kernel REWRITES the argv and
+       inserts the interpreter first. Real trace of `service fail2ban stop`:
+         a0="/bin/sh" a1="/usr/sbin/service" a2="fail2ban" a3="stop"
+       The tool name sits in a1, not a0. So we anchor on `a\d+=`, i.e. any
+       argument position, while still requiring the CO-OCCURRENCE of tool + verb
+       + service to keep false positives down.
+       WARNING: rules 100673/100674/100680/100681 still anchor on `a0=`. They
+       only target real ELF binaries (zfs, rm, dd, wipefs, systemctl), so no
+       false negative today - but adding a script-shipped tool there would
+       reopen exactly this hole.
+
+       Added: kill/pkill/killall (killing auditd without going through the
+       service manager), update-rc.d / invoke-rc.d / chkconfig / initctl (other
+       managers), aa-disable / aa-teardown / semanage (MAC), audispd.
+
+       `audit.key = audit-wazuh-c`: restricted to execve events, so that file
+       watches are not captured (same pattern as 100653).
+       A bare `kill <pid>` stays undetectable (no service name in the argv) -
+       that case is caught by the 100801/100802 heartbeat, not by this rule.
+
+       auditd purge: the three forms are covered explicitly. The former
+       alternative `a\d+="(-D|0)"` missed the joined form `-e0` and matched any
+       argument equal to "0" (FP).
+       Possible FP: legitimate admin maintenance -> corroborate with context. -->
+
+  <rule id="100654" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:systemctl|service|rc-service|invoke-rc\.d|update-rc\.d|chkconfig|initctl|kill|pkill|killall|setenforce|semanage|aa-disable|aa-teardown)"(?:[^\n]*?(?i:stop|disable|mask|-9|-15|-KILL|-TERM)[^\n]*?(?i:auditd|audispd|wazuh|rsyslog|syslog|journald|firewalld|falco|osquery|clamav|apparmor|fail2ban|snoopy)|[^\n]*?(?i:auditd|audispd|wazuh|rsyslog|syslog|journald|firewalld|falco|osquery|clamav|apparmor|fail2ban|snoopy)[^\n]*?(?i:stop|disable|mask|-9|-15|-KILL|-TERM))|a\d+="(?:[^"]*/)?(?i:auditctl)"[^\n]*?a\d+="-(?:D|e0)"|a\d+="(?:[^"]*/)?(?i:auditctl)"[^\n]*?a\d+="-e"\s+a\d+="0"|a\d+="(?:[^"]*/)?(?i:setenforce)"[^\n]*?a\d+="0"</regex>
+    <description>Defense evasion: security/logging service tampered with ($(audit.command))</description>
+    <mitre><id>T1562.001</id></mitre>
+  </rule>
+
+</group>

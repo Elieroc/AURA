@@ -1,0 +1,35 @@
+<!-- SOC-AI - rule 100805 (level 13). Domain: soc_selfcheck,wazuh,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="soc_selfcheck,wazuh,">
+
+  <!-- DIRECT detection of the kernel audit being switched off, through the
+       CONFIG_CHANGE event the kernel emits itself:
+         type=CONFIG_CHANGE op=set audit_enabled=0 old=1 auid=... res=1
+       Better than the heartbeat on two counts: it is immediate (no 5-minute
+       wait) and it carries the auid, hence the responsible user.
+       The 100801 heartbeat stays necessary regardless: if audit is switched off
+       BEFORE the agent starts, or if the CONFIG_CHANGE event is lost, only a
+       periodic signal reveals the current state. They complement each other,
+       they are not duplicates.
+
+       MEASURED ROOT CAUSE (2026-07-27): it was not an attacker who switched
+       audit off on debian-vm, it was SYSTEMD-JOURNALD. On every restart of the
+       service (here triggered by the 07:51 logrotate) journald emits
+       `CONFIG_CHANGE op=set audit_enabled=0` with auid=unset. The SOC was
+       therefore blind intermittently, with no hostile action involved - and no
+       alert whatsoever. The structural fix is `-e 2` (immutable audit
+       configuration) in zz-audit-wazuh.rules: journald's attempt then fails
+       instead of succeeding. This rule stays useful afterwards, since it reports
+       attempts (res=0) just as well as successes (res=1). -->
+
+  <rule id="100805" level="13">
+    <if_group>audit</if_group>
+    <regex type="pcre2">op=set audit_enabled=0</regex>
+    <description>Blind sensor: kernel audit disabled (CONFIG_CHANGE, auid=$(audit.auid))</description>
+    <mitre>
+      <id>T1562.001</id>
+      <id>T1562.006</id>
+    </mitre>
+  </rule>
+
+</group>

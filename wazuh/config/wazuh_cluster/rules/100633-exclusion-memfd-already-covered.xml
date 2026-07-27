@@ -1,0 +1,15 @@
+<!-- SOC-AI - rule 100633 (level 0). Domain: threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,">
+
+  <!-- Exclusion for 100631: a memfd also matches the "(deleted)" suffix, and it
+       is already covered more precisely by 100630 -> we neutralise the
+       duplicate. Tested. -->
+
+  <rule id="100633" level="0">
+    <if_sid>100631</if_sid>
+    <regex type="pcre2">exe=\w*2F6D656D66643A</regex>
+    <description>Exclusion 100631: memfd case already covered by 100630</description>
+  </rule>
+
+</group>

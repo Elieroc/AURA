@@ -1,0 +1,14 @@
+<!-- SOC-AI - rule 100621 (level 3). Domain: abuseipdb,threat_intel,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="abuseipdb,threat_intel,">
+
+  <!-- AbuseIPDB enrichment received (any response) -->
+
+  <rule id="100621" level="3">
+    <decoded_as>json</decoded_as>
+    <field name="integration">custom-abuseipdb</field>
+    <description>AbuseIPDB - IP $(abuseipdb.srcip): abuse confidence score $(abuseipdb.abuse_confidence_score)/100 ($(abuseipdb.total_reports) reports)</description>
+    <options>no_full_log</options>
+  </rule>
+
+</group>

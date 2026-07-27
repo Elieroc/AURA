@@ -1,0 +1,16 @@
+<!-- SOC-AI - rule 100771 (level 0). Domain: threat_hunting,linux,post_exploitation,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- Exclusion for 100770: the Wazuh agent's own FIM opens those very files to
+       compute their hashes, and dpkg/apt rewrite them on every package install.
+       Without this exclusion our own monitoring and every update generate
+       persistence alerts. -->
+
+  <rule id="100771" level="0">
+    <if_sid>100770</if_sid>
+    <field name="audit.exe" type="pcre2">^/var/ossec/|/(?:dpkg|dpkg-deb|apt|apt-get|frontend|systemd(?:-\w+)?|unattended-upgrade)$</field>
+    <description>Exclusion 100770: write by the FIM, the package manager or systemd</description>
+  </rule>
+
+</group>

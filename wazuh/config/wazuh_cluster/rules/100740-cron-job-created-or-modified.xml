@@ -1,0 +1,18 @@
+<!-- SOC-AI - rule 100740 (level 12). Domain: persistence,threat_hunting,linux,syscheck,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="persistence,threat_hunting,linux,syscheck,">
+
+  <!-- T1053.003 - scheduled task. Expected FP: installing a package drops files
+       into /etc/cron.d and /etc/cron.daily. Recurrent and with a stable
+       signature -> left to the automatic whitelist rather than to a hardcoded
+       exclusion, which would also blind us to an attacker writing in the very
+       same place. -->
+
+  <rule id="100740" level="12">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/etc/cron|^/etc/crontab$|^/var/spool/cron/</field>
+    <description>Persistence: scheduled task created or modified ($(file))</description>
+    <mitre><id>T1053.003</id></mitre>
+  </rule>
+
+</group>

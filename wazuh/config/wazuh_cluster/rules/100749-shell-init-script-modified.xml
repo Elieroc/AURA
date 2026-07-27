@@ -1,0 +1,14 @@
+<!-- SOC-AI - rule 100749 (level 12). Domain: persistence,threat_hunting,linux,syscheck,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="persistence,threat_hunting,linux,syscheck,">
+
+  <!-- T1546.004 - persistence through a shell initialisation script. -->
+
+  <rule id="100749" level="12">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/etc/(?:profile$|bash\.bashrc$|profile\.d/)</field>
+    <description>Persistence: shell initialisation script modified ($(file))</description>
+    <mitre><id>T1546.004</id></mitre>
+  </rule>
+
+</group>

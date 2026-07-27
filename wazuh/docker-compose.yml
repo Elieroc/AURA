@@ -44,11 +44,20 @@ services:
       - ./config/wazuh_indexer_ssl_certs/wazuh.manager.pem:/etc/ssl/filebeat.pem
       - ./config/wazuh_indexer_ssl_certs/wazuh.manager-key.pem:/etc/ssl/filebeat.key
       - ./config/wazuh_cluster/wazuh_manager.conf:/wazuh-config-mount/etc/ossec.conf
-      # Un fichier par règle (cf. config/wazuh_cluster/rules/README.md). Montage
-      # du RÉPERTOIRE et non d'un fichier : `<rule_dir>etc/rules</rule_dir>` de
-      # wazuh_manager.conf charge tous les *.xml qu'il contient, par ordre
-      # alphabétique — donc par ordre d'identifiant, les noms étant `<id>-…`.
-      - ./config/wazuh_cluster/rules:/wazuh-config-mount/etc/rules
+      # Un fichier par règle (cf. config/wazuh_cluster/rules/README.md).
+      # `<rule_dir>etc/rules</rule_dir>` de wazuh_manager.conf charge tous les
+      # *.xml du répertoire, par ordre alphabétique — donc par ordre
+      # d'identifiant, les noms étant `<id>-…`.
+      #
+      # Monté DIRECTEMENT sur /var/ossec/etc/rules, et non via
+      # /wazuh-config-mount : le mécanisme config-mount COPIE les fichiers et
+      # n'en supprime jamais. Une règle renommée ou supprimée dans le dépôt
+      # survivait donc dans le volume, et le manager chargeait l'ancienne ET la
+      # nouvelle — 82 règles définies deux fois, sans la moindre erreur au
+      # démarrage. Le montage direct fait du dépôt la seule source de vérité.
+      # Ce répertoire ne contient QUE nos règles locales ; le ruleset natif vit
+      # dans /var/ossec/ruleset/rules et n'est pas concerné.
+      - ./config/wazuh_cluster/rules:/var/ossec/etc/rules
       - ./config/wazuh_cluster/agent.conf:/wazuh-config-mount/etc/shared/default/agent.conf
       - ./config/wazuh_cluster/alerts-pipeline.json:/usr/share/filebeat/module/wazuh/alerts/ingest/pipeline.json
       - ./integrations/custom-abuseipdb:/var/ossec/integrations/custom-abuseipdb

@@ -1,0 +1,30 @@
+<!-- SOC-AI - rule 100626 (level 12). Domain: threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,">
+
+  <!-- Fork bomb: process table exhaustion (ulimit -u / nproc). Detected through
+       the error message emitted by the kernel/PAM/shell when the limit is hit -
+       far more reliable and far less noisy than auditing clone()/fork()
+       directly (millions of legitimate events per day).
+
+       REVISION 2026-07-26: cgroup v2 signatures added. On a modern systemd, the
+       limit hit first is almost never `ulimit -u` but the `TasksMax` of the unit
+       or session cgroup: the kernel then emits "cgroup: fork rejected by pids
+       controller" and systemd "Failed to fork off ... Resource temporarily
+       unavailable". The former regex only covered the shell/PAM wording and
+       therefore missed the most common case on Debian 12.
+
+       No `if_group`/`if_sid`: depending on the case these messages arrive from
+       the kernel, PAM, systemd or the shell, decoded into different groups.
+       Restricting to one group would reintroduce a blind spot - the cost of one
+       extra PCRE2 evaluation per log is the accepted price. -->
+
+  <rule id="100626" level="12">
+    <match type="pcre2">(?i)(fork:\s*(retry:\s*)?resource temporarily unavailable|too many processes|clone\(\) failed|fork rejected by pids controller|cgroup:\s*fork rejected|failed to fork off[^\n]{0,60}resource temporarily unavailable|can'?t fork|fork failed)</match>
+    <description>Process table exhaustion (kernel/PAM/systemd/shell message) - fork bomb signature</description>
+    <mitre>
+      <id>T1499.001</id>
+    </mitre>
+  </rule>
+
+</group>

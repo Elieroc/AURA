@@ -1,0 +1,17 @@
+<!-- SOC-AI - rule 100664 (level 8). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- R13 T1068 - execution of an a.out (gcc's default output): compile-and-run
+       of a PoC/exploit. We match audit.command (comm is decoded in full) and not
+       audit.exe (truncated at the first punctuation mark -> /home/u/a). Possible
+       FP on development hosts -> level 8. -->
+
+  <rule id="100664" level="8">
+    <if_group>audit</if_group>
+    <field name="audit.command" type="pcre2">^a\.out$</field>
+    <description>Possible exploitation: a.out binary executed (compile-and-run)</description>
+    <mitre><id>T1068</id></mitre>
+  </rule>
+
+</group>
