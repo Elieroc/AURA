@@ -58,6 +58,7 @@ services:
       # Ce répertoire ne contient QUE nos règles locales ; le ruleset natif vit
       # dans /var/ossec/ruleset/rules et n'est pas concerné.
       - ./config/wazuh_cluster/rules:/var/ossec/etc/rules
+      - ./config/wazuh_cluster/decoders:/var/ossec/etc/decoders
       - ./config/wazuh_cluster/agent.conf:/wazuh-config-mount/etc/shared/default/agent.conf
       - ./config/wazuh_cluster/alerts-pipeline.json:/usr/share/filebeat/module/wazuh/alerts/ingest/pipeline.json
       - ./integrations/custom-abuseipdb:/var/ossec/integrations/custom-abuseipdb

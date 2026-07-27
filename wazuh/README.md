@@ -287,12 +287,39 @@ par un processor `script` ajouté en fin de pipeline ingest
 | `wazuh-web-*` | `rule.groups` contient web/apache/nginx/iis |
 | `wazuh-windows-*` | `rule.groups` contient windows, ou champ `data.win` présent |
 | `wazuh-linux-*` | groupes syslog/sshd/pam/systemd/audit/auth, ou `location` = journald ou /var/log/* |
+| `wazuh-firewall-*` | `rule.groups` contient `pfsense` — **avant** le test `agent.id`, car pfSense arrive en syslog direct sur le manager (agent.id=000), pas via un agent |
 | `wazuh-alerts-*` (défaut) | tout le reste + alertes du manager |
 
-- Template d'index `soc-ai-routing` (clone du template wazuh, mêmes mappings) appliqué aux 3 patterns.
-- Index patterns dashboard : `wazuh-linux-*`, `wazuh-windows-*`, `wazuh-web-*`, plus le pattern
-  combiné `soc-ai-all-alerts` (= les 4) utilisé par l'app Wazuh (`pattern:` dans
+- Template d'index `soc-ai-routing` (clone du template wazuh, mêmes mappings) appliqué à tous les patterns.
+- Index patterns dashboard : `wazuh-linux-*`, `wazuh-windows-*`, `wazuh-web-*`, `wazuh-firewall-*`, plus le
+  pattern combiné `soc-ai-all-alerts` (= tous) utilisé par l'app Wazuh (`pattern:` dans
   `wazuh_dashboard/wazuh.yml`) et le dashboard custom, pour garder une vue globale.
+
+### pfSense (et tout équipement sans agent possible) — syslog direct
+
+pfSense n'a pas de paquet wazuh-agent officiel (FreeBSD, appliance). Approche :
+syslog UDP direct vers le manager (`<remote><connection>syslog</connection>...`
+dans `wazuh_manager.conf`, `allowed-ips` restreint à l'IP du pare-feu — **celle
+vue par le manager**, pas l'IP WAN/mgmt de pfSense : un routeur multi-interface
+sort avec l'IP de l'interface la plus proche de la destination).
+
+Piège rencontré en prod : le syslogd FreeBSD de pfSense (14.0-CURRENT) envoie
+les messages `filterlog` **sans hostname** (`<PRI>Mmm dd hh:mm:ss filterlog[pid]:
+...`), cassant le pré-décodage syslog standard de Wazuh (le token
+`filterlog[pid]:` atterrit dans `hostname`, `program_name` reste vide) — le
+décodeur natif `pf` (basé sur `<program_name>`) ne matche jamais, silencieusement.
+Décodeur de secours basé sur `<prematch>` : `decoders/pfsense-nohostname.xml`
+(commentaire en tête du fichier : détail des pièges de syntaxe `offset` Wazuh
+rencontrés en le construisant). Règles miroir de la native `0540-pfsense_rules.xml`
+dans `rules/100810-100812-*.xml`.
+
+Config pfSense (activation remote syslog + catégorie "Firewall Events", sans
+toucher aux autres cibles syslog déjà configurées) : script ponctuel via
+`php -f` sur le pare-feu, cf. commit d'introduction — pas versionné ici (config
+XML pfSense, pas ce dépôt).
+
+**Pas d'active response sur pfSense** : c'est un flux read-only (visibilité),
+pas une cible de remédiation automatisée pour l'instant.
 - Modif du routage : éditer le script dans `alerts-pipeline.json` puis recréer le manager
   (`docker compose up -d --force-recreate wazuh.manager`).
 

@@ -1,0 +1,13 @@
+<!--
+  Pendant décodeur de decoders/pfsense-nohostname.xml (syslogd FreeBSD sans
+  hostname, cf. commentaire là-bas). Miroir de 0540-pfsense_rules.xml
+  (87700-87702), mais sur decoded_as="pf-nohost" au lieu de program_name.
+  Groupe "pfsense," conservé : c'est lui que lit le routage d'index
+  wazuh-firewall-* (alerts-pipeline.json) et create_index_patterns.py.
+-->
+<group name="local,pfsense,">
+  <rule id="100810" level="0">
+    <decoded_as>pf-nohost</decoded_as>
+    <description>pfSense firewall rules grouped (syslog sans hostname).</description>
+  </rule>
+</group>
