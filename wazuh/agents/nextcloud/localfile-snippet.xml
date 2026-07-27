@@ -1,0 +1,10 @@
+  <!-- SOC-AI : logs Nginx Nextcloud -> index wazuh-web-* (format combined log
+       standard, decodeur natif Wazuh web-accesslog — pas de decoder custom). -->
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/root/nextcloud/config/log/nginx/access.log</location>
+  </localfile>
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/root/nextcloud/config/log/nginx/error.log</location>
+  </localfile>

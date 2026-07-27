@@ -25,7 +25,8 @@ PATTERNS = {
     "wazuh-web-*": "wazuh-web-*",
     "wazuh-firewall-*": "wazuh-firewall-*",
     "wazuh-proxy-*": "wazuh-proxy-*",
-    "soc-ai-all-alerts": "wazuh-alerts-*,wazuh-linux-*,wazuh-windows-*,wazuh-web-*,wazuh-firewall-*,wazuh-proxy-*",
+    "wazuh-jellyfin-*": "wazuh-jellyfin-*",
+    "soc-ai-all-alerts": "wazuh-alerts-*,wazuh-linux-*,wazuh-windows-*,wazuh-web-*,wazuh-firewall-*,wazuh-proxy-*,wazuh-jellyfin-*",
 }
 
 

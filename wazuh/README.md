@@ -289,19 +289,22 @@ par un processor `script` ajouté en fin de pipeline ingest
 | `wazuh-linux-*` | groupes syslog/sshd/pam/systemd/audit/auth, ou `location` = journald ou /var/log/* |
 | `wazuh-firewall-*` | `decoder.name == 'pf-nohost'` — **avant** le test `agent.id`, car pfSense arrive en syslog direct sur le manager (agent.id=000), pas via un agent |
 | `wazuh-proxy-*` | `decoder.name == 'npm-access'` |
+| `wazuh-jellyfin-*` | `decoder.name == 'jellyfin'` — log applicatif, pas un format web (pas de nginx devant Jellyfin) |
 | `wazuh-alerts-*` (défaut) | tout le reste + alertes du manager |
 
-Firewall et proxy testent le **décodeur**, pas `rule.groups` (contrairement aux
-trois premiers) : leurs décodeurs portent `<type>web-log</type>`/héritent du
-ruleset natif pour profiter de signatures d'attaque existantes (cf. section
-NPM plus bas), et une règle native sœur peut gagner à la place de la règle
-locale qui porterait le tag de groupe — le nom du décodeur, lui, ne dépend pas
-de quelle règle matche finalement, donc reste fiable pour router.
+Firewall, proxy et jellyfin testent le **décodeur**, pas `rule.groups`
+(contrairement aux trois premiers) : firewall/proxy héritent du ruleset natif
+(`<type>web-log</type>`) pour profiter de signatures d'attaque existantes (cf.
+section NPM plus bas), et une règle native sœur peut gagner à la place de la
+règle locale qui porterait le tag de groupe. Jellyfin n'a pas ce problème
+d'héritage mais suit la même convention par cohérence. Le nom du décodeur, lui,
+ne dépend pas de quelle règle matche finalement, donc reste fiable pour router.
 
 - Template d'index `soc-ai-routing` (clone du template wazuh, mêmes mappings) appliqué à tous les patterns.
 - Index patterns dashboard : `wazuh-linux-*`, `wazuh-windows-*`, `wazuh-web-*`, `wazuh-firewall-*`,
-  `wazuh-proxy-*`, plus le pattern combiné `soc-ai-all-alerts` (= tous) utilisé par l'app Wazuh
-  (`pattern:` dans `wazuh_dashboard/wazuh.yml`) et le dashboard custom, pour garder une vue globale.
+  `wazuh-proxy-*`, `wazuh-jellyfin-*`, plus le pattern combiné `soc-ai-all-alerts` (= tous) utilisé
+  par l'app Wazuh (`pattern:` dans `wazuh_dashboard/wazuh.yml`) et le dashboard custom, pour garder
+  une vue globale.
 
 ### pfSense (et tout équipement sans agent possible) — syslog direct
 
@@ -358,6 +361,24 @@ Deux pièges rencontrés, documentés en tête de fichier :
   chaînée sur la native `31101`, pas sur notre `100820` mort en pratique.
 
 Règles : `rules/100820-npm-proxy-rules.xml`.
+
+### BookStack / Nextcloud — agents Wazuh standard, décodeur natif
+
+Deux images linuxserver.io (nginx interne, format combined log standard) :
+décodeur natif Wazuh `web-accesslog` matche directement, aucun décodeur/règle
+custom. Détail (ACL, install) : `wazuh/agents/bookstack/`,
+`wazuh/agents/nextcloud/`.
+
+### Jellyfin — agent Wazuh, log applicatif (pas de format web)
+
+Pas de nginx devant (serveur Kestrel embarqué, `network_mode: host`) : pas de
+log d'accès HTTP à la verbosité par défaut (vérifié : 0 requête loguée).
+Log applicatif Serilog ingéré tel quel dans son propre index
+`wazuh-jellyfin-*` (pas `wazuh-web-*`, le contenu n'est pas comparable à un
+access log). Décodeur `decoders/jellyfin.xml` extrait `level`
+(VRB/DBG/INF/WRN/ERR/FTL) et la classe émettrice ; règles
+`rules/100830-jellyfin-rules.xml` (WRN=5, ERR=7, FTL=12). Détail :
+`wazuh/agents/jellyfin/`.
 
 - Modif du routage : éditer le script dans `alerts-pipeline.json` puis recréer le manager
   (`docker compose up -d --force-recreate wazuh.manager`).
