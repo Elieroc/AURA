@@ -1,24 +1,31 @@
+<!-- npm-access porte <type>web-log</type> pour hériter des signatures d'attaque
+     natives (31101-31106, 31109, 31110 : erreurs 4xx/5xx, SQLi, XSS, LFI,
+     CGI/PHP) et des règles locales déjà écrites dessus (100700-100702,
+     web,attack,web_attack_soc, — command injection, web shell, confirmed
+     attack). Effet de bord mesuré : la règle racine native 31100
+     (<category>web-log</category>, condition inconditionnelle sur ce type de
+     décodeur) est TOUJOURS sélectionnée avant 100820 pour un même événement —
+     deux règles racine (sans if_sid) sœurs sur le même decoder, la première
+     chargée (ruleset avant etc/rules) gagne systématiquement. 100820 ne
+     "gagne" donc jamais en pratique ; gardée comme point d'ancrage
+     documentaire sur decoded_as, pas comme base de règles filles utiles.
+     Conséquence pour le routage d'index : wazuh-proxy-* teste
+     decoder.name=='npm-access' dans alerts-pipeline.json, PAS
+     rule.groups contient npm-proxy (qui ne serait jamais posé, puisque la
+     règle qui gagne est native et ne porte pas ce groupe). -->
 <group name="local,npm-proxy,">
   <rule id="100820" level="0">
     <decoded_as>npm-access</decoded_as>
     <description>Nginx Proxy Manager access grouped.</description>
   </rule>
 
-  <rule id="100821" level="5">
-    <if_sid>100820</if_sid>
-    <field name="http_status">^4</field>
-    <description>Nginx Proxy Manager: client error ($(http_status)) on $(server)$(uri).</description>
-    <group>web_scan,</group>
-  </rule>
-
-  <rule id="100822" level="7">
-    <if_sid>100820</if_sid>
-    <field name="http_status">^5</field>
-    <description>Nginx Proxy Manager: upstream/server error ($(http_status)) on $(server)$(uri).</description>
-  </rule>
-
+  <!-- Chaîné sur la règle NATIVE (31101, "Web server 400 error code"), pas sur
+       100820 : c'est elle qui gagne en pratique, cf. commentaire plus haut.
+       Erreurs 4xx/5xx elles-mêmes déjà couvertes par le natif (31101/31120) —
+       inutile de les redupliquer ici, seule la fréquence apporte un signal
+       neuf (scan probable). -->
   <rule id="100823" level="10" frequency="12" timeframe="60" ignore="120">
-    <if_matched_sid>100821</if_matched_sid>
+    <if_matched_sid>31101</if_matched_sid>
     <same_source_ip />
     <description>Nginx Proxy Manager: multiple client errors from same source (scan probable).</description>
     <mitre>

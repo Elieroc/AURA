@@ -287,13 +287,21 @@ par un processor `script` ajouté en fin de pipeline ingest
 | `wazuh-web-*` | `rule.groups` contient web/apache/nginx/iis |
 | `wazuh-windows-*` | `rule.groups` contient windows, ou champ `data.win` présent |
 | `wazuh-linux-*` | groupes syslog/sshd/pam/systemd/audit/auth, ou `location` = journald ou /var/log/* |
-| `wazuh-firewall-*` | `rule.groups` contient `pfsense` — **avant** le test `agent.id`, car pfSense arrive en syslog direct sur le manager (agent.id=000), pas via un agent |
+| `wazuh-firewall-*` | `decoder.name == 'pf-nohost'` — **avant** le test `agent.id`, car pfSense arrive en syslog direct sur le manager (agent.id=000), pas via un agent |
+| `wazuh-proxy-*` | `decoder.name == 'npm-access'` |
 | `wazuh-alerts-*` (défaut) | tout le reste + alertes du manager |
 
+Firewall et proxy testent le **décodeur**, pas `rule.groups` (contrairement aux
+trois premiers) : leurs décodeurs portent `<type>web-log</type>`/héritent du
+ruleset natif pour profiter de signatures d'attaque existantes (cf. section
+NPM plus bas), et une règle native sœur peut gagner à la place de la règle
+locale qui porterait le tag de groupe — le nom du décodeur, lui, ne dépend pas
+de quelle règle matche finalement, donc reste fiable pour router.
+
 - Template d'index `soc-ai-routing` (clone du template wazuh, mêmes mappings) appliqué à tous les patterns.
-- Index patterns dashboard : `wazuh-linux-*`, `wazuh-windows-*`, `wazuh-web-*`, `wazuh-firewall-*`, plus le
-  pattern combiné `soc-ai-all-alerts` (= tous) utilisé par l'app Wazuh (`pattern:` dans
-  `wazuh_dashboard/wazuh.yml`) et le dashboard custom, pour garder une vue globale.
+- Index patterns dashboard : `wazuh-linux-*`, `wazuh-windows-*`, `wazuh-web-*`, `wazuh-firewall-*`,
+  `wazuh-proxy-*`, plus le pattern combiné `soc-ai-all-alerts` (= tous) utilisé par l'app Wazuh
+  (`pattern:` dans `wazuh_dashboard/wazuh.yml`) et le dashboard custom, pour garder une vue globale.
 
 ### pfSense (et tout équipement sans agent possible) — syslog direct
 
@@ -314,12 +322,43 @@ rencontrés en le construisant). Règles miroir de la native `0540-pfsense_rules
 dans `rules/100810-100812-*.xml`.
 
 Config pfSense (activation remote syslog + catégorie "Firewall Events", sans
-toucher aux autres cibles syslog déjà configurées) : script ponctuel via
-`php -f` sur le pare-feu, cf. commit d'introduction — pas versionné ici (config
-XML pfSense, pas ce dépôt).
+toucher aux autres cibles syslog déjà configurées) : `wazuh/agents/pfsense/`
+(script + README détaillé).
 
 **Pas d'active response sur pfSense** : c'est un flux read-only (visibilité),
 pas une cible de remédiation automatisée pour l'instant.
+
+### Nginx Proxy Manager — agent Wazuh standard
+
+Contrairement à pfSense, l'hôte NPM est un Linux classique (Debian 12 testé) :
+agent Wazuh normal, `<localfile>` wildcard sur `data/logs/*_access.log` /
+`*_error.log` (NPM nomme ses logs par host proxy, liste qui change à chaque
+host ajouté). Détail (ACL sur `/root`, install, permissions) :
+`wazuh/agents/npm/`.
+
+Décodeur `decoders/npm-proxy.xml` : format d'access log custom (pas le
+combined log nginx standard), porte volontairement `<type>web-log</type>` et
+des champs nommés `id`/`url` (convention native) pour **hériter tout le
+ruleset natif `<category>web-log</category>`** (0245-web_rules.xml : erreurs
+4xx/5xx, SQLi, XSS, LFI, CGI/PHP — 31101-31106, 31109, 31110) et les règles
+locales déjà écrites dessus (100700-100702, domaine `web,attack,web_attack_soc,`
+— command injection, web shell, confirmed attack) sans rien réécrire.
+
+Deux pièges rencontrés, documentés en tête de fichier :
+- Le format NPM coïncide avec le prematch du décodeur natif `zeus`
+  (`0390-zeus_decoders.xml`, pensé pour un panel C2 historique) qui le capture
+  en premier — désactivé via `<decoder_exclude>`/`<rule_exclude>` dans
+  `wazuh_manager.conf` (les deux ensemble, sinon les rules zeus natives
+  plantent le chargement).
+- Hériter `<type>web-log</type>` a un effet de bord : la règle racine native
+  31100 gagne toujours face à notre propre règle racine 100820 (deux règles
+  sœurs sans `if_sid` sur le même décodeur, la première chargée gagne) —
+  d'où le routage d'index sur `decoder.name` plutôt que `rule.groups`
+  (cf. tableau plus haut), et `100823` (détection de scan par fréquence)
+  chaînée sur la native `31101`, pas sur notre `100820` mort en pratique.
+
+Règles : `rules/100820-npm-proxy-rules.xml`.
+
 - Modif du routage : éditer le script dans `alerts-pipeline.json` puis recréer le manager
   (`docker compose up -d --force-recreate wazuh.manager`).
 

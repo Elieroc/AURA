@@ -25,10 +25,34 @@
   toute façon).
 
   `status` est un nom de champ Wazuh statique réservé (erreur au chargement :
-  "Field 'status' is static") — renommé `http_status`.
+  "Field 'status' is static") — pas utilisé, cf. `id` plus bas.
+
+  `<type>web-log</type>` + champs nommés `id`/`url` (pas `http_status`/`uri`) :
+  fait exprès. Ça fait hériter tout le ruleset natif basé sur
+  `<category>web-log</category>` (0245-web_rules.xml : erreurs 4xx/5xx,
+  SQLi, XSS, LFI, CGI/PHP — 31101-31106, 31109, 31110) ET les règles locales
+  déjà écrites dessus (100700-100702, domaine `web,attack,web_attack_soc,` —
+  command injection, web shell, confirmed attack) SANS rien réécrire : elles
+  matchent par `<category>`/`<url>`/`<id>`, indifférentes à quel décodeur a
+  produit ces champs.
+
+  Effet de bord mesuré, important pour la suite : la règle racine native
+  31100 (condition inconditionnelle sur `<category>web-log</category>`) et
+  notre propre règle racine 100820 (`<decoded_as>npm-access</decoded_as>`)
+  sont deux règles SŒURS sans `if_sid` sur le MÊME événement — une seule
+  gagne (la première chargée : ruleset avant etc/rules), donc 31100 gagne
+  systématiquement et 100820 ne "gagne" jamais en pratique. Conséquence :
+  le tag `rule.groups` "npm-proxy" que porte 100820 n'est jamais posé sur
+  l'alerte finale. **Le routage d'index (`wazuh-proxy-*` dans
+  alerts-pipeline.json) teste donc `decoder.name=='npm-access'`, pas
+  `rule.groups` — le décodeur, lui, reste stable quelle que soit la règle
+  qui gagne.** Voir rules/100820-npm-proxy-rules.xml pour le détail côté
+  règles (100823 chaîne sur la native 31101, pas sur 100820, pour la même
+  raison).
 -->
 <decoder name="npm-access">
+  <type>web-log</type>
   <prematch>[\d+/\S+/\d+:\d+:\d+:\d+ \S+] - </prematch>
   <regex offset="after_prematch">^(\d+) \d+ - (\S+) \S+ (\S+) "(\S*)" [Client (\S+)]</regex>
-  <order>http_status,method,server,uri,srcip</order>
+  <order>id,method,server,url,srcip</order>
 </decoder>
