@@ -303,8 +303,11 @@ par un processor `script` ajouté en fin de pipeline ingest
   - **Global** : compteur d'événements global + timeline des alertes par niveau
   - **Linux** : top règles, top alertes, échecs d'authentification, top agents (index `wazuh-linux-*`)
   - **Web** : top règles/alertes d'attaque, timeline, top URLs ciblées, top IP sources, codes HTTP (index `wazuh-web-*`)
-- Import (API saved objects, idempotent) :
+- Import (API saved objects, idempotent) — les index patterns custom **avant**, sinon l'import
+  échoue silencieusement sur les visualisations qui les référencent (`soc-ai-all-alerts`,
+  `wazuh-linux-*`, `wazuh-web-*` n'existent pas par défaut, contrairement à `wazuh-alerts-*`) :
   ```
+  INDEXER_PASSWORD=... python3 dashboards/create_index_patterns.py
   curl -sk -u admin:$INDEXER_PASSWORD -X POST \
     "https://localhost/api/saved_objects/_import?overwrite=true" \
     -H 'osd-xsrf: true' --form file=@dashboards/soc-ai-dashboards.ndjson
