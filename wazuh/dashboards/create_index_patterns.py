@@ -24,7 +24,8 @@ PATTERNS = {
     "wazuh-linux-*": "wazuh-linux-*",
     "wazuh-web-*": "wazuh-web-*",
     "wazuh-firewall-*": "wazuh-firewall-*",
-    "soc-ai-all-alerts": "wazuh-alerts-*,wazuh-linux-*,wazuh-windows-*,wazuh-web-*,wazuh-firewall-*",
+    "wazuh-proxy-*": "wazuh-proxy-*",
+    "soc-ai-all-alerts": "wazuh-alerts-*,wazuh-linux-*,wazuh-windows-*,wazuh-web-*,wazuh-firewall-*,wazuh-proxy-*",
 }
 
 

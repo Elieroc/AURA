@@ -425,6 +425,10 @@
     <decoder_dir>ruleset/decoders</decoder_dir>
     <rule_dir>ruleset/rules</rule_dir>
     <rule_exclude>0215-policy_rules.xml</rule_exclude>
+    <!-- zeus (decoder + rules) désactivé : collision avec le format d'access log
+         Nginx Proxy Manager, cf. commentaire dans decoders/npm-proxy.xml. -->
+    <rule_exclude>0255-zeus_rules.xml</rule_exclude>
+    <decoder_exclude>0390-zeus_decoders.xml</decoder_exclude>
     <list>etc/lists/audit-keys</list>
     <list>etc/lists/amazon/aws-eventnames</list>
     <list>etc/lists/security-eventchannel</list>
