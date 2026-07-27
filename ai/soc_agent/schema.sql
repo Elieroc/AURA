@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS alerts (
     -- Objet concerné : chemin de fichier, processus, hash… Sert de critère de
     -- rapprochement entre alertes de règles différentes.
     entity        text,
+    -- audit.uid Linux (pas forcément numérique en JSON audit, d'où text) :
+    -- lien de corrélation fort entre alertes auditd du même compte.
+    audit_uid     text,
     raw           jsonb NOT NULL,
     incident_id   bigint REFERENCES incidents(id) ON DELETE SET NULL,
     -- Suppression post-retrieval du noise filter (query_level: false). L'alerte
