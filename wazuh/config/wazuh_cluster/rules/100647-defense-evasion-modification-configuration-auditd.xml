@@ -1,0 +1,18 @@
+<!-- SOC-AI - regle 100647 (niveau 13). Domaine : threat_hunting,linux,mitre_gaps,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- T1562.001 - alteration de la configuration auditd elle-meme, captee par le
+       watch `-w /etc/audit -p wa`. Complementaire de 100654 (qui voit la
+       COMMANDE) : ici on voit l'ECRITURE, meme si elle passe par un editeur, un
+       `tee`, une redirection shell ou un binaire quelconque. Niveau 13 : c'est le
+       geste preparatoire a l'aveuglement complet du SOC. -->
+
+  <rule id="100647" level="13">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-tamper$</field>
+    <description>Defense evasion : modification de la configuration auditd ($(audit.file.name)) par $(audit.exe)</description>
+    <mitre><id>T1562.001</id></mitre>
+  </rule>
+
+</group>

@@ -1,0 +1,24 @@
+<!-- SOC-AI - regle 100744 (niveau 14). Domaine : persistence,threat_hunting,linux,syscheck,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="persistence,threat_hunting,linux,syscheck,">
+
+  <!-- T1136.001 / T1078.003 - BACKDOOR UID 0. Priorite maximale : un second
+       compte d'uid 0 est un root permanent qui ne ressemble pas a root dans les
+       logs de connexion.
+       Le champ `changed_content` est le diff produit par `report_changes="yes"`
+       sur /etc/passwd (sans cette option dans agent.conf, la regle ne peut PAS
+       se declencher). Format du diff : les lignes ajoutees sont prefixees par
+       "> ". On matche donc une ligne ajoutee de la forme `nom:x:0:0:`.
+       Le `\+?` couvre le format unifie si la version de Wazuh le change. -->
+
+  <rule id="100744" level="14">
+    <if_sid>100743</if_sid>
+    <field name="changed_content" type="pcre2">(?:^|\n)\s*(?:&gt;|\+)\s*[A-Za-z0-9_.-]+:[^:]*:0+:0+:</field>
+    <description>Backdoor : second compte UID 0 ajoute dans /etc/passwd</description>
+    <mitre>
+      <id>T1136.001</id>
+      <id>T1078.003</id>
+    </mitre>
+  </rule>
+
+</group>

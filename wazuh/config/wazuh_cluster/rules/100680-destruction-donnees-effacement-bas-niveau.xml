@@ -1,0 +1,45 @@
+<!-- SOC-AI - regle 100680 (niveau 13). Domaine : ransomware,threat_hunting,linux,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="ransomware,threat_hunting,linux,">
+
+  <!-- ==== Destruction massive de donnees (T1485 / T1561) ====
+            La regle native 553 ("File deleted", niveau 7) est taggee T1485 mais
+            raisonne par fichier : elle ne distingue pas une suppression isolee d'un
+            effacement complet. Et notre FIM etant filtre par `restrict`, elle ne se
+            declenche de toute facon quasiment jamais.
+
+            Deux angles retenus, meme doctrine que le reste du pack : on ne cherche
+            pas le volume (compter les suppressions implique de surveiller /home en
+            entier -> le bruit qu'on a refuse), on cherche l'INTENTION non ambigue.
+
+            Angle ecarte : audit des syscalls unlink/unlinkat. Techniquement precis,
+            mais chaque fichier temporaire supprime genere un evenement - volume
+            ingerable, meme raisonnement que pour clone()/fork() en 100626. -->
+
+       <!-- R6 T1561 - destruction irreversible d'un support. Aucune de ces commandes
+            n'a d'usage courant en production : elles apparaissent au provisioning
+            (machine neuve, pas encore d'agent Wazuh) ou lors d'un wipe malveillant. -->
+       <!-- REVISION 2026-07-26 : outils d'effacement manquants ajoutes.
+            - `hdparm` avec l option security-erase (et sa variante enhanced) : effacement
+              firmware ATA, irreversible, ne touche aucun chemin /dev en argument
+              reconnaissable par l'ancienne regex.
+            - `nvme format` / `nvme sanitize` : equivalent NVMe.
+            - `sgdisk` avec l option zap-all : destruction des tables de partition GPT.
+            - `cryptsetup luksErase` / `luksKillSlot` : destruction des keyslots LUKS.
+              C'est le wipe le plus economique pour un attaquant - quelques kilo-octets
+              ecrits rendent tout le volume definitivement illisible.
+            - `badblocks -w` : ecriture destructive sur tout le support.
+            Ces quatre premieres commandes n'ont pas besoin de /dev/... en argument
+            positionnel reconnaissable, d'ou une alternative dediee par verbe. -->
+
+  <rule id="100680" level="13">
+    <if_group>audit</if_group>
+    <regex type="pcre2">a0="(?:[^"]*/)?(?:(?i:wipefs|blkdiscard)"|(?i:mkfs)(?:\.[a-z0-9]+)?"|(?i:shred|dd|badblocks)"(?: a\d+="[^"]*")*? a\d+="(?:of=)?/dev/(?:sd|nvme|vd|hd|mapper|disk)|(?i:hdparm)"(?: a\d+="[^"]*")*? a\d+="--security-erase(?:-enhanced)?"|(?i:nvme)"(?: a\d+="[^"]*")*? a\d+="(?:format|sanitize)"|(?i:sgdisk)"(?: a\d+="[^"]*")*? a\d+="(?:--zap-all|-Z)"|(?i:cryptsetup)"(?: a\d+="[^"]*")*? a\d+="(?:luksErase|erase|luksKillSlot)")</regex>
+    <description>Destruction de donnees : effacement bas niveau d'un support ($(audit.command))</description>
+    <mitre>
+      <id>T1561.001</id>
+      <id>T1485</id>
+    </mitre>
+  </rule>
+
+</group>

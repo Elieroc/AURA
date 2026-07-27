@@ -38,7 +38,7 @@ Ces comportements n'ont déclenché **aucune** règle. Aucune baisse de seuil ne
 les fera apparaître : il faut créer la détection. Priorisé par valeur/effort.
 
 Convention repo (cf. `CLAUDE.md`) : règles dans
-`wazuh/config/wazuh_cluster/local_rules.xml`, plage libre à partir de **100700**,
+`wazuh/config/wazuh_cluster/rules/<id>-<slug>.xml` (un fichier par règle),
 validation `wazuh-logtest` + rejeu de régression → PR git → merge humain. Jamais
 d'écriture directe en prod. Pièges auditd connus (cf. mémoire) : `audit.exe`
 tronqué à la première ponctuation, argv hex-encodé — matcher le `full_log` via
@@ -132,7 +132,7 @@ le filet redondant côté SIEM (utile si le pipeline IA est arrêté).
 
 ## Process de mise en œuvre
 
-1. Écrire decoder/règle dans `local_rules.xml` (plage 100700+).
+1. Écrire la règle dans `wazuh/config/wazuh_cluster/rules/<id>-<slug>.xml`.
 2. `wazuh-logtest` sur un échantillon réel de chaque log (proctitle, FIM,
    access.log) — vérifier le niveau et le champ matché.
 3. Rejeu de régression : s'assurer qu'aucune règle existante ne casse.

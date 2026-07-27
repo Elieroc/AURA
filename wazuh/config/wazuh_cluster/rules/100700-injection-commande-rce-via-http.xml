@@ -1,0 +1,37 @@
+<!-- SOC-AI - regle 100700 (niveau 12). Domaine : web,attack,web_attack_soc,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="web,attack,web_attack_soc,">
+
+  <!-- Injection de commande / RCE via paramètres de requête HTTP.
+            Angle mort mesuré : shell.cgi?cmd=id -> 31100 niveau 0 (non élevé). -->
+       <!-- REVISION 2026-07-26. Deux constats sur l'ancienne version :
+            1. La premiere alternative enumerait des NOMS DE PARAMETRE
+               (cmd|exec|command|run|shell|query|q|arg|param|c). Inutile : le nom du
+               parametre est choisi par l'application vulnerable, pas par le SOC. Elle
+               est conservee (elle capte les cas ou aucun metacaractere n'est present,
+               ex. ?cmd=id) mais ne porte plus la detection.
+            2. La seconde alternative (metacaracteres) portait tout, et il y manquait
+               les evasions courantes. Ajoutees :
+               - %0a / %0d : injection par saut de ligne, l'evasion n°1 quand `;` est
+                 filtre par l'application.
+               - $IFS / ${IFS} / %24%7bIFS%7d / $'\t' : substitution du separateur
+                 quand l'espace est filtre.
+               - %2527 / %255c : double encodage, pour traverser un filtre qui decode
+                 une seule fois.
+               - ${jndi: / %24%7bjndi : Log4Shell (T1190) - absent de tout le ruleset.
+               - |base64 / base64%20-d : exfiltration/obfuscation en une ligne.
+               - python -c / perl -e / php -r : one-liners d'execution.
+               Le `&#124;` reste couvert. -->
+
+  <rule id="100700" level="12">
+    <if_sid>31100</if_sid>
+    <url type="pcre2">(?i)(cmd|exec|command|run|shell|query|q|arg|param|c)=[^&amp;]*\b(id|whoami|uname|cat|ls|nc|ncat|bash|sh|curl|wget|python|perl|ping|chmod|dir)\b|(;|%3b|\||%7c|`|%60|\$\(|%24%28|&amp;&amp;|%26%26|%0a|%0d|%250a)|/bin/(ba)?sh|%2fbin%2f|\$\{?IFS|%24%7bifs|%2527|%255c|\$\{jndi:|%24%7bjndi|\|\s*base64|base64(%20|\+)-d|(python[0-9.]*|perl|php|ruby)(%20|\+)-(c|e|r)\b</url>
+    <description>Injection de commande / RCE via HTTP : $(url)</description>
+    <mitre>
+      <id>T1190</id>
+      <id>T1059</id>
+    </mitre>
+    <group>web_attack,command_injection,</group>
+  </rule>
+
+</group>

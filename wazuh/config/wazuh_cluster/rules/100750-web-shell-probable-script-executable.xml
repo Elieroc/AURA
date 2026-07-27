@@ -1,0 +1,21 @@
+<!-- SOC-AI - regle 100750 (niveau 13). Domaine : persistence,threat_hunting,linux,syscheck,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="persistence,threat_hunting,linux,syscheck,">
+
+  <!-- T1505.003 - DEPOT d'un web shell. C'est le pendant de 100701, qui ne voit
+       que l'ACCES et seulement dans une liste de repertoires connus : un script
+       depose a la racine du docroot sous un nom quelconque echappe a toute regle
+       d'URL. Ici on ne raisonne plus sur le nom mais sur le fait qu'un fichier
+       executable par le serveur web APPARAISSE dans /var/www - ce qui, sur un
+       hote servant du statique, n'a aucune raison de se produire.
+       Depend des extensions ajoutees au `restrict` du bloc /var/www dans
+       agent.conf : sans elles, le FIM ne pose pas de watch sur ces fichiers. -->
+
+  <rule id="100750" level="13">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/var/www/.*\.(?:php[0-9]?|phtml|phar|cgi|pl|py|sh|jsp|jspx|asp|aspx)$</field>
+    <description>Web shell probable : script executable depose dans la racine web ($(file))</description>
+    <mitre><id>T1505.003</id></mitre>
+  </rule>
+
+</group>

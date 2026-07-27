@@ -1,0 +1,14 @@
+<!-- SOC-AI - regle 100657 (niveau 2). Domaine : threat_hunting,linux,mitre_gaps,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- R8 T1082/T1033/T1057 - reconnaissance systeme (base niv.2 + rafale niv.10). -->
+
+  <rule id="100657" level="2">
+    <if_group>audit</if_group>
+    <field name="audit.command" type="pcre2">^(whoami|id|uname|hostname|hostnamectl|uptime|lscpu|lsb_release|w|who|last|groups|arch|nproc|dnsdomainname|domainname)$</field>
+    <description>Commande de reconnaissance systeme ($(audit.command))</description>
+    <mitre><id>T1082</id></mitre>
+  </rule>
+
+</group>

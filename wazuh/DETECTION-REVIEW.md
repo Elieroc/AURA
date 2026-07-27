@@ -7,7 +7,7 @@ niveau ≥ 12, plus les trous que la revue a mis au jour.
 Le ruleset **natif** est hors périmètre après vérification : 376 règles natives
 de niveau ≥ 12 existent, mais la part Linux se limite à `rpc.statd`, `WU-FTPD
 2.6` et `Solaris cachefsd`. Toute la détection utile de cette infra est portée
-par `local_rules.xml`.
+par les règles locales (`config/wazuh_cluster/rules/`, un fichier par règle).
 
 ---
 

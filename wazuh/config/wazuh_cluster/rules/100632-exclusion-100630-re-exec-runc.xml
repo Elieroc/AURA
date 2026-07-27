@@ -1,0 +1,17 @@
+<!-- SOC-AI - regle 100632 (niveau 0). Domaine : threat_hunting,linux,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,">
+
+  <!-- Exclusion 100630 : runc/crun/containerd se recopient dans un memfd avant chaque
+       exec de conteneur (mitigation CVE-2019-5736, /proc/self/exe cloné) -> 100630
+       déclencherait à chaque démarrage de conteneur. "runc_cloned" est fixé par runc.
+       Signature HEX : 2F6D656D66643A72756E635F636C6F6E6564 = "/memfd:runc_cloned".
+       Testé : une ligne exe=...runc_cloned... tombe bien en niveau 0. -->
+
+  <rule id="100632" level="0">
+    <if_sid>100630</if_sid>
+    <regex type="pcre2">exe=\w*2F6D656D66643A72756E635F636C6F6E6564</regex>
+    <description>Exclusion 100630 : re-exec runc/crun via memfd (bruit conteneur connu)</description>
+  </rule>
+
+</group>

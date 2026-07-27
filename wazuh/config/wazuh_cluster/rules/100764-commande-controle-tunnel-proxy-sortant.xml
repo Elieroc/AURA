@@ -1,0 +1,23 @@
+<!-- SOC-AI - regle 100764 (niveau 12). Domaine : threat_hunting,linux,post_exploitation,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1572 / T1090 - tunnel de commande et controle. `ssh -R` (reverse tunnel)
+       expose un service interne a l'exterieur ; `ssh -D` monte un proxy SOCKS
+       pour pivoter. chisel, ngrok, frp, iodine, dnscat, gost, ligolo sont des
+       outils dont la seule fonction est le tunneling - leur presence sur un
+       serveur est en soi l'incident. `socat` avec un EXEC est un reverse shell
+       persistant. -->
+
+  <rule id="100764" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:ssh)"[^\n]*?a\d+="-[a-zA-Z]*[RD][a-zA-Z]*"|a\d+="(?:[^"]*/)?(?i:chisel|ngrok|frpc|frps|iodine|dnscat2?|gost|ligolo(?:-ng)?|pivotnacci|revsocks)"|a\d+="(?:[^"]*/)?(?i:socat)"[^\n]*?a\d+="[^"]*(?i:exec|system):</regex>
+    <description>Commande et controle : tunnel ou proxy sortant etabli ($(audit.command))</description>
+    <mitre>
+      <id>T1572</id>
+      <id>T1090</id>
+    </mitre>
+  </rule>
+
+</group>

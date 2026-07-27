@@ -1,0 +1,15 @@
+<!-- SOC-AI - regle 100806 (niveau 13). Domaine : soc_selfcheck,wazuh,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="soc_selfcheck,wazuh,">
+
+  <!-- Purge des regles auditd, meme evenement noyau. `op=remove_rule` est emis
+       par `auditctl -D` et par toute suppression de regle. -->
+
+  <rule id="100806" level="13">
+    <if_group>audit</if_group>
+    <regex type="pcre2">op=remove_rule</regex>
+    <description>Capteur aveugle : suppression d'une regle auditd (auid=$(audit.auid))</description>
+    <mitre><id>T1562.001</id></mitre>
+  </rule>
+
+</group>

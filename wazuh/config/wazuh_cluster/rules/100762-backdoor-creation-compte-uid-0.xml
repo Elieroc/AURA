@@ -1,0 +1,20 @@
+<!-- SOC-AI - regle 100762 (niveau 14). Domaine : threat_hunting,linux,post_exploitation,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1136.001 / T1078.003 - creation directe d'un compte UID 0. `-o` (non
+       unique) est obligatoire pour dupliquer l'uid 0, c'est donc un marqueur
+       tres fiable. Niveau 14, meme signal que 100744 par un autre chemin. -->
+
+  <rule id="100762" level="14">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:useradd|usermod)"[^\n]*?a\d+="-[a-zA-Z]*u[a-zA-Z]*"\s+a\d+="0"|a\d+="(?:[^"]*/)?(?i:useradd|usermod)"[^\n]*?a\d+="--uid"\s+a\d+="0"</regex>
+    <description>Backdoor : creation d'un compte UID 0 ($(audit.command))</description>
+    <mitre>
+      <id>T1136.001</id>
+      <id>T1078.003</id>
+    </mitre>
+  </rule>
+
+</group>

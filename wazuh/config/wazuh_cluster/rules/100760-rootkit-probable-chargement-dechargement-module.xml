@@ -1,0 +1,26 @@
+<!-- SOC-AI - regle 100760 (niveau 13). Domaine : threat_hunting,linux,post_exploitation,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1014 / T1547.006 - chargement ou dechargement de module noyau, capte par
+       les regles de syscall init_module/finit_module/delete_module. Complete
+       l'observation des commandes (insmod/modprobe sont deja des execve) : un
+       rootkit qui appelle finit_module() depuis son propre binaire n'execute
+       aucune commande.
+       BRUIT CONNU : un redemarrage charge plusieurs dizaines de modules et
+       produira donc une rafale d'alertes. C'est assume - on prefere une rafale
+       ponctuelle et explicable a l'aveuglement sur le chargement d'un LKM
+       malveillant, qui est la forme de compromission la plus difficile a
+       detecter une fois installee. -->
+
+  <rule id="100760" level="13">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-module$</field>
+    <description>Rootkit probable : chargement/dechargement de module noyau par $(audit.exe)</description>
+    <mitre>
+      <id>T1014</id>
+      <id>T1547.006</id>
+    </mitre>
+  </rule>
+
+</group>

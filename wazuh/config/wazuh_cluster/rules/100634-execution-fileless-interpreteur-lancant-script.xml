@@ -1,0 +1,35 @@
+<!-- SOC-AI - regle 100634 (niveau 12). Domaine : threat_hunting,linux,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,">
+
+  <!-- Exécution fileless depuis un tmpfs monté en mémoire (/dev/shm, /run/shm).
+            /dev/shm est un tmpfs (RAM) : y déposer puis exécuter un implant est une
+            technique fileless (T1620), plus forte que le simple drop-and-execute en
+            /tmp (100625, niveau 8). Deux cas, car auditd renseigne audit.exe avec le
+            BINAIRE réellement chargé par le noyau :
+            - ELF natif : exe = /dev/shm/... -> 100625 fire (niv.8) ; 100635 le rehausse.
+            - SCRIPT (#!/bin/sh) : exe = l'INTERPRETEUR (/bin/dash, python...), le
+              chemin du script est dans l'argv -> 100625 ne fire PAS. 100634 le capte
+              via exe=interpréteur + chemin tmpfs dans l'argv, en clair ou hex
+              (2F6465762F73686D2F = "/dev/shm/", 2F72756E2F73686D2F = "/run/shm/"). -->
+       <!-- REVISION 2026-07-26 : liste d'interpreteurs et de tmpfs elargie.
+            Ajoutes cote exe : awk/gawk/mawk (`awk 'BEGIN{system(...)}'` est un
+            interpreteur complet), env / nohup / setsid / xargs / timeout (wrappers
+            qui deviennent l'exe reel de l'execve et masquaient le script), Rscript.
+            Ajoutes cote chemin : /run/user/<uid> (tmpfs par session, world-writable
+            pour son proprietaire - vecteur equivalent a /dev/shm et jusqu'ici non
+            couvert) et /dev/mqueue (tmpfs aussi, monte par defaut).
+              2F72756E2F75736572 = "/run/user", 2F6465762F6D7175657565 = "/dev/mqueue" -->
+
+  <rule id="100634" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.exe" type="pcre2">/(?:sh|bash|dash|zsh|ksh|ash|busybox|python[0-9.]*|perl|php|ruby|node|lua|tclsh|awk|gawk|mawk|env|nohup|setsid|xargs|timeout|Rscript)$</field>
+    <regex type="pcre2">(?i)/(?:dev/shm|run/shm|run/user/\d+|dev/mqueue)/|2F(?:646576|72756E)2F73686D2F|2F72756E2F757365722F|2F6465762F6D7175657565</regex>
+    <description>Exécution fileless : interpréteur lançant un script depuis un tmpfs mémoire (/dev/shm) - $(audit.command)</description>
+    <mitre>
+      <id>T1620</id>
+      <id>T1059</id>
+    </mitre>
+  </rule>
+
+</group>

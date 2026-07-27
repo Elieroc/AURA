@@ -1,0 +1,18 @@
+<!-- SOC-AI - regle 100804 (niveau 10). Domaine : soc_selfcheck,wazuh,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="soc_selfcheck,wazuh,">
+
+  <!-- Deconnexion (504) : volontairement laissee SOUS le seuil de triage IA
+       (niveau 10). Une coupure reseau, un reboot ou une VM suspendue produisent
+       le meme evenement - trop ambigu pour declencher une remediation autonome,
+       assez important pour etre visible en dashboard. -->
+
+  <rule id="100804" level="10">
+    <if_sid>504</if_sid>
+    <description>Agent Wazuh deconnecte - verifier s'il s'agit d'une alteration</description>
+    <mitre>
+      <id>T1562.001</id>
+    </mitre>
+  </rule>
+
+</group>
