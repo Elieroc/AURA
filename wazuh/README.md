@@ -399,6 +399,24 @@ access log). Décodeur `decoders/jellyfin.xml` extrait `level`
     "https://localhost/api/saved_objects/_import?overwrite=true" \
     -H 'osd-xsrf: true' --form file=@dashboards/soc-ai-dashboards.ndjson
   ```
+- **Pièges rencontrés en prod (dashboards Global/Threat Intel en erreur alors que
+  Web/Linux marchaient)** :
+  - Toute agrégation `terms` sur un champ string doit cibler `<champ>.keyword`,
+    jamais le champ nu — Wazuh/OpenSearch mappe dynamiquement les strings en
+    `text` + sous-champ `.keyword`, et une agrégation sur `text` est rejetée
+    (`illegal_argument_exception`). `gen_dashboard.py` applique `.keyword`
+    partout où c'est une agrégation terms (`rule.description`, `agent.name`,
+    `data.url`, `data.srcip`, etc.) — jamais sur `timestamp`, un champ numérique,
+    ou `GeoLocation.location` (geo_point).
+  - `soc-ai-all-alerts` (pattern combiné) : l'API `_fields_for_wildcard`
+    d'OpenSearch Dashboards rejette le pattern **entier** (404
+    `no_matching_indices`) dès qu'**un seul** des sous-patterns listés ne
+    matche aucun index — même si les autres existent avec des données (vécu :
+    `wazuh-jellyfin-*` vide, avant le premier WRN/ERR réel, a cassé Global et
+    Threat Intel en entier). `create_index_patterns.py` recalcule ce pattern à
+    chaque run en excluant les sous-patterns sans index actuellement — relancer
+    le script après l'ajout d'une nouvelle source suffit, pas besoin d'y toucher
+    à la main.
 - Accès : menu Dashboards (time range 30 jours, refresh 60s).
 - Les modules built-in du dashboard Wazuh couvrent déjà Threat Hunting, MITRE ATT&CK, FIM,
   vulnérabilités — pas dupliqués ici.
