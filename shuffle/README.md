@@ -13,6 +13,35 @@ docker compose up -d
 - UI : http://localhost:3001 — API : http://localhost:5001
 - Premier compte admin : `POST /api/v1/users/register` avec `{"username": ..., "password": ...}` (retourne l'apikey), ou via l'UI.
 
+## Import des workflows
+
+Pas d'export upstream de ces workflows (ils n'ont jamais existé qu'en tant
+qu'objets vivants dans une instance Shuffle donnée) : `workflows/build_workflows.py`
+les recrée par l'API en fixant l'id des triggers webhook sur les valeurs
+attendues par `ai/.env` (`SHUFFLE_WEBHOOK_ISOLATE` / `_KILL`), pour que
+`mitigate.py` retrouve la même URL quelle que soit l'instance Shuffle.
+
+```bash
+SHUFFLE_DEFAULT_APIKEY=$(grep SHUFFLE_DEFAULT_APIKEY .env | cut -d= -f2) \
+WAZUH_API_USER=wazuh-wui \
+WAZUH_API_PASSWORD=$(grep API_PASSWORD ../wazuh/.env | cut -d= -f2) \
+WAZUH_HOST=<IP LAN de l'hôte, PAS 127.0.0.1> \
+SHUFFLE_WEBHOOK_ISOLATE=webhook_b755bdec-241d-47fd-9703-4405d9052066 \
+SHUFFLE_WEBHOOK_KILL=webhook_8c9c473e-e6cd-44b9-ba2f-60a864cdda3e \
+python3 workflows/build_workflows.py
+```
+
+`WAZUH_HOST` doit être une IP joignable depuis le réseau docker `shuffle` : le
+worker qui exécute l'action HTTP n'est **pas** en `network_mode: host` comme
+soc-agent, donc `127.0.0.1`/`localhost` ne pointe pas vers le manager Wazuh
+depuis là — utiliser l'IP LAN réelle de la machine.
+
+Pas idempotent au sens strict : relancer crée de nouveaux workflows si les
+précédents n'ont pas été supprimés (`DELETE /api/v1/workflows/<id>`).
+
+Forensic Collection n'est pas couvert par ce script (infra SSH K1/K2/K3 à
+provisionner à part, voir plus bas) — se crée à la main dans l'UI.
+
 ## Workflow « Wazuh - Host Isolation »
 
 ```
