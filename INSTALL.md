@@ -82,6 +82,25 @@ ne le signale côté manager (l'API répond 200, elle ne fait que transmettre). 
 comptes en particulier — `disable-account.sh` / `enable-account.sh` — vont par
 paire : sans le second, une désactivation n'est pas défaisable.
 
+**`soc-ai.conf` AVANT tout test d'isolation — sinon lockout.** `host-isolate.sh`
+a une IP manager par défaut codée en dur (`192.168.122.1`, ancien lab) : c'est
+la seule sortie laissée ouverte pendant l'isolation. Sans override, isoler un
+agent le coupe de son vrai manager, sans retour possible par l'AR de
+dé-isolation (le canal est mort) — vécu en prod, récupéré seulement via une
+console hors-bande (hyperviseur).
+
+```bash
+cp config/soc-ai.conf.example config/soc-ai.conf
+$EDITOR config/soc-ai.conf   # WAZUH_MANAGER_IP = IP du manager telle que l'agent la joint
+scp config/soc-ai.conf <agent>:/tmp/soc-ai.conf
+ssh <agent> 'sudo install -o root -g wazuh -m 640 /tmp/soc-ai.conf /var/ossec/etc/soc-ai.conf'
+```
+
+Après un test d'isolation/dé-isolation, si l'agent ne remonte pas de
+keepalive : `wazuh-agentd` ne se reconnecte pas toujours seul après la coupure
+brutale du firewall, `systemctl restart wazuh-agent` sur l'agent force la
+reprise.
+
 ## 5. soc-agent (pipeline IA)
 
 ```bash
