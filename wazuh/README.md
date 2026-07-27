@@ -33,7 +33,7 @@ secrets sortis vers `.env`, intégrations threat intel VirusTotal + AbuseIPDB.
   `/var/ossec/integrations/` du manager.
 - Déclencheur : alertes des groupes `sshd,attacks,authentication_failed,invalid_login` avec `data.srcip`
   publique. IP privées ignorées.
-- Réinjection du résultat dans l'analyseur → règles locales (`config/wazuh_cluster/local_rules.xml`) :
+- Réinjection du résultat dans l'analyseur → règles locales (`config/wazuh_cluster/rules/`, un fichier par règle) :
   - 100621 (niv. 3) : enrichissement reçu
   - 100622 (niv. 12) : score ≥ 80 — IP malveillante
   - 100623 (niv. 7) : score 20–79 — IP suspecte
@@ -80,7 +80,7 @@ Calculée depuis `rule.level` par un processor `script` du pipeline ingest (`con
 
 ## Détection — exécution depuis répertoire temporaire
 
-Règle locale `100625` (niv. 8, Medium) dans `local_rules.xml` : détecte l'exécution d'un binaire
+Règle locale `100625` (niv. 8, Medium), dans `config/wazuh_cluster/rules/100625-*.xml` : détecte l'exécution d'un binaire
 depuis `/tmp`, `/var/tmp` ou `/dev/shm` (technique classique de drop-and-execute), via le champ
 `audit.exe` du module Linux Audit (auditd).
 

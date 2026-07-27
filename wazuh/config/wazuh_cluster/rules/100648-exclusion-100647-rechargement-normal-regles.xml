@@ -1,0 +1,15 @@
+<!-- SOC-AI - regle 100648 (niveau 0). Domaine : threat_hunting,linux,mitre_gaps,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- Exclusion 100647 : augenrules/auditctl reecrivent /etc/audit/audit.rules
+       a chaque `augenrules load` (y compris au boot via le service auditd). C'est le
+       fonctionnement normal, pas une alteration. -->
+
+  <rule id="100648" level="0">
+    <if_sid>100647</if_sid>
+    <field name="audit.exe" type="pcre2">/(?:augenrules|auditctl|auditd|dpkg|apt|apt-get|systemd(?:-\w+)?)$</field>
+    <description>Exclusion 100647 : rechargement normal des regles auditd / mise a jour paquet</description>
+  </rule>
+
+</group>

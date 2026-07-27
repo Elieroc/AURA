@@ -1,0 +1,15 @@
+<!-- SOC-AI - regle 100745 (niveau 13). Domaine : persistence,threat_hunting,linux,syscheck,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="persistence,threat_hunting,linux,syscheck,">
+
+  <!-- T1548.003 - sudoers. Niveau 13 : une ligne NOPASSWD ajoutee donne root
+       sans mot de passe et passe inapercue dans un fichier de 30 lignes. -->
+
+  <rule id="100745" level="13">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/etc/sudoers</field>
+    <description>Elevation de privileges : configuration sudo modifiee ($(file))</description>
+    <mitre><id>T1548.003</id></mitre>
+  </rule>
+
+</group>

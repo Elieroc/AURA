@@ -1,0 +1,20 @@
+<!-- SOC-AI - regle 100741 (niveau 13). Domaine : persistence,threat_hunting,linux,syscheck,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="persistence,threat_hunting,linux,syscheck,">
+
+  <!-- T1098.004 - cle SSH deposee. Niveau 13 : c'est un acces distant permanent,
+       qui survit au changement de mot de passe et a la fermeture du web shell.
+       Couvre /root/.ssh et /home/*/.ssh grace au motif `authorized_keys` ajoute
+       au `restrict` des blocs FIM correspondants. -->
+
+  <rule id="100741" level="13">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">/\.ssh/authorized_keys</field>
+    <description>Persistance : cle SSH autorisee ajoutee ou modifiee ($(file))</description>
+    <mitre>
+      <id>T1098.004</id>
+      <id>T1021.004</id>
+    </mitre>
+  </rule>
+
+</group>

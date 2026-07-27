@@ -1,0 +1,15 @@
+<!-- SOC-AI - regle 100655 (niveau 10). Domaine : threat_hunting,linux,mitre_gaps,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- R6 T1070.002 - destruction de logs (rm/shred/truncate sur /var/log). -->
+
+  <rule id="100655" level="10">
+    <if_group>audit</if_group>
+    <field name="audit.exe" type="pcre2">/(rm|shred|truncate|unlink)$</field>
+    <regex type="pcre2">/var/log/(auth|syslog|secure|audit|wazuh|messages|journal)</regex>
+    <description>Defense evasion : suppression/troncature de journaux ($(audit.command))</description>
+    <mitre><id>T1070.002</id></mitre>
+  </rule>
+
+</group>

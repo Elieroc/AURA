@@ -1,0 +1,21 @@
+<!-- SOC-AI - regle 100763 (niveau 12). Domaine : threat_hunting,linux,post_exploitation,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1070.003 - effacement des traces shell. Trois formes : purge memoire
+       (`history -c`), neutralisation du fichier (HISTFILE=/dev/null, unset
+       HISTFILE, `ln -sf /dev/null ~/.bash_history`) et suppression du fichier.
+       Ces commandes contiennent des espaces donc arrivent hex-encodees :
+         686973746F7279202D63       = "history -c"
+         4849535446494C45           = "HISTFILE"
+         2E626173685F686973746F7279 = ".bash_history" -->
+
+  <rule id="100763" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">(?i)history\s+-c|unset\s+HISTFILE|HISTFILE=/dev/null|HISTSIZE=0|\.bash_history|686973746F7279202D63|4849535446494C45|2E626173685F686973746F7279</regex>
+    <description>Effacement de traces : manipulation de l'historique shell ($(audit.command))</description>
+    <mitre><id>T1070.003</id></mitre>
+  </rule>
+
+</group>

@@ -1,0 +1,17 @@
+<!-- SOC-AI - regle 100625 (niveau 8). Domaine : threat_hunting,linux,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,">
+
+  <!-- Exécution d'un binaire depuis un répertoire temporaire world-writable (/tmp, /var/tmp, /dev/shm) -->
+       <!-- Nécessite l'audit Linux (auditd) configuré sur l'agent pour surveiller execve. -->
+
+  <rule id="100625" level="8">
+    <if_group>audit</if_group>
+    <field name="audit.exe" type="pcre2">^(/tmp/|/var/tmp/|/dev/shm/)</field>
+    <description>Exécution d'un binaire depuis un répertoire temporaire ($(audit.exe)) - technique classique de drop-and-execute</description>
+    <mitre>
+      <id>T1204.002</id>
+    </mitre>
+  </rule>
+
+</group>

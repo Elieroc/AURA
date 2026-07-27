@@ -1,0 +1,18 @@
+<!-- SOC-AI - regle 100768 (niveau 12). Domaine : threat_hunting,linux,post_exploitation,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1548.001 - attribution d'une capacite Linux dangereuse. Alternative
+       moderne au bit setuid, et bien moins surveillee : `setcap
+       cap_setuid+ep /usr/bin/python3` donne un root instantane sans qu'aucun
+       fichier ne devienne SUID. -->
+
+  <rule id="100768" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:setcap)"[^\n]*?a\d+="[^"]*(?i:cap_setuid|cap_setgid|cap_sys_admin|cap_sys_ptrace|cap_sys_module|cap_dac_override|cap_dac_read_search|cap_chown)[^"]*"</regex>
+    <description>Elevation de privileges : capacite Linux privilegiee attribuee ($(audit.command))</description>
+    <mitre><id>T1548.001</id></mitre>
+  </rule>
+
+</group>

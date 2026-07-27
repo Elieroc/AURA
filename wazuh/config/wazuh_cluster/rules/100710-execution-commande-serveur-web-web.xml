@@ -1,0 +1,25 @@
+<!-- SOC-AI - regle 100710 (niveau 12). Domaine : audit,web_attack,web_shell,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="audit,web_attack,web_shell,">
+
+  <!-- Exécution de commande par l'utilisateur du serveur web (www-data, euid=33).
+       Sur cet hôte (Apache statique) www-data ne lance rien en temps normal :
+       toute execve en euid=33 = exécution CGI / web shell. Mesuré : shell.cgi
+       tourne en euid=33 (perl, id, whoami, cat...).
+       LIMITE ASSUMEE : euid 33 est la valeur Debian/Ubuntu de www-data. Les
+       autres comptes de service (apache=48 sur RHEL, nginx, tomcat, pool
+       php-fpm dedie, postgres, mysql, redis) sont couverts par 100711, pas ici -
+       cette regle reste la plus specifique et la plus fiable des deux. -->
+
+  <rule id="100710" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.euid">^33$</field>
+    <description>Exécution de commande par le serveur web ($(audit.exe)) - web shell probable (euid=33/www-data)</description>
+    <mitre>
+      <id>T1505.003</id>
+      <id>T1059</id>
+    </mitre>
+    <group>web_shell,command_execution,</group>
+  </rule>
+
+</group>

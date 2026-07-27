@@ -1,0 +1,21 @@
+<!-- SOC-AI - regle 100769 (niveau 12). Domaine : threat_hunting,linux,post_exploitation,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1046 - scan reseau depuis l'hote. Sur un serveur, l'execution d'un
+       scanner appartient soit a une phase de decouverte post-compromission,
+       soit a un audit planifie - dans les deux cas l'analyste doit le voir.
+       Niveau 12 assume : c'est une decouverte active, pas du bruit de fond. -->
+
+  <rule id="100769" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:nmap|masscan|zmap|rustscan|naabu|unicornscan|hping3|zgrab)"</regex>
+    <description>Decouverte reseau : scanner execute sur l'hote ($(audit.command))</description>
+    <mitre>
+      <id>T1046</id>
+      <id>T1595</id>
+    </mitre>
+  </rule>
+
+</group>

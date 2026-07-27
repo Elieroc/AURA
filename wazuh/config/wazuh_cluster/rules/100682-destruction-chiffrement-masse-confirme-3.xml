@@ -1,0 +1,22 @@
+<!-- SOC-AI - regle 100682 (niveau 15). Domaine : ransomware,threat_hunting,linux,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="ransomware,threat_hunting,linux,">
+
+  <!-- R8 T1485/T1486 - correlation : plusieurs canaris touches dans une fenetre
+       courte. Un canari isole peut theoriquement etre une manipulation humaine
+       maladroite ; trois canaris dans des repertoires differents en 2 min, non.
+       C'est la signature d'un parcours recursif automatise - chiffrement ou
+       effacement de masse en cours, et non un incident ponctuel.
+       Pas de <same_field> ici : teste, il casse le comptage de frequence
+       (cf. README, meme piege que sur 100658). -->
+
+  <rule id="100682" level="15" frequency="3" timeframe="120">
+    <if_matched_sid>100670</if_matched_sid>
+    <description>Destruction/chiffrement de masse confirme : 3+ canaris alteres en 2 min</description>
+    <mitre>
+      <id>T1485</id>
+      <id>T1486</id>
+    </mitre>
+  </rule>
+
+</group>

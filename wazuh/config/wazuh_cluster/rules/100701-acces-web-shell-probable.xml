@@ -1,0 +1,31 @@
+<!-- SOC-AI - regle 100701 (niveau 12). Domaine : web,attack,web_attack_soc,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="web,attack,web_attack_soc,">
+
+  <!-- Accès à un web shell : script exécutable dans un répertoire d'upload /
+       temporaire / statique, ou nom de web shell connu.
+       LIMITE STRUCTURELLE (revision 2026-07-26) : cette regle raisonne sur
+       l'URL, donc sur une liste de repertoires et une liste de noms connus. Un
+       web shell depose a la racine du docroot sous un nom quelconque
+       (/var/www/html/x7f2.php) ne matche NI l'une NI l'autre et passe. Aucune
+       regex d'URL ne peut combler ce trou : le signal fiable est l'APPARITION du
+       fichier, pas son nom. C'est le role de 100750 (FIM sur /var/www, avec les
+       extensions de script ajoutees au `restrict` de l'agent.conf). Les deux
+       regles sont complementaires par construction : 100701 voit l'utilisation,
+       100750 voit le depot.
+       Repertoires ajoutes : arborescences d'upload des CMS courants
+       (wp-content/uploads, sites/default/files, storage, public, backup,
+       vendor, .well-known) - tous world-writable par le serveur web dans une
+       installation par defaut. -->
+
+  <rule id="100701" level="12">
+    <if_sid>31100,31108</if_sid>
+    <url type="pcre2">(?i)/(uploads?|tmp|temp|images?|img|files?|media|data|cache|static|assets|storage|public|backup|vendor|wp-content/uploads|sites/default/files|\.well-known)/[^ ?]*\.(php[0-9]?|phtml|phar|cgi|pl|py|sh|asp|aspx|jsp|jspx)\b|/(c99|r57|wso|b374k|weevely|antsword|chopper|cmd|shell|backdoor|webshell|up|upload|adminer|alfa|marijuana|indoxploit|mini|p0wny|phpspy|sh3ll|filesman|by?pass)\.(php[0-9]?|asp|aspx|jsp|cgi|pl|py|sh)\b</url>
+    <description>Accès à un web shell probable : $(url)</description>
+    <mitre>
+      <id>T1505.003</id>
+    </mitre>
+    <group>web_attack,web_shell,</group>
+  </rule>
+
+</group>

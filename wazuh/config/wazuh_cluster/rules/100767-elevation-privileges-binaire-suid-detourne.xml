@@ -1,0 +1,31 @@
+<!-- SOC-AI - regle 100767 (niveau 13). Domaine : threat_hunting,linux,post_exploitation,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1548.001 - ABUS DE BINAIRE SUID (GTFOBins). Detection structurelle, pas
+       par signature : un processus dont l'uid REEL est celui d'un utilisateur
+       normal mais dont l'euid est 0 s'execute avec les privileges de root via le
+       bit setuid. Combine a une liste de binaires connus pour offrir une
+       evasion de shell, c'est la signature exacte de l'escalade GTFOBins.
+
+       Pourquoi c'est fiable : `sudo find ...` ne matche PAS - sudo a deja
+       bascule l'uid reel a 0 quand `find` s'execute, donc uid=0. Seul le cas
+       « binaire porteur du bit setuid lance par un utilisateur non root »
+       satisfait uid!=0 ET euid=0. Les SUID legitimes du systeme (sudo, su,
+       passwd, pkexec, ping, chsh, newgrp, mount.nfs) sont hors liste.
+
+       `^[1-9][0-9]*$` plutot qu'un lookahead negatif `^(?!0$)` : le moteur de
+       regles n'honore pas les lookaheads dans les patterns de champ (piege
+       documente sur 100629). -->
+
+  <rule id="100767" level="13">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <field name="audit.euid" type="pcre2">^0$</field>
+    <field name="audit.uid" type="pcre2">^[1-9][0-9]*$</field>
+    <field name="audit.exe" type="pcre2">/(?:find|vim|vi|nano|less|more|awk|gawk|mawk|nmap|python[0-9.]*|perl|ruby|env|tar|zip|unzip|git|ftp|man|sed|ed|cp|mv|dd|nice|flock|watch|xargs|make|gdb|strace|ltrace|busybox|tee|rsync|systemctl|apt|apt-get|dpkg|mount|umount|nsenter|capsh|socat|php|node|lua|expect|screen|tmux|bash|sh|dash|zsh|ksh)$</field>
+    <description>Elevation de privileges : binaire SUID detourne ($(audit.exe), uid=$(audit.uid) euid=0) - technique GTFOBins</description>
+    <mitre><id>T1548.001</id></mitre>
+  </rule>
+
+</group>

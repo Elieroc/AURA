@@ -1,0 +1,18 @@
+<!-- SOC-AI - regle 100740 (niveau 12). Domaine : persistence,threat_hunting,linux,syscheck,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="persistence,threat_hunting,linux,syscheck,">
+
+  <!-- T1053.003 - tache planifiee. FP attendu : l'installation d'un paquet
+       depose des fichiers dans /etc/cron.d et /etc/cron.daily. Recurrent et de
+       signature stable -> laisse a la whitelist automatique plutot qu'a une
+       exclusion figee, qui aveuglerait aussi l'attaquant qui ecrit au meme
+       endroit. -->
+
+  <rule id="100740" level="12">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/etc/cron|^/etc/crontab$|^/var/spool/cron/</field>
+    <description>Persistance : tache planifiee creee ou modifiee ($(file))</description>
+    <mitre><id>T1053.003</id></mitre>
+  </rule>
+
+</group>

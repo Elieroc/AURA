@@ -1,0 +1,14 @@
+<!-- SOC-AI - regle 100635 (niveau 12). Domaine : threat_hunting,linux,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,">
+
+  <rule id="100635" level="12">
+    <if_sid>100625</if_sid>
+    <field name="audit.exe" type="pcre2">^/(?:dev|run)/shm/</field>
+    <description>Exécution fileless : binaire ELF exécuté depuis un tmpfs mémoire ($(audit.exe))</description>
+    <mitre>
+      <id>T1620</id>
+    </mitre>
+  </rule>
+
+</group>

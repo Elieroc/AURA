@@ -1,0 +1,18 @@
+<!-- SOC-AI - regle 100670 (niveau 15). Domaine : ransomware,threat_hunting,linux,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="ransomware,threat_hunting,linux,">
+
+  <!-- R1 T1486 - canari modifie/chiffre/renomme. Level 15 : aucune raison
+       legitime qu'un fichier canari change. `if_group syscheck` couvre les
+       regles 550 (modified), 553 (deleted), 554 (added). -->
+
+  <rule id="100670" level="15">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">CANARY_SOC_NE_PAS_TOUCHER</field>
+    <description>Ransomware probable : fichier canari altere ($(file)) - chiffrement en cours</description>
+    <mitre>
+      <id>T1486</id>
+    </mitre>
+  </rule>
+
+</group>

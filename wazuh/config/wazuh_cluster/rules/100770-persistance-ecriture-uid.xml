@@ -1,0 +1,34 @@
+<!-- SOC-AI - regle 100770 (niveau 12). Domaine : threat_hunting,linux,post_exploitation,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1136 / T1053 / T1548.003 / T1543.002 / T1556.003 - ECRITURE sur un chemin
+       de persistance, vue par les watches auditd `-k audit-wazuh-persist`
+       (/etc/passwd, /etc/group, /etc/sudoers*, /etc/cron*, /var/spool/cron,
+       /etc/systemd/system, /etc/pam.d).
+
+       POURQUOI CETTE REGLE EXISTE EN PLUS DU FIM (100740-100749) : mesure live,
+       le FIM temps reel s'est revele INTERMITTENT sur /etc/passwd - trois
+       modifications successives, une seule alerte. Faire reposer la detection
+       d'une backdoor UID 0 sur ce seul canal etait donc un pari. Le watch auditd
+       est deterministe (evenement noyau par appel systeme) et apporte en prime
+       ce que le FIM ne donne jamais : QUI a ecrit (exe, uid, auid). Le FIM garde
+       l'avantage complementaire du CONTENU (diff), d'ou la conservation des deux.
+
+       Niveau 12 et non 13 : la regle couvre un perimetre large, dont des
+       ecritures legitimes (creation de compte de service par un paquet, depot
+       d'un cron par dpkg). Les cas a fort impact restent portes par les regles
+       specifiques : 100744/100762 (UID 0), 100745 (sudoers), 100748 (preload). -->
+
+  <rule id="100770" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-persist$</field>
+    <description>Persistance : ecriture sur $(audit.file.name) par $(audit.exe) (uid=$(audit.uid))</description>
+    <mitre>
+      <id>T1136</id>
+      <id>T1053.003</id>
+      <id>T1543.002</id>
+    </mitre>
+  </rule>
+
+</group>

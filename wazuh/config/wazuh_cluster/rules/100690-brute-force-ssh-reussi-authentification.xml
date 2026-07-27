@@ -1,0 +1,19 @@
+<!-- SOC-AI - regle 100690 (niveau 14). Domaine : authentication,ssh,threat_hunting,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="authentication,ssh,threat_hunting,">
+
+  <!-- Echecs sur comptes EXISTANTS (5760) puis succes -->
+
+  <rule id="100690" level="14" frequency="5" timeframe="300">
+    <if_sid>5715</if_sid>
+    <if_matched_sid>5760</if_matched_sid>
+    <same_source_ip />
+    <description>Brute force SSH REUSSI : authentification acceptee depuis une IP en echec repete ($(srcip) -> compte $(dstuser))</description>
+    <mitre>
+      <id>T1110</id>
+      <id>T1078</id>
+    </mitre>
+    <group>authentication_success,attack,</group>
+  </rule>
+
+</group>

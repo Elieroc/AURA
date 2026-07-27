@@ -1,0 +1,35 @@
+<!-- SOC-AI - regle 100805 (niveau 13). Domaine : soc_selfcheck,wazuh,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="soc_selfcheck,wazuh,">
+
+  <!-- Detection DIRECTE de la coupure de l'audit noyau, par l'evenement
+       CONFIG_CHANGE qu'emet le noyau lui-meme :
+         type=CONFIG_CHANGE op=set audit_enabled=0 old=1 auid=... res=1
+       Superieure au heartbeat sur deux points : elle est immediate (pas d'attente
+       de 5 min) et elle porte l'auid, donc l'utilisateur responsable.
+       Le heartbeat 100801 reste indispensable malgre tout : si l'audit est coupe
+       AVANT le demarrage de l'agent, ou si l'evenement CONFIG_CHANGE se perd,
+       seul un signal periodique revele l'etat courant. Les deux se completent,
+       ils ne font pas doublon.
+
+       CAUSE RACINE MESUREE (2026-07-27) : ce n'est pas un attaquant qui a coupe
+       l'audit sur debian-vm, c'est SYSTEMD-JOURNALD. A chaque redemarrage du
+       service (ici declenche par le logrotate de 07:51), journald emet
+       `CONFIG_CHANGE op=set audit_enabled=0` avec auid=unset. Le SOC etait donc
+       aveugle par intermittence, sans aucune intervention hostile - et sans
+       aucune alerte. La parade structurelle est `-e 2` (configuration audit
+       immuable) dans zz-audit-wazuh.rules : la tentative de journald echoue
+       alors au lieu de reussir. Cette regle reste utile apres coup, car elle
+       signale precisement les tentatives (res=0) comme les reussites (res=1). -->
+
+  <rule id="100805" level="13">
+    <if_group>audit</if_group>
+    <regex type="pcre2">op=set audit_enabled=0</regex>
+    <description>Capteur aveugle : desactivation de l'audit noyau (CONFIG_CHANGE, auid=$(audit.auid))</description>
+    <mitre>
+      <id>T1562.001</id>
+      <id>T1562.006</id>
+    </mitre>
+  </rule>
+
+</group>

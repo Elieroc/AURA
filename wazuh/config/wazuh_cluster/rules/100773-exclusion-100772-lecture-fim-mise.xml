@@ -1,0 +1,11 @@
+<!-- SOC-AI - regle 100773 (niveau 0). Domaine : threat_hunting,linux,post_exploitation,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <rule id="100773" level="0">
+    <if_sid>100772</if_sid>
+    <field name="audit.exe" type="pcre2">^/var/ossec/|/(?:dpkg|apt|apt-get|ldconfig)$</field>
+    <description>Exclusion 100772 : lecture par le FIM ou mise a jour du cache ldconfig</description>
+  </rule>
+
+</group>

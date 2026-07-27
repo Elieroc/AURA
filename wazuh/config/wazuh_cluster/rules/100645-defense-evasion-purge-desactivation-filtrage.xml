@@ -1,0 +1,27 @@
+<!-- SOC-AI - regle 100645 (niveau 12). Domaine : threat_hunting,linux,mitre_gaps,
+     Convention et piege d ordre de chargement : voir rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- T1562.004 - desactivation du filtrage reseau local. Distinct de 100654 :
+            autre sous-technique, autre remediation, et surtout autres binaires - un
+            `nft flush ruleset` n'implique aucun gestionnaire de services.
+            Enjeu specifique a cette infra : l'active response d'isolation
+            (host-isolate.sh) fonctionne par nftables. Un attaquant qui vide les
+            regles nftables ANNULE l'isolation appliquee par le SOC. Cette detection
+            est donc aussi la surveillance de notre propre remediation.
+            Exclusion necessaire : host-isolate.sh/host-unisolate.sh manipulent
+            legitimement nftables (cf. 100646). -->
+       <!-- Ancrage sur `a\d+=` et non sur `audit.exe` : `ufw` est un script Python et
+            `firewall-cmd` un script aussi - leur `audit.exe` vaut l'interpreteur, et
+            le noyau reecrit l'argv en inserant celui-ci en tete (cf. le detail du
+            piege dans le commentaire de 100654). -->
+
+  <rule id="100645" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:iptables|ip6tables|iptables-restore|nft|ufw|firewall-cmd|nftables)"[^\n]*?(?:a\d+="(?i:-F|--flush|flush|-X|--delete-chain|disable|--policy)"|a\d+="(?i:delete)"[^\n]*?a\d+="(?i:table)"|a\d+="-P"[^\n]*?a\d+="ACCEPT")</regex>
+    <description>Defense evasion : purge/desactivation du filtrage reseau ($(audit.command)) - peut annuler une isolation d'hote</description>
+    <mitre><id>T1562.004</id></mitre>
+  </rule>
+
+</group>
