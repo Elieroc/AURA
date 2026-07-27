@@ -1,0 +1,22 @@
+<!-- SOC-AI - rule 100769 (level 12). Domain: threat_hunting,linux,post_exploitation,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1046 - network scanning from the host. On a server, running a scanner
+       belongs either to a post-compromise discovery phase or to a planned audit -
+       in both cases the analyst must see it.
+       Level 12 accepted deliberately: this is active discovery, not background
+       noise. -->
+
+  <rule id="100769" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:nmap|masscan|zmap|rustscan|naabu|unicornscan|hping3|zgrab)"</regex>
+    <description>Network discovery: scanner executed on the host ($(audit.command))</description>
+    <mitre>
+      <id>T1046</id>
+      <id>T1595</id>
+    </mitre>
+  </rule>
+
+</group>

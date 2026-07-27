@@ -1,0 +1,26 @@
+<!-- SOC-AI - rule 100772 (level 14). Domain: threat_hunting,linux,post_exploitation,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1574.006 - a write to /etc/ld.so.preload seen by auditd. Deliberate
+       duplicate of the FIM rule 100748: this is the most critical detection of
+       the pack (a userland rootkit able to hide the SOC's own collectors) and the
+       FIM proved intermittent. Two independent channels, on purpose.
+
+       PREREQUISITE: the file must EXIST, even empty. inotify and auditd watches
+       alike target an inode - on an absent path neither the FIM nor auditd arms
+       anything, and the creation of the file goes unnoticed. That is why
+       scripts/install-agent.sh creates an empty /etc/ld.so.preload.
+
+       The watch is `-p wa`, NOT `-p rwa`: with the read permission the dynamic
+       loader opens this file on every exec, which measured 33 level-14 alerts in
+       30 seconds - one per process launched. Only the write carries signal. -->
+
+  <rule id="100772" level="14">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-preload$</field>
+    <description>Probable rootkit: write to $(audit.file.name) by $(audit.exe)</description>
+    <mitre><id>T1574.006</id></mitre>
+  </rule>
+
+</group>

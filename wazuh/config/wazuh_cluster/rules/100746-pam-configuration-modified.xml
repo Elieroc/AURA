@@ -1,0 +1,16 @@
+<!-- SOC-AI - rule 100746 (level 13). Domain: persistence,threat_hunting,linux,syscheck,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="persistence,threat_hunting,linux,syscheck,">
+
+  <!-- T1556.003 - PAM module. A replaced pam_unix.so, or a single
+       `auth sufficient pam_permit.so` line, accepts any password system-wide.
+       No legitimate reason for it outside a package update. -->
+
+  <rule id="100746" level="13">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/etc/pam\.d/</field>
+    <description>Authentication backdoor: PAM configuration modified ($(file))</description>
+    <mitre><id>T1556.003</id></mitre>
+  </rule>
+
+</group>

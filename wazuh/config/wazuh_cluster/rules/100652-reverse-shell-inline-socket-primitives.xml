@@ -1,0 +1,22 @@
+<!-- SOC-AI - rule 100652 (level 10). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- R3 T1059 - interpreter carrying inline reverse-shell code
+       (socket/pty/dup2). Possible FP: developers running legitimate socket
+       code -> level 10.
+       Inline code (python -c '...', perl -e '...') contains spaces, so the
+       argument is hex-encoded by auditd. We therefore match the reverse-shell
+       idioms both in clear text AND in hex:
+         7074792E737061776E         = "pty.spawn"
+         66736F636B6F70656E         = "fsockopen"
+         736F636B65742E736F636B6574 = "socket.socket" -->
+
+  <rule id="100652" level="10">
+    <if_group>audit</if_group>
+    <regex type="pcre2">(?i)pty\.spawn|socket\.socket|os\.dup2|fsockopen|IO::Socket::INET|/inet/tcp/|Socket\.new|7074792E737061776E|66736F636B6F70656E|736F636B65742E736F636B6574</regex>
+    <description>Probable reverse shell: interpreter with inline socket/pty primitives</description>
+    <mitre><id>T1059</id></mitre>
+  </rule>
+
+</group>

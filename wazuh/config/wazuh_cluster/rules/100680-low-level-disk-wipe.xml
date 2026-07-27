@@ -1,0 +1,45 @@
+<!-- SOC-AI - rule 100680 (level 13). Domain: ransomware,threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="ransomware,threat_hunting,linux,">
+
+  <!-- ==== Mass data destruction (T1485 / T1561) ====
+       The built-in rule 553 ("File deleted", level 7) is tagged T1485 but
+       reasons per file: it does not tell an isolated deletion from a full wipe.
+       And since our FIM is filtered by `restrict`, it hardly ever fires anyway.
+
+       Two angles kept, same doctrine as the rest of the pack: we do not look for
+       volume (counting deletions means watching all of /home -> the very noise we
+       refused), we look for unambiguous INTENT.
+
+       Angle rejected: auditing the unlink/unlinkat syscalls. Technically precise,
+       but every deleted temporary file produces an event - unmanageable volume,
+       same reasoning as for clone()/fork() in 100626.
+
+       R6 T1561 - irreversible destruction of a storage device. None of these
+       commands has a routine production use: they show up at provisioning time
+       (fresh machine, no Wazuh agent yet) or during a malicious wipe.
+
+       REVISION 2026-07-26: missing wipe tools added.
+       - `hdparm` with the security-erase option (and its enhanced variant): ATA
+         firmware erase, irreversible, and it touches no /dev path in a
+         positional argument the former regex could recognise.
+       - `nvme format` / `nvme sanitize`: the NVMe equivalent.
+       - `sgdisk` with the zap-all option: destruction of the GPT partition tables.
+       - `cryptsetup luksErase` / `luksKillSlot`: destruction of the LUKS
+         keyslots. This is the cheapest wipe available to an attacker - a few
+         kilobytes written make the whole volume permanently unreadable.
+       - `badblocks -w`: destructive write across the whole device.
+       The first four need no recognisable /dev/... positional argument, hence a
+       dedicated alternative per verb. -->
+
+  <rule id="100680" level="13">
+    <if_group>audit</if_group>
+    <regex type="pcre2">a0="(?:[^"]*/)?(?:(?i:wipefs|blkdiscard)"|(?i:mkfs)(?:\.[a-z0-9]+)?"|(?i:shred|dd|badblocks)"(?: a\d+="[^"]*")*? a\d+="(?:of=)?/dev/(?:sd|nvme|vd|hd|mapper|disk)|(?i:hdparm)"(?: a\d+="[^"]*")*? a\d+="--security-erase(?:-enhanced)?"|(?i:nvme)"(?: a\d+="[^"]*")*? a\d+="(?:format|sanitize)"|(?i:sgdisk)"(?: a\d+="[^"]*")*? a\d+="(?:--zap-all|-Z)"|(?i:cryptsetup)"(?: a\d+="[^"]*")*? a\d+="(?:luksErase|erase|luksKillSlot)")</regex>
+    <description>Data destruction: low-level wipe of a storage device ($(audit.command))</description>
+    <mitre>
+      <id>T1561.001</id>
+      <id>T1485</id>
+    </mitre>
+  </rule>
+
+</group>

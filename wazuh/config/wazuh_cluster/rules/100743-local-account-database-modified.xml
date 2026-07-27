@@ -1,0 +1,16 @@
+<!-- SOC-AI - rule 100743 (level 12). Domain: persistence,threat_hunting,linux,syscheck,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="persistence,threat_hunting,linux,syscheck,">
+
+  <!-- T1136 - account database. Level 12: a change to /etc/passwd or /etc/group
+       is notable but can be legitimate (a package creating a service account).
+       The strong signal is carried by 100744. -->
+
+  <rule id="100743" level="12">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/etc/(?:passwd|group)$</field>
+    <description>Local account database modified ($(file))</description>
+    <mitre><id>T1136.001</id></mitre>
+  </rule>
+
+</group>

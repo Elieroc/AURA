@@ -1,0 +1,17 @@
+<!-- SOC-AI - rule 100658 (level 10). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- Frequency correlation. NOTE (tested): <same_field>audit.auid</same_field>
+       prevents correlation in this Wazuh version (the rule never fires) ->
+       removed. Correlation is therefore host-wide (all users).
+       Threshold deliberately high (12 commands / 30 s): Ansible fact gathering
+       and monitoring agents fire discovery bursts -> tune if FPs appear. -->
+
+  <rule id="100658" level="10" frequency="12" timeframe="30">
+    <if_matched_sid>100657</if_matched_sid>
+    <description>System discovery burst (12+ commands in 30s) - active enumeration</description>
+    <mitre><id>T1082</id></mitre>
+  </rule>
+
+</group>

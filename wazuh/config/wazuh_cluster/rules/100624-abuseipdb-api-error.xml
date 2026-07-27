@@ -1,0 +1,14 @@
+<!-- SOC-AI - rule 100624 (level 5). Domain: abuseipdb,threat_intel,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="abuseipdb,threat_intel,">
+
+  <!-- API query error -->
+
+  <rule id="100624" level="5">
+    <decoded_as>json</decoded_as>
+    <field name="integration">custom-abuseipdb</field>
+    <field name="abuseipdb.error" type="pcre2">.+</field>
+    <description>AbuseIPDB - API query error for $(abuseipdb.srcip)</description>
+  </rule>
+
+</group>

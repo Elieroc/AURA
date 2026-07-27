@@ -1,0 +1,31 @@
+<!-- SOC-AI - rule 100701 (level 12). Domain: web,attack,web_attack_soc,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="web,attack,web_attack_soc,">
+
+  <!-- Access to a web shell: an executable script inside an upload / temporary /
+       static directory, or a known web shell name.
+
+       STRUCTURAL LIMITATION (revision 2026-07-26): this rule reasons on the URL,
+       hence on a list of directories and a list of known names. A web shell
+       dropped at the docroot root under an arbitrary name (/var/www/html/x7f2.php)
+       matches NEITHER and gets through. No URL regex can close that hole: the
+       reliable signal is the APPEARANCE of the file, not its name. That is the
+       role of 100750 (FIM on /var/www, with script extensions added to the
+       `restrict` attribute in agent.conf). The two rules are complementary by
+       construction: 100701 sees the use, 100750 sees the drop.
+
+       Directories added: the upload trees of common CMSes (wp-content/uploads,
+       sites/default/files, storage, public, backup, vendor, .well-known) - all
+       world-writable by the web server in a default installation. -->
+
+  <rule id="100701" level="12">
+    <if_sid>31100,31108</if_sid>
+    <url type="pcre2">(?i)/(uploads?|tmp|temp|images?|img|files?|media|data|cache|static|assets|storage|public|backup|vendor|wp-content/uploads|sites/default/files|\.well-known)/[^ ?]*\.(php[0-9]?|phtml|phar|cgi|pl|py|sh|asp|aspx|jsp|jspx)\b|/(c99|r57|wso|b374k|weevely|antsword|chopper|cmd|shell|backdoor|webshell|up|upload|adminer|alfa|marijuana|indoxploit|mini|p0wny|phpspy|sh3ll|filesman|by?pass)\.(php[0-9]?|asp|aspx|jsp|cgi|pl|py|sh)\b</url>
+    <description>Probable web shell access: $(url)</description>
+    <mitre>
+      <id>T1505.003</id>
+    </mitre>
+    <group>web_attack,web_shell,</group>
+  </rule>
+
+</group>

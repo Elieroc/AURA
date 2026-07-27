@@ -1,0 +1,18 @@
+<!-- SOC-AI - rule 100672 (level 14). Domain: ransomware,threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="ransomware,threat_hunting,linux,">
+
+  <!-- R3 T1486 - known encryption extension appended to a file. Scope limited to
+       extensions with no legitimate use (no .enc/.aes: those are used by admin
+       tooling). -->
+
+  <rule id="100672" level="14">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">(?i)\.(locky|lockbit|conti|ryuk|revil|sodinokibi|djvu|wncry|wannacry|crysis|phobos|makop|mallox|blackcat|royal|akira|basta|8base|cuba|hive|nokoyawa|encrypted|crypted|cryptolocker|kraken|onion|payransom)$</field>
+    <description>Probable ransomware: file carrying a known encryption extension ($(file))</description>
+    <mitre>
+      <id>T1486</id>
+    </mitre>
+  </rule>
+
+</group>

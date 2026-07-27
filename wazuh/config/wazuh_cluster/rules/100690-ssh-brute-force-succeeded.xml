@@ -1,0 +1,19 @@
+<!-- SOC-AI - rule 100690 (level 14). Domain: authentication,ssh,threat_hunting,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="authentication,ssh,threat_hunting,">
+
+  <!-- Failures against EXISTING accounts (5760) followed by a success. -->
+
+  <rule id="100690" level="14" frequency="5" timeframe="300">
+    <if_sid>5715</if_sid>
+    <if_matched_sid>5760</if_matched_sid>
+    <same_source_ip />
+    <description>SSH brute force SUCCEEDED: authentication accepted from an IP with repeated failures ($(srcip) -> account $(dstuser))</description>
+    <mitre>
+      <id>T1110</id>
+      <id>T1078</id>
+    </mitre>
+    <group>authentication_success,attack,</group>
+  </rule>
+
+</group>

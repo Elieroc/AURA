@@ -1,0 +1,21 @@
+<!-- SOC-AI - rule 100750 (level 13). Domain: persistence,threat_hunting,linux,syscheck,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="persistence,threat_hunting,linux,syscheck,">
+
+  <!-- T1505.003 - web shell DROP. The counterpart of 100701, which only sees the
+       ACCESS and only inside a list of known directories: a script dropped at the
+       docroot root under an arbitrary name escapes every URL rule. Here we no
+       longer reason on the name but on the fact that a file executable by the web
+       server APPEARS under /var/www - which, on a host serving static content, has
+       no reason to happen at all.
+       Depends on the extensions added to the `restrict` attribute of the /var/www
+       block in agent.conf: without them the FIM sets no watch on those files. -->
+
+  <rule id="100750" level="13">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/var/www/.*\.(?:php[0-9]?|phtml|phar|cgi|pl|py|sh|jsp|jspx|asp|aspx)$</field>
+    <description>Probable web shell: executable script dropped in the web root ($(file))</description>
+    <mitre><id>T1505.003</id></mitre>
+  </rule>
+
+</group>

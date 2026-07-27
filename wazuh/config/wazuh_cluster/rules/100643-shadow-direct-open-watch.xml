@@ -1,0 +1,19 @@
+<!-- SOC-AI - rule 100643 (level 12). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- Complements 100653 through the auditd WATCH (`-w /etc/shadow -p rwa`, see
+       wazuh/config/agent/zz-audit-wazuh.rules). This is the only path that
+       catches a read with NO associated execve: a compiled binary, a script
+       opening the file, or exfiltration by an already running process.
+       Legitimate readers are filtered out by 100644: PAM invokes them on every
+       authentication and they account for nearly the whole volume. -->
+
+  <rule id="100643" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-shadow$</field>
+    <description>Credential access: direct open of $(audit.file.name) by $(audit.exe)</description>
+    <mitre><id>T1003.008</id></mitre>
+  </rule>
+
+</group>

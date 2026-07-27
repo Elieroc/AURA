@@ -1,0 +1,15 @@
+<!-- SOC-AI - rule 100747 (level 12). Domain: persistence,threat_hunting,linux,syscheck,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="persistence,threat_hunting,linux,syscheck,">
+
+  <!-- T1098.004 - SSH server configuration (PermitRootLogin yes, a hijacked
+       AuthorizedKeysFile, ForceCommand). -->
+
+  <rule id="100747" level="12">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/etc/ssh/sshd_config</field>
+    <description>SSH server configuration modified ($(file))</description>
+    <mitre><id>T1098.004</id></mitre>
+  </rule>
+
+</group>

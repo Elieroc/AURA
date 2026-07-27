@@ -1,0 +1,25 @@
+<!-- SOC-AI - rule 100748 (level 14). Domain: persistence,threat_hunting,linux,syscheck,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="persistence,threat_hunting,linux,syscheck,">
+
+  <!-- T1574.006 - dynamic loader hijack. Level 14: /etc/ld.so.preload holds no
+       content on a healthy Debian. Writing to it is the persistence mechanism of
+       userland rootkits (Azazel, Bedevil, HiddenWasp) and lets an attacker hide
+       processes and files from every tool on the system, including the SOC's own
+       collectors. Zero false positives expected.
+
+       PREREQUISITE: the file must EXIST, even empty (created by
+       scripts/install-agent.sh). inotify targets an inode - on an absent path
+       nothing is armed and the creation of the file, which is precisely the
+       attacker's action, goes unnoticed.
+       Deliberately duplicated with 100772 (auditd watch): this is the most
+       critical detection of the pack and real-time FIM proved intermittent. -->
+
+  <rule id="100748" level="14">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/etc/ld\.so\.preload$|^/etc/ld\.so\.conf\.d/</field>
+    <description>Probable rootkit: dynamic loader hijack ($(file))</description>
+    <mitre><id>T1574.006</id></mitre>
+  </rule>
+
+</group>

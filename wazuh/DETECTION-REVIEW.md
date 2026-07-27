@@ -259,3 +259,38 @@ Deux pièges de ce harnais, chacun payé en heures :
 - **`debian-vm` est isolée** (table nftables `wazuh_isolation`, policy drop),
   reliquat d'une remédiation autonome antérieure. Les tests web ont donc été
   lancés depuis la loopback de la VM. L'isolation n'a pas été levée.
+
+---
+
+## Addendum 2026-07-27 — règles passées en anglais
+
+Les 82 fichiers de règles sont désormais intégralement en anglais, descriptions
+comme commentaires. Ce n'est pas cosmétique pour les descriptions : elles
+partent dans les alertes, dans les cases DFIR-IRIS et dans le contexte envoyé au
+LLM de triage.
+
+Deux effets de bord ont dû être traités, tous deux silencieux.
+
+**`correlate.py` filtrait nos propres règles.** `_graine_valide()` écarte des
+graines d'incident toute alerte dont la description matche
+`\bagent (connected|started|stopped|disconnected|…)\b` — un filtre visant le
+bruit de statut du ruleset natif, donc écrit en anglais. Une fois `100803`
+reformulée en « SOC tampering: Wazuh agent stopped », elle tombait dedans et ne
+pouvait plus ouvrir de case, alors que c'est précisément la règle qui doit
+signaler qu'un attaquant vient de couper l'agent. Corrigé par une liste
+d'exception explicite (`SIDS_STATUT_AGENT_GRAINE`), **par identifiant et non par
+texte** — un filtre sur du texte reste fragile à toute reformulation.
+
+**Le montage des règles laissait des fichiers fantômes.** Le renommage des
+fichiers (slugs français → anglais) a révélé que `/wazuh-config-mount` copie les
+fichiers dans le conteneur sans jamais en supprimer : après redéploiement, le
+manager chargeait **164 fichiers** — les 82 anciens noms et les 82 nouveaux —
+soit chaque règle définie deux fois, `wazuh-analysisd` démarrant sans la moindre
+erreur. Le répertoire est désormais monté **directement** sur
+`/var/ossec/etc/rules`, ce qui fait du dépôt la seule source de vérité et
+supprime toute la classe de bug (renommage comme suppression).
+
+Vérifié après bascule : 82 fichiers chargés, 0 identifiant en double,
+`scripts/test-detection-rules.sh` à 43 OK / 0 FAIL, et la batterie d'attaques
+rejouée sur debian-vm redéclenche 100643, 100653, 100654, 100656, 100700,
+100701, 100711, 100748, 100767, 100770 et 100772 avec les libellés anglais.

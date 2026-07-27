@@ -1,0 +1,28 @@
+<!-- SOC-AI - rule 100673 (level 12). Domain: ransomware,threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="ransomware,threat_hunting,linux,">
+
+  <!-- R4 T1490 - destruction of backups/snapshots before encryption.
+       MIND the auditd format: arguments arrive split as `a0="zfs" a1="destroy"`,
+       there is NO space between the binary and its verb inside full_log. A regex
+       like `zfs\s+destroy` never matches. So we match the binary in a0 (with an
+       optional path) then the verb in any later argument.
+
+       Verbs deliberately limited to unambiguous destruction. EXCLUDED:
+       `restic forget`, `borg prune`, `duplicity remove` - those are retention
+       commands, run by cron on every properly backed-up machine -> guaranteed
+       daily FP. A bare `rm -rf /var/backups` is excluded for the same reason
+       (cleanup scripts).
+       One possible FP remains: scheduled snapshot pruning (zfs-auto-snapshot).
+       Hence level 12 rather than 15 - the zero-FP signal is the canary. -->
+
+  <rule id="100673" level="12">
+    <if_group>audit</if_group>
+    <regex type="pcre2">a0="(?:[^"]*/)?(?i:zfs|borg|btrfs|virsh|timeshift|snapper|lvremove)"(?: a\d+="[^"]*")*? a\d+="(?i:destroy|delete|--delete|snapshot-delete)"</regex>
+    <description>Inhibit system recovery: backups/snapshots destroyed ($(audit.command))</description>
+    <mitre>
+      <id>T1490</id>
+    </mitre>
+  </rule>
+
+</group>

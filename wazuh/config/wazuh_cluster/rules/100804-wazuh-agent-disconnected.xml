@@ -1,0 +1,20 @@
+<!-- SOC-AI - rule 100804 (level 10). Domain: soc_selfcheck,wazuh,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="soc_selfcheck,wazuh,">
+
+  <!-- Disconnection (504): deliberately kept BELOW the AI triage threshold
+       (level 10). A network outage, a reboot or a suspended VM produce the very
+       same event - too ambiguous to arm an autonomous remediation, important
+       enough to stay visible on the dashboard.
+       Exempted from the incident-seed filter of correlate.py by rule id, same
+       reason as 100803. -->
+
+  <rule id="100804" level="10">
+    <if_sid>504</if_sid>
+    <description>Wazuh agent disconnected - check whether this is tampering</description>
+    <mitre>
+      <id>T1562.001</id>
+    </mitre>
+  </rule>
+
+</group>

@@ -1,0 +1,29 @@
+<!-- SOC-AI - rule 100645 (level 12). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- T1562.004 - disabling local network filtering. Distinct from 100654:
+       different sub-technique, different remediation, and above all different
+       binaries - an `nft flush ruleset` involves no service manager at all.
+
+       Concern specific to this infrastructure: the isolation active response
+       (host-isolate.sh) works through nftables. An attacker flushing the nftables
+       rules CANCELS the isolation applied by the SOC. This detection is therefore
+       also the monitoring of our own remediation.
+       Required exclusion: host-isolate.sh/host-unisolate.sh legitimately drive
+       nftables (see 100646).
+
+       Anchored on `a\d+=` rather than `audit.exe`: `ufw` is a Python script and
+       `firewall-cmd` a script too - their `audit.exe` is the interpreter, and the
+       kernel rewrites the argv by inserting it first (see the detailed trap
+       description in the 100654 comment). -->
+
+  <rule id="100645" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:iptables|ip6tables|iptables-restore|nft|ufw|firewall-cmd|nftables)"[^\n]*?(?:a\d+="(?i:-F|--flush|flush|-X|--delete-chain|disable|--policy)"|a\d+="(?i:delete)"[^\n]*?a\d+="(?i:table)"|a\d+="-P"[^\n]*?a\d+="ACCEPT")</regex>
+    <description>Defense evasion: network filtering flushed/disabled ($(audit.command)) - may cancel a host isolation</description>
+    <mitre><id>T1562.004</id></mitre>
+  </rule>
+
+</group>

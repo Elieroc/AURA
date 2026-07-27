@@ -1,0 +1,25 @@
+<!-- SOC-AI - rule 100631 (level 10). Domain: threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,">
+
+  <!-- Execution of an unlinked/deleted binary: the file is opened then unlink()ed
+       before execve (fexecve on the fd of a deleted file, DDexec,
+       drop-run-delete). /proc/PID/exe -> "<path> (deleted)", so exe is
+       HEX-encoded (it contains a space) and absent from audit.exe, same as for
+       memfd. We match the HEX suffix " (deleted)":
+         202864656C6574656429 = " (deleted)"
+       Higher FP rate than memfd (self-extracting installers, `go run`,
+       snap/flatpak may execute a deleted temporary binary) -> level 10, to be
+       tuned against real alerts. Child rule 100633 avoids the duplicate with
+       memfd. -->
+
+  <rule id="100631" level="10">
+    <if_group>audit</if_group>
+    <regex type="pcre2">exe=\w*202864656C6574656429</regex>
+    <description>Fileless execution detected: deleted/unlinked binary run from memory (exec of deleted)</description>
+    <mitre>
+      <id>T1620</id>
+    </mitre>
+  </rule>
+
+</group>

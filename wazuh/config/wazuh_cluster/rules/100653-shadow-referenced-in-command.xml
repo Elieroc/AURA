@@ -1,0 +1,44 @@
+<!-- SOC-AI - rule 100653 (level 12). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- R4 T1003.008 - access to /etc/shadow|/etc/gshadow.
+
+       EXE CONSTRAINT REMOVED (revision 2026-07-26). The former version required
+       `audit.exe` to be in a list of utilities (cat, head, cp...):
+         <field name="audit.exe">/(cat|less|more|head|...)$</field>
+       Three trivial bypasses, all verified:
+         1. `sh -c 'cat /etc/shadow'`  -> audit.exe = /usr/bin/dash, not in list.
+         2. `python3 -c "open('/etc/shadow').read()"` -> exe = python3, not in list.
+         3. any compiled binary calling open() -> no usable execve at all.
+       The list could not be completed: it enumerated the MEANS while the signal
+       is the TARGET. So we match the path in the argv, whatever the binary is.
+
+       Hex form mandatory on top of clear text: as soon as an argument contains a
+       space (the case of every `sh -c '...'`), auditd hex-encodes the whole
+       argument and /etc/shadow no longer appears in clear text.
+         2F6574632F736861646F77   = "/etc/shadow"
+         2F6574632F67736861646F77 = "/etc/gshadow"
+       The legitimate reader (PAM/unix_chkpwd) NEVER passes /etc/shadow as a
+       command-line argument: it opens the file directly. The residual FP we
+       expect comes from the Wazuh agent's own SCA/rootcheck checks
+       (`stat /etc/shadow`) - excluded by 100642.
+
+       KEY SCOPING (mandatory, measured live): without
+       `audit.key = audit-wazuh-c`, this rule ALSO catches the events of the
+       `-w /etc/shadow` watch - whose PATH field contains /etc/shadow. Measured
+       result: 11 level-12 alerts on `sudo` and 2 on `sshd` within minutes, i.e.
+       the normal authentication chain reclassified as credential theft, and
+       100643 fully masked (it was never reached). The key cleanly separates the
+       two sources: `audit-wazuh-c` = execve, `audit-wazuh-shadow` = file watch
+       (handled by 100643/100644). -->
+
+  <rule id="100653" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">/etc/g?shadow\b|2F6574632F(?:67)?736861646F77</regex>
+    <description>Credential access: /etc/shadow referenced in a command ($(audit.command))</description>
+    <mitre><id>T1003.008</id></mitre>
+  </rule>
+
+</group>

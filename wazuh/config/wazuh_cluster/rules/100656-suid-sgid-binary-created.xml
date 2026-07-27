@@ -1,0 +1,16 @@
+<!-- SOC-AI - rule 100656 (level 10). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- R7 T1548.001 - creation of a SUID/SGID binary through chmod (octal
+       4xxx/2xxx/6xxx or symbolic u+s/g+s). Possible FP: installers -> level 10. -->
+
+  <rule id="100656" level="10">
+    <if_group>audit</if_group>
+    <field name="audit.exe" type="pcre2">/chmod$</field>
+    <regex type="pcre2">a\d+=\"(0?[2467][0-7]{3}|[ugoa]*\+s\w*)\"</regex>
+    <description>Privilege escalation: SUID/SGID binary created (chmod $(audit.execve.a1))</description>
+    <mitre><id>T1548.001</id></mitre>
+  </rule>
+
+</group>

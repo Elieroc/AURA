@@ -1,0 +1,13 @@
+<!-- SOC-AI - rule 100623 (level 7). Domain: abuseipdb,threat_intel,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="abuseipdb,threat_intel,">
+
+  <!-- Suspicious IP: score 20-79 -->
+
+  <rule id="100623" level="7">
+    <if_sid>100621</if_sid>
+    <field name="abuseipdb.abuse_confidence_score" type="pcre2">^[2-7][0-9]$</field>
+    <description>AbuseIPDB - suspicious IP: $(abuseipdb.srcip) (score $(abuseipdb.abuse_confidence_score)/100)</description>
+  </rule>
+
+</group>

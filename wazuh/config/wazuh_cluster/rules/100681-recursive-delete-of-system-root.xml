@@ -1,0 +1,25 @@
+<!-- SOC-AI - rule 100681 (level 12). Domain: ransomware,threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="ransomware,threat_hunting,linux,">
+
+  <!-- R7 T1485 - rm -rf against a system or data root. The target list is
+       deliberately closed: a generic `rm -rf` is the most mundane operation a
+       build or cleanup script performs, and alerting on it means alerting
+       continuously. We only match roots whose deletion has no operational
+       justification whatsoever.
+
+       Accepted limitation: the shell expands `rm -rf /home/*` BEFORE execve, so
+       auditd sees the paths one by one and this rule does not match that case -
+       it is covered by the canary (100670), which sits precisely in those
+       directories. The two rules are complementary by construction. -->
+
+  <rule id="100681" level="12">
+    <if_group>audit</if_group>
+    <regex type="pcre2">a0="(?:[^"]*/)?rm"(?: a\d+="[^"]*")*? a\d+="-[a-zA-Z]*[rR][a-zA-Z]*"(?: a\d+="[^"]*")*? a\d+="/(?:|home|srv|etc|boot|data|opt|var|var/www|var/lib|var/lib/mysql|var/lib/postgresql|var/backups)/?"</regex>
+    <description>Data destruction: recursive deletion of a system root ($(audit.command))</description>
+    <mitre>
+      <id>T1485</id>
+    </mitre>
+  </rule>
+
+</group>

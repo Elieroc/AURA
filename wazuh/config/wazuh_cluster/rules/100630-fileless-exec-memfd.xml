@@ -1,0 +1,30 @@
+<!-- SOC-AI - rule 100630 (level 12). Domain: threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,">
+
+  <!-- Fileless execution through memfd_create: the binary only ever exists in
+       RAM (anonymous file), is never written to disk, then runs via
+       /proc/self/fd/N. /proc/PID/exe then points to "/memfd:<name> (deleted)".
+       No legitimate software (apart from runc, see 100632) executes from a
+       memfd -> very reliable fileless IOC, low FP.
+
+       IMPORTANT (validated by an end-to-end test on the agent plus
+       wauzh-logtest on the manager): auditd's exe field is HEX-encoded as soon
+       as it contains a space - and "/memfd:... (deleted)" always does. Wazuh's
+       built-in auditd decoder therefore does NOT populate audit.exe in that case
+       (field absent). So we match the raw HEX signature inside full_log through
+       <regex>:
+         2F6D656D66643A = "/memfd:"
+       Already captured by the execve audit in place (rule 100625), no extra
+       auditd configuration needed (a memfd exec IS an execve). -->
+
+  <rule id="100630" level="12">
+    <if_group>audit</if_group>
+    <regex type="pcre2">exe=\w*2F6D656D66643A</regex>
+    <description>Fileless execution detected: binary run from an anonymous in-memory file (memfd)</description>
+    <mitre>
+      <id>T1620</id>
+    </mitre>
+  </rule>
+
+</group>

@@ -1,0 +1,22 @@
+<!-- SOC-AI - rule 100682 (level 15). Domain: ransomware,threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="ransomware,threat_hunting,linux,">
+
+  <!-- R8 T1485/T1486 - correlation: several canaries touched within a short
+       window. A single canary could in theory be a clumsy human action; three
+       canaries in different directories within 2 minutes could not. That is the
+       signature of an automated recursive walk - mass encryption or erasure in
+       progress, not an isolated incident.
+       No <same_field> here: tested, it breaks the frequency counting (see
+       README, same trap as on 100658). -->
+
+  <rule id="100682" level="15" frequency="3" timeframe="120">
+    <if_matched_sid>100670</if_matched_sid>
+    <description>Mass destruction/encryption confirmed: 3+ canaries altered in 2 min</description>
+    <mitre>
+      <id>T1485</id>
+      <id>T1486</id>
+    </mitre>
+  </rule>
+
+</group>

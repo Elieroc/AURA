@@ -45,6 +45,16 @@ _RE_STATUT_AGENT = re.compile(
     r"\bagent (?:connected|started|stopped|disconnected|removed|restarted)\b",
     re.I)
 
+# Exception à _RE_STATUT_AGENT : nos règles d'auto-surveillance (100803/100804)
+# décrivent le MÊME événement, mais volontairement comme une altération possible
+# du SOC (T1562.001) — arrêter l'agent est la première action d'un attaquant qui
+# a obtenu root. Elles doivent pouvoir amorcer un incident.
+# Le filtre ci-dessus est écrit en anglais parce qu'il vise les descriptions du
+# ruleset natif ; depuis que nos règles locales sont elles aussi en anglais, il
+# les capturait par effet de bord et les rendait inaptes à ouvrir un case, sans
+# rien signaler. D'où cette liste explicite, par identifiant et non par texte.
+SIDS_STATUT_AGENT_GRAINE = {"100803", "100804"}
+
 
 def _graine_valide(a: dict) -> bool:
     """Une alerte peut-elle OUVRIR un incident (être une graine) ?
@@ -56,7 +66,8 @@ def _graine_valide(a: dict) -> bool:
     """
     if set(a.get("rule_groups") or []) & GROUPES_NON_GRAINE:
         return False
-    if _RE_STATUT_AGENT.search(a.get("rule_desc") or ""):
+    if (str(a.get("rule_id")) not in SIDS_STATUT_AGENT_GRAINE
+            and _RE_STATUT_AGENT.search(a.get("rule_desc") or "")):
         return False
     return True
 

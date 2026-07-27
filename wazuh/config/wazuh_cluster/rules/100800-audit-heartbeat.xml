@@ -1,0 +1,20 @@
+<!-- SOC-AI - rule 100800 (level 0). Domain: soc_selfcheck,wazuh,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="soc_selfcheck,wazuh,">
+
+  <!-- Base rule for the heartbeat output. Level 0 - this is the normal case,
+       once every 5 minutes per agent.
+       Chaining on 530 is MANDATORY (`decoded_as ossec` + `match "ossec:
+       output:"`, level 0, group process_monitor): verified with logtest, a
+       standalone rule using a plain <match> loses arbitration to 530, which
+       catches every <localfile><command> output and wins. Same pattern as the
+       built-in rule 533 (netstat). We do not match on <location>: the alias is
+       reported differently depending on the version. -->
+
+  <rule id="100800" level="0">
+    <if_sid>530</if_sid>
+    <match>audit_enabled=</match>
+    <description>Kernel audit heartbeat collected</description>
+  </rule>
+
+</group>

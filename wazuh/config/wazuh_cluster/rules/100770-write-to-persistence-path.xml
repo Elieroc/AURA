@@ -1,0 +1,34 @@
+<!-- SOC-AI - rule 100770 (level 12). Domain: threat_hunting,linux,post_exploitation,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1136 / T1053 / T1548.003 / T1543.002 / T1556.003 - a WRITE to a
+       persistence path, seen through the auditd `-k audit-wazuh-persist` watches
+       (/etc/passwd, /etc/group, /etc/sudoers*, /etc/cron*, /var/spool/cron,
+       /etc/systemd/system, /etc/pam.d).
+
+       WHY THIS RULE EXISTS ON TOP OF THE FIM (100740-100749): measured live,
+       real-time FIM proved INTERMITTENT on /etc/passwd - three consecutive
+       modifications, a single alert. Resting the detection of a UID 0 backdoor on
+       that one channel was therefore a gamble. The auditd watch is deterministic
+       (one kernel event per syscall) and additionally brings what the FIM never
+       provides: WHO wrote (exe, uid, auid). The FIM keeps the complementary
+       advantage of CONTENT (the diff), hence keeping both.
+
+       Level 12 rather than 13: the rule covers a broad perimeter, including
+       legitimate writes (a package creating a service account, dpkg dropping a
+       cron file). The high-impact cases stay carried by the specific rules:
+       100744/100762 (UID 0), 100745 (sudoers), 100748 (preload). -->
+
+  <rule id="100770" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-persist$</field>
+    <description>Persistence: write to $(audit.file.name) by $(audit.exe) (uid=$(audit.uid))</description>
+    <mitre>
+      <id>T1136</id>
+      <id>T1053.003</id>
+      <id>T1543.002</id>
+    </mitre>
+  </rule>
+
+</group>

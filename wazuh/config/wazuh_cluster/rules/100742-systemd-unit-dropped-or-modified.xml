@@ -1,0 +1,19 @@
+<!-- SOC-AI - rule 100742 (level 12). Domain: persistence,threat_hunting,linux,syscheck,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="persistence,threat_hunting,linux,syscheck,">
+
+  <!-- T1543.002 - systemd service or timer. The most common persistence vector
+       on modern Linux, and the most discreet: a `.service` with Restart=always
+       brings the implant back after every kill. -->
+
+  <rule id="100742" level="12">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/(?:etc|lib|usr/lib)/systemd/system/</field>
+    <description>Persistence: systemd unit dropped or modified ($(file))</description>
+    <mitre>
+      <id>T1543.002</id>
+      <id>T1053.006</id>
+    </mitre>
+  </rule>
+
+</group>

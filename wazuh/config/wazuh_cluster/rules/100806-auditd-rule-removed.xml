@@ -1,0 +1,15 @@
+<!-- SOC-AI - rule 100806 (level 13). Domain: soc_selfcheck,wazuh,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="soc_selfcheck,wazuh,">
+
+  <!-- auditd rules being purged, same kernel event source. `op=remove_rule` is
+       emitted by `auditctl -D` and by any single rule deletion. -->
+
+  <rule id="100806" level="13">
+    <if_group>audit</if_group>
+    <regex type="pcre2">op=remove_rule</regex>
+    <description>Blind sensor: auditd rule removed (auid=$(audit.auid))</description>
+    <mitre><id>T1562.001</id></mitre>
+  </rule>
+
+</group>

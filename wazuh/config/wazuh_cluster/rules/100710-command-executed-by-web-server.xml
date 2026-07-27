@@ -1,0 +1,26 @@
+<!-- SOC-AI - rule 100710 (level 12). Domain: audit,web_attack,web_shell,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="audit,web_attack,web_shell,">
+
+  <!-- Command executed by the web server user (www-data, euid=33). On this host
+       (static Apache) www-data runs nothing under normal operation, so any
+       execve with euid=33 means CGI / web shell execution. Measured: shell.cgi
+       runs with euid=33 (perl, id, whoami, cat...).
+
+       ACCEPTED LIMITATION: euid 33 is the Debian/Ubuntu value for www-data.
+       Other service accounts (apache=48 on RHEL, nginx, tomcat, a dedicated
+       php-fpm pool, postgres, mysql, redis) are covered by 100711, not here -
+       this rule stays the more specific and more reliable of the two. -->
+
+  <rule id="100710" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.euid">^33$</field>
+    <description>Command executed by the web server ($(audit.exe)) - probable web shell (euid=33/www-data)</description>
+    <mitre>
+      <id>T1505.003</id>
+      <id>T1059</id>
+    </mitre>
+    <group>web_shell,command_execution,</group>
+  </rule>
+
+</group>

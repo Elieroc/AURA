@@ -1,0 +1,19 @@
+<!-- SOC-AI - rule 100635 (level 12). Domain: threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,">
+
+  <!-- Native ELF case of the tmpfs execution described in 100634: audit.exe is
+       the /dev/shm path itself, so 100625 already fires at level 8 - this rule
+       raises it to 12, running from RAM being a deliberate fileless technique
+       rather than plain drop-and-execute. -->
+
+  <rule id="100635" level="12">
+    <if_sid>100625</if_sid>
+    <field name="audit.exe" type="pcre2">^/(?:dev|run)/shm/</field>
+    <description>Fileless execution: ELF binary run from a memory tmpfs ($(audit.exe))</description>
+    <mitre>
+      <id>T1620</id>
+    </mitre>
+  </rule>
+
+</group>
