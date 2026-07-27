@@ -23,7 +23,8 @@ AUTH = f"admin:{os.environ['INDEXER_PASSWORD']}"
 PATTERNS = {
     "wazuh-linux-*": "wazuh-linux-*",
     "wazuh-web-*": "wazuh-web-*",
-    "soc-ai-all-alerts": "wazuh-alerts-*,wazuh-linux-*,wazuh-windows-*,wazuh-web-*",
+    "wazuh-firewall-*": "wazuh-firewall-*",
+    "soc-ai-all-alerts": "wazuh-alerts-*,wazuh-linux-*,wazuh-windows-*,wazuh-web-*,wazuh-firewall-*",
 }
 
 

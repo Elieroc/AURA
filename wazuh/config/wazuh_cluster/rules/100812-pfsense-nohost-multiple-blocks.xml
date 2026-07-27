@@ -1,0 +1,14 @@
+<!--
+  cf. 100810-pfsense-nohost-grouped.xml. Miroir de la native 87702.
+-->
+<group name="local,pfsense,">
+  <rule id="100812" level="10" frequency="18" timeframe="45" ignore="240">
+    <if_matched_sid>100811</if_matched_sid>
+    <same_source_ip />
+    <description>Multiple pfSense firewall blocks events from same source (syslog sans hostname).</description>
+    <mitre>
+      <id>T1110</id>
+    </mitre>
+    <group>multiple_blocks,pfsense,</group>
+  </rule>
+</group>

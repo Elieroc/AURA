@@ -31,6 +31,21 @@
     <queue_size>131072</queue_size>
   </remote>
 
+  <!-- pfSense (et tout équipement sans agent Wazuh possible) : syslog brut,
+       parsé par le decoder/rules pfsense natifs (program_name filterlog).
+       allowed-ips restreint la source à l'IP du pare-feu : un syslog UDP
+       ouvert au monde, c'est n'importe qui qui injecte de fausses alertes
+       firewall. -->
+  <remote>
+    <connection>syslog</connection>
+    <port>514</port>
+    <protocol>udp</protocol>
+    <!-- IP telle que VUE PAR LE MANAGER, pas forcément celle de son
+         interface WAN/mgmt : pfSense route par l'interface la plus proche du
+         manager, donc source = IP de son interface sur CE sous-réseau. -->
+    <allowed-ips>CHANGE_ME_PFSENSE_IP/32</allowed-ips>
+  </remote>
+
   <!-- Policy monitoring -->
   <rootcheck>
     <disabled>no</disabled>

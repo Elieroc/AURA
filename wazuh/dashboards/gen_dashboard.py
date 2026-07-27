@@ -8,7 +8,7 @@ Dashboards :
 """
 import json
 
-IDX_ALL = "soc-ai-all-alerts"    # pattern combiné wazuh-alerts-*,wazuh-linux-*,wazuh-windows-*,wazuh-web-*
+IDX_ALL = "soc-ai-all-alerts"    # pattern combiné wazuh-alerts-*,wazuh-linux-*,wazuh-windows-*,wazuh-web-*,wazuh-firewall-*
 IDX_LINUX = "wazuh-linux-*"
 IDX_WEB = "wazuh-web-*"
 OUT = "/home/elie/Nextcloud/Documents/IT/Projets/SOC-AI/wazuh/dashboards/soc-ai-dashboards.ndjson"

@@ -1,0 +1,52 @@
+<!--
+  pfSense filterlog sans hostname : ce syslogd FreeBSD (14.0-CURRENT, testé sur
+  pfsense.lab) envoie "<PRI>Mmm dd hh:mm:ss filterlog[pid]: <csv>" — pas de
+  hostname entre le timestamp et le tag, contrairement à l'exemple du décodeur
+  natif (0455-pfsense_decoders.xml, qui attend "... pfSense filterlog: ...").
+
+  Le pré-décodeur syslog de Wazuh assigne alors le jeton "filterlog[pid]:" au
+  champ hostname, laissant program_name vide : le décodeur natif "pf" (matché
+  sur <program_name>filterlog</program_name>) ne matche jamais, silencieusement
+  (wazuh-logtest confirme : "No decoder matched").
+
+  Décodeur de secours, matché sur <prematch> (texte brut) plutôt que
+  program_name. Nommé différemment ("pf-nohost") pour coexister avec le
+  décodeur natif sans conflit — chacun couvre un format de source différent.
+
+  Pièges rencontrés en le construisant (offsets Wazuh, pas du regex standard) :
+  - `\[` suivi d'une classe `[0-9]` cassait le parseur XML/regex de Wazuh à la
+    validation ("Syntax error on regex") — `\[\d+\]` littéral passe, `\[[0-9]+\]`
+    non. Rester sur `\d`, jamais de classe adjacente à un bracket échappé.
+  - `offset="after_prematch"` n'existe QUE quand prematch et regex sont dans le
+    MÊME <decoder> (cf. natif "agent-buffer" dans 0005-wazuh_decoders.xml) —
+    invalide entre un decoder et son <parent>. Entre décodeurs, seul
+    `after_parent` (après le match du parent, quel qu'il soit) et `after_regex`
+    (après le <regex> du parent) sont valides.
+  - Un decoder ne peut être <parent> que s'il est directement au sommet : pas
+    de petit-enfant (parent du parent). La continuation multi-champs se fait en
+    répétant le MÊME nom de decoder plusieurs fois avec <parent> pointant tous
+    vers la racine — exactement le motif du natif pf-fields ×3. Rompre ce
+    motif (parenter un enfant sur un autre enfant, ou renommer chaque étape)
+    fait échouer le chargement ("Invalid offset value: '<nom du decoder>'").
+-->
+<decoder name="pf-nohost">
+  <prematch>filterlog[\d+]: </prematch>
+</decoder>
+
+<decoder name="pf-nohost-fields">
+  <parent>pf-nohost</parent>
+  <regex offset="after_parent">^\S*,\S*,\S*,(\S*),\S*,\S*,(\S*),</regex>
+  <order>id,action</order>
+</decoder>
+
+<decoder name="pf-nohost-fields">
+  <parent>pf-nohost</parent>
+  <regex offset="after_regex">\S*,\S*,\S*,\S*,\S*,\S*,\S*,\S*,\S*,(\S*),\S*,(\S*),(\S*),</regex>
+  <order>protocol,srcip,dstip</order>
+</decoder>
+
+<decoder name="pf-nohost-fields">
+  <parent>pf-nohost</parent>
+  <regex offset="after_regex">(\d*),(\d*),\S*</regex>
+  <order>srcport,dstport</order>
+</decoder>
