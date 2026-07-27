@@ -1,5 +1,22 @@
 # Plan d'action — détections manquantes
 
+> **ÉTAT AU 2026-07-27 — P1, P2 et P3 sont FAITS**, dans le cadre de la révision
+> complète des règles High/Critical. Voir `DETECTION-REVIEW.md` pour le détail
+> des règles, des pièges rencontrés et des tests.
+>
+> Ce que la révision a changé par rapport au plan ci-dessous :
+> - **Plage d'identifiants** : 100700-100730 était réservée ici, mais les règles
+>   web ont pris 100700-100702 et 100710-100712 entre-temps. La persistance FIM
+>   est donc en **100740-100750**, la post-exploitation en **100760-100773**,
+>   l'auto-surveillance du SOC en **100800-100806**. Ne pas réutiliser
+>   100703-100709.
+> - **Cause A/B incomplètes** : la revue a trouvé une cause C, plus grave que les
+>   deux autres — le capteur auditd était **éteint** (`enabled 0`), rendant 19
+>   règles de niveau ≥ 12 inertes. Aucune règle nouvelle n'aurait rien changé.
+>   Corrigé par `-e 2` (audit immuable) ; cause racine : systemd-journald.
+> - **P4 (méta-corrélation « host owned ») reste À FAIRE** — seul point non
+>   traité de cette liste.
+
 Établi après le scénario d'attaque web→root rejoué sur `debian-vm` (2026-07-24).
 Le rapport d'analyse IA ne couvrait qu'une partie de la kill chain. Deux causes,
 deux réponses.

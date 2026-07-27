@@ -1,5 +1,130 @@
 <!-- Règles locales SOC-AI -->
 
+<!-- ==========================================================================
+     Auto-surveillance du SOC (T1562.001 / T1562.006)
+
+     Le trou le plus grave trouvé sur cette infra n'était pas une regex trop
+     etroite : c'etait un capteur coupe. Le 2026-07-26, `auditctl -e 0` a laisse
+     auditd `active`, l'agent connecte, /var/log/audit/audit.log en place - et le
+     noyau muet. 19 des 24 regles locales de niveau >= 12 dependent de
+     `if_group audit` : aveugles pendant 2 h, zero alerte.
+
+     Une regle de correlation ne peut pas detecter une absence : elle ne raisonne
+     que sur des evenements presents. La detection d'une coupure de capteur passe
+     donc par un signal POSITIF periodique (heartbeat pousse par agent.conf,
+     alias `audit-status`) sur lequel on alerte par la VALEUR.
+
+     Ces regles sont volontairement en niveau >= 12 : sans capteur, le reste du
+     ruleset est decoratif, et le pipeline soc-agent doit voir passer l'incident.
+     ========================================================================== -->
+<group name="soc_selfcheck,wazuh,">
+
+  <!-- Base : la sortie du heartbeat. Niveau 0 - c'est la normale, une fois
+       toutes les 5 min par agent.
+       Il FAUT chainer sur 530 (`decoded_as ossec` + `match "ossec: output:"`,
+       niveau 0, groupe process_monitor) : teste en logtest, une regle autonome
+       avec un simple <match> perd l'arbitrage face a 530, qui capte toute sortie
+       de <localfile><command> et gagne. C'est le meme schema que la regle native
+       533 (netstat). On ne matche pas sur <location> : l'alias remonte
+       differemment selon la version. -->
+  <rule id="100800" level="0">
+    <if_sid>530</if_sid>
+    <match>audit_enabled=</match>
+    <description>Heartbeat de l'audit noyau collecte</description>
+  </rule>
+
+  <!-- Audit noyau desactive, ou auditctl injoignable (valeur vide). Le `\b` sur
+       le 0 evite de matcher un futur `audit_enabled=01`. -->
+  <rule id="100801" level="13">
+    <if_sid>100800</if_sid>
+    <match type="pcre2">audit_enabled=(?:0\b|\s|$)</match>
+    <description>Capteur aveugle : audit noyau desactive - toutes les regles auditd (1006xx/1007xx) sont inoperantes</description>
+    <mitre>
+      <id>T1562.001</id>
+      <id>T1562.006</id>
+    </mitre>
+  </rule>
+
+  <!-- Regles auditd purgees (`auditctl -D`) ou jamais chargees. Le jeu de regles
+       versionne (wazuh/config/agent/zz-audit-wazuh.rules) en charge 21 : un
+       nombre a un seul chiffre signifie donc une purge, pas une variation
+       normale. Distinct de 100801 : ici le noyau audite, mais plus rien n'est
+       instrumente - meme cecite, autre cause, autre remediation. -->
+  <rule id="100802" level="13">
+    <if_sid>100800</if_sid>
+    <match type="pcre2">audit_rules=[0-9]\b</match>
+    <description>Capteur aveugle : moins de 10 regles auditd chargees - purge probable (auditctl -D)</description>
+    <mitre>
+      <id>T1562.001</id>
+    </mitre>
+  </rule>
+
+  <!-- Detection DIRECTE de la coupure de l'audit noyau, par l'evenement
+       CONFIG_CHANGE qu'emet le noyau lui-meme :
+         type=CONFIG_CHANGE op=set audit_enabled=0 old=1 auid=... res=1
+       Superieure au heartbeat sur deux points : elle est immediate (pas d'attente
+       de 5 min) et elle porte l'auid, donc l'utilisateur responsable.
+       Le heartbeat 100801 reste indispensable malgre tout : si l'audit est coupe
+       AVANT le demarrage de l'agent, ou si l'evenement CONFIG_CHANGE se perd,
+       seul un signal periodique revele l'etat courant. Les deux se completent,
+       ils ne font pas doublon.
+
+       CAUSE RACINE MESUREE (2026-07-27) : ce n'est pas un attaquant qui a coupe
+       l'audit sur debian-vm, c'est SYSTEMD-JOURNALD. A chaque redemarrage du
+       service (ici declenche par le logrotate de 07:51), journald emet
+       `CONFIG_CHANGE op=set audit_enabled=0` avec auid=unset. Le SOC etait donc
+       aveugle par intermittence, sans aucune intervention hostile - et sans
+       aucune alerte. La parade structurelle est `-e 2` (configuration audit
+       immuable) dans zz-audit-wazuh.rules : la tentative de journald echoue
+       alors au lieu de reussir. Cette regle reste utile apres coup, car elle
+       signale precisement les tentatives (res=0) comme les reussites (res=1). -->
+  <rule id="100805" level="13">
+    <if_group>audit</if_group>
+    <regex type="pcre2">op=set audit_enabled=0</regex>
+    <description>Capteur aveugle : desactivation de l'audit noyau (CONFIG_CHANGE, auid=$(audit.auid))</description>
+    <mitre>
+      <id>T1562.001</id>
+      <id>T1562.006</id>
+    </mitre>
+  </rule>
+
+  <!-- Purge des regles auditd, meme evenement noyau. `op=remove_rule` est emis
+       par `auditctl -D` et par toute suppression de regle. -->
+  <rule id="100806" level="13">
+    <if_group>audit</if_group>
+    <regex type="pcre2">op=remove_rule</regex>
+    <description>Capteur aveugle : suppression d'une regle auditd (auid=$(audit.auid))</description>
+    <mitre><id>T1562.001</id></mitre>
+  </rule>
+
+  <!-- Promotion de la regle native 506 (niveau 3). Arreter l'agent est LA
+       premiere action d'un attaquant qui a obtenu root, et c'est une ACTION
+       deliberee (contrairement a une deconnexion reseau) : niveau 12 pour que le
+       pipeline la traite. Effet de bord assume : une maintenance sur l'agent
+       genere une alerte HIGH. C'est le prix a payer pour ne pas rater l'inverse,
+       et la whitelist automatique absorbera la recurrence si elle apparait. -->
+  <rule id="100803" level="12">
+    <if_sid>506</if_sid>
+    <description>Alteration du SOC : agent Wazuh arrete</description>
+    <mitre>
+      <id>T1562.001</id>
+    </mitre>
+  </rule>
+
+  <!-- Deconnexion (504) : volontairement laissee SOUS le seuil de triage IA
+       (niveau 10). Une coupure reseau, un reboot ou une VM suspendue produisent
+       le meme evenement - trop ambigu pour declencher une remediation autonome,
+       assez important pour etre visible en dashboard. -->
+  <rule id="100804" level="10">
+    <if_sid>504</if_sid>
+    <description>Agent Wazuh deconnecte - verifier s'il s'agit d'une alteration</description>
+    <mitre>
+      <id>T1562.001</id>
+    </mitre>
+  </rule>
+
+</group>
+
 <group name="abuseipdb,threat_intel,">
 
   <!-- Enrichissement AbuseIPDB reçu (toute réponse) -->
@@ -68,9 +193,20 @@
        le message d'erreur émis par le noyau/PAM/le shell quand la limite est atteinte -
        plus fiable et bien moins bruyant qu'auditer clone()/fork() en direct (des millions
        d'événements légitimes par jour). -->
+  <!-- REVISION 2026-07-26 : ajout des signatures cgroup v2. Sur un systemd
+       moderne, la limite atteinte en premier n'est presque jamais `ulimit -u`
+       mais `TasksMax` du cgroup de l'unite ou de la session : le noyau emet
+       alors "cgroup: fork rejected by pids controller" et systemd
+       "Failed to fork off ... Resource temporarily unavailable". L'ancienne
+       regex ne couvrait que la forme shell/PAM et ratait donc le cas le plus
+       courant sur Debian 12.
+       Pas d'`if_group`/`if_sid` : ces messages arrivent selon le cas via le
+       noyau, PAM, systemd ou le shell, decodes dans des groupes differents.
+       Restreindre a un groupe reintroduirait un angle mort - le cout d'une
+       evaluation PCRE2 supplementaire par log est le prix assume. -->
   <rule id="100626" level="12">
-    <match type="pcre2">(?i)(fork:\s*(retry:\s*)?resource temporarily unavailable|too many processes|clone\(\) failed)</match>
-    <description>Épuisement de la table de process (message noyau/PAM/shell) - signature de fork bomb</description>
+    <match type="pcre2">(?i)(fork:\s*(retry:\s*)?resource temporarily unavailable|too many processes|clone\(\) failed|fork rejected by pids controller|cgroup:\s*fork rejected|failed to fork off[^\n]{0,60}resource temporarily unavailable|can'?t fork|fork failed)</match>
+    <description>Épuisement de la table de process (message noyau/PAM/systemd/shell) - signature de fork bomb</description>
     <mitre>
       <id>T1499.001</id>
     </mitre>
@@ -144,10 +280,18 @@
          chemin du script est dans l'argv -> 100625 ne fire PAS. 100634 le capte
          via exe=interpréteur + chemin tmpfs dans l'argv, en clair ou hex
          (2F6465762F73686D2F = "/dev/shm/", 2F72756E2F73686D2F = "/run/shm/"). -->
+  <!-- REVISION 2026-07-26 : liste d'interpreteurs et de tmpfs elargie.
+       Ajoutes cote exe : awk/gawk/mawk (`awk 'BEGIN{system(...)}'` est un
+       interpreteur complet), env / nohup / setsid / xargs / timeout (wrappers
+       qui deviennent l'exe reel de l'execve et masquaient le script), Rscript.
+       Ajoutes cote chemin : /run/user/<uid> (tmpfs par session, world-writable
+       pour son proprietaire - vecteur equivalent a /dev/shm et jusqu'ici non
+       couvert) et /dev/mqueue (tmpfs aussi, monte par defaut).
+         2F72756E2F75736572 = "/run/user", 2F6465762F6D7175657565 = "/dev/mqueue" -->
   <rule id="100634" level="12">
     <if_group>audit</if_group>
-    <field name="audit.exe" type="pcre2">/(?:sh|bash|dash|zsh|ksh|ash|busybox|python[0-9.]*|perl|php|ruby|node|lua|tclsh)$</field>
-    <regex type="pcre2">(?i)/(?:dev|run)/shm/|2F(?:646576|72756E)2F73686D2F</regex>
+    <field name="audit.exe" type="pcre2">/(?:sh|bash|dash|zsh|ksh|ash|busybox|python[0-9.]*|perl|php|ruby|node|lua|tclsh|awk|gawk|mawk|env|nohup|setsid|xargs|timeout|Rscript)$</field>
+    <regex type="pcre2">(?i)/(?:dev/shm|run/shm|run/user/\d+|dev/mqueue)/|2F(?:646576|72756E)2F73686D2F|2F72756E2F757365722F|2F6465762F6D7175657565</regex>
     <description>Exécution fileless : interpréteur lançant un script depuis un tmpfs mémoire (/dev/shm) - $(audit.command)</description>
     <mitre>
       <id>T1620</id>
@@ -215,24 +359,181 @@
     <mitre><id>T1059</id></mitre>
   </rule>
 
-  <!-- R4 T1003.008 - lecture de /etc/shadow|/etc/gshadow via utilitaire fichier. -->
+  <!-- R4 T1003.008 - acces a /etc/shadow|/etc/gshadow.
+       CONTRAINTE D'EXE SUPPRIMEE (revision 2026-07-26). L'ancienne version
+       exigeait `audit.exe` dans une liste d'utilitaires (cat, head, cp...) :
+         <field name="audit.exe">/(cat|less|more|head|...)$</field>
+       Trois contournements triviaux, tous verifies :
+         1. `sh -c 'cat /etc/shadow'`  -> audit.exe = /usr/bin/dash, hors liste.
+         2. `python3 -c "open('/etc/shadow').read()"` -> exe = python3, hors liste.
+         3. tout binaire compile qui appelle open() -> aucun execve exploitable.
+       La liste ne pouvait pas etre completee : elle enumerait les MOYENS alors
+       que le signal est la CIBLE. On matche donc le chemin dans l'argv, quel que
+       soit le binaire.
+       Forme hex obligatoire en plus du clair : des que l'argument contient un
+       espace (le cas de tout `sh -c '...'`), auditd hex-encode l'argument entier
+       et /etc/shadow n'apparait pas en clair.
+         2F6574632F736861646F77   = "/etc/shadow"
+         2F6574632F67736861646F77 = "/etc/gshadow"
+       Le lecteur legitime (PAM/unix_chkpwd) ne passe JAMAIS /etc/shadow en
+       argument de ligne de commande : il l'ouvre directement. Le FP residuel
+       attendu vient des verifications SCA/rootcheck de l'agent Wazuh lui-meme
+       (`stat /etc/shadow`) - exclu par 100642. -->
+       CLOISONNEMENT PAR CLE (indispensable, mesure live) : sans
+       `audit.key = audit-wazuh-c`, cette regle capte AUSSI les evenements du
+       watch `-w /etc/shadow` - dont le champ PATH contient /etc/shadow. Resultat
+       mesure : 11 alertes niveau 12 sur `sudo` et 2 sur `sshd` en quelques
+       minutes, soit la chaine d'authentification normale requalifiee en vol de
+       credentials, et 100643 totalement masquee (elle n'etait jamais atteinte).
+       La cle separe proprement les deux sources : `audit-wazuh-c` = execve,
+       `audit-wazuh-shadow` = watch fichier (traite par 100643/100644). -->
   <rule id="100653" level="12">
     <if_group>audit</if_group>
-    <field name="audit.exe" type="pcre2">/(cat|less|more|head|tail|cp|dd|xxd|od|base64|strings|sort|awk|sed|nano|vi|vim|cut|grep)$</field>
-    <regex type="pcre2">/etc/(shadow|gshadow)</regex>
-    <description>Acces credentials : lecture de /etc/shadow via $(audit.command)</description>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">/etc/g?shadow\b|2F6574632F(?:67)?736861646F77</regex>
+    <description>Acces credentials : /etc/shadow reference dans une commande ($(audit.command))</description>
     <mitre><id>T1003.008</id></mitre>
   </rule>
 
+  <!-- Exclusion 100653 : les checks SCA / rootcheck de l'agent Wazuh inspectent
+       les permissions de /etc/shadow (politiques CIS Debian) a chaque scan. Le
+       binaire est sous /var/ossec, jamais le fait d'un attaquant qui aurait
+       obtenu ce chemin d'execution sans que 100710/100711 le signalent d'abord. -->
+  <rule id="100642" level="0">
+    <if_sid>100653</if_sid>
+    <field name="audit.exe" type="pcre2">^/var/ossec/</field>
+    <description>Exclusion 100653 : verification SCA/rootcheck de l'agent Wazuh</description>
+  </rule>
+
+  <!-- Complement de 100653 par le WATCH auditd (`-w /etc/shadow -p rwa`, cf.
+       wazuh/config/agent/zz-audit-wazuh.rules). C'est le seul chemin qui capte une
+       lecture SANS execve associe : binaire compile, script qui ouvre le fichier,
+       ou exfiltration par un process deja en cours.
+       Les lecteurs legitimes sont ecartes par 100644 : PAM les invoque a chaque
+       authentification, ils representent la quasi-totalite du volume. -->
+  <rule id="100643" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-shadow$</field>
+    <description>Acces credentials : ouverture directe de $(audit.file.name) par $(audit.exe)</description>
+    <mitre><id>T1003.008</id></mitre>
+  </rule>
+
+  <!-- Exclusion 100643 : chaine d'authentification normale. unix_chkpwd est le
+       helper PAM appele a chaque `sudo`/`su`/login ; sshd, login, passwd, chage,
+       useradd/usermod/groupadd et vipw ouvrent shadow par construction.
+       systemd-* (sysusers, machine-id) le lit au boot.
+       `^/var/ossec/` : mesure live, wazuh-syscheckd lit /etc/shadow a chaque
+       scan FIM pour en calculer les empreintes - le FIM que nous venons
+       justement d'etendre a /etc/shadow. Sans cette exclusion, notre propre
+       surveillance genere une alerte de vol de credentials a chaque passe. -->
+  <rule id="100644" level="0">
+    <if_sid>100643</if_sid>
+    <field name="audit.exe" type="pcre2">^/var/ossec/|/(?:unix_chkpwd|unix_update|sshd|login|su|sudo|passwd|chpasswd|chage|gpasswd|useradd|usermod|userdel|groupadd|groupmod|groupdel|newusers|vipw|vigr|pwck|grpck|pwconv|grpconv|cron|systemd(?:-\w+)?|nscd|sss_cache)$</field>
+    <description>Exclusion 100643 : lecture de /etc/shadow par la chaine d'authentification legitime ou par le FIM</description>
+  </rule>
+
   <!-- R5 T1562.001 - arret/desactivation d'un service de securite/journalisation,
-       purge des regles auditd (auditctl -D), desactivation SELinux (setenforce 0).
+       purge des regles auditd, desactivation SELinux/AppArmor.
+
+       REVISION 2026-07-26 - l'ancienne regex exigeait le verbe AVANT le nom du
+       service :
+         (stop|disable|mask)\b.{0,60}(auditd|wazuh|...)
+       Or les deux syntaxes SysV mettent le verbe en dernier :
+         service auditd stop        -> a0="service"    a1="auditd" a2="stop"
+         rc-service auditd stop     -> idem
+       Ces commandes ne matchaient donc PAS : le contournement etait d'utiliser
+       `service` au lieu de `systemctl`. La regex est desormais bidirectionnelle
+       (verbe avant OU apres le nom du service).
+
+       DEUXIEME DEFAUT, mesure live : la contrainte portait sur `audit.exe`, avec
+       `/service$` dans la liste. Or /usr/sbin/service est un SCRIPT SHELL - le
+       noyau charge donc /usr/bin/dash et `audit.exe` vaut "/usr/bin/dash",
+       jamais "/usr/sbin/service". La condition ne pouvait pas etre satisfaite.
+       Meme piege pour tout gestionnaire livre sous forme de script (ufw est un
+       script Python, service un script shell).
+
+       TROISIEME DEFAUT, decouvert en corrigeant le deuxieme : ancrer sur `a0=`
+       ne suffit pas non plus. Pour un script a shebang, le noyau REECRIT l'argv
+       et insere l'interpreteur en tete. Trace reelle de `service fail2ban stop` :
+         a0="/bin/sh" a1="/usr/sbin/service" a2="fail2ban" a3="stop"
+       Le nom de l'outil est en a1, pas en a0. On ancre donc sur `a\d+=`, c'est
+       a dire n'importe quelle position d'argument, en continuant d'exiger la
+       CO-OCCURRENCE outil + verbe + service pour tenir les FP.
+       ATTENTION : les regles 100673/100674/100680/100681 ancrent encore sur
+       `a0=`. Elles ne visent que de vrais binaires ELF (zfs, rm, dd, wipefs,
+       systemctl), donc pas de faux negatif aujourd'hui - mais y ajouter un outil
+       livre en script rouvrirait exactement ce trou.
+
+       Ajoutes : kill/pkill/killall (tuer auditd sans passer par le gestionnaire
+       de services), update-rc.d / invoke-rc.d / chkconfig / initctl (autres
+       gestionnaires), aa-disable / aa-teardown / semanage (MAC), audispd.
+
+       `audit.key = audit-wazuh-c` : restreint aux evenements execve, pour ne pas
+       capter les watches fichier (meme motif que 100653).
+       `kill <pid>` nu reste indetectable (aucun nom de service dans l'argv) -
+       c'est le heartbeat 100801/100802 qui rattrape ce cas, pas cette regle.
+
+       Purge auditd : les trois formes sont couvertes explicitement, l'ancienne
+       alternative `a\d+="(-D|0)"` ratait la forme collee `-e0` et matchait
+       n'importe quel argument valant "0" (FP).
        FP possible : maintenance admin legitime -> a corroborer avec le contexte. -->
   <rule id="100654" level="12">
     <if_group>audit</if_group>
-    <field name="audit.exe" type="pcre2">/(systemctl|service|rc-service|auditctl|setenforce)$</field>
-    <regex type="pcre2">(?i)(stop|disable|mask)\b.{0,60}(auditd|wazuh|rsyslog|syslog|firewalld|ufw|falco|osquery|clamav|apparmor|fail2ban)|a\d+="(-D|0)"</regex>
-    <description>Defense evasion : alteration d'un service de securite/journalisation</description>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:systemctl|service|rc-service|invoke-rc\.d|update-rc\.d|chkconfig|initctl|kill|pkill|killall|setenforce|semanage|aa-disable|aa-teardown)"(?:[^\n]*?(?i:stop|disable|mask|-9|-15|-KILL|-TERM)[^\n]*?(?i:auditd|audispd|wazuh|rsyslog|syslog|journald|firewalld|falco|osquery|clamav|apparmor|fail2ban|snoopy)|[^\n]*?(?i:auditd|audispd|wazuh|rsyslog|syslog|journald|firewalld|falco|osquery|clamav|apparmor|fail2ban|snoopy)[^\n]*?(?i:stop|disable|mask|-9|-15|-KILL|-TERM))|a\d+="(?:[^"]*/)?(?i:auditctl)"[^\n]*?a\d+="-(?:D|e0)"|a\d+="(?:[^"]*/)?(?i:auditctl)"[^\n]*?a\d+="-e"\s+a\d+="0"|a\d+="(?:[^"]*/)?(?i:setenforce)"[^\n]*?a\d+="0"</regex>
+    <description>Defense evasion : alteration d'un service de securite/journalisation ($(audit.command))</description>
     <mitre><id>T1562.001</id></mitre>
+  </rule>
+
+  <!-- T1562.004 - desactivation du filtrage reseau local. Distinct de 100654 :
+       autre sous-technique, autre remediation, et surtout autres binaires - un
+       `nft flush ruleset` n'implique aucun gestionnaire de services.
+       Enjeu specifique a cette infra : l'active response d'isolation
+       (host-isolate.sh) fonctionne par nftables. Un attaquant qui vide les
+       regles nftables ANNULE l'isolation appliquee par le SOC. Cette detection
+       est donc aussi la surveillance de notre propre remediation.
+       Exclusion necessaire : host-isolate.sh/host-unisolate.sh manipulent
+       legitimement nftables (cf. 100646). -->
+  <!-- Ancrage sur `a\d+=` et non sur `audit.exe` : `ufw` est un script Python et
+       `firewall-cmd` un script aussi - leur `audit.exe` vaut l'interpreteur, et
+       le noyau reecrit l'argv en inserant celui-ci en tete (cf. le detail du
+       piege dans le commentaire de 100654). -->
+  <rule id="100645" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:iptables|ip6tables|iptables-restore|nft|ufw|firewall-cmd|nftables)"[^\n]*?(?:a\d+="(?i:-F|--flush|flush|-X|--delete-chain|disable|--policy)"|a\d+="(?i:delete)"[^\n]*?a\d+="(?i:table)"|a\d+="-P"[^\n]*?a\d+="ACCEPT")</regex>
+    <description>Defense evasion : purge/desactivation du filtrage reseau ($(audit.command)) - peut annuler une isolation d'hote</description>
+    <mitre><id>T1562.004</id></mitre>
+  </rule>
+
+  <!-- Exclusion 100645 : les active responses du SOC pilotent nftables par
+       conception (isolation et lever d'isolation). Leur parent est le script AR,
+       pas un shell d'attaquant. -->
+  <rule id="100646" level="0">
+    <if_sid>100645</if_sid>
+    <regex type="pcre2">host-(?:un)?isolate|66697265776</regex>
+    <description>Exclusion 100645 : manipulation nftables par une active response SOC-AI</description>
+  </rule>
+
+  <!-- T1562.001 - alteration de la configuration auditd elle-meme, captee par le
+       watch `-w /etc/audit -p wa`. Complementaire de 100654 (qui voit la
+       COMMANDE) : ici on voit l'ECRITURE, meme si elle passe par un editeur, un
+       `tee`, une redirection shell ou un binaire quelconque. Niveau 13 : c'est le
+       geste preparatoire a l'aveuglement complet du SOC. -->
+  <rule id="100647" level="13">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-tamper$</field>
+    <description>Defense evasion : modification de la configuration auditd ($(audit.file.name)) par $(audit.exe)</description>
+    <mitre><id>T1562.001</id></mitre>
+  </rule>
+
+  <!-- Exclusion 100647 : augenrules/auditctl reecrivent /etc/audit/audit.rules
+       a chaque `augenrules load` (y compris au boot via le service auditd). C'est le
+       fonctionnement normal, pas une alteration. -->
+  <rule id="100648" level="0">
+    <if_sid>100647</if_sid>
+    <field name="audit.exe" type="pcre2">/(?:augenrules|auditctl|auditd|dpkg|apt|apt-get|systemd(?:-\w+)?)$</field>
+    <description>Exclusion 100647 : rechargement normal des regles auditd / mise a jour paquet</description>
   </rule>
 
   <!-- R6 T1070.002 - destruction de logs (rm/shred/truncate sur /var/log). -->
@@ -422,9 +723,21 @@
   <!-- R6 T1561 - destruction irreversible d'un support. Aucune de ces commandes
        n'a d'usage courant en production : elles apparaissent au provisioning
        (machine neuve, pas encore d'agent Wazuh) ou lors d'un wipe malveillant. -->
+  <!-- REVISION 2026-07-26 : outils d'effacement manquants ajoutes.
+       - `hdparm` avec l option security-erase (et sa variante enhanced) : effacement
+         firmware ATA, irreversible, ne touche aucun chemin /dev en argument
+         reconnaissable par l'ancienne regex.
+       - `nvme format` / `nvme sanitize` : equivalent NVMe.
+       - `sgdisk` avec l option zap-all : destruction des tables de partition GPT.
+       - `cryptsetup luksErase` / `luksKillSlot` : destruction des keyslots LUKS.
+         C'est le wipe le plus economique pour un attaquant - quelques kilo-octets
+         ecrits rendent tout le volume definitivement illisible.
+       - `badblocks -w` : ecriture destructive sur tout le support.
+       Ces quatre premieres commandes n'ont pas besoin de /dev/... en argument
+       positionnel reconnaissable, d'ou une alternative dediee par verbe. -->
   <rule id="100680" level="13">
     <if_group>audit</if_group>
-    <regex type="pcre2">a0="(?:[^"]*/)?(?:(?i:wipefs|blkdiscard)"|(?i:mkfs)(?:\.[a-z0-9]+)?"|(?i:shred|dd)"(?: a\d+="[^"]*")*? a\d+="(?:of=)?/dev/(?:sd|nvme|vd|hd|mapper|disk))</regex>
+    <regex type="pcre2">a0="(?:[^"]*/)?(?:(?i:wipefs|blkdiscard)"|(?i:mkfs)(?:\.[a-z0-9]+)?"|(?i:shred|dd|badblocks)"(?: a\d+="[^"]*")*? a\d+="(?:of=)?/dev/(?:sd|nvme|vd|hd|mapper|disk)|(?i:hdparm)"(?: a\d+="[^"]*")*? a\d+="--security-erase(?:-enhanced)?"|(?i:nvme)"(?: a\d+="[^"]*")*? a\d+="(?:format|sanitize)"|(?i:sgdisk)"(?: a\d+="[^"]*")*? a\d+="(?:--zap-all|-Z)"|(?i:cryptsetup)"(?: a\d+="[^"]*")*? a\d+="(?:luksErase|erase|luksKillSlot)")</regex>
     <description>Destruction de donnees : effacement bas niveau d'un support ($(audit.command))</description>
     <mitre>
       <id>T1561.001</id>
@@ -556,9 +869,27 @@
 
   <!-- Injection de commande / RCE via paramètres de requête HTTP.
        Angle mort mesuré : shell.cgi?cmd=id -> 31100 niveau 0 (non élevé). -->
+  <!-- REVISION 2026-07-26. Deux constats sur l'ancienne version :
+       1. La premiere alternative enumerait des NOMS DE PARAMETRE
+          (cmd|exec|command|run|shell|query|q|arg|param|c). Inutile : le nom du
+          parametre est choisi par l'application vulnerable, pas par le SOC. Elle
+          est conservee (elle capte les cas ou aucun metacaractere n'est present,
+          ex. ?cmd=id) mais ne porte plus la detection.
+       2. La seconde alternative (metacaracteres) portait tout, et il y manquait
+          les evasions courantes. Ajoutees :
+          - %0a / %0d : injection par saut de ligne, l'evasion n°1 quand `;` est
+            filtre par l'application.
+          - $IFS / ${IFS} / %24%7bIFS%7d / $'\t' : substitution du separateur
+            quand l'espace est filtre.
+          - %2527 / %255c : double encodage, pour traverser un filtre qui decode
+            une seule fois.
+          - ${jndi: / %24%7bjndi : Log4Shell (T1190) - absent de tout le ruleset.
+          - |base64 / base64%20-d : exfiltration/obfuscation en une ligne.
+          - python -c / perl -e / php -r : one-liners d'execution.
+          Le `&#124;` reste couvert. -->
   <rule id="100700" level="12">
     <if_sid>31100</if_sid>
-    <url type="pcre2">(?i)(cmd|exec|command|run|shell|query|q|arg|param|c)=[^&amp;]*\b(id|whoami|uname|cat|ls|nc|ncat|bash|sh|curl|wget|python|perl|ping|chmod|dir)\b|(;|%3b|\||%7c|`|%60|\$\(|%24%28|&amp;&amp;|%26%26)|/bin/(ba)?sh|%2fbin%2f</url>
+    <url type="pcre2">(?i)(cmd|exec|command|run|shell|query|q|arg|param|c)=[^&amp;]*\b(id|whoami|uname|cat|ls|nc|ncat|bash|sh|curl|wget|python|perl|ping|chmod|dir)\b|(;|%3b|\||%7c|`|%60|\$\(|%24%28|&amp;&amp;|%26%26|%0a|%0d|%250a)|/bin/(ba)?sh|%2fbin%2f|\$\{?IFS|%24%7bifs|%2527|%255c|\$\{jndi:|%24%7bjndi|\|\s*base64|base64(%20|\+)-d|(python[0-9.]*|perl|php|ruby)(%20|\+)-(c|e|r)\b</url>
     <description>Injection de commande / RCE via HTTP : $(url)</description>
     <mitre>
       <id>T1190</id>
@@ -568,10 +899,23 @@
   </rule>
 
   <!-- Accès à un web shell : script exécutable dans un répertoire d'upload /
-       temporaire / statique, ou nom de web shell connu. -->
+       temporaire / statique, ou nom de web shell connu.
+       LIMITE STRUCTURELLE (revision 2026-07-26) : cette regle raisonne sur
+       l'URL, donc sur une liste de repertoires et une liste de noms connus. Un
+       web shell depose a la racine du docroot sous un nom quelconque
+       (/var/www/html/x7f2.php) ne matche NI l'une NI l'autre et passe. Aucune
+       regex d'URL ne peut combler ce trou : le signal fiable est l'APPARITION du
+       fichier, pas son nom. C'est le role de 100750 (FIM sur /var/www, avec les
+       extensions de script ajoutees au `restrict` de l'agent.conf). Les deux
+       regles sont complementaires par construction : 100701 voit l'utilisation,
+       100750 voit le depot.
+       Repertoires ajoutes : arborescences d'upload des CMS courants
+       (wp-content/uploads, sites/default/files, storage, public, backup,
+       vendor, .well-known) - tous world-writable par le serveur web dans une
+       installation par defaut. -->
   <rule id="100701" level="12">
     <if_sid>31100,31108</if_sid>
-    <url type="pcre2">(?i)/(uploads?|tmp|temp|images?|img|files?|media|data|cache|static|assets)/[^ ?]*\.(php[0-9]?|phtml|phar|cgi|pl|py|sh|asp|aspx|jsp|jspx)\b|/(c99|r57|wso|b374k|weevely|antsword|chopper|cmd|shell|backdoor|webshell|up|upload)\.(php[0-9]?|asp|aspx|jsp|cgi|pl|py|sh)\b</url>
+    <url type="pcre2">(?i)/(uploads?|tmp|temp|images?|img|files?|media|data|cache|static|assets|storage|public|backup|vendor|wp-content/uploads|sites/default/files|\.well-known)/[^ ?]*\.(php[0-9]?|phtml|phar|cgi|pl|py|sh|asp|aspx|jsp|jspx)\b|/(c99|r57|wso|b374k|weevely|antsword|chopper|cmd|shell|backdoor|webshell|up|upload|adminer|alfa|marijuana|indoxploit|mini|p0wny|phpspy|sh3ll|filesman|by?pass)\.(php[0-9]?|asp|aspx|jsp|cgi|pl|py|sh)\b</url>
     <description>Accès à un web shell probable : $(url)</description>
     <mitre>
       <id>T1505.003</id>
@@ -593,12 +937,412 @@
 
 </group>
 
+<!-- ==========================================================================
+     PERSISTANCE ET INTEGRITE SYSTEME (FIM) - plage 100740-100759
+
+     Comble le P1 de DETECTION-ROADMAP.md, jamais implemente : cron, cles SSH,
+     unit systemd, sudoers, PAM, ld.so.preload, second UID 0. C'etait le trou le
+     plus dangereux du dispositif - une backdoor durable ne generait aucune
+     alerte, a aucun niveau.
+
+     Ces regles supposent le FIM temps reel etendu de agent.conf. Sans lui,
+     /etc n'est scanne que periodiquement : un fichier cron depose puis retire
+     entre deux passes reste invisible, et l'alerte arrive avec des heures de
+     retard. Config et regles sont indissociables.
+
+     PLAGE D'IDENTIFIANTS : la roadmap reservait 100700-100730 pour ce pack, mais
+     les regles web ont pris 100700-100702 et 100710-100712 entre-temps. D'ou le
+     decalage en 100740+. Ne pas reutiliser 100703-100709.
+
+     Niveaux : 12 pour un vecteur de persistance, 13-14 quand la modification
+     donne un acces root direct (sudoers, PAM, ld.so.preload, second UID 0).
+     ========================================================================== -->
+<group name="persistence,threat_hunting,linux,syscheck,">
+
+  <!-- T1053.003 - tache planifiee. FP attendu : l'installation d'un paquet
+       depose des fichiers dans /etc/cron.d et /etc/cron.daily. Recurrent et de
+       signature stable -> laisse a la whitelist automatique plutot qu'a une
+       exclusion figee, qui aveuglerait aussi l'attaquant qui ecrit au meme
+       endroit. -->
+  <rule id="100740" level="12">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/etc/cron|^/etc/crontab$|^/var/spool/cron/</field>
+    <description>Persistance : tache planifiee creee ou modifiee ($(file))</description>
+    <mitre><id>T1053.003</id></mitre>
+  </rule>
+
+  <!-- T1098.004 - cle SSH deposee. Niveau 13 : c'est un acces distant permanent,
+       qui survit au changement de mot de passe et a la fermeture du web shell.
+       Couvre /root/.ssh et /home/*/.ssh grace au motif `authorized_keys` ajoute
+       au `restrict` des blocs FIM correspondants. -->
+  <rule id="100741" level="13">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">/\.ssh/authorized_keys</field>
+    <description>Persistance : cle SSH autorisee ajoutee ou modifiee ($(file))</description>
+    <mitre>
+      <id>T1098.004</id>
+      <id>T1021.004</id>
+    </mitre>
+  </rule>
+
+  <!-- T1543.002 - service ou timer systemd. Vecteur de persistance le plus
+       courant sur Linux moderne, et le plus discret : un `.service` avec
+       Restart=always redemarre l'implant a chaque kill. -->
+  <rule id="100742" level="12">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/(?:etc|lib|usr/lib)/systemd/system/</field>
+    <description>Persistance : unit systemd deposee ou modifiee ($(file))</description>
+    <mitre>
+      <id>T1543.002</id>
+      <id>T1053.006</id>
+    </mitre>
+  </rule>
+
+  <!-- T1136 - base comptes. Niveau 12 : une modification de /etc/passwd ou
+       /etc/group est notable mais legitime (creation de compte de service par
+       un paquet). C'est 100744 qui porte le signal fort. -->
+  <rule id="100743" level="12">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/etc/(?:passwd|group)$</field>
+    <description>Modification de la base de comptes locale ($(file))</description>
+    <mitre><id>T1136.001</id></mitre>
+  </rule>
+
+  <!-- T1136.001 / T1078.003 - BACKDOOR UID 0. Priorite maximale : un second
+       compte d'uid 0 est un root permanent qui ne ressemble pas a root dans les
+       logs de connexion.
+       Le champ `changed_content` est le diff produit par `report_changes="yes"`
+       sur /etc/passwd (sans cette option dans agent.conf, la regle ne peut PAS
+       se declencher). Format du diff : les lignes ajoutees sont prefixees par
+       "> ". On matche donc une ligne ajoutee de la forme `nom:x:0:0:`.
+       Le `\+?` couvre le format unifie si la version de Wazuh le change. -->
+  <rule id="100744" level="14">
+    <if_sid>100743</if_sid>
+    <field name="changed_content" type="pcre2">(?:^|\n)\s*(?:&gt;|\+)\s*[A-Za-z0-9_.-]+:[^:]*:0+:0+:</field>
+    <description>Backdoor : second compte UID 0 ajoute dans /etc/passwd</description>
+    <mitre>
+      <id>T1136.001</id>
+      <id>T1078.003</id>
+    </mitre>
+  </rule>
+
+  <!-- T1548.003 - sudoers. Niveau 13 : une ligne NOPASSWD ajoutee donne root
+       sans mot de passe et passe inapercue dans un fichier de 30 lignes. -->
+  <rule id="100745" level="13">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/etc/sudoers</field>
+    <description>Elevation de privileges : configuration sudo modifiee ($(file))</description>
+    <mitre><id>T1548.003</id></mitre>
+  </rule>
+
+  <!-- T1556.003 - module PAM. Un pam_unix.so remplace, ou une ligne
+       `auth sufficient pam_permit.so`, accepte n'importe quel mot de passe sur
+       tout le systeme. Aucune raison legitime hors mise a jour de paquet. -->
+  <rule id="100746" level="13">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/etc/pam\.d/</field>
+    <description>Backdoor d'authentification : configuration PAM modifiee ($(file))</description>
+    <mitre><id>T1556.003</id></mitre>
+  </rule>
+
+  <!-- T1098.004 - configuration SSH serveur (PermitRootLogin yes, AuthorizedKeys
+       File detourne, ForceCommand). -->
+  <rule id="100747" level="12">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/etc/ssh/sshd_config</field>
+    <description>Configuration du serveur SSH modifiee ($(file))</description>
+    <mitre><id>T1098.004</id></mitre>
+  </rule>
+
+  <!-- T1574.006 - detournement du chargeur dynamique. Niveau 14 : /etc/ld.so.preload
+       n'existe PAS sur un Debian sain. Sa creation est le mecanisme de
+       persistance des rootkits userland (Azazel, Bedevil, HiddenWasp) et permet
+       de masquer processus et fichiers a tous les outils du systeme, y compris
+       aux collecteurs du SOC. Zero faux positif attendu. -->
+  <rule id="100748" level="14">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/etc/ld\.so\.preload$|^/etc/ld\.so\.conf\.d/</field>
+    <description>Rootkit probable : detournement du chargeur dynamique ($(file))</description>
+    <mitre><id>T1574.006</id></mitre>
+  </rule>
+
+  <!-- T1546.004 - persistance par shell d'initialisation. -->
+  <rule id="100749" level="12">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/etc/(?:profile$|bash\.bashrc$|profile\.d/)</field>
+    <description>Persistance : script d'initialisation de shell modifie ($(file))</description>
+    <mitre><id>T1546.004</id></mitre>
+  </rule>
+
+  <!-- T1505.003 - DEPOT d'un web shell. C'est le pendant de 100701, qui ne voit
+       que l'ACCES et seulement dans une liste de repertoires connus : un script
+       depose a la racine du docroot sous un nom quelconque echappe a toute regle
+       d'URL. Ici on ne raisonne plus sur le nom mais sur le fait qu'un fichier
+       executable par le serveur web APPARAISSE dans /var/www - ce qui, sur un
+       hote servant du statique, n'a aucune raison de se produire.
+       Depend des extensions ajoutees au `restrict` du bloc /var/www dans
+       agent.conf : sans elles, le FIM ne pose pas de watch sur ces fichiers. -->
+  <rule id="100750" level="13">
+    <if_group>syscheck</if_group>
+    <field name="file" type="pcre2">^/var/www/.*\.(?:php[0-9]?|phtml|phar|cgi|pl|py|sh|jsp|jspx|asp|aspx)$</field>
+    <description>Web shell probable : script executable depose dans la racine web ($(file))</description>
+    <mitre><id>T1505.003</id></mitre>
+  </rule>
+
+</group>
+
+<!-- ==========================================================================
+     TECHNIQUES POST-EXPLOITATION NON COUVERTES (auditd) - plage 100760-100779
+
+     Categories absentes du ruleset avant cette revision, choisies pour leur
+     rapport valeur/bruit : chargement de module noyau, creation de compte
+     privilegie, effacement d'historique, tunneling C2, telechargement pipe vers
+     un shell, evasion de conteneur, abus de binaire SUID (GTFOBins), capacites
+     Linux, scan sortant.
+
+     Toutes ancrent sur `a\d+=` et non sur `a0=` ni sur `audit.exe` : le noyau
+     reecrit l'argv des scripts a shebang en inserant l'interpreteur en tete
+     (piege documente en detail sur 100654).
+     ========================================================================== -->
+<group name="threat_hunting,linux,post_exploitation,">
+
+  <!-- T1014 / T1547.006 - chargement ou dechargement de module noyau, capte par
+       les regles de syscall init_module/finit_module/delete_module. Complete
+       l'observation des commandes (insmod/modprobe sont deja des execve) : un
+       rootkit qui appelle finit_module() depuis son propre binaire n'execute
+       aucune commande.
+       BRUIT CONNU : un redemarrage charge plusieurs dizaines de modules et
+       produira donc une rafale d'alertes. C'est assume - on prefere une rafale
+       ponctuelle et explicable a l'aveuglement sur le chargement d'un LKM
+       malveillant, qui est la forme de compromission la plus difficile a
+       detecter une fois installee. -->
+  <rule id="100760" level="13">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-module$</field>
+    <description>Rootkit probable : chargement/dechargement de module noyau par $(audit.exe)</description>
+    <mitre>
+      <id>T1014</id>
+      <id>T1547.006</id>
+    </mitre>
+  </rule>
+
+  <!-- T1136.001 / T1098 - creation de compte ou ajout a un groupe privilegie.
+       La regle native 5902 couvre le cas via syslog ; celle-ci ajoute le
+       contexte auditd (utilisateur d'origine, commande complete) et surtout
+       fonctionne meme si le compte est cree sans passer par le journal. -->
+  <rule id="100761" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:useradd|adduser|usermod|gpasswd|newusers)"[^\n]*?a\d+="[^"]*(?i:sudo|wheel|admin|docker|adm|shadow|root)[^"]*"</regex>
+    <description>Elevation de privileges : compte ajoute a un groupe privilegie ($(audit.command))</description>
+    <mitre>
+      <id>T1136.001</id>
+      <id>T1098</id>
+    </mitre>
+  </rule>
+
+  <!-- T1136.001 / T1078.003 - creation directe d'un compte UID 0. `-o` (non
+       unique) est obligatoire pour dupliquer l'uid 0, c'est donc un marqueur
+       tres fiable. Niveau 14, meme signal que 100744 par un autre chemin. -->
+  <rule id="100762" level="14">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:useradd|usermod)"[^\n]*?a\d+="-[a-zA-Z]*u[a-zA-Z]*"\s+a\d+="0"|a\d+="(?:[^"]*/)?(?i:useradd|usermod)"[^\n]*?a\d+="--uid"\s+a\d+="0"</regex>
+    <description>Backdoor : creation d'un compte UID 0 ($(audit.command))</description>
+    <mitre>
+      <id>T1136.001</id>
+      <id>T1078.003</id>
+    </mitre>
+  </rule>
+
+  <!-- T1070.003 - effacement des traces shell. Trois formes : purge memoire
+       (`history -c`), neutralisation du fichier (HISTFILE=/dev/null, unset
+       HISTFILE, `ln -sf /dev/null ~/.bash_history`) et suppression du fichier.
+       Ces commandes contiennent des espaces donc arrivent hex-encodees :
+         686973746F7279202D63       = "history -c"
+         4849535446494C45           = "HISTFILE"
+         2E626173685F686973746F7279 = ".bash_history" -->
+  <rule id="100763" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">(?i)history\s+-c|unset\s+HISTFILE|HISTFILE=/dev/null|HISTSIZE=0|\.bash_history|686973746F7279202D63|4849535446494C45|2E626173685F686973746F7279</regex>
+    <description>Effacement de traces : manipulation de l'historique shell ($(audit.command))</description>
+    <mitre><id>T1070.003</id></mitre>
+  </rule>
+
+  <!-- T1572 / T1090 - tunnel de commande et controle. `ssh -R` (reverse tunnel)
+       expose un service interne a l'exterieur ; `ssh -D` monte un proxy SOCKS
+       pour pivoter. chisel, ngrok, frp, iodine, dnscat, gost, ligolo sont des
+       outils dont la seule fonction est le tunneling - leur presence sur un
+       serveur est en soi l'incident. `socat` avec un EXEC est un reverse shell
+       persistant. -->
+  <rule id="100764" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:ssh)"[^\n]*?a\d+="-[a-zA-Z]*[RD][a-zA-Z]*"|a\d+="(?:[^"]*/)?(?i:chisel|ngrok|frpc|frps|iodine|dnscat2?|gost|ligolo(?:-ng)?|pivotnacci|revsocks)"|a\d+="(?:[^"]*/)?(?i:socat)"[^\n]*?a\d+="[^"]*(?i:exec|system):</regex>
+    <description>Commande et controle : tunnel ou proxy sortant etabli ($(audit.command))</description>
+    <mitre>
+      <id>T1572</id>
+      <id>T1090</id>
+    </mitre>
+  </rule>
+
+  <!-- T1105 - telechargement pipe directement dans un interpreteur
+       (`curl ... | bash`). Le pipe implique un espace, donc l'argument complet
+       est hex-encode par auditd - on matche les deux formes :
+         7C2062617368 = "| bash",  7C207368 = "| sh"
+       Le `-o /dev/stdout` et la substitution `$(curl ...)` sont couverts par la
+       meme logique de co-occurrence telechargeur + interpreteur. -->
+  <rule id="100765" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">(?i)(?:curl|wget|fetch)[^\n]{0,200}?\|\s*(?:ba|z|k|da)?sh\b|(?:6375726C|77676574)[0-9A-F]*?7C20(?:62617368|7368|7A7368)</regex>
+    <description>Ingress tool transfer : telechargement execute directement par un interpreteur ($(audit.command))</description>
+    <mitre>
+      <id>T1105</id>
+      <id>T1059.004</id>
+    </mitre>
+  </rule>
+
+  <!-- T1611 - evasion de conteneur / prise de controle de l'hote. Un conteneur
+       privilegie, un montage de la racine de l'hote, l'acces au socket Docker
+       ou `nsenter -t 1` donnent root sur l'hote depuis un conteneur.
+       Egalement valable dans l'autre sens : sur un hote deja compromis, ce sont
+       les commandes qui transforment un acces conteneur en acces hote complet. -->
+  <rule id="100766" level="13">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">(?i)a\d+="--privileged"|a\d+="(?:[^"]*/)?nsenter"[^\n]*?a\d+="-[a-zA-Z]*t[a-zA-Z]*"\s+a\d+="1"|a\d+="[^"]*/var/run/docker\.sock[^"]*"|a\d+="-v"\s+a\d+="/:/[^"]*"|a\d+="--pid=host"|a\d+="--net=host"[^\n]*?a\d+="--privileged"</regex>
+    <description>Evasion de conteneur : acces privilegie a l'hote demande ($(audit.command))</description>
+    <mitre>
+      <id>T1611</id>
+      <id>T1610</id>
+    </mitre>
+  </rule>
+
+  <!-- T1548.001 - ABUS DE BINAIRE SUID (GTFOBins). Detection structurelle, pas
+       par signature : un processus dont l'uid REEL est celui d'un utilisateur
+       normal mais dont l'euid est 0 s'execute avec les privileges de root via le
+       bit setuid. Combine a une liste de binaires connus pour offrir une
+       evasion de shell, c'est la signature exacte de l'escalade GTFOBins.
+
+       Pourquoi c'est fiable : `sudo find ...` ne matche PAS - sudo a deja
+       bascule l'uid reel a 0 quand `find` s'execute, donc uid=0. Seul le cas
+       « binaire porteur du bit setuid lance par un utilisateur non root »
+       satisfait uid!=0 ET euid=0. Les SUID legitimes du systeme (sudo, su,
+       passwd, pkexec, ping, chsh, newgrp, mount.nfs) sont hors liste.
+
+       `^[1-9][0-9]*$` plutot qu'un lookahead negatif `^(?!0$)` : le moteur de
+       regles n'honore pas les lookaheads dans les patterns de champ (piege
+       documente sur 100629). -->
+  <rule id="100767" level="13">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <field name="audit.euid" type="pcre2">^0$</field>
+    <field name="audit.uid" type="pcre2">^[1-9][0-9]*$</field>
+    <field name="audit.exe" type="pcre2">/(?:find|vim|vi|nano|less|more|awk|gawk|mawk|nmap|python[0-9.]*|perl|ruby|env|tar|zip|unzip|git|ftp|man|sed|ed|cp|mv|dd|nice|flock|watch|xargs|make|gdb|strace|ltrace|busybox|tee|rsync|systemctl|apt|apt-get|dpkg|mount|umount|nsenter|capsh|socat|php|node|lua|expect|screen|tmux|bash|sh|dash|zsh|ksh)$</field>
+    <description>Elevation de privileges : binaire SUID detourne ($(audit.exe), uid=$(audit.uid) euid=0) - technique GTFOBins</description>
+    <mitre><id>T1548.001</id></mitre>
+  </rule>
+
+  <!-- T1548.001 - attribution d'une capacite Linux dangereuse. Alternative
+       moderne au bit setuid, et bien moins surveillee : `setcap
+       cap_setuid+ep /usr/bin/python3` donne un root instantane sans qu'aucun
+       fichier ne devienne SUID. -->
+  <rule id="100768" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:setcap)"[^\n]*?a\d+="[^"]*(?i:cap_setuid|cap_setgid|cap_sys_admin|cap_sys_ptrace|cap_sys_module|cap_dac_override|cap_dac_read_search|cap_chown)[^"]*"</regex>
+    <description>Elevation de privileges : capacite Linux privilegiee attribuee ($(audit.command))</description>
+    <mitre><id>T1548.001</id></mitre>
+  </rule>
+
+  <!-- T1136 / T1053 / T1548.003 / T1543.002 / T1556.003 - ECRITURE sur un chemin
+       de persistance, vue par les watches auditd `-k audit-wazuh-persist`
+       (/etc/passwd, /etc/group, /etc/sudoers*, /etc/cron*, /var/spool/cron,
+       /etc/systemd/system, /etc/pam.d).
+
+       POURQUOI CETTE REGLE EXISTE EN PLUS DU FIM (100740-100749) : mesure live,
+       le FIM temps reel s'est revele INTERMITTENT sur /etc/passwd - trois
+       modifications successives, une seule alerte. Faire reposer la detection
+       d'une backdoor UID 0 sur ce seul canal etait donc un pari. Le watch auditd
+       est deterministe (evenement noyau par appel systeme) et apporte en prime
+       ce que le FIM ne donne jamais : QUI a ecrit (exe, uid, auid). Le FIM garde
+       l'avantage complementaire du CONTENU (diff), d'ou la conservation des deux.
+
+       Niveau 12 et non 13 : la regle couvre un perimetre large, dont des
+       ecritures legitimes (creation de compte de service par un paquet, depot
+       d'un cron par dpkg). Les cas a fort impact restent portes par les regles
+       specifiques : 100744/100762 (UID 0), 100745 (sudoers), 100748 (preload). -->
+  <rule id="100770" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-persist$</field>
+    <description>Persistance : ecriture sur $(audit.file.name) par $(audit.exe) (uid=$(audit.uid))</description>
+    <mitre>
+      <id>T1136</id>
+      <id>T1053.003</id>
+      <id>T1543.002</id>
+    </mitre>
+  </rule>
+
+  <!-- Exclusion 100770 : le FIM de l'agent Wazuh ouvre ces memes fichiers pour
+       en calculer les empreintes, et dpkg/apt les reecrivent a chaque
+       installation de paquet. Sans cette exclusion, notre propre surveillance et
+       toute mise a jour generent des alertes de persistance. -->
+  <rule id="100771" level="0">
+    <if_sid>100770</if_sid>
+    <field name="audit.exe" type="pcre2">^/var/ossec/|/(?:dpkg|dpkg-deb|apt|apt-get|frontend|systemd(?:-\w+)?|unattended-upgrade)$</field>
+    <description>Exclusion 100770 : ecriture par le FIM, le gestionnaire de paquets ou systemd</description>
+  </rule>
+
+  <!-- T1574.006 - ecriture sur /etc/ld.so.preload vue par auditd. Doublon
+       assume avec le FIM 100748 : c'est la detection la plus critique du pack
+       (rootkit userland capable de masquer les collecteurs du SOC eux-memes) et
+       le FIM s'est montre intermittent. Deux canaux independants, volontairement.
+       PREREQUIS : le fichier doit EXISTER, meme vide. inotify comme les watches
+       auditd ciblent un inode : sur un chemin absent, ni le FIM ni auditd ne
+       posent quoi que ce soit, et la creation du fichier passe inapercue. C'est
+       pourquoi scripts/install-agent.sh cree un /etc/ld.so.preload vide. -->
+  <rule id="100772" level="14">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-preload$</field>
+    <description>Rootkit probable : ecriture sur $(audit.file.name) par $(audit.exe)</description>
+    <mitre><id>T1574.006</id></mitre>
+  </rule>
+
+  <rule id="100773" level="0">
+    <if_sid>100772</if_sid>
+    <field name="audit.exe" type="pcre2">^/var/ossec/|/(?:dpkg|apt|apt-get|ldconfig)$</field>
+    <description>Exclusion 100772 : lecture par le FIM ou mise a jour du cache ldconfig</description>
+  </rule>
+
+  <!-- T1046 - scan reseau depuis l'hote. Sur un serveur, l'execution d'un
+       scanner appartient soit a une phase de decouverte post-compromission,
+       soit a un audit planifie - dans les deux cas l'analyste doit le voir.
+       Niveau 12 assume : c'est une decouverte active, pas du bruit de fond. -->
+  <rule id="100769" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:nmap|masscan|zmap|rustscan|naabu|unicornscan|hping3|zgrab)"</regex>
+    <description>Decouverte reseau : scanner execute sur l'hote ($(audit.command))</description>
+    <mitre>
+      <id>T1046</id>
+      <id>T1595</id>
+    </mitre>
+  </rule>
+
+</group>
+
 <group name="audit,web_attack,web_shell,">
 
   <!-- Exécution de commande par l'utilisateur du serveur web (www-data, euid=33).
        Sur cet hôte (Apache statique) www-data ne lance rien en temps normal :
        toute execve en euid=33 = exécution CGI / web shell. Mesuré : shell.cgi
-       tourne en euid=33 (perl, id, whoami, cat...). -->
+       tourne en euid=33 (perl, id, whoami, cat...).
+       LIMITE ASSUMEE : euid 33 est la valeur Debian/Ubuntu de www-data. Les
+       autres comptes de service (apache=48 sur RHEL, nginx, tomcat, pool
+       php-fpm dedie, postgres, mysql, redis) sont couverts par 100711, pas ici -
+       cette regle reste la plus specifique et la plus fiable des deux. -->
   <rule id="100710" level="12">
     <if_group>audit</if_group>
     <field name="audit.euid">^33$</field>
@@ -608,6 +1352,47 @@
       <id>T1059</id>
     </mitre>
     <group>web_shell,command_execution,</group>
+  </rule>
+
+  <!-- T1190/T1059 - execution d'un SHELL par un compte de service quelconque.
+       Comble l'angle mort de 100710, qui codait euid=33 en dur : une RCE sur
+       PostgreSQL (COPY TO PROGRAM), MySQL (UDF), Redis (module), Tomcat ou un
+       pool php-fpm dedie n'aurait rien declenche. Le signal generique est
+       « un compte de service a obtenu un interpreteur », independamment du
+       service compromis.
+
+       Perimetre : euid 1-999 = plage des comptes systeme sous Debian (les
+       comptes humains commencent a 1000, root est 0 et exclu par la borne
+       inferieure). `nobody` (65534) est hors plage, volontairement : c'est l'uid
+       de repli de nombreux montages et sa surveillance est trop bruyante.
+
+       Contrainte sur l'exe : uniquement les interpreteurs. Un compte de service
+       qui execute son propre binaire est la normale ; qui execute un shell ne
+       l'est pas. Sans cette contrainte la regle alerterait sur chaque
+       ExecStartPre de systemd.
+
+       FP attendus a mesurer : archive_command PostgreSQL, hooks de sauvegarde,
+       jobs cron tournant sous un compte de service. Ces cas sont recurrents et
+       de signature stable -> absorbes par la whitelist automatique
+       (soc_agent.whitelist) plutot que par une exclusion figee ici. -->
+  <rule id="100711" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.euid" type="pcre2">^(?:[1-9]|[1-9][0-9]|[1-9][0-9][0-9])$</field>
+    <field name="audit.exe" type="pcre2">/(?:sh|bash|dash|zsh|ksh|ash|busybox|python[0-9.]*|perl|php|ruby|node|lua|tclsh|awk|gawk|mawk|nc|ncat|netcat|socat|curl|wget)$</field>
+    <description>Compte de service compromis probable : interpreteur ($(audit.exe)) execute en euid=$(audit.euid) - $(audit.command)</description>
+    <mitre>
+      <id>T1190</id>
+      <id>T1059</id>
+    </mitre>
+    <group>command_execution,</group>
+  </rule>
+
+  <!-- Exclusion 100711 : euid 33 est deja couvert plus precisement par 100710,
+       qui porte le contexte web shell. On neutralise le doublon. -->
+  <rule id="100712" level="0">
+    <if_sid>100711</if_sid>
+    <field name="audit.euid">^33$</field>
+    <description>Exclusion 100711 : cas www-data deja couvert par 100710</description>
   </rule>
 
 </group>

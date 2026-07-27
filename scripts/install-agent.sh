@@ -64,11 +64,44 @@ fi
 systemctl daemon-reload
 systemctl enable --now wazuh-agent >/dev/null 2>&1
 
-echo "[3/5] auditd (détection exec depuis /tmp,/var/tmp,/dev/shm — règle Wazuh 100625)"
+echo "[3/5] auditd (socle de détection des règles Wazuh 1006xx/1007xx)"
 apt-get install -y -qq auditd audispd-plugins >/dev/null
-echo "-a always,exit -F arch=b64 -S execve -k audit-wazuh-c" > /etc/audit/rules.d/audit-wazuh.rules
-augenrules --load >/dev/null 2>&1
+# Le jeu de règles est versionné dans wazuh/config/agent/zz-audit-wazuh.rules.
+# Le préfixe `zz-` est OBLIGATOIRE : augenrules concatène rules.d/*.rules en
+# collation C, et le audit.rules de Debian commence par `-D` (purge). Un fichier
+# nommé `audit-wazuh.rules` est chargé AVANT ce `-D` et se fait effacer
+# silencieusement — c'est ce qui a laissé l'agent sans audit execve.
+AUDIT_RULES_SRC="$(dirname "$0")/../wazuh/config/agent/zz-audit-wazuh.rules"
+if [ -f "$AUDIT_RULES_SRC" ]; then
+  install -m 640 -o root -g root "$AUDIT_RULES_SRC" /etc/audit/rules.d/zz-audit-wazuh.rules
+else
+  echo "  ERREUR: $AUDIT_RULES_SRC introuvable" >&2; exit 1
+fi
+rm -f /etc/audit/rules.d/audit-wazuh.rules   # ancien nom, chargé trop tôt
+
+# /etc/ld.so.preload doit EXISTER pour être surveillable. inotify (FIM) comme les
+# watches auditd ciblent un inode : sur un chemin absent, rien n'est armé et la
+# CRÉATION du fichier — c'est-à-dire précisément l'action du rootkit userland —
+# passe inaperçue. Un fichier vide est sans effet pour glibc.
+[ -e /etc/ld.so.preload ] || { : > /etc/ld.so.preload; chmod 644 /etc/ld.so.preload; }
+
+# Le jeu de règles se termine par `-e 2` (configuration immuable). Si l'audit est
+# déjà verrouillé par un chargement précédent, `augenrules --load` échoue et il
+# faut redémarrer — on le signale au lieu d'échouer en silence.
+if ! augenrules --load >/dev/null 2>&1; then
+  echo "  AVERTISSEMENT: règles audit non rechargées (audit probablement en -e 2)."
+  echo "                 Redémarrer la machine pour appliquer la nouvelle version."
+fi
 systemctl enable --now auditd >/dev/null 2>&1
+
+# Autorise les <localfile><command> poussés par l'agent.conf partagé du manager.
+# Sans ce réglage (défaut 0), Wazuh IGNORE silencieusement toute commande venant
+# d'une configuration distante — c'est ce qui porte le heartbeat de l'audit noyau
+# (règles 100801/100802). Pas d'élargissement de la surface de confiance : le
+# canal active-response donne déjà au manager l'exécution root sur l'agent.
+LIO="/var/ossec/etc/local_internal_options.conf"
+grep -q "^logcollector.remote_commands=1" "$LIO" 2>/dev/null || \
+  printf '# SOC-AI : autorise les <localfile><command> poussés par agent.conf\nlogcollector.remote_commands=1\n' >> "$LIO"
 
 OSSEC_CONF="/var/ossec/etc/ossec.conf"
 if ! grep -q "log_format>audit<" "$OSSEC_CONF" 2>/dev/null; then
@@ -104,7 +137,10 @@ visudo -cf "/etc/sudoers.d/${ADMIN_USER}" >/dev/null || { echo "ERREUR sudoers";
 echo "[5/5] Vérifications"
 systemctl is-active wazuh-agent >/dev/null && echo "  agent: actif" || echo "  agent: INACTIF"
 systemctl is-active auditd >/dev/null && echo "  auditd: actif" || echo "  auditd: INACTIF"
-auditctl -l 2>/dev/null | grep -q "execve" && echo "  règle audit execve: chargée" || echo "  règle audit execve: ABSENTE"
+auditctl -l 2>/dev/null | grep -q "execveat" && echo "  règles audit: chargées ($(auditctl -l | wc -l))" || echo "  règles audit: ABSENTES"
+[ "$(auditctl -s 2>/dev/null | awk '/^enabled/{print $2}')" = "1" ] \
+  && echo "  audit noyau: activé" \
+  || echo "  audit noyau: DÉSACTIVÉ (enabled != 1) — aucune règle 1006xx ne peut se déclencher"
 sudo -u "$ADMIN_USER" sudo -n true 2>/dev/null && echo "  sudo ${ADMIN_USER}: OK" || echo "  sudo ${ADMIN_USER}: ECHEC"
 echo
 echo "Terminé. Test depuis le serveur Wazuh :"

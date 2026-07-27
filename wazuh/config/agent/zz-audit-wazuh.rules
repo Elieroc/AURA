@@ -1,0 +1,124 @@
+## SOC-AI — règles auditd de l'agent Wazuh
+##
+## NOM DU FICHIER : IMPORTANT, ne pas renommer sans comprendre.
+## `augenrules` concatène /etc/audit/rules.d/*.rules dans l'ordre de collation C
+## (chiffres < majuscules < minuscules). Le fichier Debian par défaut
+## `audit.rules` commence par `-D` (purge de toutes les règles). Un fichier
+## nommé `audit-wazuh.rules` ou `10-audit-wazuh.rules` est donc chargé AVANT ce
+## `-D` et se fait effacer silencieusement au prochain `augenrules --load`.
+## Le préfixe `zz-` garantit le chargement en dernier.
+##
+## Les paramètres globaux (-b 8192, --backlog_wait_time, -f 1) viennent de
+## audit.rules ; on ne les redéfinit pas ici.
+
+## ---------------------------------------------------------------------------
+## Exécution de processus — socle de tout le pack de règles Wazuh 1006xx/1007xx
+##
+## `execveat` est indispensable : fexecve(3), l'exécution depuis un memfd
+## (règle 100630) et DDexec passent par execveat, pas par execve. Sans lui, les
+## règles fileless ne se déclenchent jamais.
+## `arch=b32` : un binaire 32 bits exécuté sur un noyau 64 bits n'émet aucun
+## événement b64 — angle mort d'évasion trivial.
+## ---------------------------------------------------------------------------
+-a always,exit -F arch=b64 -S execve,execveat -F key=audit-wazuh-c
+-a always,exit -F arch=b32 -S execve,execveat -F key=audit-wazuh-c
+
+## ---------------------------------------------------------------------------
+## Accès aux credentials — T1003.008
+##
+## Complète la règle Wazuh 100653, qui ne voit que l'EXÉCUTION d'un utilitaire
+## de lecture (cat, head…). Un binaire compilé, un `sh -c`, ou un script Python
+## qui ouvre /etc/shadow ne produit aucun execve exploitable : seul le watch
+## fichier le capte.
+## `-p r` génère un événement à chaque authentification PAM (unix_chkpwd, sudo,
+## sshd, su) — volume faible sur cet hôte, et le tri des lecteurs légitimes est
+## fait côté règles Wazuh, pas ici.
+## ---------------------------------------------------------------------------
+-w /etc/shadow -p rwa -k audit-wazuh-shadow
+-w /etc/gshadow -p rwa -k audit-wazuh-shadow
+-w /etc/security/opasswd -p rwa -k audit-wazuh-shadow
+
+## ---------------------------------------------------------------------------
+## Détournement du chargeur dynamique — T1574.006
+##
+## /etc/ld.so.preload est le mécanisme de persistance des rootkits userland
+## (Azazel, Bedevil, HiddenWasp).
+##
+## `-p wa` et SURTOUT PAS `-p rwa` — mesuré : avec le `r`, le fichier étant
+## désormais présent, le chargeur dynamique l'ouvre à CHAQUE exec. Résultat
+## observé : 33 alertes de niveau 14 en 30 secondes, une par processus lancé.
+## Seule l'ÉCRITURE porte du signal ; la lecture, c'est le fonctionnement normal
+## de glibc.
+##
+## Le fichier doit EXISTER, même vide (créé par scripts/install-agent.sh) :
+## inotify comme les watches auditd ciblent un inode, donc sur un chemin absent
+## rien n'est armé et la création du fichier — précisément l'action de
+## l'attaquant — passe inaperçue.
+## ---------------------------------------------------------------------------
+-w /etc/ld.so.preload -p wa -k audit-wazuh-preload
+-w /etc/ld.so.conf.d -p wa -k audit-wazuh-preload
+
+## ---------------------------------------------------------------------------
+## Persistance et élévation par fichier — T1136 / T1548.003 / T1053.003 /
+## T1543.002 / T1556.003
+##
+## En `-p wa` seulement (write + attribute) : la lecture de /etc/passwd ou d'un
+## crontab est banale, son ÉCRITURE ne l'est pas.
+## Redondant par construction avec le FIM temps réel (agent.conf) : le FIM donne
+## le diff du contenu, auditd donne le processus et l'utilisateur responsables.
+## Les deux sont nécessaires — le FIM ne dit pas QUI a écrit.
+## ---------------------------------------------------------------------------
+-w /etc/passwd -p wa -k audit-wazuh-persist
+-w /etc/group -p wa -k audit-wazuh-persist
+-w /etc/sudoers -p wa -k audit-wazuh-persist
+-w /etc/sudoers.d -p wa -k audit-wazuh-persist
+-w /etc/crontab -p wa -k audit-wazuh-persist
+-w /etc/cron.d -p wa -k audit-wazuh-persist
+-w /etc/cron.daily -p wa -k audit-wazuh-persist
+-w /etc/cron.hourly -p wa -k audit-wazuh-persist
+-w /var/spool/cron -p wa -k audit-wazuh-persist
+-w /etc/systemd/system -p wa -k audit-wazuh-persist
+-w /etc/pam.d -p wa -k audit-wazuh-persist
+
+## ---------------------------------------------------------------------------
+## Chargement de module noyau — T1014
+##
+## insmod/modprobe sont déjà visibles en execve, mais un rootkit qui appelle
+## finit_module() directement depuis un binaire ne l'est pas.
+## ---------------------------------------------------------------------------
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -F key=audit-wazuh-module
+-a always,exit -F arch=b32 -S init_module,finit_module,delete_module -F key=audit-wazuh-module
+
+## ---------------------------------------------------------------------------
+## Auto-protection de la journalisation — T1562.001
+##
+## Le scénario vécu : `enabled 0` posé à la main, plus aucun événement pendant
+## 2 h, aucune alerte. Ce watch capte l'altération de la CONFIGURATION ; la
+## détection du SILENCE (audit vivant mais muet) ne peut pas venir d'auditd
+## lui-même — elle est portée par la règle Wazuh de heartbeat.
+## ---------------------------------------------------------------------------
+-w /etc/audit -p wa -k audit-wazuh-tamper
+
+## ---------------------------------------------------------------------------
+## `-e 2` : configuration d'audit IMMUABLE jusqu'au prochain redémarrage.
+##
+## Ce n'est pas un durcissement théorique, c'est la correction d'une panne
+## mesurée. Le 2026-07-27, l'audit du noyau s'est retrouvé désactivé sans aucune
+## intervention hostile :
+##
+##   audit: CONFIG_CHANGE op=set audit_enabled=0 old=1 auid=4294967295 res=1
+##
+## émis par systemd-journald à chaque redémarrage du service — déclenché ici par
+## le logrotate quotidien. Résultat : 19 des 24 règles Wazuh de niveau >= 12
+## dépendent des événements auditd, elles ont été aveugles pendant 2 h, et rien
+## ne l'a signalé. Le phénomène est récurrent par construction, pas accidentel.
+##
+## Avec `-e 2`, la tentative échoue (res=0) au lieu de réussir. Bénéfice
+## secondaire, du même ordre : `auditctl -e 0` et `auditctl -D` par un attaquant
+## (T1562.001) échouent aussi.
+##
+## CONTREPARTIE À CONNAÎTRE : toute modification ultérieure de ces règles exige
+## un REDÉMARRAGE de la machine — `augenrules --load` échouera. C'est le prix
+## d'un capteur qu'on ne peut plus éteindre. Éditer ce fichier, puis rebooter.
+## ---------------------------------------------------------------------------
+-e 2
