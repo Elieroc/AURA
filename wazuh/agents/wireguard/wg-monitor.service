@@ -1,0 +1,9 @@
+[Unit]
+Description=SOC-AI: WireGuard peer connect/disconnect events
+After=wg-quick@wg0.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/wg-monitor.py
+StandardOutput=append:/var/log/wireguard-events.log
+StandardError=journal

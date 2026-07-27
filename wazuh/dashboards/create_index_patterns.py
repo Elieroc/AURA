@@ -37,13 +37,14 @@ SIMPLE_PATTERNS = {
     "wazuh-firewall-*": "wazuh-firewall-*",
     "wazuh-proxy-*": "wazuh-proxy-*",
     "wazuh-jellyfin-*": "wazuh-jellyfin-*",
+    "wazuh-vpn-*": "wazuh-vpn-*",
 }
 
 # Candidats du pattern combiné — filtrés à l'existence réelle avant de
 # construire soc-ai-all-alerts.
 ALL_ALERTS_CANDIDATES = [
     "wazuh-alerts-*", "wazuh-linux-*", "wazuh-windows-*", "wazuh-web-*",
-    "wazuh-firewall-*", "wazuh-proxy-*", "wazuh-jellyfin-*",
+    "wazuh-firewall-*", "wazuh-proxy-*", "wazuh-jellyfin-*", "wazuh-vpn-*",
 ]
 
 
