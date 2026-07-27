@@ -1,0 +1,35 @@
+<!--
+  WireGuard n'a pas d'audit natif (module noyau, pas de journal par pair) —
+  wg-monitor.py (déployé en systemd timer 30s sur l'agent) diffuse l'état
+  `wg show` et loggue les transitions actif/inactif dans
+  /var/log/wireguard-events.log, décodé par decoders/wireguard.xml.
+-->
+<group name="local,vpn,">
+  <rule id="100840" level="0">
+    <decoded_as>wg-monitor</decoded_as>
+    <description>WireGuard peer event grouped.</description>
+  </rule>
+
+  <rule id="100841" level="3">
+    <if_sid>100840</if_sid>
+    <field name="event">^peer_connected$</field>
+    <description>WireGuard: peer $(peer_ip) connected from $(endpoint).</description>
+  </rule>
+
+  <rule id="100842" level="3">
+    <if_sid>100840</if_sid>
+    <field name="event">^peer_disconnected$</field>
+    <description>WireGuard: peer $(peer_ip) disconnected ($(endpoint)).</description>
+  </rule>
+
+  <!-- Nouveau pair (jamais vu avant) qui se connecte : plus intéressant qu'une
+       reconnexion habituelle, mais on n'a pas d'inventaire des pairs "connus"
+       ici — se contente de la fréquence : beaucoup de connexions/déconnexions
+       rapprochées du même pair, signe d'un lien instable ou d'un scan de la
+       clé publique (peu probable vu Curve25519, mais coût nul à couvrir). -->
+  <rule id="100843" level="7" frequency="6" timeframe="120" ignore="300">
+    <if_matched_sid>100841</if_matched_sid>
+    <same_field>peer_ip</same_field>
+    <description>WireGuard: reconnexions répétées du pair $(peer_ip) (lien instable ou anomalie).</description>
+  </rule>
+</group>

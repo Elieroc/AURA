@@ -290,20 +290,23 @@ par un processor `script` ajouté en fin de pipeline ingest
 | `wazuh-firewall-*` | `decoder.name == 'pf-nohost'` — **avant** le test `agent.id`, car pfSense arrive en syslog direct sur le manager (agent.id=000), pas via un agent |
 | `wazuh-proxy-*` | `decoder.name == 'npm-access'` |
 | `wazuh-jellyfin-*` | `decoder.name == 'jellyfin'` — log applicatif, pas un format web (pas de nginx devant Jellyfin) |
+| `wazuh-vpn-*` | `decoder.name == 'wg-monitor'` — WireGuard n'a pas de log natif, cf. section VPN plus bas |
 | `wazuh-alerts-*` (défaut) | tout le reste + alertes du manager |
 
-Firewall, proxy et jellyfin testent le **décodeur**, pas `rule.groups`
+Firewall, proxy, jellyfin et vpn testent le **décodeur**, pas `rule.groups`
 (contrairement aux trois premiers) : firewall/proxy héritent du ruleset natif
 (`<type>web-log</type>`) pour profiter de signatures d'attaque existantes (cf.
 section NPM plus bas), et une règle native sœur peut gagner à la place de la
-règle locale qui porterait le tag de groupe. Jellyfin n'a pas ce problème
-d'héritage mais suit la même convention par cohérence. Le nom du décodeur, lui,
-ne dépend pas de quelle règle matche finalement, donc reste fiable pour router.
+règle locale qui porterait le tag de groupe. Jellyfin/vpn n'ont pas ce
+problème d'héritage mais suivent la même convention par cohérence. Le nom du
+décodeur, lui, ne dépend pas de quelle règle matche finalement, donc reste
+fiable pour router.
 
 - Template d'index `soc-ai-routing` (clone du template wazuh, mêmes mappings) appliqué à tous les patterns.
 - Index patterns dashboard : `wazuh-linux-*`, `wazuh-windows-*`, `wazuh-web-*`, `wazuh-firewall-*`,
-  `wazuh-proxy-*`, `wazuh-jellyfin-*`, plus le pattern combiné `soc-ai-all-alerts` (= tous) utilisé
-  par l'app Wazuh (`pattern:` dans `wazuh_dashboard/wazuh.yml`) et le dashboard custom, pour garder
+  `wazuh-proxy-*`, `wazuh-jellyfin-*`, `wazuh-vpn-*`, plus le pattern combiné `soc-ai-all-alerts`
+  (= ceux qui ont réellement des données, cf. piège plus bas) utilisé par l'app Wazuh
+  (`pattern:` dans `wazuh_dashboard/wazuh.yml`) et le dashboard custom, pour garder
   une vue globale.
 
 ### pfSense (et tout équipement sans agent possible) — syslog direct
@@ -379,6 +382,20 @@ access log). Décodeur `decoders/jellyfin.xml` extrait `level`
 (VRB/DBG/INF/WRN/ERR/FTL) et la classe émettrice ; règles
 `rules/100830-jellyfin-rules.xml` (WRN=5, ERR=7, FTL=12). Détail :
 `wazuh/agents/jellyfin/`.
+
+### WireGuard — agent Wazuh + wg-monitor (pas de log natif)
+
+WireGuard (module noyau) n'a **aucun audit natif** : pas de log par pair,
+seul `wg show` donne un état instantané. `dynamic_debug` noyau (journalise
+chaque handshake) indisponible sur wireguard.lab — `/sys/kernel/debug`
+inaccessible même en root (LXC Proxmox, même contrainte que le manager
+SOC-AI). `wg-monitor.py` interroge `wg show wg0 dump` en systemd timer
+(30s), compare à l'état précédent, et loggue les **transitions**
+actif/inactif par pair dans `/var/log/wireguard-events.log` (actif = dernier
+handshake < 200s). Décodeur `decoders/wireguard.xml` ; règles
+`rules/100840-wireguard-rules.xml` (connect/disconnect level 3, reconnexions
+répétées d'un même pair en level 7). Index `wazuh-vpn-*`. Détail (script,
+unités systemd) : `wazuh/agents/wireguard/`.
 
 - Modif du routage : éditer le script dans `alerts-pipeline.json` puis recréer le manager
   (`docker compose up -d --force-recreate wazuh.manager`).
