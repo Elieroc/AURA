@@ -276,6 +276,14 @@
         "ignore_failure": true,
         "source": "def dn = ctx.decoder?.name;\ndef g = ctx.rule?.groups;\nString d;\nif (ctx.timestamp != null && ctx.timestamp.length() >= 10) {\n  d = ctx.timestamp.substring(0,10).replace('-','.');\n} else { return; }\nif (dn == 'pf-nohost') { ctx._index = 'wazuh-firewall-' + d; return; }\nif (dn == 'npm-access') { ctx._index = 'wazuh-proxy-' + d; return; }\nif (dn == 'jellyfin') { ctx._index = 'wazuh-jellyfin-' + d; return; }\nif (dn == 'wg-monitor') { ctx._index = 'wazuh-vpn-' + d; return; }\nif (g != null && g.contains('suricata')) { ctx._index = 'wazuh-firewall-' + d; return; }\nif (g != null && g.contains('dns')) { ctx._index = 'wazuh-dns-' + d; return; }\ndef aid = ctx.agent?.id;\nif (aid == null || aid == '000') { return; }\ndef loc = ctx.location;\nboolean web = g != null && (g.contains('web') || g.contains('apache') || g.contains('nginx') || g.contains('iis'));\nboolean windows = (g != null && g.contains('windows')) || ctx.data?.win != null;\nboolean linux = (g != null && (g.contains('syslog') || g.contains('sshd') || g.contains('pam') || g.contains('systemd') || g.contains('audit') || g.contains('adduser') || g.contains('authentication_success') || g.contains('authentication_failed'))) || (loc instanceof String && (loc.startsWith('/var/log') || loc == 'journald'));\nif (web) { ctx._index = 'wazuh-web-' + d; }\nelse if (windows) { ctx._index = 'wazuh-windows-' + d; }\nelse if (linux) { ctx._index = 'wazuh-linux-' + d; }"
       }
+    },
+    {
+      "script": {
+        "description": "YARITRUST: extract scanned host/ip from loki file_path (/mnt/yaritrust/<host>_<ip>/...) into data.yara.* and route YARA matches to the yara-* index. Runs last so its _index wins over the wazuh-alerts default.",
+        "lang": "painless",
+        "ignore_failure": true,
+        "source": "def g = ctx.rule?.groups;\nif (g == null || !g.contains('yara')) { return; }\ndef fp = ctx.data?.file_path;\nif (fp != null) {\n  int i = fp.indexOf('/mnt/yaritrust/');\n  if (i >= 0) {\n    def rest = fp.substring(i + 15);\n    int sl = rest.indexOf('/');\n    def seg = sl >= 0 ? rest.substring(0, sl) : rest;\n    int us = seg.lastIndexOf('_');\n    if (ctx.data == null) { ctx.data = [:]; }\n    Map y = new HashMap();\n    if (us > 0) { y.scanned_host = seg.substring(0, us); y.scanned_ip = seg.substring(us + 1); }\n    else { y.scanned_host = seg; }\n    ctx.data.yara = y;\n  }\n}\nif (ctx.timestamp == null || ctx.timestamp.length() < 10) { return; }\ndef d = ctx.timestamp.substring(0,10).replace('-','.');\nctx._index = 'yara-' + d;"
+      }
     }
   ],
   "on_failure": [
