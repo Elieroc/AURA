@@ -33,6 +33,18 @@ HIST_PARAMS = {
     "thresholdLine": {"show": False, "value": 10, "width": 1, "style": "full", "color": "#E7664C"},
 }
 
+# PIEGE (vecu, 3 allers-retours) : ne JAMAIS ajouter `.keyword` a un champ ici.
+# Wazuh declare tous ses champs string en `keyword` PUR dans son template
+# (_template/wazuh) — pas en `text` + sous-champ `.keyword` comme le fait le
+# mapping dynamique par defaut d'OpenSearch. `agent.name.keyword`,
+# `rule.description.keyword`, `data.virustotal.source.file.keyword`... n'existent
+# donc pas, et la visualisation affiche "No results found" en silence.
+# Les index custom (wazuh-linux-*, wazuh-web-*, wazuh-proxy-*, ...) heritent du
+# meme mapping via le template `soc-ai-routing` (clone de celui de wazuh, cf.
+# wazuh/README.md) — la regle vaut donc pour eux aussi.
+# Verifier avant d'ajouter un champ :
+#   curl -sk -u admin:$INDEXER_PASSWORD \
+#     "https://localhost:9200/wazuh-alerts-*/_mapping/field/<champ>"
 TERMS = {"orderBy": "1", "order": "desc", "otherBucket": False, "otherBucketLabel": "Other",
          "missingBucket": False, "missingBucketLabel": "Missing"}
 
@@ -49,7 +61,7 @@ SEV_COLORS = {"vis": {"colors": {
 }}}
 
 # Tri des buckets sévérité par rule.severity_order (Critical=5 ... Info=1)
-SEV_TERMS = {**TERMS, "field": "rule.severity.keyword", "size": 5, "orderBy": "custom", "order": "desc",
+SEV_TERMS = {**TERMS, "field": "rule.severity", "size": 5, "orderBy": "custom", "order": "desc",
              "orderAgg": {"id": "orderAgg", "enabled": True, "type": "max", "schema": "orderAgg",
                           "params": {"field": "rule.severity_order"}}}
 
@@ -185,7 +197,7 @@ objs.append(vis("soc-ai-virustotal-table", "Détections VirusTotal", {
          "params": {**TERMS, "field": "data.virustotal.positives", "orderBy": "_key",
                      "size": 5, "customLabel": "Moteurs positifs"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "agent.name.keyword", "size": 5, "customLabel": "Machine"}},
+         "params": {**TERMS, "field": "agent.name", "size": 5, "customLabel": "Machine"}},
     ],
     "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
@@ -284,7 +296,7 @@ objs.append(vis("soc-ai-top-rules", "Top règles déclenchées", {
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
-         "params": {**TERMS, "field": "rule.description.keyword", "size": 10,
+         "params": {**TERMS, "field": "rule.description", "size": 10,
                      "otherBucket": True, "otherBucketLabel": "Autres"}},
     ],
     "params": {"type": "pie", "addTooltip": True, "addLegend": True, "legendPosition": "right",
@@ -301,7 +313,7 @@ objs.append(vis("soc-ai-auth-failures", "Échecs d'authentification", {
                      "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
                      "interval": "auto", "drop_partials": False, "min_doc_count": 1, "extended_bounds": {}}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "group",
-         "params": {**TERMS, "field": "agent.name.keyword", "size": 10}},
+         "params": {**TERMS, "field": "agent.name", "size": 10}},
     ],
     "params": HIST_PARAMS,
 }, IDX_LINUX,
@@ -313,11 +325,11 @@ objs.append(vis("soc-ai-linux-top-alerts", "Top alertes", {
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {"customLabel": "Occurrences"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "rule.description.keyword", "size": 15, "customLabel": "Alerte"}},
+         "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alerte"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**SEV_TERMS, "customLabel": "Sévérité"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "agent.name.keyword", "size": 3, "customLabel": "Agent"}},
+         "params": {**TERMS, "field": "agent.name", "size": 3, "customLabel": "Agent"}},
     ],
     "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
@@ -331,7 +343,7 @@ def hbar_agents(vid, title, metric_label, query=""):
             {"id": "1", "enabled": True, "type": "count", "schema": "metric",
              "params": {"customLabel": metric_label}},
             {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
-             "params": {**TERMS, "field": "agent.name.keyword", "size": 10, "customLabel": "Agent"}},
+             "params": {**TERMS, "field": "agent.name", "size": 10, "customLabel": "Agent"}},
         ],
         "params": {"type": "histogram", "grid": {"categoryLines": False},
                    "categoryAxes": [{"id": "CategoryAxis-1", "type": "category", "position": "left",
@@ -368,7 +380,7 @@ objs.append(vis("soc-ai-web-top-rules", "Top règles web (attaques)", {
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
-         "params": {**TERMS, "field": "rule.description.keyword", "size": 10,
+         "params": {**TERMS, "field": "rule.description", "size": 10,
                      "otherBucket": True, "otherBucketLabel": "Autres"}},
     ],
     "params": {"type": "pie", "addTooltip": True, "addLegend": True, "legendPosition": "right",
@@ -381,11 +393,11 @@ objs.append(vis("soc-ai-web-top-alerts", "Top alertes web", {
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {"customLabel": "Occurrences"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "rule.description.keyword", "size": 15, "customLabel": "Alerte"}},
+         "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alerte"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**SEV_TERMS, "customLabel": "Sévérité"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "agent.name.keyword", "size": 3, "customLabel": "Agent"}},
+         "params": {**TERMS, "field": "agent.name", "size": 3, "customLabel": "Agent"}},
     ],
     "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
@@ -401,7 +413,7 @@ objs.append(vis("soc-ai-web-timeline", "Alertes web (timeline)", {
                      "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
                      "interval": "auto", "drop_partials": False, "min_doc_count": 1, "extended_bounds": {}}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "group",
-         "params": {**TERMS, "field": "agent.name.keyword", "size": 10}},
+         "params": {**TERMS, "field": "agent.name", "size": 10}},
     ],
     "params": HIST_PARAMS,
 }, IDX_WEB))
@@ -412,9 +424,9 @@ objs.append(vis("soc-ai-web-top-urls", "Top URLs ciblées", {
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {"customLabel": "Hits"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "data.url.keyword", "size": 15, "customLabel": "URL"}},
+         "params": {**TERMS, "field": "data.url", "size": 15, "customLabel": "URL"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "data.id.keyword", "size": 3, "customLabel": "Code HTTP"}},
+         "params": {**TERMS, "field": "data.id", "size": 3, "customLabel": "Code HTTP"}},
     ],
     "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
@@ -427,7 +439,7 @@ objs.append(vis("soc-ai-web-top-srcips", "Top IP sources web", {
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
          "params": {"customLabel": "Requêtes"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
-         "params": {**TERMS, "field": "data.srcip.keyword", "size": 10, "customLabel": "IP source"}},
+         "params": {**TERMS, "field": "data.srcip", "size": 10, "customLabel": "IP source"}},
     ],
     "params": {"type": "histogram", "grid": {"categoryLines": False},
                "categoryAxes": [{"id": "CategoryAxis-1", "type": "category", "position": "left",
@@ -455,7 +467,7 @@ objs.append(vis("soc-ai-web-http-codes", "Codes HTTP", {
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
-         "params": {**TERMS, "field": "data.id.keyword", "size": 10, "customLabel": "Code HTTP"}},
+         "params": {**TERMS, "field": "data.id", "size": 10, "customLabel": "Code HTTP"}},
     ],
     "params": {"type": "pie", "addTooltip": True, "addLegend": True, "legendPosition": "right",
                "isDonut": True, "labels": {"show": False, "values": True, "last_level": True, "truncate": 100}},

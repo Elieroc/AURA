@@ -303,7 +303,44 @@ problème d'héritage mais suivent la même convention par cohérence. Le nom du
 décodeur, lui, ne dépend pas de quelle règle matche finalement, donc reste
 fiable pour router.
 
-- Template d'index `soc-ai-routing` (clone du template wazuh, mêmes mappings) appliqué à tous les patterns.
+- **Template d'index `soc-ai-routing` — À CRÉER, sinon mappings dynamiques faux.**
+  Le routage envoie les alertes vers des index qui ne matchent PAS
+  `wazuh-alerts-4.x-*`, donc le template `wazuh` natif ne s'y applique pas :
+  sans template dédié, OpenSearch mappe dynamiquement et se trompe —
+  `GeoLocation.location` devient un objet `{lat,lon}` de floats au lieu d'un
+  `geo_point`, ce qui casse la carte GeoIP (« Saved field
+  "GeoLocation.location" is invalid for use with the "Geohash" aggregation »)
+  et met le champ en `conflict` dans le pattern combiné. Les strings partent
+  en `text` + `.keyword` au lieu de `keyword` pur, ce qui décale tous les noms
+  de champs des agrégations. Création (clone du mapping natif) :
+  ```bash
+  source .env
+  curl -sk -u admin:$INDEXER_PASSWORD "https://localhost:9200/_template/wazuh" -o /tmp/wazuh_tpl.json
+  python3 -c "
+  import json
+  d = json.load(open('/tmp/wazuh_tpl.json'))['wazuh']
+  json.dump({
+      'index_patterns': ['wazuh-linux-*','wazuh-windows-*','wazuh-web-*','wazuh-firewall-*',
+                         'wazuh-proxy-*','wazuh-jellyfin-*','wazuh-vpn-*','wazuh-dns-*'],
+      'settings': {'index': {'number_of_shards': 1, 'number_of_replicas': 0,
+                             'mapping': {'total_fields': {'limit': 10000}}}},
+      'mappings': d['mappings'], 'order': 1,
+  }, open('/tmp/soc-ai-routing.json','w'))"
+  curl -sk -u admin:$INDEXER_PASSWORD -X PUT "https://localhost:9200/_template/soc-ai-routing" \
+    -H "Content-Type: application/json" -d @/tmp/soc-ai-routing.json
+  ```
+  Un template ne s'applique qu'aux index **créés après** : les index déjà
+  mal mappés gardent leur mapping. Les laisser expirer (un par jour) ou les
+  reindexer. **Si reindex : ne jamais supprimer la copie de travail avant
+  d'avoir vérifié le `count` de la destination** — un `_reindex` renvoie
+  `"failures": []` même quand il n'a copié qu'une partie des documents
+  (refresh non forcé), et l'original supprimé ne se récupère pas.
+- **Vérifier les visualisations après chaque import** : `_import` de saved
+  objects réussit même quand les champs référencés n'existent pas — la visu
+  s'ouvre ensuite sur « No results found » ou une erreur d'agrégation, sans
+  rien dans les logs. `dashboards/verify_visualizations.py` rejoue chaque
+  agrégation de chaque visu contre son index pattern et signale les champs
+  invalides.
 - Index patterns dashboard : `wazuh-linux-*`, `wazuh-windows-*`, `wazuh-web-*`, `wazuh-firewall-*`,
   `wazuh-proxy-*`, `wazuh-jellyfin-*`, `wazuh-vpn-*`, `wazuh-dns-*`, plus le pattern combiné `soc-ai-all-alerts`
   (= ceux qui ont réellement des données, cf. piège plus bas) utilisé par l'app Wazuh
