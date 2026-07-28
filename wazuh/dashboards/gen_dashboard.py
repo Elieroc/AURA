@@ -7,11 +7,12 @@ Dashboards :
 - Linux       : top règles, échecs d'auth, top alertes (index wazuh-linux-*)
 """
 import json
+import os
 
 IDX_ALL = "soc-ai-all-alerts"    # pattern combiné wazuh-alerts-*,wazuh-linux-*,wazuh-windows-*,wazuh-web-*,wazuh-firewall-*,wazuh-proxy-*
 IDX_LINUX = "wazuh-linux-*"
 IDX_WEB = "wazuh-web-*"
-OUT = "/home/elie/Nextcloud/Documents/IT/Projets/SOC-AI/wazuh/dashboards/soc-ai-dashboards.ndjson"
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "soc-ai-dashboards.ndjson")
 
 HIST_PARAMS = {
     "type": "histogram", "grid": {"categoryLines": False},
@@ -179,7 +180,7 @@ objs.append(vis("soc-ai-virustotal-table", "Détections VirusTotal", {
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {"customLabel": "Alertes"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "data.virustotal.source.file.keyword", "size": 20, "customLabel": "Fichier"}},
+         "params": {**TERMS, "field": "data.virustotal.source.file", "size": 20, "customLabel": "Fichier"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "data.virustotal.positives", "orderBy": "_key",
                      "size": 5, "customLabel": "Moteurs positifs"}},
