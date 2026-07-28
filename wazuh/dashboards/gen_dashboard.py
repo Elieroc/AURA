@@ -12,6 +12,7 @@ import os
 IDX_ALL = "soc-ai-all-alerts"    # pattern combiné wazuh-alerts-*,wazuh-linux-*,wazuh-windows-*,wazuh-web-*,wazuh-firewall-*,wazuh-proxy-*
 IDX_LINUX = "wazuh-linux-*"
 IDX_WEB = "wazuh-web-*"
+IDX_YARA = "wazuh-yara-*"
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "soc-ai-dashboards.ndjson")
 
 HIST_PARAMS = {
@@ -473,6 +474,92 @@ objs.append(vis("soc-ai-web-http-codes", "Codes HTTP", {
                "isDonut": True, "labels": {"show": False, "values": True, "last_level": True, "truncate": 100}},
 }, IDX_WEB))
 
+# ---------- Visualisations : YARA (index wazuh-yara-*) ----------
+# Loki/YARITRUST : les logs loki portent leur propre niveau dans data.level
+# (ALERT/WARNING/NOTICE) ; la machine scannee est dans data.yara.scanned_host
+# (le champ hostname natif de loki est TOUJOURS le scanner, cf. rule 100900).
+
+objs.append(vis("soc-ai-yara-total", "Fichiers malveillants detectes (total)", {
+    "title": "Fichiers malveillants detectes (total)",
+    "type": "metric",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Matches YARA/IOC"}},
+    ],
+    "params": {"addTooltip": True, "addLegend": False, "type": "metric",
+               "metric": {"percentageMode": False, "useRanges": False,
+                          "colorSchema": "Green to Red", "metricColorMode": "None",
+                          "colorsRange": [{"from": 0, "to": 10000}],
+                          "labels": {"show": True}, "invertColors": False,
+                          "style": {"bgFill": "#000", "bgColor": False, "labelColor": False,
+                                     "subText": "", "fontSize": 60}}},
+}, IDX_YARA))
+
+objs.append(vis("soc-ai-yara-timeline", "Matches YARA par gravite (timeline)", {
+    "title": "Matches YARA par gravite (timeline)",
+    "type": "histogram",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
+        {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
+         "params": {"field": "timestamp", "timeRange": {"from": "now-30d", "to": "now"},
+                     "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
+                     "interval": "auto", "drop_partials": False, "min_doc_count": 1, "extended_bounds": {}}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "group",
+         "params": {**TERMS, "field": "data.level", "size": 3}},
+    ],
+    "params": HIST_PARAMS,
+}, IDX_YARA, ui_state={"vis": {"colors": {"ALERT": "#BD271E", "WARNING": "#E7664C", "NOTICE": "#6092C0"}}}))
+
+objs.append(vis("soc-ai-yara-top-hosts", "Top machines infectees", {
+    "title": "Top machines infectees",
+    "type": "horizontal_bar",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Matches"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "data.yara.scanned_host", "size": 15, "customLabel": "Machine"}},
+    ],
+    "params": {"type": "histogram", "grid": {"categoryLines": False},
+               "categoryAxes": [{"id": "CategoryAxis-1", "type": "category", "position": "left",
+                                  "show": True, "style": {}, "scale": {"type": "linear"},
+                                  "labels": {"show": True, "rotate": 0, "filter": False, "truncate": 200},
+                                  "title": {}}],
+               "valueAxes": [{"id": "ValueAxis-1", "name": "BottomAxis-1", "type": "value",
+                               "position": "bottom", "show": True, "style": {},
+                               "scale": {"type": "linear", "mode": "normal"},
+                               "labels": {"show": True, "rotate": 75, "filter": True, "truncate": 100},
+                               "title": {"text": "Matches"}}],
+               "seriesParams": [{"show": True, "type": "histogram", "mode": "normal",
+                                  "data": {"label": "Matches", "id": "1"},
+                                  "valueAxis": "ValueAxis-1", "drawLinesBetweenPoints": True,
+                                  "lineWidth": 2, "showCircles": True}],
+               "addTooltip": True, "addLegend": False, "legendPosition": "right",
+               "times": [], "addTimeMarker": False, "labels": {},
+               "thresholdLine": {"show": False, "value": 10, "width": 1, "style": "full",
+                                  "color": "#E7664C"}},
+}, IDX_YARA))
+
+objs.append(vis("soc-ai-yara-top-files", "Fichiers detectes", {
+    "title": "Fichiers detectes",
+    "type": "table",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {"customLabel": "Occurrences"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "data.file_path", "size": 20, "customLabel": "Fichier"}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "data.yara.scanned_host", "size": 3, "customLabel": "Machine"}},
+        {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "data.sha256", "size": 1, "customLabel": "SHA256"}},
+    ],
+    "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
+               "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
+}, IDX_YARA))
+
+objs.append(saved_search("soc-ai-yara-latest", "Derniers matches YARA",
+    "Flux chronologique des fichiers detectes par Loki/YARITRUST, plus recents en tete.",
+    ["data.yara.scanned_host", "data.score", "rule.severity", "data.file_path", "data.sha256"],
+    IDX_YARA))
+
 # ---------- Dashboards ----------
 
 objs.append(dashboard("soc-ai-threat-intel", "Threat Intel",
@@ -512,6 +599,16 @@ objs.append(dashboard("soc-ai-web", "Web",
         ("soc-ai-web-top-urls",    0, 27, 24, 13),
         ("soc-ai-web-top-srcips", 24, 27, 12, 13),
         ("soc-ai-web-http-codes", 36, 27, 12, 13),
+    ]))
+
+objs.append(dashboard("soc-ai-yara", "YARA",
+    "Scans YARA/IOC Loki (YARITRUST, index wazuh-yara-*) : fichiers malveillants detectes par machine du lab.",
+    [
+        ("soc-ai-yara-total",     0,  0, 12, 12),
+        ("soc-ai-yara-timeline", 12,  0, 36, 12),
+        ("soc-ai-yara-top-hosts", 0, 12, 24, 14),
+        ("soc-ai-yara-top-files",24, 12, 24, 14),
+        ("soc-ai-yara-latest",    0, 26, 48, 20, "search"),
     ]))
 
 with open(OUT, "w") as f:
