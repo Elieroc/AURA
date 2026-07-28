@@ -279,10 +279,10 @@
     },
     {
       "script": {
-        "description": "YARITRUST: extract scanned host/ip from loki file_path (/mnt/yaritrust/<host>_<ip>/...) into data.yara.* and route YARA matches to the wazuh-yara-* index. Runs last so its _index wins over the wazuh-alerts default.",
+        "description": "YARITRUST: from loki file_path (/mnt/yaritrust/<host>_<ip>/<real path>) extract host/ip into data.yara.*, keep the full mount path in data.yara.scan_path, rewrite data.file_path to the real path on the scanned host (prefix stripped), and route YARA matches to the wazuh-yara-* index. Runs last so its _index wins over the wazuh-alerts default.",
         "lang": "painless",
         "ignore_failure": true,
-        "source": "def g = ctx.rule?.groups;\nif (g == null || !g.contains('yara')) { return; }\ndef fp = ctx.data?.file_path;\nif (fp != null) {\n  int i = fp.indexOf('/mnt/yaritrust/');\n  if (i >= 0) {\n    def rest = fp.substring(i + 15);\n    int sl = rest.indexOf('/');\n    def seg = sl >= 0 ? rest.substring(0, sl) : rest;\n    int us = seg.lastIndexOf('_');\n    if (ctx.data == null) { ctx.data = [:]; }\n    Map y = new HashMap();\n    if (us > 0) { y.scanned_host = seg.substring(0, us); y.scanned_ip = seg.substring(us + 1); }\n    else { y.scanned_host = seg; }\n    ctx.data.yara = y;\n  }\n}\nif (ctx.timestamp == null || ctx.timestamp.length() < 10) { return; }\ndef d = ctx.timestamp.substring(0,10).replace('-','.');\nctx._index = 'wazuh-yara-' + d;"
+        "source": "def g = ctx.rule?.groups;\nif (g == null || !g.contains('yara')) { return; }\ndef fp = ctx.data?.file_path;\nif (fp != null) {\n  int i = fp.indexOf('/mnt/yaritrust/');\n  if (i >= 0) {\n    def rest = fp.substring(i + 15);\n    int sl = rest.indexOf('/');\n    def seg = sl >= 0 ? rest.substring(0, sl) : rest;\n    int us = seg.lastIndexOf('_');\n    if (ctx.data == null) { ctx.data = [:]; }\n    Map y = new HashMap();\n    if (us > 0) { y.scanned_host = seg.substring(0, us); y.scanned_ip = seg.substring(us + 1); }\n    else { y.scanned_host = seg; }\n    y.scan_path = fp;\n    ctx.data.yara = y;\n    def real = sl >= 0 ? rest.substring(sl) : '/';\n    ctx.data.file_path = real;\n    if (ctx.rule != null && ctx.rule.description != null) {\n      ctx.rule.description = ctx.rule.description.replace(fp, real);\n    }\n  }\n}\nif (ctx.timestamp == null || ctx.timestamp.length() < 10) { return; }\ndef d = ctx.timestamp.substring(0,10).replace('-','.');\nctx._index = 'wazuh-yara-' + d;"
       }
     }
   ],
