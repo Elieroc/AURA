@@ -291,6 +291,7 @@ par un processor `script` ajouté en fin de pipeline ingest
 | `wazuh-proxy-*` | `decoder.name == 'npm-access'` |
 | `wazuh-jellyfin-*` | `decoder.name == 'jellyfin'` — log applicatif, pas un format web (pas de nginx devant Jellyfin) |
 | `wazuh-vpn-*` | `decoder.name == 'wg-monitor'` — WireGuard n'a pas de log natif, cf. section VPN plus bas |
+| `wazuh-dns-*` | `rule.groups` contient `dns` (AdGuard Home, decoder générique `json` — pas assez spécifique pour router dessus) |
 | `wazuh-alerts-*` (défaut) | tout le reste + alertes du manager |
 
 Firewall, proxy, jellyfin et vpn testent le **décodeur**, pas `rule.groups`
@@ -304,7 +305,7 @@ fiable pour router.
 
 - Template d'index `soc-ai-routing` (clone du template wazuh, mêmes mappings) appliqué à tous les patterns.
 - Index patterns dashboard : `wazuh-linux-*`, `wazuh-windows-*`, `wazuh-web-*`, `wazuh-firewall-*`,
-  `wazuh-proxy-*`, `wazuh-jellyfin-*`, `wazuh-vpn-*`, plus le pattern combiné `soc-ai-all-alerts`
+  `wazuh-proxy-*`, `wazuh-jellyfin-*`, `wazuh-vpn-*`, `wazuh-dns-*`, plus le pattern combiné `soc-ai-all-alerts`
   (= ceux qui ont réellement des données, cf. piège plus bas) utilisé par l'app Wazuh
   (`pattern:` dans `wazuh_dashboard/wazuh.yml`) et le dashboard custom, pour garder
   une vue globale.
@@ -400,6 +401,22 @@ parallèle. Systemd timer (30s), compare à l'état précédent, loggue les
 3, reconnexions ou changements d'IP répétés en level 7). Index
 `wazuh-vpn-*`. Détail (script, unités systemd, piège du test en direct sans
 passer par systemd) : `wazuh/agents/wireguard/`.
+
+### AdGuard Home — agent Wazuh, JSON natif (aucun décodeur custom)
+
+Query log déjà en JSON structuré (une ligne par requête DNS) :
+`log_format=json` suffit, Wazuh décode tous les champs automatiquement
+(objets imbriqués aplatis, ex `Result.IsFiltered`) — premier agent de ce
+repo sans le moindre décodeur custom. Règles
+`rules/100850-adguard-dns-rules.xml` : grouped, requête bloquée (level 3),
+nombreuses résolutions bloquées depuis la même IP en 60s (level 7, machine
+potentiellement compromise). Index `wazuh-dns-*`.
+
+**Piège rencontré** : AdGuard Home bufferise le query log en mémoire avant
+d'écrire sur disque (`querylog.size_memory`, défaut 1000 requêtes) — sur un
+homelab, une résolution bloquée peut mettre des dizaines de minutes à
+apparaître dans Wazuh. Abaissé à 20 sur adguard-home.lab pour une visibilité
+quasi temps réel. Détail : `wazuh/agents/adguard-home/`.
 
 - Modif du routage : éditer le script dans `alerts-pipeline.json` puis recréer le manager
   (`docker compose up -d --force-recreate wazuh.manager`).

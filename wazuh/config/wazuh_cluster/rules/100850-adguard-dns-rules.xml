@@ -1,0 +1,32 @@
+<!--
+  AdGuard Home : query log déjà en JSON structuré (une ligne par requête DNS),
+  décodé par le decoder générique natif "json" (pas de decoder custom
+  nécessaire) — QH (hostname interrogé), IP (client), Result.IsFiltered
+  (bloqué par une règle de filtrage).
+-->
+<group name="local,dns,">
+  <rule id="100850" level="0">
+    <decoded_as>json</decoded_as>
+    <field name="QH">\.+</field>
+    <description>AdGuard Home DNS query grouped.</description>
+  </rule>
+
+  <rule id="100851" level="3">
+    <if_sid>100850</if_sid>
+    <field name="Result.IsFiltered">^true$</field>
+    <description>AdGuard Home: DNS query blocked for $(QH) from $(IP).</description>
+  </rule>
+
+  <!-- Beaucoup de résolutions bloquées depuis la même IP en peu de temps :
+       signe probable d'une machine infectée qui essaie de joindre un C2/domaine
+       de phishing déjà connu du filtrage, ou d'un logiciel très bavard en
+       télémétrie/pub bloquée (bruit attendu, l'IA de triage tranchera). -->
+  <rule id="100852" level="7" frequency="20" timeframe="60" ignore="300">
+    <if_matched_sid>100851</if_matched_sid>
+    <same_field>IP</same_field>
+    <description>AdGuard Home: nombreuses résolutions DNS bloquées depuis $(IP) (machine potentiellement compromise).</description>
+    <mitre>
+      <id>T1071.004</id>
+    </mitre>
+  </rule>
+</group>
