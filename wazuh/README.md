@@ -467,11 +467,12 @@ quasi temps réel. Détail : `wazuh/agents/adguard-home/`.
 
 ## Dashboards custom
 
-- `dashboards/soc-ai-dashboards.ndjson` (généré par `dashboards/gen_dashboard.py`), 3 dashboards :
+- `dashboards/soc-ai-dashboards.ndjson` (généré par `dashboards/gen_dashboard.py`), 5 dashboards :
   - **Threat Intel** : carte GeoIP des IP sources, réputation AbuseIPDB, détections VirusTotal
   - **Global** : compteur d'événements global + timeline des alertes par niveau
   - **Linux** : top règles, top alertes, échecs d'authentification, top agents (index `wazuh-linux-*`)
   - **Web** : top règles/alertes d'attaque, timeline, top URLs ciblées, top IP sources, codes HTTP (index `wazuh-web-*`)
+  - **YARA** : fichiers malveillants détectés par Loki/YARITRUST, top machines infectées, timeline par gravité, liste des matches (index `wazuh-yara-*`)
 - Import (API saved objects, idempotent) — les index patterns custom **avant**, sinon l'import
   échoue silencieusement sur les visualisations qui les référencent (`soc-ai-all-alerts`,
   `wazuh-linux-*`, `wazuh-web-*` n'existent pas par défaut, contrairement à `wazuh-alerts-*`) :
