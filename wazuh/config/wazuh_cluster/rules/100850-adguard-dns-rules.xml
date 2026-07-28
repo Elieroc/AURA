@@ -17,6 +17,12 @@
     <description>AdGuard Home: DNS query blocked for $(QH) from $(IP).</description>
   </rule>
 
+  <rule id="100853" level="2">
+    <if_sid>100850</if_sid>
+    <match negate="yes">"IsFiltered":true</match>
+    <description>AdGuard Home: DNS query allowed for $(QH) from $(IP).</description>
+  </rule>
+
   <!-- Beaucoup de résolutions bloquées depuis la même IP en peu de temps :
        signe probable d'une machine infectée qui essaie de joindre un C2/domaine
        de phishing déjà connu du filtrage, ou d'un logiciel très bavard en
