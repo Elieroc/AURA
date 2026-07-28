@@ -102,6 +102,15 @@ Suricata tourne en paquet pfSense (`pfSense-pkg-suricata`), **une instance par
 interface**. Piège de nommage : le VLAN `LAN100` est l'interface pfSense `wan`
 (vtnet0) — le champ `descr` porte le nom du VLAN, pas la clé de config.
 
+```bash
+scp wazuh/agents/pfsense/configure-suricata.php root@<pfsense>:/tmp/
+ssh root@<pfsense> 'php -f /tmp/configure-suricata.php -- wan LAN100'
+ssh root@<pfsense> '/usr/local/etc/rc.d/suricata.sh restart'
+```
+
+Le script est idempotent et applique tout ce qui suit. Détail de ce qu'il fait
+et pourquoi :
+
 Configuration **sans la webUI** : un script PHP sur le boîtier qui manipule
 `config_get_path('installedpackages/suricata/rule')`, puis `write_config()`,
 puis `sync_suricata_package_config()` (définie dans
@@ -133,6 +142,20 @@ liste un objet par fichier réellement suivi, avec son `offset`.
 `_tls`, `_smb`, …) et ne garder que `alert`, `drop`, `anomaly`. Mesuré sur ce
 lab : ~450 Mo/jour et par interface avec les transactions, contre quelques
 événements par minute sans.
+
+**Catégorie `stream-events` supprimée sur toutes les interfaces.** Sur ce lab
+virtualisé (virtio + TCP offload), Suricata voit des segments que la carte a
+déjà réassemblés ou découpés autrement : `SURICATA STREAM ESTABLISHED invalid
+ack` et `Packet with invalid ack` tiraient en continu. Mesuré **~200 alertes/s,
+127 000 en dix minutes, 98 % du volume Suricata total** — du bruit
+d'infrastructure, pas de l'évasion TCP. Suppression via une liste
+`stream-noise` (`installedpackages/suricata/suppress/item`, contenu en base64
+dans `suppresspassthru`, écrit dans le `threshold.config` de chaque instance),
+rattachée aux 5 instances par `suppresslistname`. Après suppression : 37
+événements sur 3 min, uniquement ET user-agent et QUIC.
+
+Ce piège ne se voit pas tant que l'EVE part en syslog : le bruit existait déjà,
+il était juste jeté. Il apparaît le jour où on branche Wazuh dessus.
 
 Index de destination : `wazuh-firewall-*`, routé sur `rule.groups` contenant
 `suricata` (le décodeur est le `json` générique, il ne discrimine rien).
