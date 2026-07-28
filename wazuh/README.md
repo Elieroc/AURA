@@ -287,7 +287,7 @@ par un processor `script` ajouté en fin de pipeline ingest
 | `wazuh-web-*` | `rule.groups` contient web/apache/nginx/iis |
 | `wazuh-windows-*` | `rule.groups` contient windows, ou champ `data.win` présent |
 | `wazuh-linux-*` | groupes syslog/sshd/pam/systemd/audit/auth, ou `location` = journald ou /var/log/* |
-| `wazuh-firewall-*` | `decoder.name == 'pf-nohost'` — **avant** le test `agent.id`, car pfSense arrive en syslog direct sur le manager (agent.id=000), pas via un agent |
+| `wazuh-firewall-*` | `decoder.name == 'pf-nohost'` — **avant** le test `agent.id`, car pfSense arrive en syslog direct sur le manager (agent.id=000), pas via un agent ; **ou** `rule.groups` contient `suricata` (IDS du même boîtier, mais remonté par l'agent Wazuh de pfSense) |
 | `wazuh-proxy-*` | `decoder.name == 'npm-access'` |
 | `wazuh-jellyfin-*` | `decoder.name == 'jellyfin'` — log applicatif, pas un format web (pas de nginx devant Jellyfin) |
 | `wazuh-vpn-*` | `decoder.name == 'wg-monitor'` — WireGuard n'a pas de log natif, cf. section VPN plus bas |
@@ -302,6 +302,13 @@ règle locale qui porterait le tag de groupe. Jellyfin/vpn n'ont pas ce
 problème d'héritage mais suivent la même convention par cohérence. Le nom du
 décodeur, lui, ne dépend pas de quelle règle matche finalement, donc reste
 fiable pour router.
+
+Exception : les alertes **Suricata** partagent l'index `wazuh-firewall-*` avec le
+syslog pfSense (même boîtier), mais se routent sur `rule.groups` et non sur le
+décodeur — l'EVE JSON est décodé par le décodeur générique `json`, comme AdGuard,
+donc `decoder.name` ne discrimine rien. Ce test est placé **avant** celui de
+`dns` : sinon une alerte Suricata portant le groupe `dns` (règles 86601+ sur des
+événements DNS) atterrirait dans `wazuh-dns-*`.
 
 - **Template d'index `soc-ai-routing` — À CRÉER, sinon mappings dynamiques faux.**
   Le routage envoie les alertes vers des index qui ne matchent PAS
