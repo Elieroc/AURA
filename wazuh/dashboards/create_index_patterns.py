@@ -39,6 +39,7 @@ SIMPLE_PATTERNS = {
     "wazuh-jellyfin-*": "wazuh-jellyfin-*",
     "wazuh-vpn-*": "wazuh-vpn-*",
     "wazuh-dns-*": "wazuh-dns-*",
+    "wazuh-yara-*": "wazuh-yara-*",
 }
 
 # Candidats du pattern combiné — filtrés à l'existence réelle avant de
@@ -46,6 +47,7 @@ SIMPLE_PATTERNS = {
 ALL_ALERTS_CANDIDATES = [
     "wazuh-alerts-*", "wazuh-linux-*", "wazuh-windows-*", "wazuh-web-*",
     "wazuh-firewall-*", "wazuh-proxy-*", "wazuh-jellyfin-*", "wazuh-vpn-*", "wazuh-dns-*",
+    "wazuh-yara-*",
 ]
 
 

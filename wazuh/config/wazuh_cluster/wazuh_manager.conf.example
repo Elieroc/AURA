@@ -46,7 +46,7 @@
     <allowed-ips>CHANGE_ME_PFSENSE_IP/32</allowed-ips>
     <!-- YARITRUST scanner (loki host): loki --remote json datagrams over
          udp/514, decoded by the generic json decoder, rules 100900-100903,
-         routed to the yara-* index by alerts-pipeline.json. -->
+         routed to the wazuh-yara-* index by alerts-pipeline.json. -->
     <allowed-ips>CHANGE_ME_YARITRUST_SCANNER_IP/32</allowed-ips>
   </remote>
 

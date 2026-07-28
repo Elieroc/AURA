@@ -9,7 +9,7 @@
      ("loki"), never the host being scanned. The scanned host is carried in
      file_path, which the scanner builds as /mnt/yaritrust/<host>_<ip>/... and
      the indexer ingest pipeline (alerts-pipeline.json) extracts into
-     data.yara.scanned_host / data.yara.scanned_ip and routes to the yara-* index.
+     data.yara.scanned_host / data.yara.scanned_ip and routes to the wazuh-yara-* index.
 
      Severity mirrors loki's own tiering (level field): ALERT (score >= alert
      level, default 80) is treated as HIGH so the SOC-AI triage pipeline
