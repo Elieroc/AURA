@@ -17,6 +17,25 @@ docker compose -f generate-indexer-certs.yml run --rm generator
 docker compose up -d
 ```
 
+**Vérifier que la configuration partagée (agent.conf : FIM ransomware/webshell/SSH
+keys, cron/sudoers/pam) part bien vers les agents** — piège vécu en prod : le
+volume `wazuh_etc` neuf a `/var/ossec/etc/shared/default/` en `root:root`, alors
+que `wazuh-remoted` tourne en user `wazuh` (uid 999) et ne peut pas y écrire
+`merged.mg`. Symptôme : `wazuh-remoted: ERROR: Unable to open file:
+'etc/shared/default/merged.mg' due to [(13)-(Permission denied)]` en boucle
+dans les logs du manager, agents actifs mais **aucune des directives FIM
+custom jamais appliquée** (silencieux : pas d'agent syscheckd en erreur, il
+applique juste le strict minimum par défaut de l'image). Fix (une fois par
+volume `wazuh_etc`, persiste ensuite) :
+
+```bash
+docker exec wazuh-wazuh.manager-1 chown -R wazuh:wazuh /var/ossec/etc/shared
+docker restart wazuh-wazuh.manager-1
+# vérifier :
+docker exec wazuh-wazuh.manager-1 ls -la /var/ossec/etc/shared/default/   # merged.mg doit exister
+docker exec wazuh-wazuh.manager-1 grep merged.mg /var/ossec/logs/ossec.log  # plus d'erreur après le restart
+```
+
 Dashboard : https://localhost — `admin` / `INDEXER_PASSWORD`.
 
 Dashboards/visualisations custom (index patterns d'abord, sinon l'import
