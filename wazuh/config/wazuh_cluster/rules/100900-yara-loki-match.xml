@@ -1,0 +1,57 @@
+<!-- Loki-RS / YARITRUST remote JSON: YARA & IOC file matches from lab-wide scans.
+
+     Transport: the YARITRUST scanner (loki.lab, 192.168.10.4) mounts every lab
+     host read-only over sshfs and runs loki against the mount, shipping results
+     as JSON datagrams to the manager syslog remote (udp/514). Each datagram is
+     decoded by the generic 'json' decoder.
+
+     Scanned-host identity: loki's own "hostname" field is ALWAYS the scanner
+     ("loki"), never the host being scanned. The scanned host is carried in
+     file_path, which the scanner builds as /mnt/yaritrust/<host>_<ip>/... and
+     the indexer ingest pipeline (alerts-pipeline.json) extracts into
+     data.yara.scanned_host / data.yara.scanned_ip and routes to the yara-* index.
+
+     Severity mirrors loki's own tiering (level field): ALERT (score >= alert
+     level, default 80) is treated as HIGH so the SOC-AI triage pipeline
+     (>= level 12) picks it up; WARNING / NOTICE stay informational. -->
+<group name="local,yara,yaritrust,">
+
+  <!-- Base rule: any loki file match on a YARITRUST mount. Chained to the
+       native generic-JSON root 86600 (decoded_as json + timestamp + event_type)
+       rather than decoded_as json directly: two sibling root rules on the same
+       decoder would let the first-loaded native rule win and ours never fire
+       (same trap as 31100 vs 100820, cf. npm-proxy rule). Level kept low so it
+       never fires on its own; the level-tiering children below inherit it. -->
+  <rule id="100900" level="3">
+    <if_sid>86600</if_sid>
+    <field name="event_type">^file_match$</field>
+    <field name="file_path">/mnt/yaritrust/</field>
+    <description>YARITRUST: Loki file match (base).</description>
+    <options>no_full_log</options>
+  </rule>
+
+  <rule id="100901" level="12">
+    <if_sid>100900</if_sid>
+    <field name="level">ALERT</field>
+    <description>YARITRUST: malware/YARA alert on $(file_path) (score $(score)).</description>
+    <group>yara_alert,</group>
+    <mitre>
+      <id>T1587</id>
+    </mitre>
+  </rule>
+
+  <rule id="100902" level="7">
+    <if_sid>100900</if_sid>
+    <field name="level">WARNING</field>
+    <description>YARITRUST: suspicious file warning on $(file_path) (score $(score)).</description>
+    <group>yara_warning,</group>
+  </rule>
+
+  <rule id="100903" level="4">
+    <if_sid>100900</if_sid>
+    <field name="level">NOTICE</field>
+    <description>YARITRUST: file notice on $(file_path) (score $(score)).</description>
+    <group>yara_notice,</group>
+  </rule>
+
+</group>
