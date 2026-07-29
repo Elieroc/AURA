@@ -18,7 +18,7 @@ import sys
 
 import psycopg
 
-from . import config, correlate, ingest, iris, triage, whitelist
+from . import config, correlate, ingest, iris, triage, watchdog, whitelist
 
 # Journalisé sur stderr -> capté par `docker compose logs` du conteneur.
 logging.basicConfig(
@@ -53,6 +53,15 @@ def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
 
             n_inc, n_alertes = correlate.correler(config.MIN_LEVEL)
             log.info("correlate : %d alertes -> %d incidents", n_alertes, n_inc)
+
+            # Capteur muet : un flux établi qui se tait (Suricata étouffé, lecteur
+            # journald figé, audit coupé) rend des pans du ruleset inertes sans la
+            # moindre alerte. Détecté côté base, donc pas soumis au backlog de
+            # l'agent. Log-only pour l'instant (escalade IRIS = revue à part).
+            try:
+                watchdog.verifier()  # journalise chaque capteur muet en WARNING
+            except Exception as e:  # noqa: BLE001 — un watchdog ne casse pas le cycle
+                log.warning("watchdog capteur muet sauté : %s", e)
 
             # Le triage dépend du serveur LLM. S'il est indisponible, on ne fait
             # pas échouer tout le cycle : l'ingestion et la corrélation ont déjà
