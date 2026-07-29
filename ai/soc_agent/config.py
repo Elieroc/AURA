@@ -255,6 +255,26 @@ COMMAND_CLUSTER_GAP_S = int(os.environ.get("COMMAND_CLUSTER_GAP_S", "60"))
 # accident ; la récurrence est le signal.
 WHITELIST_MIN_FP = int(os.environ.get("WHITELIST_MIN_FP", "3"))
 
+# --- Métriques d'IA exportées vers l'indexer (metrics.py) -------------------
+#
+# Index dédié plutôt qu'un champ dans les alertes : ces documents ne sont pas
+# des alertes, ils n'ont ni agent ni règle, et les mélanger fausserait tous les
+# compteurs d'alertes existants.
+METRICS_INDEX_PREFIX = os.environ.get("METRICS_INDEX_PREFIX", "wazuh-ai")
+
+# Fenêtre réexportée à chaque passage. Largement supérieure à la cadence du job
+# (5 min) : l'export étant idempotent (_id déterministe), un recouvrement large
+# rattrape gratuitement une panne d'indexer de quelques heures.
+METRICS_FENETRE = os.environ.get("METRICS_FENETRE", "6h")
+
+# Tarifs du modèle, en USD par million de tokens. À 0, le champ `ai.cost_usd`
+# est présent mais nul — un coût faux serait pire qu'un coût absent. Renseigner
+# avec le tarif réel de DEEPSEEK_MODEL pour que la courbe de coût ait un sens.
+LLM_COUT_USD_PAR_MTOKEN_IN = float(
+    os.environ.get("LLM_COUT_USD_PAR_MTOKEN_IN", "0"))
+LLM_COUT_USD_PAR_MTOKEN_OUT = float(
+    os.environ.get("LLM_COUT_USD_PAR_MTOKEN_OUT", "0"))
+
 # --- Réglage automatique des règles Wazuh (rule_tuning.py) ------------------
 #
 # Second étage de la whitelist : au lieu d'écarter l'alerte APRÈS coup dans le

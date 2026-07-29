@@ -14,21 +14,71 @@ template change le verdict (mesuré).
 """
 
 import json
+import logging
 import time
 
 import requests
 
 from . import config
 
+log = logging.getLogger(__name__)
+
+
+def _enregistrer(usage: str, modele: str, max_tokens: int, duree_ms: int,
+                 metriques: dict | None, incident_id: int | None,
+                 erreur: str | None) -> None:
+    """Trace l'appel dans `llm_calls`. N'échoue JAMAIS vers l'appelant.
+
+    Point de passage unique : instrumenter ici plutôt que chez chaque appelant
+    garantit qu'un nouvel usage du modèle est compté sans qu'on y pense. Et une
+    métrique perdue vaut mieux qu'un verdict perdu — d'où le try/except large.
+
+    Import de psycopg à l'intérieur : `llm.py` doit rester utilisable sans base
+    (tests, appels ponctuels).
+    """
+    try:
+        import psycopg
+        m = metriques or {}
+        with psycopg.connect(config.PG_DSN) as conn:
+            conn.execute(
+                "INSERT INTO llm_calls (usage, modele, prompt_tokens, "
+                "completion_tokens, max_tokens, duree_ms, incident_id, ok, erreur) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (usage, m.get("modele") or modele, m.get("prompt_tokens"),
+                 m.get("completion_tokens"), max_tokens, duree_ms,
+                 incident_id, erreur is None, erreur))
+            conn.commit()
+    except Exception as e:                                   # noqa: BLE001
+        log.debug("métrique LLM non enregistrée : %s", e)
+
 
 def completion(systeme: str, utilisateur: str, max_tokens: int = 500,
-               temperature: float = 0.2) -> tuple[dict, dict]:
+               temperature: float = 0.2, usage: str = "inconnu",
+               incident_id: int | None = None) -> tuple[dict, dict]:
     """Retourne (objet JSON parsé, métriques).
 
     `response_format` json_object exige que le mot « json » apparaisse dans les
     messages — les prompts système le mentionnent explicitement (« objet JSON »).
+
+    `usage` nomme l'appelant ('triage', 'report', …) : c'est la dimension par
+    laquelle on lit ensuite la consommation dans le dashboard AI. Les appels en
+    échec sont comptés aussi — un timeout ou un budget trop court coûte du
+    temps, et parfois des tokens, même sans réponse exploitable.
     """
     debut = time.monotonic()
+    try:
+        return _completion(systeme, utilisateur, max_tokens, temperature,
+                           usage, incident_id, debut)
+    except Exception as e:                                   # noqa: BLE001
+        _enregistrer(usage, config.DEEPSEEK_MODEL, max_tokens,
+                     int((time.monotonic() - debut) * 1000), None,
+                     incident_id, f"{type(e).__name__}: {e}"[:500])
+        raise
+
+
+def _completion(systeme: str, utilisateur: str, max_tokens: int,
+                temperature: float, usage: str, incident_id: int | None,
+                debut: float) -> tuple[dict, dict]:
     rep = requests.post(
         f"{config.DEEPSEEK_URL}/chat/completions",
         headers={"Authorization": f"Bearer {config.DEEPSEEK_API_KEY}"},
@@ -66,8 +116,11 @@ def completion(systeme: str, utilisateur: str, max_tokens: int = 500,
     # json_object garantit un JSON valide : un JSONDecodeError ici signalerait
     # une panne côté API, pas une sortie mal formée du modèle. On laisse remonter.
     obj = json.loads(contenu)
-    usage = corps.get("usage", {})
-    return obj, {"duree_ms": duree_ms,
-                 "prompt_tokens": usage.get("prompt_tokens"),
-                 "completion_tokens": usage.get("completion_tokens"),
+    conso = corps.get("usage", {})
+    metriques = {"duree_ms": duree_ms,
+                 "prompt_tokens": conso.get("prompt_tokens"),
+                 "completion_tokens": conso.get("completion_tokens"),
                  "modele": corps.get("model", config.DEEPSEEK_MODEL)}
+    _enregistrer(usage, config.DEEPSEEK_MODEL, max_tokens, duree_ms,
+                 metriques, incident_id, None)
+    return obj, metriques

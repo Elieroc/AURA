@@ -138,7 +138,9 @@ def _traiter_tache(conn, case, incident_id: int, case_id: int, task_id: int,
         verifier_fuite(utilisateur, interdits)
         systeme = (PROMPTS / "whitelist_task.md").read_text()
         rep, _ = completion(systeme, utilisateur,
-                            max_tokens=config.WHITELIST_TASK_MAX_TOKENS)
+                            max_tokens=config.WHITELIST_TASK_MAX_TOKENS,
+                            usage="whitelist_task",
+                            incident_id=incident_id)
         sauver_map(conn, incident_id, anon.mapping)
     except Exception as e:  # noqa: BLE001 — retry naturel au prochain passage
         log.warning("LLM whitelist_task indisponible (tâche %s) : %s", task_id, e)
