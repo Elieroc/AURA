@@ -74,5 +74,20 @@ services:
     container_name: soc-agent-whitelist-task
     command: sh -c "while true; do python -m soc_agent.whitelist_task; sleep 60; done"
 
+  # Génère des règles Wazuh d'exception à partir des FP récurrents, pour que le
+  # bruit soit écarté DANS le moteur de règles et non après coup par le
+  # soc-agent (cf. rule_tuning.py). Seul job à écrire dans le répertoire de
+  # règles du manager, d'où le montage — le même chemin hôte que celui monté
+  # sur /var/ossec/etc/rules dans wazuh/docker-compose.yml.
+  #
+  # Cadence HORAIRE et non à la minute : charger un changement de règle exige
+  # un redémarrage du manager. Il n'y a rien d'urgent à calmer une règle.
+  soc-agent-rule-tuning:
+    <<: *soc-agent
+    container_name: soc-agent-rule-tuning
+    volumes:
+      - ${WAZUH_RULES_DIR:-../wazuh/config/wazuh_cluster/rules}:/wazuh-rules
+    command: sh -c "while true; do python -m soc_agent.rule_tuning; sleep 3600; done"
+
 volumes:
   socagent_db:

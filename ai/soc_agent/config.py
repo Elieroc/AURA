@@ -255,6 +255,48 @@ COMMAND_CLUSTER_GAP_S = int(os.environ.get("COMMAND_CLUSTER_GAP_S", "60"))
 # accident ; la récurrence est le signal.
 WHITELIST_MIN_FP = int(os.environ.get("WHITELIST_MIN_FP", "3"))
 
+# --- Réglage automatique des règles Wazuh (rule_tuning.py) ------------------
+#
+# Second étage de la whitelist : au lieu d'écarter l'alerte APRÈS coup dans le
+# soc-agent, on génère une règle fille Wazuh qui la neutralise dans le moteur
+# lui-même. Le bruit ne coûte alors plus ni indexation ni corrélation.
+
+# Répertoire de règles du manager, monté dans le conteneur. Même répertoire que
+# les règles écrites à la main : un fichier par règle, ordre alphabétique.
+RULE_TUNING_DIR = os.environ.get(
+    "RULE_TUNING_DIR", "/wazuh-rules")
+
+# Plage d'identifiants réservée aux règles générées. Séparée de 1006xx-1009xx
+# (règles écrites à la main) pour qu'un coup d'œil au numéro dise l'origine.
+RULE_TUNING_ID_MIN = int(os.environ.get("RULE_TUNING_ID_MIN", "101000"))
+RULE_TUNING_ID_MAX = int(os.environ.get("RULE_TUNING_ID_MAX", "101999"))
+
+# Niveau appliqué par l'exception. Par DÉFAUT on abaisse (5) au lieu de
+# supprimer (0) : l'alerte reste consultable et auditable, elle passe seulement
+# sous MIN_LEVEL, donc n'ouvre plus d'incident. C'est ce qui distingue
+# « calmer une règle » de « l'invalider ».
+RULE_TUNING_NIVEAU = int(os.environ.get("RULE_TUNING_NIVEAU", "5"))
+
+# La suppression totale (niveau 0) fait disparaître l'évènement des alertes :
+# plus rien à relire le jour où la signature exonérée s'avère être une vraie
+# attaque. Verrouillée derrière un drapeau explicite.
+RULE_TUNING_AUTORISE_NIVEAU_0 = os.environ.get(
+    "RULE_TUNING_AUTORISE_NIVEAU_0", "false").lower() == "true"
+
+# Plafond de règles générées. Au-delà, ce n'est plus du réglage fin : c'est un
+# ruleset qui ne correspond pas à l'environnement, et ça se traite à la main.
+RULE_TUNING_MAX_REGLES = int(os.environ.get("RULE_TUNING_MAX_REGLES", "50"))
+
+# Alertes examinées pour trouver un contre-exemple (un évènement de la même
+# règle parente NON couvert par l'exception). Sans contre-exemple, la règle
+# n'est pas déployée : on ne peut pas prouver qu'elle n'invalide pas la parente.
+RULE_TUNING_CANDIDATS_CONTRE_EXEMPLE = int(
+    os.environ.get("RULE_TUNING_CANDIDATS_CONTRE_EXEMPLE", "200"))
+
+# Redémarrage du manager (seule façon de charger un changement de règle) :
+# nombre de sondages de 5 s avant de conclure à l'échec et de tout retirer.
+RULE_TUNING_ATTENTE_ESSAIS = int(os.environ.get("RULE_TUNING_ATTENTE_ESSAIS", "24"))
+
 # Niveau Wazuh à partir duquel on ne whitelist JAMAIS automatiquement, même sur
 # des FP répétés. Même logique que le garde-fou de clôture : une règle qui tire
 # à 14+ mérite un humain avant d'être neutralisée. Un attaquant qui provoque

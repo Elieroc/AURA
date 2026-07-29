@@ -299,6 +299,8 @@ _RE_REVSHELL = re.compile(r"/dev/(?:tcp|udp)/(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,5})
 _RE_PROCTITLE = re.compile(r"proctitle=([0-9A-Fa-f]{8,})")
 # Création de compte dans une commande (dernier token = nom du compte).
 _RE_USERADD = re.compile(r"\b(?:useradd|adduser)\b.*?([A-Za-z_][\w-]*)\s*$")
+# Préfixe du montage sshfs du scanner YARA : /mnt/yaritrust/<hôte>_<ip>/…
+_RE_MONTAGE_SCAN = re.compile(r"^/mnt/yaritrust/[^/]+/")
 
 
 def _decoder_proctitle(full_log: str) -> str:
@@ -311,6 +313,21 @@ def _decoder_proctitle(full_log: str) -> str:
             "utf-8", "replace")
     except ValueError:
         return ""
+
+
+def _chemin_cible(p: str | None) -> str | None:
+    """Chemin réel sur la machine scannée, sans le préfixe du montage sshfs.
+
+    Le scanner YARITRUST monte chaque hôte sous /mnt/yaritrust/<hôte>_<ip>/ et
+    scanne à travers. `data.file_path` porte déjà le chemin nettoyé, mais les
+    alertes antérieures au correctif n'ont que `yara.scan_path`, préfixé. Sans
+    ce retrait, le MÊME fichier produit deux IOC distincts dans le case (l'un
+    préfixé, l'autre non), et aucun des deux n'est utilisable tel quel sur
+    l'hôte concerné.
+    """
+    if not p:
+        return None
+    return _RE_MONTAGE_SCAN.sub("/", p, count=1)
 
 
 def _chemin_suspect(p: str | None) -> bool:
@@ -376,9 +393,46 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
         if _chemin_suspect(fichier):
             ajouter(fichier, "filename", "Fichier déposé (emplacement suspect)")
 
+        # Match YARA (scanner YARITRUST). Cas à part, et c'est voulu : le
+        # filtre `_chemin_suspect` ne s'applique PAS ici. Ailleurs, un chemin
+        # ne devient un indicateur que par son emplacement, faute de mieux —
+        # un scanner de signatures, lui, a DÉJÀ qualifié le contenu. Filtrer
+        # sur le répertoire faisait disparaître les vrais IOC : un webshell
+        # dans /usr/local/www/ (pfSense) ou /var/www/ hors liste passait à la
+        # trappe, alors que c'est précisément le fichier à chercher.
+        #
+        # `data.file_path` est le chemin RÉEL sur la machine scannée ; le
+        # préfixe du montage sshfs (/mnt/yaritrust/<hôte>_<ip>/) est retiré en
+        # amont. C'est celui-là qu'il faut mettre dans le case : un analyste
+        # doit pouvoir aller voir le fichier sur l'hôte concerné.
+        yara = data.get("yara") or {}
+        if yara or data.get("event_type") == "file_match":
+            hote = yara.get("scanned_host") or data.get("hostname") or "?"
+            score = data.get("score")
+            suffixe = f" (score {score})" if score else ""
+            # Nom de la première règle YARA qui a matché : ce qui dit CE qu'est
+            # le fichier, et la seule chose vraiment réutilisable en chasse.
+            raisons = data.get("reasons") or []
+            regle = (raisons[0].get("message") or "").replace(
+                "YARA match with rule ", "") if raisons else ""
+            detail = f" — {regle}" if regle else ""
+            # Normalisé dans les deux cas : `file_path` lui-même arrive préfixé
+            # sur les alertes antérieures au correctif du scanner.
+            ajouter(_chemin_cible(data.get("file_path") or yara.get("scan_path")),
+                    "filename",
+                    f"Fichier détecté par YARA sur {hote}{suffixe}{detail}")
+            ajouter(data.get("sha256"), "sha256",
+                    f"Hash du fichier détecté par YARA sur {hote}{suffixe}")
+            ajouter(data.get("md5"), "md5",
+                    f"Hash MD5 du fichier détecté par YARA sur {hote}")
+
         # Hash de malware (VT) ou de fichier suspect modifié (FIM).
         vt = data.get("virustotal", {}).get("source", {})
         ajouter(vt.get("sha256"), "sha256", "Hash VirusTotal (malveillant)")
+        # Chemin du fichier jugé malveillant par VirusTotal : même raison que
+        # pour YARA — la qualification vient du moteur, pas du répertoire.
+        if vt.get("file"):
+            ajouter(vt["file"], "filename", "Fichier signalé par VirusTotal")
         sc = raw.get("syscheck", {})
         if _chemin_suspect(sc.get("path")):
             ajouter(sc.get("sha256_after"), "sha256",
