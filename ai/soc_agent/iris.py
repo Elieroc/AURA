@@ -875,6 +875,26 @@ def _capteurs_actifs(conn, agent_id: str) -> str:
 _COMPTES_GENERIQUES = {"root", "admin", "administrator", "www-data", "nobody",
                        "daemon", "sync", "postgres", "mysql", "-", ""}
 
+# La flotte est en conteneurs LXC ; l'auditd tourne sur l'hôte Proxmox (agent
+# pve) et voit l'execve de TOUS les conteneurs. L'enrichisseur `soc-audit-enrich`
+# tague chaque record du conteneur d'origine (`lxc_ct=<nom>`, cf.
+# wazuh/agents/pve/). On l'extrait ici pour que le case dise « jellyfin » et pas
+# « pve ». Valeurs réelles, note locale — jamais envoyé au LLM (nom d'hôte).
+_LXC_CT = re.compile(r"lxc_ct=([A-Za-z0-9_.-]+)")
+
+
+def _conteneurs(alertes: list[dict]) -> list[str]:
+    """Conteneurs LXC d'origine, extraits du full_log enrichi. Ignore host et
+    unknown (exec court non résolu). Vide si l'hôte n'est pas l'agent pve."""
+    vus: set[str] = set()
+    for a in alertes:
+        raw = a.get("raw")
+        raw = raw if isinstance(raw, dict) else json.loads(raw) if raw else {}
+        for ct in _LXC_CT.findall(str(raw.get("full_log", ""))):
+            if ct not in ("host", "unknown"):
+                vus.add(ct)
+    return sorted(vus)
+
 
 def _incidents_lies(conn, incident: dict) -> list[dict]:
     """Incidents sur d'AUTRES agents partageant une entité forte (même IP, même
@@ -972,11 +992,19 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
     for cle in ("resume", "analyse", "couverture"):
         rapport[cle] = rehydrater(rapport[cle], anon.mapping)
 
+    cts = _conteneurs(alertes)
     lignes = [
         "# Rapport d'analyse — Vrai positif",
         "",
         f"**Verdict IA** : vrai positif (confiance {triage['confidence']})"
         + (f" — technique {triage['mitre']}" if triage.get("mitre") else ""),
+    ]
+    # Attribution conteneur : l'agent est l'hôte Proxmox (pve) ; le vrai théâtre
+    # est le conteneur LXC résolu par l'enrichisseur auditd.
+    if cts:
+        lignes.append(f"**Conteneur(s) concerné(s)** : {', '.join(cts)} "
+                      f"(exécution vue par l'auditd de l'hôte {incident['agent_name']})")
+    lignes += [
         "",
         "## Résumé",
         rapport["resume"],
