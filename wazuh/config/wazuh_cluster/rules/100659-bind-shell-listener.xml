@@ -1,0 +1,39 @@
+<!-- SOC-AI - rule 100659 (level 12). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- R2b T1059.004 / T1571 - a listener bind shell that 100651 misses.
+       100651 fires on nc/ncat WITH an exec option (-e/-c), covering the classic
+       `nc -lvp 4444 -e /bin/bash`. But a bind shell can listen WITHOUT an exec
+       option (payload wires the socket to a shell itself, a named-pipe backpipe,
+       or socat LISTEN...EXEC), and none of those carry -e/-c on the command
+       line. Measured 2026-07-29: a `nc -l 4444` bind shell on jellyfin fired
+       nothing.
+
+       Signals on a LISTEN option: an nc/ncat option bundle containing `l`
+       (-l, -lvp, -nvlp...) or the socat `LISTEN` token. socat is matched only
+       here (100651 does not know socat).
+
+       Overlap with 100651 is deliberate and harmless: a `nc -lvp -e` event
+       matches both, Wazuh fires one, and either is a level-12 shell alert - no
+       detection is masked (the README trap is about LOSING a detection, not
+       about two equivalent alerts). The pattern is a bare token like 100651's,
+       NOT anchored: in production the event is multiline (SYSCALL+EXECVE) and a
+       `^...*` anchor would never reach the EXECVE args.
+
+       Scope: on these servers no legitimate service runs as an interactive
+       nc/socat listener, so a listener is anomalous by itself - level 12. If a
+       real service ever does this, whitelist the exact command. -->
+
+  <rule id="100659" level="12">
+    <if_group>audit</if_group>
+    <field name="audit.exe" type="pcre2">/(nc|ncat|netcat|socat)(\.\w+)?$</field>
+    <regex type="pcre2">a\d+=\"-[a-z]*l[a-z]*\"|LISTEN</regex>
+    <description>Probable bind shell: netcat/socat listening socket without exec flag</description>
+    <mitre>
+      <id>T1059.004</id>
+      <id>T1571</id>
+    </mitre>
+  </rule>
+
+</group>
