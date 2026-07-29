@@ -416,7 +416,15 @@ def _cibles(action: str, incident: dict, alertes: list[dict]) -> list[str]:
     blocage, comptes nommés pour la désactivation, process malveillants
     (basename) pour le kill."""
     if action == "propose_isolate_host":
-        return [str(incident["agent_id"])]
+        agent_id = str(incident["agent_id"])
+        # Un agent protégé (000, le manager) n'est JAMAIS isolé : l'isolation
+        # couperait la collecte de tout le parc et le canal même par lequel on
+        # dé-isole. Filtré ici plutôt que dans le prompt — cf. AGENTS_PROTEGES.
+        # Retourner une liste vide fait sauter l'action : `appliquer` ne trouve
+        # pas de cible et n'exécute rien.
+        if agent_id in config.AGENTS_PROTEGES:
+            return []
+        return [agent_id]
     if action == "propose_kill_process":
         # Nom exact (comm) des exécutables lancés depuis un répertoire suspect :
         # l'implant, jamais un shell système. pkill -x matchera ce nom.
