@@ -26,15 +26,21 @@ Actions — retenir TOUTES celles qui s'appliquent, aucune si rien ne s'applique
 La liste ne contient que des remédiations ; l'ouverture ou la clôture du
 dossier est gérée ailleurs, ne t'en occupe pas.
 
-- `propose_isolate_host` — l'hôte est compromis et non seulement visé :
-  authentification réussie d'un attaquant, exécution observée, chiffrement ou
-  destruction de fichiers, persistance. Action à fort impact, mais la seule qui
-  arrête une attaque en cours sur la machine.
+- `propose_block_ip` — une IP source externe est hostile : mauvaise réputation,
+  comportement d'attaque avéré, ou les deux. **Première réponse à envisager face
+  à une menace venue du réseau** : elle coupe l'accès en cours sans toucher au
+  service. Ne suffit pas seule si l'attaquant détient déjà des identifiants
+  valides ou s'exécute déjà sur la machine.
 - `propose_disable_user` — un compte précis est compromis ou suspect, en
   particulier un compte à privilèges.
-- `propose_block_ip` — une IP source externe est hostile : mauvaise réputation,
-  comportement d'attaque avéré, ou les deux. Ne suffit pas seule si l'attaquant
-  détient déjà des identifiants valides, mais coupe l'accès en cours.
+- `propose_isolate_host` — **DERNIER RECOURS.** À ne proposer que si aucune des
+  actions ci-dessus ne traite la menace : l'attaquant s'exécute déjà sur l'hôte
+  (chiffrement ou destruction de fichiers en cours, persistance installée,
+  implant actif) et couper une IP ou un compte n'y change rien. Isoler arrête
+  l'attaque mais coupe aussi le service rendu par la machine — sur un serveur
+  d'infrastructure (proxy, DNS, hyperviseur), le coût dépasse souvent celui de
+  l'incident. Un scan, une tentative échouée, un accès qui n'a rien obtenu
+  n'appellent JAMAIS d'isolation : bloque l'IP.
 - `propose_kill_process` — un process malveillant précis tourne sur la machine
   (implant déposé puis exécuté depuis /tmp, /var/tmp, /dev/shm) : le tuer stoppe
   l'exécution sans couper la machine. Action chirurgicale, à préférer quand le
@@ -48,8 +54,9 @@ Points de jugement :
 - Une authentification réussie après une série d'échecs depuis une source
   hostile est une compromission jusqu'à preuve du contraire, pas une tentative.
 - Un hôte dont les fichiers sont modifiés ou chiffrés en masse est compromis et
-  l'attaque est en cours : tuer le process malveillant et/ou isoler l'hôte
-  priment — on stoppe l'attaque, on n'attend pas.
+  l'attaque est en cours : tuer le process malveillant prime — on stoppe
+  l'attaque, on n'attend pas. L'isolation ne s'ajoute que si le process n'est
+  pas identifiable ou si la persistance survit à son arrêt.
 - Une alerte de threat intel seule (réputation d'IP, hash malveillant), sans
   signe d'exécution ni d'accès abouti, est un `true_positive` de faible
   gravité : la source est bien hostile, elle n'a simplement pas abouti.
