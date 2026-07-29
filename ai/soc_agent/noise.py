@@ -29,6 +29,10 @@ CHAMP = {
     "src_user": "data.srcuser",
     "dst_user": "data.dstuser",
     "command": "data.command",
+    # Discriminant des règles web. Réservé à rule_tuning.py : dans le moteur de
+    # règles, `<url>` est une option native, alors qu'un filtre post-retrieval
+    # sur l'URL n'aurait aucun intérêt (l'alerte est déjà produite et indexée).
+    "url": "data.url",
     "agent_name": "agent.name",
     "agent_id": "agent.id",
 }

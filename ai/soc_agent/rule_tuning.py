@@ -61,7 +61,7 @@ pas prouver inoffensive n'est pas déployée.
 ## Garde-fous (les mêmes que la whitelist, plus deux)
 
 - signature PRÉCISE : `rule_id` seul est refusé, il faut au moins un champ
-  discriminant (compte, commande, fichier) ;
+  discriminant (compte, commande, fichier, URL) ;
 - jamais au-dessus de `WHITELIST_MAX_LEVEL` ;
 - jamais une signature vue au moins une fois en `true_positive` ;
 - conditions ANCRÉES (`^valeur$`, pcre2, valeur échappée) : une exception sur
@@ -98,7 +98,15 @@ requests.packages.urllib3.disable_warnings()  # certificats auto-signés en loca
 _OPTION_STATIQUE = {
     "src_user": "user",
     "dst_user": "user",
+    "url": "url",
 }
+
+# Discriminants acceptés ici, un de plus que la whitelist post-retrieval :
+# `url`. C'est LE champ des faux positifs web, et de loin le plus gros
+# contributeur de charge sur cette plateforme (un reverse proxy exposé sur
+# internet). Le filtre post-retrieval ne peut rien en faire d'utile — l'alerte
+# est déjà produite et indexée quand il s'exécute ; une règle fille, si.
+CHAMPS_DISCRIMINANTS_REGLE = CHAMPS_DISCRIMINANTS + ("url",)
 # Chemin JSON (data.X) -> nom de champ dynamique tel qu'écrit dans une règle.
 # Wazuh nomme le champ dynamique par son chemin SOUS `data.`.
 _PREFIXE_DATA = "data."
@@ -155,7 +163,7 @@ def construire_xml(rule_id: int, parent: str, niveau: int, signature: dict,
                    raw: dict, n_fp: int, incidents: list[int]) -> str | None:
     """XML de la règle fille, ou None si la signature n'est pas traduisible."""
     conditions = []
-    for champ in CHAMPS_DISCRIMINANTS:
+    for champ in CHAMPS_DISCRIMINANTS_REGLE:
         if champ in signature:
             ligne = _condition(champ, signature[champ], raw)
             if ligne is None:
@@ -174,7 +182,7 @@ def construire_xml(rule_id: int, parent: str, niveau: int, signature: dict,
 
     valeurs = "\n".join(
         f"       - {c} = {signature[c]}"
-        for c in CHAMPS_DISCRIMINANTS if c in signature)
+        for c in CHAMPS_DISCRIMINANTS_REGLE if c in signature)
 
     return f"""<!-- SOC-AI - rule {rule_id} (level {niveau}). GÉNÉRÉ AUTOMATIQUEMENT.
      Ne pas éditer à la main : régénéré par `python -m soc_agent.rule_tuning`.
@@ -296,7 +304,7 @@ def _contre_exemple(conn, parent: str, signature: dict) -> tuple[str, str] | Non
         # Une seule valeur différente sur un champ discriminant suffit : cet
         # évènement n'est pas couvert par l'exception, il doit rester détecté.
         if any(str(_valeur_champ(raw, c) or "") != signature[c]
-               for c in CHAMPS_DISCRIMINANTS if c in signature):
+               for c in CHAMPS_DISCRIMINANTS_REGLE if c in signature):
             ev = _evenement(raw)
             if ev:
                 return ev
@@ -356,7 +364,8 @@ def analyser(min_fp: int, simulation: bool) -> list[dict]:
     poses: list[tuple[Path, dict]] = []   # (fichier, contexte de vérification)
 
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-        fp_par_sig, sig_tp = _incidents_par_verdict(conn)
+        fp_par_sig, sig_tp = _incidents_par_verdict(
+            conn, CHAMPS_DISCRIMINANTS_REGLE)
         deja = _signatures_deja_traitees(dossier)
         n_existantes = len(deja)
         tok = _token()
@@ -379,7 +388,7 @@ def analyser(min_fp: int, simulation: bool) -> list[dict]:
                 decisions.append({"signature": canon, "action": "en attente",
                                   "raison": f"{n}/{min_fp} FP"})
                 continue
-            if not any(c in signature for c in CHAMPS_DISCRIMINANTS):
+            if not any(c in signature for c in CHAMPS_DISCRIMINANTS_REGLE):
                 refus("signature trop large : rule_id seul ne suffit pas"); continue
             parent = signature.get("rule_id")
             if not parent:
