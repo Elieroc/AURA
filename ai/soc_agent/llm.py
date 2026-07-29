@@ -42,10 +42,12 @@ def _enregistrer(usage: str, modele: str, max_tokens: int, duree_ms: int,
         with psycopg.connect(config.PG_DSN) as conn:
             conn.execute(
                 "INSERT INTO llm_calls (usage, modele, prompt_tokens, "
-                "completion_tokens, max_tokens, duree_ms, incident_id, ok, erreur) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "completion_tokens, cache_hit_tokens, cache_miss_tokens, "
+                "max_tokens, duree_ms, incident_id, ok, erreur) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (usage, m.get("modele") or modele, m.get("prompt_tokens"),
-                 m.get("completion_tokens"), max_tokens, duree_ms,
+                 m.get("completion_tokens"), m.get("cache_hit_tokens"),
+                 m.get("cache_miss_tokens"), max_tokens, duree_ms,
                  incident_id, erreur is None, erreur))
             conn.commit()
     except Exception as e:                                   # noqa: BLE001
@@ -117,9 +119,15 @@ def _completion(systeme: str, utilisateur: str, max_tokens: int,
     # une panne côté API, pas une sortie mal formée du modèle. On laisse remonter.
     obj = json.loads(contenu)
     conso = corps.get("usage", {})
+    # DeepSeek ventile l'entrée entre cache hit et cache miss, et le hit est
+    # facturé 50x moins cher. Sans cette ventilation, le coût est surestimé :
+    # le prompt système est constant d'un incident à l'autre, donc il est
+    # presque toujours servi par le cache.
     metriques = {"duree_ms": duree_ms,
                  "prompt_tokens": conso.get("prompt_tokens"),
                  "completion_tokens": conso.get("completion_tokens"),
+                 "cache_hit_tokens": conso.get("prompt_cache_hit_tokens"),
+                 "cache_miss_tokens": conso.get("prompt_cache_miss_tokens"),
                  "modele": corps.get("model", config.DEEPSEEK_MODEL)}
     _enregistrer(usage, config.DEEPSEEK_MODEL, max_tokens, duree_ms,
                  metriques, incident_id, None)

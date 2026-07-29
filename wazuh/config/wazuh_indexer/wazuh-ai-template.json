@@ -1,5 +1,7 @@
 {
-  "index_patterns": ["wazuh-ai-*"],
+  "index_patterns": [
+    "wazuh-ai-*"
+  ],
   "order": 1,
   "settings": {
     "index": {
@@ -14,67 +16,147 @@
       {
         "strings_as_keyword": {
           "match_mapping_type": "string",
-          "mapping": { "type": "keyword" }
+          "mapping": {
+            "type": "keyword"
+          }
         }
       }
     ],
     "properties": {
-      "@timestamp": { "type": "date" },
-      "timestamp": { "type": "date" },
-      "event_type": { "type": "keyword" },
-
+      "@timestamp": {
+        "type": "date"
+      },
+      "timestamp": {
+        "type": "date"
+      },
+      "event_type": {
+        "type": "keyword"
+      },
       "ai": {
         "properties": {
-          "usage": { "type": "keyword" },
-          "model": { "type": "keyword" },
-          "prompt_tokens": { "type": "long" },
-          "completion_tokens": { "type": "long" },
-          "total_tokens": { "type": "long" },
-          "max_tokens": { "type": "long" },
-          "duration_ms": { "type": "long" },
-          "cost_usd": { "type": "double" },
-          "ok": { "type": "boolean" },
-          "error": { "type": "keyword" },
-          "prompt_sha": { "type": "keyword" },
-          "mode": { "type": "keyword" }
+          "usage": {
+            "type": "keyword"
+          },
+          "model": {
+            "type": "keyword"
+          },
+          "prompt_tokens": {
+            "type": "long"
+          },
+          "completion_tokens": {
+            "type": "long"
+          },
+          "total_tokens": {
+            "type": "long"
+          },
+          "max_tokens": {
+            "type": "long"
+          },
+          "duration_ms": {
+            "type": "long"
+          },
+          "cost_usd": {
+            "type": "double"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "keyword"
+          },
+          "prompt_sha": {
+            "type": "keyword"
+          },
+          "mode": {
+            "type": "keyword"
+          },
+          "cache_hit_tokens": {
+            "type": "long"
+          },
+          "cache_miss_tokens": {
+            "type": "long"
+          }
         }
       },
-
       "triage": {
         "properties": {
-          "verdict": { "type": "keyword" },
-          "confidence": { "type": "keyword" },
-          "mitre": { "type": "keyword" },
-          "actions": { "type": "keyword" },
-          "action_count": { "type": "integer" },
-          "incoherences": { "type": "keyword" },
-          "incoherence_count": { "type": "integer" },
-          "garde_fous": { "type": "keyword" },
-          "garde_fou_count": { "type": "integer" },
-          "injection_motifs": { "type": "keyword" },
-          "injection_detected": { "type": "boolean" }
+          "verdict": {
+            "type": "keyword"
+          },
+          "confidence": {
+            "type": "keyword"
+          },
+          "mitre": {
+            "type": "keyword"
+          },
+          "actions": {
+            "type": "keyword"
+          },
+          "action_count": {
+            "type": "integer"
+          },
+          "incoherences": {
+            "type": "keyword"
+          },
+          "incoherence_count": {
+            "type": "integer"
+          },
+          "garde_fous": {
+            "type": "keyword"
+          },
+          "garde_fou_count": {
+            "type": "integer"
+          },
+          "injection_motifs": {
+            "type": "keyword"
+          },
+          "injection_detected": {
+            "type": "boolean"
+          }
         }
       },
-
       "incident": {
         "properties": {
-          "id": { "type": "long" },
-          "agent_name": { "type": "keyword" },
-          "max_level": { "type": "integer" },
-          "alert_count": { "type": "integer" }
+          "id": {
+            "type": "long"
+          },
+          "agent_name": {
+            "type": "keyword"
+          },
+          "max_level": {
+            "type": "integer"
+          },
+          "alert_count": {
+            "type": "integer"
+          }
         }
       },
-
       "pipeline": {
         "properties": {
-          "alerts_total": { "type": "long" },
-          "alerts_suppressed": { "type": "long" },
-          "incidents_total": { "type": "long" },
-          "incidents_open": { "type": "long" },
-          "triages_total": { "type": "long" },
-          "whitelist_rules_active": { "type": "long" },
-          "mitigations_executed": { "type": "long" },
-          "labels_total": { "type": "long" }
+          "alerts_total": {
+            "type": "long"
+          },
+          "alerts_suppressed": {
+            "type": "long"
+          },
+          "incidents_total": {
+            "type": "long"
+          },
+          "incidents_open": {
+            "type": "long"
+          },
+          "triages_total": {
+            "type": "long"
+          },
+          "whitelist_rules_active": {
+            "type": "long"
+          },
+          "mitigations_executed": {
+            "type": "long"
+          },
+          "labels_total": {
+            "type": "long"
+          }
         }
       }
     }
