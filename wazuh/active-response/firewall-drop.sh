@@ -16,6 +16,11 @@ set -u
 LOG_FILE="/var/ossec/logs/active-responses.log"
 IPT="/usr/sbin/iptables"
 IPT6="/usr/sbin/ip6tables"
+NFT="/usr/sbin/nft"
+# Table nftables dédiée au blocage d'IP, distincte de `wazuh_isolation`
+# (host-isolate.sh) : une dé-isolation supprime sa table entière, elle ne doit
+# pas emporter les blocages d'IP posés séparément.
+NFT_TABLE="soc_ai_block"
 OSSEC_CONF="/var/ossec/etc/ossec.conf"
 
 log() {
@@ -70,13 +75,36 @@ if [ -n "$MANAGER" ] && [ "$IP" = "$MANAGER" ]; then
 fi
 
 case "$IP" in
-    *:*) BIN="$IPT6" ;;
-    *)   BIN="$IPT" ;;
+    *:*) BIN="$IPT6"; FAM="ip6" ;;
+    *)   BIN="$IPT";  FAM="ip"  ;;
 esac
 
+# Repli nftables : les hôtes Debian récents (ex. adguard-home) n'embarquent que
+# `nft`, sans le shim iptables. Sans ce repli, le blocage échouait sur ces
+# agents — et l'échec ne remonte que dans active-responses.log.
 if [ ! -x "$BIN" ]; then
-    log "ERREUR: $BIN introuvable"
-    exit 1
+    if [ ! -x "$NFT" ]; then
+        log "ERREUR: ni $BIN ni $NFT trouvés"
+        exit 1
+    fi
+    "$NFT" list table inet "$NFT_TABLE" >/dev/null 2>&1 \
+        || "$NFT" add table inet "$NFT_TABLE" 2>/dev/null
+    # priority -10 : avant le filtre habituel (priority 0), pour que le DROP
+    # prime sur un ACCEPT posé par le pare-feu de l'hôte.
+    "$NFT" add chain inet "$NFT_TABLE" input \
+        '{ type filter hook input priority -10 ; policy accept ; }' 2>/dev/null
+
+    if "$NFT" list chain inet "$NFT_TABLE" input 2>/dev/null \
+            | grep -q "$FAM saddr $IP drop"; then
+        log "IP '$IP' déjà bloquée (nft), rien à faire"
+        exit 0
+    fi
+    if ! "$NFT" add rule inet "$NFT_TABLE" input "$FAM" saddr "$IP" drop 2>/dev/null; then
+        log "ERREUR: échec de l'ajout de la règle nft drop pour '$IP'"
+        exit 1
+    fi
+    log "IP '$IP' bloquée (nft inet $NFT_TABLE input drop)"
+    exit 0
 fi
 
 # Idempotent : une IP déjà bloquée ne reçoit pas une seconde règle. Sinon un

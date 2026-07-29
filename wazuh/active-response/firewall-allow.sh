@@ -13,6 +13,8 @@ set -u
 LOG_FILE="/var/ossec/logs/active-responses.log"
 IPT="/usr/sbin/iptables"
 IPT6="/usr/sbin/ip6tables"
+NFT="/usr/sbin/nft"
+NFT_TABLE="soc_ai_block"   # cf. firewall-drop.sh
 
 log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') firewall-allow: $1" >> "$LOG_FILE"
@@ -47,13 +49,34 @@ case "$IP" in
 esac
 
 case "$IP" in
-    *:*) BIN="$IPT6" ;;
-    *)   BIN="$IPT" ;;
+    *:*) BIN="$IPT6"; FAM="ip6" ;;
+    *)   BIN="$IPT";  FAM="ip"  ;;
 esac
 
+# Repli nftables, symétrique de firewall-drop.sh (hôtes sans shim iptables).
 if [ ! -x "$BIN" ]; then
-    log "ERREUR: $BIN introuvable"
-    exit 1
+    if [ ! -x "$NFT" ]; then
+        log "ERREUR: ni $BIN ni $NFT trouvés"
+        exit 1
+    fi
+    REMOVED=0
+    # Les handles se décalent après chaque suppression : on relit la chaîne à
+    # chaque tour plutôt que de collecter la liste une fois pour toutes.
+    i=0
+    while [ $i -lt 20 ]; do
+        H=$("$NFT" -a list chain inet "$NFT_TABLE" input 2>/dev/null \
+            | sed -n "s/.*$FAM saddr $IP drop # handle \([0-9]*\).*/\1/p" | head -1)
+        [ -z "$H" ] && break
+        "$NFT" delete rule inet "$NFT_TABLE" input handle "$H" 2>/dev/null || break
+        REMOVED=$((REMOVED + 1))
+        i=$((i + 1))
+    done
+    if [ "$REMOVED" -eq 0 ]; then
+        log "aucune règle nft drop pour '$IP', rien à faire"
+        exit 0
+    fi
+    log "IP '$IP' débloquée (nft, $REMOVED règle(s) supprimée(s))"
+    exit 0
 fi
 
 REMOVED=0
