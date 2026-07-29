@@ -34,6 +34,20 @@
 # pilotable. Une valeur fausse ici coupe l'agent définitivement.
 WAZUH_MANAGER_IP="192.168.60.1"
 
+# Marque un hôte d'INFRASTRUCTURE : pare-feu, reverse proxy, résolveur DNS,
+# passerelle VPN, hyperviseur. À 1, host-isolate.sh REFUSE de l'isoler.
+#
+# L'isolation réseau ne doit viser que des endpoints — des machines dont on peut
+# couper le réseau sans couper celui des autres. Une machine qui achemine le
+# trafic d'autrui, isolée, ne contient pas un incident : elle provoque une panne
+# générale, et sur un pare-feu elle coupe le lien par lequel on rétablirait.
+#
+# Doublon assumé du garde-fou côté manager (groupe Wazuh `infrastructure`, cf.
+# mitigate.raison_non_isolable) : l'active-response est aussi joignable par
+# l'API Wazuh et le serveur MCP, qui ne passent pas par le code Python. Et
+# celui-ci survit à une erreur d'inventaire, la machine portant son propre refus.
+SOC_AI_NO_ISOLATE="0"
+
 # ===========================================================================
 # HÔTE MANAGER — /etc/soc-ai/soc-ai.conf (collecte forensique)
 # ===========================================================================

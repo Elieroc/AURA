@@ -67,6 +67,21 @@ if [ ! -x "$NFT" ]; then
     exit 1
 fi
 
+# Refus porté par la machine elle-même. `SOC_AI_NO_ISOLATE=1` dans
+# /var/ossec/etc/soc-ai.conf marque un hôte d'INFRASTRUCTURE — pare-feu, reverse
+# proxy, résolveur DNS, passerelle VPN. Ces machines acheminent le trafic
+# d'autrui : les isoler ne contient pas un incident, ça provoque une panne
+# générale, et sur un pare-feu ça coupe le lien par lequel on rétablirait.
+#
+# Doublon assumé du garde-fou Python (groupes Wazuh, cf. mitigate.raison_non_
+# isolable) : l'AR est aussi joignable par l'API Wazuh et le serveur MCP, qui ne
+# passent pas par ce code. Et celui-ci survit à une erreur d'inventaire côté
+# manager, puisque la machine porte elle-même son refus.
+if [ "${SOC_AI_NO_ISOLATE:-0}" = "1" ]; then
+    log "REFUS: hôte d'infrastructure (SOC_AI_NO_ISOLATE=1 dans $CONF_FILE) — isolation refusée"
+    exit 1
+fi
+
 # Refus d'auto-isolation du manager. Si MANAGER_IP est une adresse LOCALE, c'est
 # que ce script tourne SUR le manager (agent 000) : l'isoler couperait la
 # collecte de tout le parc, l'API et la console — donc le seul canal par lequel
