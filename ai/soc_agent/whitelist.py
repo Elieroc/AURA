@@ -38,15 +38,20 @@ CHAMPS_DISCRIMINANTS = ("src_user", "command", "file")
 CHAMPS_SIGNATURE = ("rule_id",) + CHAMPS_DISCRIMINANTS
 
 
-def _signature(alertes_raw: list[dict]) -> dict | None:
+def _signature(alertes_raw: list[dict],
+               discriminants: tuple[str, ...] = CHAMPS_DISCRIMINANTS) -> dict | None:
     """Signature d'un incident : champs constants sur toutes ses alertes.
 
     Un champ n'entre dans la signature que s'il a une seule valeur non nulle,
     identique sur toutes les alertes de l'incident. Retourne None si la
     signature n'est pas assez précise pour une whitelist sûre.
+
+    `discriminants` est paramétrable pour `rule_tuning.py`, qui en accepte un de
+    plus (`url`) : une exception écrite dans le moteur de règles peut discriminer
+    sur l'URL, ce que le filtre post-retrieval ne sait pas faire.
     """
     signature: dict = {}
-    for champ in CHAMPS_SIGNATURE:
+    for champ in ("rule_id",) + tuple(discriminants):
         valeurs = {v for a in alertes_raw
                    if (v := _valeur_champ(a, champ)) is not None}
         if len(valeurs) == 1:
@@ -54,7 +59,7 @@ def _signature(alertes_raw: list[dict]) -> dict | None:
 
     # Précision : au moins un discriminant, sinon on neutraliserait trop large
     # (rule_id seul = toute la règle).
-    if not any(c in signature for c in CHAMPS_DISCRIMINANTS):
+    if not any(c in signature for c in discriminants):
         return None
     return signature
 
@@ -63,7 +68,9 @@ def _canonique(signature: dict) -> str:
     return "|".join(f"{k}={signature[k]}" for k in sorted(signature))
 
 
-def _incidents_par_verdict(conn) -> tuple[dict, set]:
+def _incidents_par_verdict(
+        conn,
+        discriminants: tuple[str, ...] = CHAMPS_DISCRIMINANTS) -> tuple[dict, set]:
     """(FP par signature, ensemble des signatures vues en TP).
 
     On ne considère que le DERNIER triage de chaque incident : les passages
@@ -86,7 +93,7 @@ def _incidents_par_verdict(conn) -> tuple[dict, set]:
             (l["incident_id"],)).fetchall()]
         if not raws:
             continue
-        signature = _signature(raws)
+        signature = _signature(raws, discriminants)
         if signature is None:
             continue
         canon = _canonique(signature)
