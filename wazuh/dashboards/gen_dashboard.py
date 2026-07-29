@@ -55,6 +55,12 @@ TERMS = {"orderBy": "1", "order": "desc", "otherBucket": False, "otherBucketLabe
 # Alertes actionnables : sévérité >= Medium (rule.level >= 7)
 SEV_ACTIONABLE = 'rule.severity:("Medium" or "High" or "Critical")'
 
+# Ce qu'on REGARDE, par opposition à ce qu'on compte. Même seuil que celui à
+# partir duquel le pipeline IA ouvre un incident (config.MIN_LEVEL = 12 ~ High) :
+# le flux du dashboard Global montre donc exactement ce que le soc-agent a pu
+# prendre en compte, ni plus ni moins.
+SEV_HIGH_CRIT = 'rule.severity:("High" or "Critical")'
+
 # Couleurs par sévérité (palette Elastic/OSD)
 SEV_COLORS = {"vis": {"colors": {
     "Critical": "#BD271E",   # rouge
@@ -270,10 +276,13 @@ objs.append(vis("soc-ai-alerts-timeline", "Alertes par sévérité (timeline)", 
     "params": HIST_PARAMS,
 }, IDX_ALL, ui_state=SEV_COLORS))
 
-objs.append(saved_search("soc-ai-latest-alerts", "Dernières alertes (timeline)",
-    "Flux chronologique des alertes actionnables (sévérité ≥ Medium), plus récentes en tête.",
-    ["agent.name", "rule.severity", "rule.level", "rule.description", "data.srcip"],
-    IDX_ALL, query=SEV_ACTIONABLE))
+objs.append(saved_search("soc-ai-latest-alerts", "Dernières alertes (High / Critical)",
+    "Flux chronologique des alertes High et Critical, plus récentes en tête. "
+    "Le seuil ≥ Medium noyait ce flux sous le bruit de scan du reverse proxy — "
+    "des dizaines de milliers de 4xx par jour, aucune actionnable.",
+    ["agent.name", "rule.severity", "rule.level", "rule.description", "data.srcip",
+     "rule.mitre.tactic"],
+    IDX_ALL, query=SEV_HIGH_CRIT))
 
 objs.append(vis("soc-ai-total-events", "Nombre d'événements global", {
     "title": "Nombre d'événements global",
@@ -899,6 +908,161 @@ objs.append(saved_search("soc-ai-ai-latest", "Derniers appels au modele",
      "ai.duration_ms", "ai.ok", "incident.id"],
     IDX_AI, query=Q_LLM))
 
+
+def compteur(vid, title, label, query="", idx=IDX_ALL, agg=None):
+    """Grand chiffre unique sur l'index combiné."""
+    return vis(vid, title, {
+        "title": title,
+        "type": "metric",
+        "aggs": [{"id": "1", "enabled": True, "schema": "metric",
+                  **(agg or {"type": "count"}),
+                  "params": {**(agg or {}).get("params", {}), "customLabel": label}}],
+        "params": {"addTooltip": True, "addLegend": False, "type": "metric",
+                   "metric": {"percentageMode": False, "useRanges": False,
+                              "colorSchema": "Green to Red", "metricColorMode": "None",
+                              "colorsRange": [{"from": 0, "to": 10 ** 12}],
+                              "labels": {"show": True}, "invertColors": False,
+                              "style": {"bgFill": "#000", "bgColor": False,
+                                        "labelColor": False, "subText": "",
+                                        "fontSize": 48}}},
+    }, idx, query=query)
+
+
+objs.append(compteur("soc-ai-actionable-events", "Alertes actionnables (>= Medium)",
+                     "Alertes", query=SEV_ACTIONABLE))
+
+objs.append(compteur("soc-ai-highcrit-events", "Alertes High + Critical",
+                     "Alertes", query=SEV_HIGH_CRIT))
+
+# Cardinalite sur agent.name : compte les machines qui ont REELLEMENT emis,
+# pas les agents enroles. Un agent muet (capteur coupe, agent arrete) fait
+# baisser ce chiffre — c'est le but.
+objs.append(compteur("soc-ai-active-agents", "Machines emettrices",
+                     "Machines",
+                     agg={"type": "cardinality", "params": {"field": "agent.name"}}))
+
+objs.append(vis("soc-ai-severity-pie", "Repartition par severite", {
+    "title": "Repartition par severite",
+    "type": "pie",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Alertes"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": SEV_TERMS},
+    ],
+    "params": {"type": "pie", "addTooltip": True, "addLegend": True,
+               "legendPosition": "right", "isDonut": True,
+               "labels": {"show": True, "values": True, "last_level": True,
+                          "truncate": 100}},
+}, IDX_ALL, ui_state=SEV_COLORS))
+
+# Evenements par machine, EMPILES par severite : le simple total par host dit
+# qui est bavard, pas qui va mal. Une machine avec peu d'evenements mais une
+# barre rouge compte davantage qu'une machine noyee sous du niveau 3.
+objs.append(vis("soc-ai-events-by-host", "Evenements par machine (par severite)", {
+    "title": "Evenements par machine (par severite)",
+    "type": "horizontal_bar",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Evenements"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "agent.name", "size": 20,
+                    "customLabel": "Machine"}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "group",
+         "params": SEV_TERMS},
+    ],
+    "params": {**HIST_PARAMS, "type": "horizontal_bar",
+               "seriesParams": [{"show": True, "type": "histogram", "mode": "stacked",
+                                 "data": {"label": "Evenements", "id": "1"},
+                                 "valueAxis": "ValueAxis-1",
+                                 "drawLinesBetweenPoints": True, "lineWidth": 2,
+                                 "showCircles": True}],
+               "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
+                              "title": {"text": "Evenements"}}]},
+}, IDX_ALL, ui_state=SEV_COLORS))
+
+# Par index : mesure ce que produit CHAQUE capteur, et donc ou part la charge de
+# la plateforme. `_index` est un champ meta d'OpenSearch, agregeable tel quel —
+# c'est la seule facon de voir le routage (alerts-pipeline.json) depuis une
+# visualisation, puisque le nom de l'index n'existe dans aucun champ du document.
+objs.append(vis("soc-ai-events-by-index", "Evenements par index (capteur)", {
+    "title": "Evenements par index (capteur)",
+    "type": "pie",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Evenements"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "_index", "size": 20,
+                    "customLabel": "Index"}},
+    ],
+    "params": {"type": "pie", "addTooltip": True, "addLegend": True,
+               "legendPosition": "right", "isDonut": True,
+               "labels": {"show": True, "values": True, "last_level": True,
+                          "truncate": 100}},
+}, IDX_ALL))
+
+objs.append(vis("soc-ai-global-top-rules", "Top regles (toutes sources)", {
+    "title": "Top regles (toutes sources)",
+    "type": "table",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Alertes"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "rule.description", "size": 15,
+                    "customLabel": "Regle"}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "rule.level", "orderBy": "_key", "order": "desc",
+                    "size": 3, "customLabel": "Niveau"}},
+    ],
+    "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
+               "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
+}, IDX_ALL))
+
+# Restreint aux alertes actionnables : sur un parc expose, le top des IP toutes
+# severites confondues n'est qu'un classement de scanners.
+objs.append(vis("soc-ai-global-top-srcips", "Top IP sources (>= Medium)", {
+    "title": "Top IP sources (>= Medium)",
+    "type": "horizontal_bar",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Alertes"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "data.srcip", "size": 15,
+                    "customLabel": "IP source"}},
+    ],
+    "params": {**HIST_PARAMS, "type": "horizontal_bar",
+               "seriesParams": [{"show": True, "type": "histogram", "mode": "stacked",
+                                 "data": {"label": "Alertes", "id": "1"},
+                                 "valueAxis": "ValueAxis-1",
+                                 "drawLinesBetweenPoints": True, "lineWidth": 2,
+                                 "showCircles": True}],
+               "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
+                              "title": {"text": "Alertes"}}]},
+}, IDX_ALL, query=SEV_ACTIONABLE))
+
+# Tactiques MITRE : dit a quel STADE d'une intrusion on se trouve. Une bascule
+# de Reconnaissance vers Execution/Persistence est le signal qui compte, et il
+# ne se lit sur aucun compteur de volume.
+objs.append(vis("soc-ai-mitre-tactics", "Tactiques MITRE (>= Medium)", {
+    "title": "Tactiques MITRE (>= Medium)",
+    "type": "horizontal_bar",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Alertes"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "rule.mitre.tactic", "size": 12,
+                    "customLabel": "Tactique"}},
+    ],
+    "params": {**HIST_PARAMS, "type": "horizontal_bar",
+               "seriesParams": [{"show": True, "type": "histogram", "mode": "stacked",
+                                 "data": {"label": "Alertes", "id": "1"},
+                                 "valueAxis": "ValueAxis-1",
+                                 "drawLinesBetweenPoints": True, "lineWidth": 2,
+                                 "showCircles": True}],
+               "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
+                              "title": {"text": "Alertes"}}]},
+}, IDX_ALL, query=SEV_ACTIONABLE))
+
 # ---------- Dashboards ----------
 
 objs.append(dashboard("soc-ai-threat-intel", "Threat Intel",
@@ -912,11 +1076,22 @@ objs.append(dashboard("soc-ai-threat-intel", "Threat Intel",
     ]))
 
 objs.append(dashboard("soc-ai-global", "Global",
-    "Vue globale : volume d'événements, répartition par sévérité, flux des dernières alertes.",
+    "Vue globale : volume et severite, repartition par machine et par capteur, "
+    "tactiques MITRE, flux des alertes High/Critical.",
     [
-        ("soc-ai-total-events",     0,  0, 12, 15),
-        ("soc-ai-alerts-timeline", 12,  0, 36, 15),
-        ("soc-ai-latest-alerts",    0, 15, 48, 20, "search"),
+        ("soc-ai-total-events",       0,  0, 12, 10),
+        ("soc-ai-actionable-events", 12,  0, 12, 10),
+        ("soc-ai-highcrit-events",   24,  0, 12, 10),
+        ("soc-ai-active-agents",     36,  0, 12, 10),
+        ("soc-ai-alerts-timeline",    0, 10, 32, 15),
+        ("soc-ai-severity-pie",      32, 10, 16, 15),
+        ("soc-ai-events-by-host",     0, 25, 32, 16),
+        ("soc-ai-events-by-index",   32, 25, 16, 16),
+        ("soc-ai-global-top-rules",   0, 41, 26, 14),
+        ("soc-ai-mitre-tactics",     26, 41, 22, 14),
+        ("soc-ai-global-top-srcips",  0, 55, 24, 14),
+        ("soc-ai-geoip-map",         24, 55, 24, 14),
+        ("soc-ai-latest-alerts",      0, 69, 48, 20, "search"),
     ]))
 
 objs.append(dashboard("soc-ai-linux", "Linux",
