@@ -71,8 +71,20 @@ def pattern_has_indices(pattern):
 
 
 def fetch_fields(title):
+    """Liste de champs mise en cache dans l'index pattern.
+
+    `meta_fields` est OBLIGATOIRE et facile à oublier : sans lui, `_index`,
+    `_id` & co. sont absents de la liste, et une visualisation qui agrège
+    dessus s'importe sans erreur puis affiche « Could not locate that
+    index-pattern-field (id: _index) » à l'ouverture. Le champ existe pourtant
+    côté OpenSearch — c'est bien la liste mise en cache qui est incomplète.
+    Même paramètre que dans refresh_index_patterns.py, garder les deux synchro.
+    """
     cmd = ["curl", "-sk", "-u", AUTH, "--get", f"{DASHBOARD_URL}/api/index_patterns/_fields_for_wildcard",
-           "--data-urlencode", f"pattern={title}"]
+           "--data-urlencode", f"pattern={title}",
+           "--data-urlencode", "meta_fields=_source", "--data-urlencode", "meta_fields=_id",
+           "--data-urlencode", "meta_fields=_type", "--data-urlencode", "meta_fields=_index",
+           "--data-urlencode", "meta_fields=_score"]
     out = subprocess.run(cmd, capture_output=True, text=True).stdout
     r = json.loads(out) if out else {}
     return r.get("fields")

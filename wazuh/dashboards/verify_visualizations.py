@@ -2,7 +2,19 @@
 """Verifie que chaque agregation de chaque visualisation importee fonctionne
 reellement contre l'index pattern qu'elle reference (le _import de saved
 objects ne valide PAS les champs -- une visu peut s'importer avec succes puis
-afficher 'No results found' ou une erreur d'agregation a l'ouverture)."""
+afficher 'No results found' ou une erreur d'agregation a l'ouverture).
+
+DEUX controles, et il faut les deux :
+
+1. l'agregation tourne cote OpenSearch (le champ existe et est agregeable) ;
+2. le champ figure dans la LISTE MISE EN CACHE de l'index pattern.
+
+Le second a ete ajoute apres coup : `_index` passait le controle 1 sans
+probleme -- c'est un champ meta parfaitement agregeable -- mais etait absent de
+la liste mise en cache de `soc-ai-all-alerts`, faute de `meta_fields` a la
+creation. Resultat : verificateur tout vert, et « Could not locate that
+index-pattern-field (id: _index) » a l'ecran. Un controle qui ne teste pas le
+meme chemin que le produit ne prouve rien."""
 import json
 import os
 import subprocess
@@ -23,9 +35,14 @@ def curl(url, data=None, headers=None):
 
 
 patterns = {}
+champs_connus = {}
 found = curl(f"{DASH}/api/saved_objects/_find?type=index-pattern&per_page=100")
 for o in found.get("saved_objects", []):
     patterns[o["id"]] = o["attributes"]["title"]
+    # La liste de champs telle que le dashboard la voit. C'est elle que
+    # consulte la visualisation a l'ouverture, pas le mapping OpenSearch.
+    champs_connus[o["id"]] = {
+        f.get("name") for f in json.loads(o["attributes"].get("fields") or "[]")}
 
 vis = curl(f"{DASH}/api/saved_objects/_find?type=visualization&per_page=100")
 ok = bad = 0
@@ -48,6 +65,13 @@ for o in vis.get("saved_objects", []):
             body = {"size": 0, "aggs": {"t": {"geohash_grid": {"field": field, "precision": 2}}}}
         else:
             body = {"size": 0, "aggs": {"t": {"terms": {"field": field, "size": 3}}}}
+        connus = champs_connus.get(idx_ref) or set()
+        if connus and field not in connus:
+            print(f"KO  {vid:32s} {atype:16s} {field:45s} "
+                  f"absent de la liste de champs de l'index pattern {idx_ref}")
+            bad += 1
+            continue
+
         r = curl(f"{IDX}/{title}/_search", data=body)
         if "error" in r:
             reason = r["error"].get("root_cause", [{}])[0].get("reason", "")[:90]
