@@ -340,6 +340,49 @@ def _chemin_suspect(p: str | None) -> bool:
     return base.startswith(".") and not p.startswith(("/etc", "/home", "/root/."))
 
 
+# Ordre de préférence pour REPRÉSENTER un fichier dans la liste d'IOC. Un hash
+# identifie le contenu : il survit à un renommage, vaut sur n'importe quelle
+# machine, et se partage tel quel avec un tiers ou un moteur de réputation. Un
+# chemin ne vaut que sur l'hôte où il a été vu. D'où hash > filename.
+_PRIORITE_IOC_FICHIER = ("sha256", "sha1", "md5")
+
+
+def _ioc_fichier(chemin: str | None, hashes: dict, contexte: str
+                 ) -> tuple[str, str, str] | None:
+    """UN seul IOC pour un fichier, le reste replié dans la description.
+
+    Un même fichier produisait jusqu'à trois entrées (chemin, sha256, md5). La
+    liste d'IOC d'un case en devenait illisible et son compteur trompeur : six
+    fichiers détectés y apparaissaient comme dix-huit indicateurs distincts, et
+    rien ne disait que ces trois lignes désignaient le même objet.
+
+    Aucune information n'est perdue — les autres hashs et le chemin restent
+    écrits dans la description, donc lisibles dans le case et cherchables. Ce
+    qui change est le nombre de LIGNES : une par artefact réel.
+    """
+    principal = next(((t, hashes[t]) for t in _PRIORITE_IOC_FICHIER
+                      if hashes.get(t)), None)
+    complements = []
+    if principal:
+        type_ioc, valeur = principal
+        if chemin:
+            complements.append(f"fichier {chemin}")
+    elif chemin:
+        type_ioc, valeur = "filename", chemin
+    else:
+        return None
+
+    # Les hashs non retenus comme valeur principale restent affichés : un
+    # analyste qui n'a qu'un MD5 sous la main doit pouvoir faire le lien.
+    complements += [f"{t} {hashes[t]}" for t in _PRIORITE_IOC_FICHIER
+                    if hashes.get(t) and hashes[t] != valeur]
+
+    description = contexte
+    if complements:
+        description = f"{contexte} · " + " · ".join(complements)
+    return str(valeur), type_ioc, description
+
+
 def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
     """Vrais indicateurs d'attaque, dédupliqués. Best-effort.
 
@@ -349,12 +392,30 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
     ne sont PAS des IOC et sont écartés.
     """
     vus: set[str] = set()
+    fichiers_vus: set[str] = set()
     out: list[tuple[str, str, str]] = []
 
     def ajouter(valeur, type_ioc, desc):
         if valeur and str(valeur) not in vus:
             vus.add(str(valeur))
             out.append((str(valeur), type_ioc, desc))
+
+    def ajouter_fichier(chemin, hashes, contexte):
+        """Un fichier = UN IOC (cf. _ioc_fichier), hash prioritaire sur chemin.
+
+        Dédup supplémentaire sur le CHEMIN : le même fichier vu par deux alertes
+        successives (rescan) porte le même hash, donc `ajouter` suffirait ; mais
+        un fichier réécrit entre deux scans change de hash tout en restant le
+        même artefact, et on ne veut pas deux lignes pour autant.
+        """
+        ioc = _ioc_fichier(chemin, hashes or {}, contexte)
+        if ioc is None:
+            return
+        if chemin and str(chemin) in fichiers_vus:
+            return
+        if chemin:
+            fichiers_vus.add(str(chemin))
+        ajouter(*ioc)
 
     for a in alertes:
         raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
@@ -418,25 +479,30 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
             detail = f" — {regle}" if regle else ""
             # Normalisé dans les deux cas : `file_path` lui-même arrive préfixé
             # sur les alertes antérieures au correctif du scanner.
-            ajouter(_chemin_cible(data.get("file_path") or yara.get("scan_path")),
-                    "filename",
-                    f"Fichier détecté par YARA sur {hote}{suffixe}{detail}")
-            ajouter(data.get("sha256"), "sha256",
-                    f"Hash du fichier détecté par YARA sur {hote}{suffixe}")
-            ajouter(data.get("md5"), "md5",
-                    f"Hash MD5 du fichier détecté par YARA sur {hote}")
+            ajouter_fichier(
+                _chemin_cible(data.get("file_path") or yara.get("scan_path")),
+                {"sha256": data.get("sha256"), "sha1": data.get("sha1"),
+                 "md5": data.get("md5")},
+                f"Fichier détecté par YARA sur {hote}{suffixe}{detail}")
 
-        # Hash de malware (VT) ou de fichier suspect modifié (FIM).
+        # Fichier jugé malveillant par VirusTotal. Même raison que pour YARA de
+        # ne pas filtrer sur le répertoire : la qualification vient du moteur.
         vt = data.get("virustotal", {}).get("source", {})
-        ajouter(vt.get("sha256"), "sha256", "Hash VirusTotal (malveillant)")
-        # Chemin du fichier jugé malveillant par VirusTotal : même raison que
-        # pour YARA — la qualification vient du moteur, pas du répertoire.
-        if vt.get("file"):
-            ajouter(vt["file"], "filename", "Fichier signalé par VirusTotal")
+        if vt.get("sha256") or vt.get("file"):
+            ajouter_fichier(vt.get("file"),
+                            {"sha256": vt.get("sha256"), "sha1": vt.get("sha1"),
+                             "md5": vt.get("md5")},
+                            "Fichier signalé par VirusTotal")
+
+        # Fichier suspect modifié (FIM) : ici le répertoire compte, aucun moteur
+        # n'a jugé le contenu.
         sc = raw.get("syscheck", {})
         if _chemin_suspect(sc.get("path")):
-            ajouter(sc.get("sha256_after"), "sha256",
-                    f"Hash FIM — {sc.get('path')}")
+            ajouter_fichier(sc.get("path"),
+                            {"sha256": sc.get("sha256_after"),
+                             "sha1": sc.get("sha1_after"),
+                             "md5": sc.get("md5_after")},
+                            "Fichier modifié dans un emplacement suspect (FIM)")
     return out
 
 
@@ -1246,10 +1312,99 @@ def creer_cases(un_seul: int | None = None) -> list[tuple[int, int, str]]:
     return faits
 
 
+def nettoyer_iocs(simulation: bool = True) -> list[tuple[int, str, str]]:
+    """Retire des cases existants les IOC devenus redondants.
+
+    `_poser_iocs` n'AJOUTE que le manquant, il ne retire jamais : les cases
+    créés avant le repliage « un fichier = un IOC » gardent leurs trois lignes
+    par fichier (chemin, sha256, md5). Ce nettoyage les ramène à une.
+
+    Prudence : on ne supprime QUE des valeurs que ce code a lui-même produites
+    auparavant pour un fichier désormais représenté par son hash — jamais un IOC
+    ajouté à la main par un analyste, qui ne peut pas figurer dans cette liste.
+    """
+    a_faire: list[tuple[int, str, str]] = []
+    case = _client()
+    with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
+        incidents = conn.execute(
+            "SELECT id, iris_case_id FROM incidents "
+            "WHERE iris_case_id IS NOT NULL ORDER BY id").fetchall()
+        for inc in incidents:
+            alertes = conn.execute(
+                "SELECT * FROM alerts WHERE incident_id = %s ORDER BY ts",
+                (inc["id"],)).fetchall()
+            if not alertes:
+                continue
+            # Ce que le code produit AUJOURD'HUI : la liste de référence.
+            gardes = {v for v, _t, _d in _iocs(alertes)}
+            # Les valeurs de fichier connues de ces alertes : chemins et hashs.
+            # Tout ce qui est là-dedans mais plus dans `gardes` est un reliquat
+            # de l'ancienne forme, replié depuis dans une description.
+            connues = _valeurs_fichier(alertes)
+            try:
+                presents = (case.list_iocs(inc["iris_case_id"]).get_data()
+                            or {}).get("ioc") or []
+            except Exception as e:                            # noqa: BLE001
+                log.warning("case #%s : IOC illisibles (%s)",
+                            inc["iris_case_id"], e)
+                continue
+            for i in presents:
+                valeur = i.get("ioc_value")
+                if not valeur or valeur in gardes or valeur not in connues:
+                    continue
+                a_faire.append((inc["iris_case_id"], valeur, i.get("ioc_id")))
+                if not simulation:
+                    try:
+                        case.delete_ioc(i["ioc_id"], cid=inc["iris_case_id"])
+                    except Exception as e:                    # noqa: BLE001
+                        log.warning("suppression IOC %s : %s", valeur, e)
+    return a_faire
+
+
+def _valeurs_fichier(alertes: list[dict]) -> set[str]:
+    """Chemins et hashs de fichier présents dans ces alertes.
+
+    Périmètre du nettoyage : on ne supprime rien qui ne vienne pas de là.
+    """
+    valeurs: set[str] = set()
+    for a in alertes:
+        raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
+        data = raw.get("data", {}) or {}
+        yara = data.get("yara") or {}
+        vt = (data.get("virustotal", {}) or {}).get("source", {}) or {}
+        sc = raw.get("syscheck", {}) or {}
+        for v in (data.get("file_path"), yara.get("scan_path"),
+                  _chemin_cible(data.get("file_path") or yara.get("scan_path")),
+                  data.get("sha256"), data.get("sha1"), data.get("md5"),
+                  vt.get("file"), vt.get("sha256"), vt.get("sha1"), vt.get("md5"),
+                  sc.get("path"), sc.get("sha256_after"), sc.get("sha1_after"),
+                  sc.get("md5_after")):
+            if v:
+                valeurs.add(str(v))
+    return valeurs
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--incident", type=int, default=None)
+    ap.add_argument("--nettoyer-iocs", action="store_true",
+                    help="retire des cases existants les IOC redondants "
+                         "(un fichier = un IOC, hash prioritaire sur chemin)")
+    ap.add_argument("--appliquer", action="store_true",
+                    help="avec --nettoyer-iocs : supprime réellement "
+                         "(sans ce drapeau, simulation)")
     args = ap.parse_args()
+
+    if args.nettoyer_iocs:
+        faits = nettoyer_iocs(simulation=not args.appliquer)
+        verbe = "supprimé" if args.appliquer else "à supprimer"
+        for case_id, valeur, _ in faits:
+            print(f"  case #{case_id} : {verbe} {valeur}")
+        print(f"  {len(faits)} IOC redondant(s) {verbe}.")
+        if faits and not args.appliquer:
+            print("  Relancer avec --appliquer pour supprimer.")
+        return
+
     crees = creer_cases(args.incident)
     if not crees:
         print("Aucun incident à verser dans IRIS.")
