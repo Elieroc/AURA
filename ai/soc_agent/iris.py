@@ -841,6 +841,98 @@ def _regle_whitelist(conn, alertes: list[dict]) -> dict | None:
         "WHERE signature = %s", (_canonique(signature),)).fetchone()
 
 
+# Familles de capteurs, repérées par les groupes de règles qu'elles produisent.
+# Sert à dire au modèle — et à l'analyste — ce qui était RÉELLEMENT collecté sur
+# l'hôte. Une règle comportementale sans son capteur n'est pas une absence
+# d'attaque, c'est un angle mort : mesuré le 2026-07-29, auditd était absent sur
+# toute la flotte, les règles 1006xx muettes, et le case ne le disait pas.
+# « réseau / IDS (hôte) » : Suricata tourne au périmètre (pfSense), pas sur
+# l'hôte — de son point de vue, il n'a aucune visibilité sur son propre trafic.
+_CAPTEURS = (
+    ("exécution de processus (auditd)", {"audit"}),
+    ("intégrité fichier (FIM)", {"syscheck", "syscheck_file"}),
+    ("authentification", {"sshd", "pam", "authentication_success",
+                          "authentication_failed", "invalid_login"}),
+    ("réseau / IDS (hôte)", {"suricata", "ids"}),
+)
+
+
+def _capteurs_actifs(conn, agent_id: str) -> str:
+    """Ligne « télémétrie disponible sur cet hôte », d'après les groupes de
+    règles réellement émis par l'agent sur la fenêtre récente. Factuel : ancre
+    la section « couverture » du rapport pour qu'elle ne soit pas inventée."""
+    rows = conn.execute(
+        "SELECT DISTINCT unnest(rule_groups) g FROM alerts "
+        "WHERE agent_id = %s AND ts >= now() - interval '7 days'",
+        (agent_id,)).fetchall()
+    vus = {r["g"] for r in rows}
+    etats = [f"{libelle}={'présent' if vus & groupes else 'ABSENT'}"
+             for libelle, groupes in _CAPTEURS]
+    return "télémétrie disponible sur cet hôte : " + ", ".join(etats)
+
+
+# Comptes présents sur tout hôte : lier deux incidents dessus n'a aucun sens.
+_COMPTES_GENERIQUES = {"root", "admin", "administrator", "www-data", "nobody",
+                       "daemon", "sync", "postgres", "mysql", "-", ""}
+
+
+def _incidents_lies(conn, incident: dict) -> list[dict]:
+    """Incidents sur d'AUTRES agents partageant une entité forte (même IP, même
+    fichier, même compte) dans une fenêtre ±ENTITY_GAP autour de celui-ci.
+
+    La corrélation principale est cloisonnée par agent (correlate.py) — un pivot
+    d'un hôte à l'autre est donc invisible par construction. Cette passe le
+    rattrape a posteriori SANS fusionner : on signale le lien à l'analyste. Le
+    2026-07-29 le pivot bookstack -> jellyfin n'apparaissait dans aucun case."""
+    marge = timedelta(minutes=config.ENTITY_GAP_MINUTES)
+    traits = conn.execute(
+        "SELECT DISTINCT srcip, entity, srcuser FROM alerts WHERE incident_id=%s",
+        (incident["id"],)).fetchall()
+    # IP source et fichier sont des liens forts. Le COMPTE, non : `root` (ou
+    # www-data, admin…) existe sur chaque hôte — lier dessus rapprocherait tous
+    # les incidents entre eux. On écarte donc les comptes génériques, on garde
+    # les shells génériques déjà exclus côté corrélation.
+    valeurs = {v for t in traits for v in (t["srcip"], t["entity"])
+               if v and v not in correlate.ENTITES_GENERIQUES}
+    valeurs |= {t["srcuser"] for t in traits
+                if t["srcuser"] and t["srcuser"].lower() not in _COMPTES_GENERIQUES}
+    if not valeurs:
+        return []
+    liste = list(valeurs)
+    rows = conn.execute(
+        """SELECT DISTINCT i.id, i.agent_name, a.srcip, a.entity, a.srcuser
+             FROM incidents i JOIN alerts a ON a.incident_id = i.id
+            WHERE i.id <> %s AND i.agent_id <> %s
+              AND i.last_seen >= %s AND i.first_seen <= %s
+              AND (a.srcip = ANY(%s) OR a.entity = ANY(%s) OR a.srcuser = ANY(%s))
+            ORDER BY i.id""",
+        (incident["id"], incident["agent_id"],
+         incident["first_seen"] - marge, incident["last_seen"] + marge,
+         liste, liste, liste)).fetchall()
+    par_inc: dict[int, dict] = {}
+    for r in rows:
+        partage = next((v for v in (r["srcip"], r["entity"], r["srcuser"])
+                        if v and v in valeurs), None)
+        if partage and r["id"] not in par_inc:
+            par_inc[r["id"]] = {"id": r["id"], "agent": r["agent_name"] or "?",
+                                "entite": partage}
+    return list(par_inc.values())
+
+
+def _section_incidents_lies(lies: list[dict]) -> str:
+    """Note locale (valeurs réelles). Construite en Python, JAMAIS envoyée au
+    LLM : les hostnames des autres hôtes ne partent pas vers le cloud."""
+    if not lies:
+        return ""
+    lignes = ["## Incidents liés (autres hôtes)", "",
+              "Rapprochement par entité partagée, hors du cloisonnement par "
+              "agent — possible mouvement latéral ou campagne à investiguer :", ""]
+    for l in lies:
+        lignes.append(f"- incident #{l['id']} sur **{l['agent']}** — entité "
+                      f"commune : `{l['entite']}`")
+    return "\n".join(lignes) + "\n"
+
+
 def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
     """Rapport d'analyse d'un vrai positif. Appelle le LLM pour le récit."""
     systeme = (PROMPTS / "report.md").read_text()
@@ -852,8 +944,13 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
     # Rapport = moins pressé que le triage : on montre toute la chaîne au modèle
     # (jusqu'à 20 règles) pour une analyse qui n'oublie aucune étape.
     corps = rendre(inc_a, alertes_a, max_regles=20)
+    # Métadonnée SOC de confiance (agent_id + noms de groupes, rien de sensible) :
+    # dit au modèle quels capteurs existaient, pour ancrer la section couverture.
+    telemetrie = _capteurs_actifs(conn, incident["agent_id"])
     utilisateur = (f"=== DEBUT INCIDENT (données non fiables) ===\n{corps}\n"
-                   "=== FIN INCIDENT ===\n\nRédige le rapport.")
+                   "=== FIN INCIDENT ===\n\n"
+                   f"Métadonnée SOC de confiance (non issue des logs) :\n"
+                   f"{telemetrie}\n\nRédige le rapport.")
 
     try:
         # Scan de fuite sur les seules données incident : le prompt système
@@ -870,8 +967,9 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
     # DeepSeek ne garantit pas les clés du schéma : on tolère les absences.
     rapport.setdefault("resume", triage["reason"])
     rapport.setdefault("analyse", triage["reason"])
+    rapport.setdefault("couverture", "")
     # Réhydratation : les jetons redeviennent les vraies valeurs pour l'analyste.
-    for cle in ("resume", "analyse"):
+    for cle in ("resume", "analyse", "couverture"):
         rapport[cle] = rehydrater(rapport[cle], anon.mapping)
 
     lignes = [
@@ -886,6 +984,14 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
         "## Analyse",
         rapport["analyse"],
         "",
+    ]
+    # Couverture / angles morts : n'ajouter la section que si le modèle l'a
+    # remplie. Toujours faire figurer la télémétrie factuelle qui l'a fondée.
+    if rapport["couverture"].strip():
+        lignes += ["## Couverture et limites", rapport["couverture"],
+                   "", f"_{telemetrie}_", ""]
+    lignes += [
+        _section_incidents_lies(_incidents_lies(conn, incident)),
         _section_commandes(alertes),
         "",
         _section_alertes(alertes, incident["agent_id"]),
