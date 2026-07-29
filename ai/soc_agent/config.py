@@ -220,6 +220,35 @@ AGENTS_PROTEGES = {
     a.strip() for a in os.environ.get("AGENTS_PROTEGES", "000").split(",")
     if a.strip()}
 
+# Groupes Wazuh dont les agents ne sont JAMAIS isolés du réseau.
+#
+# L'isolation ne doit concerner que des ENDPOINTS — des machines dont on peut
+# couper le réseau sans couper celui des autres. Un pare-feu, un reverse proxy,
+# un résolveur DNS ou une passerelle VPN acheminent le trafic D'AUTRUI :
+# les isoler ne contient pas l'incident, ça provoque une panne générale, et sur
+# un pare-feu ça coupe aussi le lien par lequel on rétablirait la situation.
+#
+# Le rôle est porté par les groupes Wazuh plutôt que par une liste d'ID en dur :
+# c'est le mécanisme d'inventaire natif, il survit à l'ajout d'un agent, et
+# l'opérateur qui enrôle une machine déclare son rôle au même endroit que le
+# reste de sa configuration. Cf. wazuh/README.md pour la création du groupe.
+ISOLATION_GROUPES_INTERDITS = {
+    g.strip().lower()
+    for g in os.environ.get("ISOLATION_GROUPES_INTERDITS", "infrastructure").split(",")
+    if g.strip()}
+
+# Que faire quand on n'arrive PAS à connaître les groupes d'un agent (API
+# injoignable, agent supprimé) : par défaut on refuse l'isolation.
+#
+# C'est un choix, et c'est le bon sens du garde-fou : l'isolation est l'action
+# la plus destructrice du catalogue, et ne pas pouvoir vérifier qu'une machine
+# est un endpoint est une raison de s'abstenir, pas de tenter. Le pire cas d'un
+# refus est un incident non contenu que l'analyste voit dans le case (l'action
+# bascule en escalate_human) ; le pire cas d'une autorisation par défaut est le
+# pare-feu du site coupé sur une panne d'API.
+ISOLATION_REFUS_SI_ROLE_INCONNU = os.environ.get(
+    "ISOLATION_REFUS_SI_ROLE_INCONNU", "true").lower() == "true"
+
 
 # --- Corrélation ------------------------------------------------------------
 #

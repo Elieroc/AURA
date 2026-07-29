@@ -134,7 +134,23 @@ def _afficher_etat(etat: dict) -> None:
         print(f"  agent {a} : non isolé (pas de marqueur)")
 
 
-def isoler(agent_id: str, reason: str = "isolation manuelle") -> None:
+def isoler(agent_id: str, reason: str = "isolation manuelle",
+           forcer: bool = False) -> None:
+    """Isolation demandée par un opérateur.
+
+    Le garde-fou « endpoints seulement » s'applique AUSSI ici : un opérateur qui
+    tape la commande sur un pare-feu ne veut presque jamais couper le site, il
+    s'est trompé d'agent. Mais il reste le décideur — `--forcer` lève le refus.
+    C'est la différence entre une barrière (l'automatisme, jamais franchissable)
+    et un filet (l'humain, qui doit dire explicitement qu'il sait).
+    """
+    refus = raison_non_isolable(agent_id)
+    if refus and not forcer:
+        print(f"  REFUS : {refus}")
+        print("  Relancer avec --forcer si l'isolation est bien voulue.")
+        return
+    if refus:
+        print(f"  /!\\ garde-fou outrepassé (--forcer) : {refus}")
     fire_isolation(agent_id, True, reason)
     _tracer_isolation(agent_id, True, reason)
     print(f"  agent {agent_id} : isolation demandée ({reason})")
@@ -200,6 +216,60 @@ def _agent_ip(agent_id: str) -> str | None:
     r.raise_for_status()
     items = r.json().get("data", {}).get("affected_items", [])
     return items[0].get("ip") if items else None
+
+
+def _groupes_agent(agent_id: str) -> set[str] | None:
+    """Groupes Wazuh de l'agent, ou None si on n'a pas pu les lire.
+
+    None et set() ne veulent PAS dire la même chose : None = « je ne sais pas »
+    (API injoignable, agent inconnu), set() = « aucun groupe », qui est un fait.
+    L'appelant traite les deux différemment.
+    """
+    try:
+        tok = _wazuh_token()
+        r = requests.get(f"{config.WAZUH_API_URL}/agents",
+                         params={"agents_list": agent_id, "select": "group"},
+                         headers={"Authorization": f"Bearer {tok}"},
+                         verify=False, timeout=15)
+        r.raise_for_status()
+        items = r.json().get("data", {}).get("affected_items", [])
+        if not items:
+            return None
+        return {str(g).lower() for g in (items[0].get("group") or [])}
+    except (requests.RequestException, ValueError, KeyError) as e:
+        log.warning("groupes de l'agent %s illisibles : %s", agent_id, e)
+        return None
+
+
+def raison_non_isolable(agent_id: str) -> str | None:
+    """Motif de refus d'isolation pour cet agent, ou None s'il est isolable.
+
+    L'isolation ne vise que les ENDPOINTS. Trois barrières, dans l'ordre :
+
+    1. agent explicitement protégé (`AGENTS_PROTEGES`, dont 000 le manager, qui
+       n'a d'ailleurs aucun groupe — le mécanisme de groupes ne le couvrirait
+       pas) ;
+    2. agent appartenant à un groupe d'infrastructure : pare-feu, proxy, DNS,
+       VPN. Ces machines acheminent le trafic d'autrui, les couper provoque une
+       panne générale au lieu de contenir un incident ;
+    3. rôle indéterminable — refus par défaut (cf.
+       ISOLATION_REFUS_SI_ROLE_INCONNU).
+    """
+    if str(agent_id) in config.AGENTS_PROTEGES:
+        return f"agent {agent_id} protégé (AGENTS_PROTEGES)"
+
+    groupes = _groupes_agent(str(agent_id))
+    if groupes is None:
+        if config.ISOLATION_REFUS_SI_ROLE_INCONNU:
+            return (f"rôle de l'agent {agent_id} indéterminable (groupes "
+                    "illisibles) — isolation refusée par prudence")
+        return None
+
+    interdits = groupes & config.ISOLATION_GROUPES_INTERDITS
+    if interdits:
+        return (f"agent {agent_id} dans le groupe {', '.join(sorted(interdits))} "
+                "— infrastructure réseau, jamais isolée")
+    return None
 
 
 def _interpreter(stdout: str, returncode: int) -> dict:
@@ -417,12 +487,14 @@ def _cibles(action: str, incident: dict, alertes: list[dict]) -> list[str]:
     (basename) pour le kill."""
     if action == "propose_isolate_host":
         agent_id = str(incident["agent_id"])
-        # Un agent protégé (000, le manager) n'est JAMAIS isolé : l'isolation
-        # couperait la collecte de tout le parc et le canal même par lequel on
-        # dé-isole. Filtré ici plutôt que dans le prompt — cf. AGENTS_PROTEGES.
-        # Retourner une liste vide fait sauter l'action : `appliquer` ne trouve
-        # pas de cible et n'exécute rien.
-        if agent_id in config.AGENTS_PROTEGES:
+        # L'isolation ne vise que les ENDPOINTS : ni le manager, ni un pare-feu,
+        # proxy, DNS ou VPN (cf. raison_non_isolable). Filtré ici plutôt que
+        # dans le prompt — le modèle ne voit qu'un agent_id et n'a aucun moyen
+        # de savoir ce que la machine porte. Retourner une liste vide fait
+        # sauter l'action : `appliquer` ne trouve pas de cible et n'exécute rien.
+        refus = raison_non_isolable(agent_id)
+        if refus:
+            log.warning("isolation refusée : %s", refus)
             return []
         return [agent_id]
     if action == "propose_kill_process":
@@ -824,13 +896,17 @@ def main() -> None:
                         "en 'Canceled' (desisolation, deblocage, reactivation)")
     ap.add_argument("--motif", default="action opérateur",
                     help="motif consigné avec l'(dé)isolation manuelle")
+    ap.add_argument("--forcer", action="store_true",
+                    help="isole malgré le garde-fou « endpoints seulement » "
+                         "(pare-feu, proxy, DNS, VPN, manager). À n'utiliser "
+                         "qu'en sachant que le trafic d'autres machines tombe.")
     args = ap.parse_args()
 
     # --isoler / --desisoler sont des commandes opérateur explicites : elles
     # s'exécutent réellement, indépendamment de MITIGATE_EXECUTE (qui ne borne
     # que l'exécution AUTOMATIQUE depuis un verdict).
     if args.isoler:
-        isoler(args.isoler, args.motif)
+        isoler(args.isoler, args.motif, args.forcer)
     elif args.desisoler:
         desisoler(args.desisoler, args.motif)
     elif args.etat:
