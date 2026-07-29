@@ -54,8 +54,8 @@ def _enregistrer(usage: str, modele: str, max_tokens: int, duree_ms: int,
         log.debug("métrique LLM non enregistrée : %s", e)
 
 
-def completion(systeme: str, utilisateur: str, max_tokens: int = 500,
-               temperature: float = 0.2, usage: str = "inconnu",
+def completion(systeme: str, utilisateur: str, usage: str,
+               max_tokens: int = 500, temperature: float = 0.2,
                incident_id: int | None = None) -> tuple[dict, dict]:
     """Retourne (objet JSON parsé, métriques).
 
@@ -66,6 +66,11 @@ def completion(systeme: str, utilisateur: str, max_tokens: int = 500,
     laquelle on lit ensuite la consommation dans le dashboard AI. Les appels en
     échec sont comptés aussi — un timeout ou un budget trop court coûte du
     temps, et parfois des tokens, même sans réponse exploitable.
+
+    Paramètre OBLIGATOIRE et placé avant les optionnels, volontairement : avec
+    une valeur par défaut, un nouvel appelant qui l'oublie passe inaperçu et sa
+    consommation atterrit dans un bucket « inconnu » du dashboard — ce qui est
+    exactement arrivé. Sans défaut, l'oubli est une TypeError au premier appel.
     """
     debut = time.monotonic()
     try:
