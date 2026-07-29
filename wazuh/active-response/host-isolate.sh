@@ -67,6 +67,20 @@ if [ ! -x "$NFT" ]; then
     exit 1
 fi
 
+# Refus d'auto-isolation du manager. Si MANAGER_IP est une adresse LOCALE, c'est
+# que ce script tourne SUR le manager (agent 000) : l'isoler couperait la
+# collecte de tout le parc, l'API et la console — donc le seul canal par lequel
+# on pourrait le dé-isoler. Le ruleset ci-dessous n'ouvre d'exception que « vers
+# le manager », ce qui ne veut rien dire quand on EST le manager.
+#
+# Doublon assumé du garde-fou Python (config.AGENTS_PROTEGES) : l'AR est aussi
+# joignable par l'API Wazuh et le serveur MCP, qui ne passent pas par ce code.
+if [ -n "$MANAGER_IP" ] && command -v ip >/dev/null 2>&1 \
+   && ip -o addr show 2>/dev/null | grep -qw "$MANAGER_IP"; then
+    log "REFUS: $MANAGER_IP est une adresse locale — auto-isolation du manager refusée"
+    exit 1
+fi
+
 # Idempotent : table déjà en place = déjà isolé. On (re)pose le marqueur au cas
 # où il aurait disparu (agent redémarré, marqueur effacé), pour qu'il reflète
 # toujours l'état réel de la table.

@@ -205,6 +205,21 @@ SSH_KEY = os.path.expanduser(
 SSH_USER = os.environ.get("SSH_USER", "wazuh-admin")
 ISOLATION_MARKER = os.environ.get("ISOLATION_MARKER", "/var/ossec/isolated")
 
+# Agents qu'aucune remédiation ne peut prendre pour cible, quel que soit le
+# verdict. 000 est le manager : l'isoler coupe la collecte de TOUT le parc, la
+# console, l'API — et donc le seul canal par lequel on pourrait le dé-isoler.
+# C'est un suicide du SOC, et il n'a rien d'hypothétique : le 2026-07-29 un
+# incident YARA porté par l'agent `wazuh.manager` (les alertes YARITRUST sont
+# émises par le manager, alors que le fichier suspect est sur une AUTRE machine)
+# a fait sortir `propose_isolate_host` sur 000. L'action est partie ; seule
+# l'absence de `nft` dans le conteneur l'a rendue inoffensive.
+#
+# À laisser en tête des garde-fous déterministes : le modèle ne voit qu'un
+# `agent_id` dans son contexte et n'a aucun moyen de savoir lequel porte le SOC.
+AGENTS_PROTEGES = {
+    a.strip() for a in os.environ.get("AGENTS_PROTEGES", "000").split(",")
+    if a.strip()}
+
 
 # --- Corrélation ------------------------------------------------------------
 #
