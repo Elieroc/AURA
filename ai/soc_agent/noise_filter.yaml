@@ -23,11 +23,20 @@ filters:
 
   # Par identifiant de règle Wazuh.
   rules:
-    ignore_rule_ids: []
-      # Exemple (désactivé tant que non observé sur notre parc) :
-      # - id: "5715"
-      #   reason: "PAM session opened — bruit de cycle de vie"
-      #   query_level: true
+    ignore_rule_ids:
+      # 242 409 événements en 24 h à elle seule, soit 99,6 % de wazuh-proxy-*.
+      # nginx-proxy-manager expose tout le lab sur internet : son access log est
+      # un flux continu de scan non ciblé, et un 400 signifie précisément que
+      # rien n'a été servi. Écartée AVANT ingestion, sinon l'ajout de
+      # wazuh-proxy-* aux indices lus fait entrer un quart de million de lignes
+      # par jour en base.
+      # Le signal utile de ces événements n'est pas perdu : la règle 100823
+      # (12 erreurs 4xx en 60 s depuis la même IP -> niveau 10, scan probable)
+      # est agrégée CÔTÉ MANAGER, donc en amont de ce filtre, et elle est
+      # ingérée normalement.
+      - id: "31101"
+        reason: "Erreur 4xx du serveur web — bruit de scan internet sur le reverse proxy, agrégé par 100823"
+        query_level: true
 
   # Par compte source (data.srcuser).
   actors:
