@@ -5,6 +5,8 @@ Dashboards :
 - Threat Intel : carte GeoIP, réputation AbuseIPDB, détections VirusTotal
 - Global      : timeline des alertes par niveau, compteur global d'événements
 - Linux       : top règles, échecs d'auth, top alertes (index wazuh-linux-*)
+- AI          : tokens, coût, latence et qualité des verdicts (index wazuh-ai-*,
+                alimenté par le conteneur soc-agent-metrics)
 """
 import json
 import os
@@ -13,6 +15,7 @@ IDX_ALL = "soc-ai-all-alerts"    # pattern combiné wazuh-alerts-*,wazuh-linux-*
 IDX_LINUX = "wazuh-linux-*"
 IDX_WEB = "wazuh-web-*"
 IDX_YARA = "wazuh-yara-*"
+IDX_AI = "wazuh-ai-*"      # métriques d'IA produites par ai/soc_agent/metrics.py
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "soc-ai-dashboards.ndjson")
 
 HIST_PARAMS = {
@@ -560,6 +563,301 @@ objs.append(saved_search("soc-ai-yara-latest", "Derniers matches YARA",
     ["data.yara.scanned_host", "data.score", "rule.severity", "data.file_path", "data.sha256"],
     IDX_YARA))
 
+
+# ---------- Visualisations : AI (index wazuh-ai-*) ----------
+#
+# Deux familles de documents dans cet index, toujours filtrer sur `event_type` :
+#   event_type:llm_call -> consommation (tokens, latence, coût), un doc par appel
+#   event_type:triage   -> qualité (verdict, incohérences, garde-fous)
+# Sans ce filtre, un compteur mélange les deux et ne veut rien dire.
+
+Q_LLM = "event_type:llm_call"
+Q_TRIAGE = "event_type:triage"
+
+# Couleurs de verdict : vrai positif rouge, faux positif vert, doute jaune.
+VERDICT_COLORS = {"vis": {"colors": {
+    "true_positive": "#BD271E",
+    "false_positive": "#54B399",
+    "needs_investigation": "#D6BF57",
+}}}
+
+
+def metric_vis(vid, title, label, idx, query, agg):
+    """Grand chiffre unique. `agg` est l'agrégation de métrique (count, sum...)."""
+    return vis(vid, title, {
+        "title": title,
+        "type": "metric",
+        "aggs": [{"id": "1", "enabled": True, "schema": "metric",
+                  **agg, "params": {**agg.get("params", {}), "customLabel": label}}],
+        "params": {"addTooltip": True, "addLegend": False, "type": "metric",
+                   "metric": {"percentageMode": False, "useRanges": False,
+                              "colorSchema": "Green to Red", "metricColorMode": "None",
+                              "colorsRange": [{"from": 0, "to": 10 ** 12}],
+                              "labels": {"show": True}, "invertColors": False,
+                              "style": {"bgFill": "#000", "bgColor": False,
+                                        "labelColor": False, "subText": "",
+                                        "fontSize": 48}}},
+    }, idx, query=query)
+
+
+objs.append(metric_vis("soc-ai-ai-tokens-total", "Tokens consommes (total)",
+                       "Tokens", IDX_AI, Q_LLM,
+                       {"type": "sum", "params": {"field": "ai.total_tokens"}}))
+
+objs.append(metric_vis("soc-ai-ai-calls-total", "Appels au modele",
+                       "Appels", IDX_AI, Q_LLM, {"type": "count"}))
+
+objs.append(metric_vis("soc-ai-ai-cost-total", "Cout estime (USD)",
+                       "USD", IDX_AI, Q_LLM,
+                       {"type": "sum", "params": {"field": "ai.cost_usd"}}))
+
+objs.append(metric_vis("soc-ai-ai-latency-avg", "Latence moyenne (ms)",
+                       "ms", IDX_AI, Q_LLM,
+                       {"type": "avg", "params": {"field": "ai.duration_ms"}}))
+
+# Tokens dans le temps, empiles entree/sortie : c'est le rapport entre les deux
+# qui explique le cout (la sortie est facturee plus cher partout), et un pic de
+# sortie signale un modele qui raisonne long.
+objs.append(vis("soc-ai-ai-tokens-timeline", "Tokens dans le temps (entree / sortie)", {
+    "title": "Tokens dans le temps (entree / sortie)",
+    "type": "histogram",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "sum", "schema": "metric",
+         "params": {"field": "ai.prompt_tokens", "customLabel": "Tokens entree"}},
+        {"id": "3", "enabled": True, "type": "sum", "schema": "metric",
+         "params": {"field": "ai.completion_tokens", "customLabel": "Tokens sortie"}},
+        {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
+         "params": {"field": "timestamp", "timeRange": {"from": "now-30d", "to": "now"},
+                    "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
+                    "interval": "auto", "drop_partials": False, "min_doc_count": 1,
+                    "extended_bounds": {}}},
+    ],
+    "params": {**HIST_PARAMS,
+               "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
+                              "title": {"text": "Tokens"}}]},
+}, IDX_AI, query=Q_LLM,
+   ui_state={"vis": {"colors": {"Tokens entree": "#6092C0", "Tokens sortie": "#E7664C"}}}))
+
+# Par appelant : dit OU part le budget. Le triage n'est qu'un des consommateurs
+# — le rapport IRIS coute souvent plus cher (4000 tokens de budget contre 3000).
+objs.append(vis("soc-ai-ai-tokens-by-usage", "Tokens par usage", {
+    "title": "Tokens par usage",
+    "type": "pie",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "sum", "schema": "metric",
+         "params": {"field": "ai.total_tokens", "customLabel": "Tokens"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "ai.usage", "size": 10, "customLabel": "Usage"}},
+    ],
+    "params": {"type": "pie", "addTooltip": True, "addLegend": True,
+               "legendPosition": "right", "isDonut": True,
+               "labels": {"show": True, "values": True, "last_level": True,
+                          "truncate": 100}},
+}, IDX_AI, query=Q_LLM))
+
+objs.append(vis("soc-ai-ai-calls-by-model", "Appels par modele", {
+    "title": "Appels par modele",
+    "type": "pie",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Appels"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "ai.model", "size": 10, "customLabel": "Modele"}},
+    ],
+    "params": {"type": "pie", "addTooltip": True, "addLegend": True,
+               "legendPosition": "right", "isDonut": True,
+               "labels": {"show": True, "values": True, "last_level": True,
+                          "truncate": 100}},
+}, IDX_AI, query=Q_LLM))
+
+# Latence : moyenne ET 95e centile. La moyenne seule cache les appels qui
+# partent en timeout, et c'est le 95e qui dit si le cycle de 5 min tient.
+objs.append(vis("soc-ai-ai-latency-timeline", "Latence des appels (moyenne / p95)", {
+    "title": "Latence des appels (moyenne / p95)",
+    "type": "line",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "avg", "schema": "metric",
+         "params": {"field": "ai.duration_ms", "customLabel": "Moyenne (ms)"}},
+        {"id": "3", "enabled": True, "type": "percentiles", "schema": "metric",
+         "params": {"field": "ai.duration_ms", "percents": [95],
+                    "customLabel": "p95 (ms)"}},
+        {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
+         "params": {"field": "timestamp", "timeRange": {"from": "now-30d", "to": "now"},
+                    "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
+                    "interval": "auto", "drop_partials": False, "min_doc_count": 1,
+                    "extended_bounds": {}}},
+    ],
+    "params": {**HIST_PARAMS, "type": "line",
+               "seriesParams": [{"show": True, "type": "line", "mode": "normal",
+                                 "data": {"label": "Moyenne (ms)", "id": "1"},
+                                 "valueAxis": "ValueAxis-1",
+                                 "drawLinesBetweenPoints": True, "lineWidth": 2,
+                                 "showCircles": True}],
+               "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
+                              "title": {"text": "Millisecondes"}}]},
+}, IDX_AI, query=Q_LLM))
+
+# Budget : un completion_tokens qui colle a max_tokens explique un content vide
+# (finish_reason=length sur les modeles raisonnants).
+objs.append(vis("soc-ai-ai-budget", "Sortie vs budget par usage", {
+    "title": "Sortie vs budget par usage",
+    "type": "table",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "avg", "schema": "metric",
+         "params": {"field": "ai.completion_tokens", "customLabel": "Sortie moy."}},
+        {"id": "3", "enabled": True, "type": "max", "schema": "metric",
+         "params": {"field": "ai.completion_tokens", "customLabel": "Sortie max"}},
+        {"id": "4", "enabled": True, "type": "max", "schema": "metric",
+         "params": {"field": "ai.max_tokens", "customLabel": "Budget"}},
+        {"id": "5", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Appels"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "ai.usage", "size": 10, "customLabel": "Usage"}},
+    ],
+    "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
+               "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
+}, IDX_AI, query=Q_LLM))
+
+objs.append(vis("soc-ai-ai-errors", "Appels en echec", {
+    "title": "Appels en echec",
+    "type": "table",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Appels"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "ai.error", "size": 10, "customLabel": "Erreur"}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "ai.usage", "size": 5, "customLabel": "Usage"}},
+    ],
+    "params": {"perPage": 5, "showPartialRows": False, "showMetricsAtAllLevels": False,
+               "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
+}, IDX_AI, query="event_type:llm_call and ai.ok:false"))
+
+# ---------- Qualite des verdicts (event_type:triage) ----------
+
+objs.append(vis("soc-ai-ai-verdicts", "Repartition des verdicts", {
+    "title": "Repartition des verdicts",
+    "type": "pie",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Triages"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "triage.verdict", "size": 5,
+                    "customLabel": "Verdict"}},
+    ],
+    "params": {"type": "pie", "addTooltip": True, "addLegend": True,
+               "legendPosition": "right", "isDonut": True,
+               "labels": {"show": True, "values": True, "last_level": True,
+                          "truncate": 100}},
+}, IDX_AI, query=Q_TRIAGE, ui_state=VERDICT_COLORS))
+
+objs.append(vis("soc-ai-ai-verdicts-timeline", "Verdicts dans le temps", {
+    "title": "Verdicts dans le temps",
+    "type": "histogram",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
+        {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
+         "params": {"field": "timestamp", "timeRange": {"from": "now-30d", "to": "now"},
+                    "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
+                    "interval": "auto", "drop_partials": False, "min_doc_count": 1,
+                    "extended_bounds": {}}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "group",
+         "params": {**TERMS, "field": "triage.verdict", "size": 5}},
+    ],
+    "params": {**HIST_PARAMS,
+               "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
+                              "title": {"text": "Triages"}}]},
+}, IDX_AI, query=Q_TRIAGE, ui_state=VERDICT_COLORS))
+
+objs.append(vis("soc-ai-ai-confidence", "Confiance par verdict", {
+    "title": "Confiance par verdict",
+    "type": "horizontal_bar",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Triages"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "triage.verdict", "size": 5,
+                    "customLabel": "Verdict"}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "group",
+         "params": {**TERMS, "field": "triage.confidence", "size": 3,
+                    "customLabel": "Confiance"}},
+    ],
+    "params": {**HIST_PARAMS, "type": "horizontal_bar",
+               "seriesParams": [{"show": True, "type": "histogram", "mode": "stacked",
+                                 "data": {"label": "Triages", "id": "1"},
+                                 "valueAxis": "ValueAxis-1",
+                                 "drawLinesBetweenPoints": True, "lineWidth": 2,
+                                 "showCircles": True}],
+               "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
+                              "title": {"text": "Triages"}}]},
+}, IDX_AI, query=Q_TRIAGE,
+   ui_state={"vis": {"colors": {"high": "#BD271E", "medium": "#D6BF57",
+                                "low": "#6092C0"}}}))
+
+# Les trois signaux de degradation lisibles SANS jeu labellise. Une barre qui
+# monte ici precede toujours un probleme : prompt casse, ou donnees hostiles.
+objs.append(vis("soc-ai-ai-quality", "Garde-fous, incoherences, injections", {
+    "title": "Garde-fous, incoherences, injections",
+    "type": "histogram",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "sum", "schema": "metric",
+         "params": {"field": "triage.garde_fou_count", "customLabel": "Garde-fous"}},
+        {"id": "3", "enabled": True, "type": "sum", "schema": "metric",
+         "params": {"field": "triage.incoherence_count", "customLabel": "Incoherences"}},
+        {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
+         "params": {"field": "timestamp", "timeRange": {"from": "now-30d", "to": "now"},
+                    "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
+                    "interval": "auto", "drop_partials": False, "min_doc_count": 1,
+                    "extended_bounds": {}}},
+    ],
+    "params": {**HIST_PARAMS,
+               "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
+                              "title": {"text": "Occurrences"}}]},
+}, IDX_AI, query=Q_TRIAGE,
+   ui_state={"vis": {"colors": {"Garde-fous": "#E7664C", "Incoherences": "#D6BF57"}}}))
+
+objs.append(vis("soc-ai-ai-actions", "Actions proposees", {
+    "title": "Actions proposees",
+    "type": "horizontal_bar",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Occurrences"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "triage.actions", "size": 10,
+                    "customLabel": "Action"}},
+    ],
+    "params": {**HIST_PARAMS, "type": "horizontal_bar",
+               "seriesParams": [{"show": True, "type": "histogram", "mode": "stacked",
+                                 "data": {"label": "Occurrences", "id": "1"},
+                                 "valueAxis": "ValueAxis-1",
+                                 "drawLinesBetweenPoints": True, "lineWidth": 2,
+                                 "showCircles": True}],
+               "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
+                              "title": {"text": "Occurrences"}}]},
+}, IDX_AI, query=Q_TRIAGE))
+
+objs.append(vis("soc-ai-ai-cost-by-agent", "Cout et tokens par machine", {
+    "title": "Cout et tokens par machine",
+    "type": "table",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Triages"}},
+        {"id": "3", "enabled": True, "type": "sum", "schema": "metric",
+         "params": {"field": "ai.prompt_tokens", "customLabel": "Tokens entree"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "incident.agent_name", "size": 15,
+                    "customLabel": "Machine"}},
+    ],
+    "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
+               "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
+}, IDX_AI, query=Q_TRIAGE))
+
+objs.append(saved_search("soc-ai-ai-latest", "Derniers appels au modele",
+    "Flux chronologique des appels DeepSeek : usage, tokens, duree, incident.",
+    ["ai.usage", "ai.model", "ai.prompt_tokens", "ai.completion_tokens",
+     "ai.duration_ms", "ai.ok", "incident.id"],
+    IDX_AI, query=Q_LLM))
+
 # ---------- Dashboards ----------
 
 objs.append(dashboard("soc-ai-threat-intel", "Threat Intel",
@@ -609,6 +907,29 @@ objs.append(dashboard("soc-ai-yara", "YARA",
         ("soc-ai-yara-top-hosts", 0, 12, 24, 14),
         ("soc-ai-yara-top-files",24, 12, 24, 14),
         ("soc-ai-yara-latest",    0, 26, 48, 20, "search"),
+    ]))
+
+objs.append(dashboard("soc-ai-ai", "AI",
+    "Utilisation du modele (index wazuh-ai-*) : tokens, cout, latence, et "
+    "qualite des verdicts rendus par le triage.",
+    [
+        ("soc-ai-ai-tokens-total",     0,  0, 12, 10),
+        ("soc-ai-ai-calls-total",     12,  0, 12, 10),
+        ("soc-ai-ai-cost-total",      24,  0, 12, 10),
+        ("soc-ai-ai-latency-avg",     36,  0, 12, 10),
+        ("soc-ai-ai-tokens-timeline",  0, 10, 32, 14),
+        ("soc-ai-ai-tokens-by-usage", 32, 10, 16, 14),
+        ("soc-ai-ai-latency-timeline", 0, 24, 32, 13),
+        ("soc-ai-ai-calls-by-model",  32, 24, 16, 13),
+        ("soc-ai-ai-budget",           0, 37, 24, 12),
+        ("soc-ai-ai-errors",          24, 37, 24, 12),
+        ("soc-ai-ai-verdicts",         0, 49, 16, 14),
+        ("soc-ai-ai-verdicts-timeline",16, 49, 32, 14),
+        ("soc-ai-ai-confidence",       0, 63, 24, 13),
+        ("soc-ai-ai-actions",         24, 63, 24, 13),
+        ("soc-ai-ai-quality",          0, 76, 32, 13),
+        ("soc-ai-ai-cost-by-agent",   32, 76, 16, 13),
+        ("soc-ai-ai-latest",           0, 89, 48, 20, "search"),
     ]))
 
 with open(OUT, "w") as f:
