@@ -9,6 +9,7 @@ l'identifiant natif Wazuh).
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -17,6 +18,29 @@ import requests
 import urllib3
 
 from . import config, noise
+
+# --- Attribution conteneur LXC (auditd de l'hôte Proxmox) --------------------
+# L'agent pve (009) capte l'execve de TOUS les conteneurs LXC (noyau partagé) ;
+# `data.lxc_ct` (extrait par le pipeline indexer) — ou le tag dans full_log en
+# repli — dit lequel. On réattribue alors l'alerte à l'agent Wazuh PROPRE du
+# conteneur quand il en a un (jellyfin -> 005) : la corrélation se fait par
+# conteneur (agent_id est la clé) et la remédiation vise le bon hôte. Sinon on
+# garde pve et on note le conteneur dans la colonne `container` pour la lisibilité.
+_HOTE_AUDITD = {"pve", "009"}
+_CT_IGNORE = {"", "host", "unknown"}
+_LXC_CT = re.compile(r"lxc_ct=([A-Za-z0-9_.-]+)")
+_AGENTS: dict[str, str] = {}   # nom de conteneur -> agent_id Wazuh propre
+
+
+def _charger_agents(conn) -> None:
+    """Carte nom d'agent -> id, pour réattribuer un conteneur à son propre agent.
+    Rechargée à chaque run d'ingestion (agents stables, requête triviale)."""
+    _AGENTS.clear()
+    for nom, aid in conn.execute(
+            "SELECT DISTINCT agent_name, agent_id FROM alerts "
+            "WHERE agent_name IS NOT NULL"):
+        if nom and nom not in _HOTE_AUDITD:
+            _AGENTS.setdefault(nom, aid)
 
 # L'indexer utilise les certificats auto-signés de la stack Wazuh, sur la
 # loopback. L'avertissement urllib3 noierait la sortie à chaque lot ; la
@@ -75,11 +99,29 @@ def _aplatir(src: dict, filtre: noise.NoiseFilter) -> dict:
     mitre = regle.get("mitre", {})
     raison = filtre.raison_suppression(src)
 
+    # Attribution conteneur : si l'émetteur est l'hôte auditd (pve) et que le
+    # conteneur d'origine est résolu, on réattribue à son agent propre quand il
+    # existe, et on trace le conteneur dans tous les cas.
+    agent_id = agent.get("id", "?")
+    agent_name = agent.get("name")
+    container = None
+    lxc = data.get("lxc_ct") or ""
+    if not lxc:
+        m = _LXC_CT.search(src.get("full_log") or "")
+        lxc = m.group(1) if m else ""
+    if lxc not in _CT_IGNORE and (agent_name in _HOTE_AUDITD
+                                  or agent_id in _HOTE_AUDITD):
+        container = lxc
+        propre = _AGENTS.get(lxc)
+        if propre:
+            agent_id, agent_name = propre, lxc
+
     return {
         "id": src["id"],
         "ts": src["@timestamp"],
-        "agent_id": agent.get("id", "?"),
-        "agent_name": agent.get("name"),
+        "agent_id": agent_id,
+        "agent_name": agent_name,
+        "container": container,
         "rule_id": str(regle.get("id", "?")),
         "rule_level": int(regle.get("level", 0)),
         "rule_desc": regle.get("description"),
@@ -118,11 +160,11 @@ def _aplatir(src: dict, filtre: noise.NoiseFilter) -> dict:
 
 
 INSERT = """
-INSERT INTO alerts (id, ts, agent_id, agent_name, rule_id, rule_level,
+INSERT INTO alerts (id, ts, agent_id, agent_name, container, rule_id, rule_level,
                     rule_desc, rule_groups, mitre_ids, mitre_tactics,
                     srcip, srcuser, entity, audit_uid, suppressed,
                     suppress_reason, raw)
-VALUES (%(id)s, %(ts)s, %(agent_id)s, %(agent_name)s, %(rule_id)s,
+VALUES (%(id)s, %(ts)s, %(agent_id)s, %(agent_name)s, %(container)s, %(rule_id)s,
         %(rule_level)s, %(rule_desc)s, %(rule_groups)s, %(mitre_ids)s,
         %(mitre_tactics)s, %(srcip)s, %(srcuser)s, %(entity)s, %(audit_uid)s,
         %(suppressed)s, %(suppress_reason)s, %(raw)s)
@@ -249,6 +291,8 @@ def ingerer(depuis: str | None, taille_lot: int,
     with psycopg.connect(config.PG_DSN) as conn:
         # Filtre construit une fois par run, whitelist auto (DB) comprise.
         filtre = noise.charger_avec_db(conn)
+        # Carte conteneur -> agent propre, pour la réattribution des alertes pve.
+        _charger_agents(conn)
 
         with conn.cursor() as cur:
             cur.execute(

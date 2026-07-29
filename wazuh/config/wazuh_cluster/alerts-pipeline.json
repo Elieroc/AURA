@@ -8,6 +8,14 @@
       }
     },
     {
+      "grok": {
+        "field": "full_log",
+        "patterns": ["lxc_ct=%{NOTSPACE:data.lxc_ct}"],
+        "ignore_missing": true,
+        "ignore_failure": true
+      }
+    },
+    {
       "set": {
         "field": "data.aws.region",
         "value": "{{data.aws.awsRegion}}",

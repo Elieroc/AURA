@@ -42,6 +42,10 @@ CREATE TABLE IF NOT EXISTS alerts (
     ts            timestamptz NOT NULL,
     agent_id      text NOT NULL,
     agent_name    text,
+    -- Conteneur LXC d'origine quand l'alerte vient de l'auditd de l'hôte pve
+    -- (cf. ingest._aplatir). Réattribuée à l'agent propre du conteneur quand il
+    -- en a un ; cette colonne trace le conteneur dans tous les cas.
+    container     text,
     rule_id       text NOT NULL,
     rule_level    integer NOT NULL,
     rule_desc     text,
