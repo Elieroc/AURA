@@ -28,6 +28,21 @@ locale — jamais envoyé au LLM : c'est un nom d'hôte).
     ssh root@pve.lab 'systemctl enable --now soc-audit-enrich'
     # puis repointer l'agent : ossec.conf <location> audit.log -> audit-soc.log
 
+### Champ requêtable + corrélation par conteneur
+
+- **Indexer** : le décodeur Wazuh ne peut pas ajouter le champ (`auditd`
+  n'applique qu'un décodeur enfant, natif). On l'extrait donc côté **pipeline
+  d'ingest indexer** (`../../config/wazuh_cluster/alerts-pipeline.json`, grok sur
+  `full_log`) → champ `data.lxc_ct` filtrable/agrégeable dans le dashboard.
+  `agent.name` reste `pve` (agent émetteur). Appliqué par PUT du pipeline (cf.
+  `../../README.md`).
+- **Pipeline soc_agent** (`ingest._aplatir`) : une alerte pve dont le conteneur
+  est résolu est **réattribuée à l'agent Wazuh propre du conteneur** quand il en
+  a un (jellyfin→005, nextcloud→004) — la corrélation se fait alors par
+  conteneur et la remédiation vise le bon hôte. Sinon (conteneur sans agent :
+  soc-ai…) l'alerte reste sur `pve` avec le conteneur en colonne `container`.
+  Migration : `ALTER TABLE alerts ADD COLUMN container text`.
+
 ### Limite : best-effort
 
 La résolution se fait a posteriori via `/proc`. Un exec **court** (id, whoami)
