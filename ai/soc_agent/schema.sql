@@ -275,3 +275,12 @@ CREATE TABLE IF NOT EXISTS llm_calls (
 );
 
 CREATE INDEX IF NOT EXISTS llm_calls_ts ON llm_calls (ts DESC);
+
+-- Ventilation de l'entrée renvoyée par DeepSeek. Le cache hit est facturé 50x
+-- moins cher que le cache miss : sans ces deux colonnes, le coût est surestimé,
+-- puisque le prompt système est constant d'un incident à l'autre et donc servi
+-- par le cache la plupart du temps. NULL sur les appels antérieurs, et sur toute
+-- API qui ne fournit pas la ventilation — le calcul retombe alors sur « tout en
+-- cache miss », soit une estimation haute.
+ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS cache_hit_tokens integer;
+ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS cache_miss_tokens integer;

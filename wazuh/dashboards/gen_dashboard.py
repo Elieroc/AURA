@@ -607,8 +607,8 @@ objs.append(metric_vis("soc-ai-ai-tokens-total", "Tokens consommes (total)",
 objs.append(metric_vis("soc-ai-ai-calls-total", "Appels au modele",
                        "Appels", IDX_AI, Q_LLM, {"type": "count"}))
 
-objs.append(metric_vis("soc-ai-ai-cost-total", "Cout estime (USD)",
-                       "USD", IDX_AI, Q_LLM,
+objs.append(metric_vis("soc-ai-ai-cost-total", "Cout estime (USD, approx.)",
+                       "USD (approx.)", IDX_AI, Q_LLM,
                        {"type": "sum", "params": {"field": "ai.cost_usd"}}))
 
 objs.append(metric_vis("soc-ai-ai-latency-avg", "Latence moyenne (ms)",
@@ -654,6 +654,47 @@ objs.append(vis("soc-ai-ai-tokens-by-usage", "Tokens par usage", {
                "labels": {"show": True, "values": True, "last_level": True,
                           "truncate": 100}},
 }, IDX_AI, query=Q_LLM))
+
+# Cout dans le temps. Titre explicite sur l'approximation : les tarifs viennent
+# de la grille publique, pas d'une facture (cf. config.LLM_COUT_USD_PAR_MTOKEN_*).
+objs.append(vis("soc-ai-ai-cost-timeline", "Cout estime dans le temps (USD, approx.)", {
+    "title": "Cout estime dans le temps (USD, approx.)",
+    "type": "histogram",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "sum", "schema": "metric",
+         "params": {"field": "ai.cost_usd", "customLabel": "USD (approx.)"}},
+        {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
+         "params": {"field": "timestamp", "timeRange": {"from": "now-30d", "to": "now"},
+                    "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
+                    "interval": "auto", "drop_partials": False, "min_doc_count": 1,
+                    "extended_bounds": {}}},
+    ],
+    "params": {**HIST_PARAMS,
+               "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
+                              "title": {"text": "USD (estimation)"}}]},
+}, IDX_AI, query=Q_LLM))
+
+# Part de l'entree servie par le cache : c'est le principal levier de cout, le
+# cache hit etant facture 50x moins cher que le cache miss.
+objs.append(vis("soc-ai-ai-cache", "Entree : cache hit vs cache miss", {
+    "title": "Entree : cache hit vs cache miss",
+    "type": "histogram",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "sum", "schema": "metric",
+         "params": {"field": "ai.cache_hit_tokens", "customLabel": "Cache hit"}},
+        {"id": "3", "enabled": True, "type": "sum", "schema": "metric",
+         "params": {"field": "ai.cache_miss_tokens", "customLabel": "Cache miss"}},
+        {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
+         "params": {"field": "timestamp", "timeRange": {"from": "now-30d", "to": "now"},
+                    "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
+                    "interval": "auto", "drop_partials": False, "min_doc_count": 1,
+                    "extended_bounds": {}}},
+    ],
+    "params": {**HIST_PARAMS,
+               "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
+                              "title": {"text": "Tokens d'entree"}}]},
+}, IDX_AI, query=Q_LLM,
+   ui_state={"vis": {"colors": {"Cache hit": "#54B399", "Cache miss": "#E7664C"}}}))
 
 objs.append(vis("soc-ai-ai-calls-by-model", "Appels par modele", {
     "title": "Appels par modele",
@@ -921,15 +962,17 @@ objs.append(dashboard("soc-ai-ai", "AI",
         ("soc-ai-ai-tokens-by-usage", 32, 10, 16, 14),
         ("soc-ai-ai-latency-timeline", 0, 24, 32, 13),
         ("soc-ai-ai-calls-by-model",  32, 24, 16, 13),
-        ("soc-ai-ai-budget",           0, 37, 24, 12),
-        ("soc-ai-ai-errors",          24, 37, 24, 12),
-        ("soc-ai-ai-verdicts",         0, 49, 16, 14),
-        ("soc-ai-ai-verdicts-timeline",16, 49, 32, 14),
-        ("soc-ai-ai-confidence",       0, 63, 24, 13),
-        ("soc-ai-ai-actions",         24, 63, 24, 13),
-        ("soc-ai-ai-quality",          0, 76, 32, 13),
-        ("soc-ai-ai-cost-by-agent",   32, 76, 16, 13),
-        ("soc-ai-ai-latest",           0, 89, 48, 20, "search"),
+        ("soc-ai-ai-cost-timeline",    0, 37, 32, 13),
+        ("soc-ai-ai-cache",           32, 37, 16, 13),
+        ("soc-ai-ai-budget",           0, 50, 24, 12),
+        ("soc-ai-ai-errors",          24, 50, 24, 12),
+        ("soc-ai-ai-verdicts",         0, 62, 16, 14),
+        ("soc-ai-ai-verdicts-timeline",16, 62, 32, 14),
+        ("soc-ai-ai-confidence",       0, 76, 24, 13),
+        ("soc-ai-ai-actions",         24, 76, 24, 13),
+        ("soc-ai-ai-quality",          0, 89, 32, 13),
+        ("soc-ai-ai-cost-by-agent",   32, 89, 16, 13),
+        ("soc-ai-ai-latest",           0, 102, 48, 20, "search"),
     ]))
 
 with open(OUT, "w") as f:

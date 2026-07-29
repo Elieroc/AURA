@@ -267,13 +267,28 @@ METRICS_INDEX_PREFIX = os.environ.get("METRICS_INDEX_PREFIX", "wazuh-ai")
 # rattrape gratuitement une panne d'indexer de quelques heures.
 METRICS_FENETRE = os.environ.get("METRICS_FENETRE", "6h")
 
-# Tarifs du modèle, en USD par million de tokens. À 0, le champ `ai.cost_usd`
-# est présent mais nul — un coût faux serait pire qu'un coût absent. Renseigner
-# avec le tarif réel de DEEPSEEK_MODEL pour que la courbe de coût ait un sens.
+# Tarifs du modèle, en USD par million de tokens. Valeurs publiées pour
+# deepseek-v4-flash (relevées le 2026-07-29) :
+#     entrée cache miss 0,14 · entrée cache hit 0,0028 · sortie 0,28
+#
+# APPROXIMATIF, et il faut le dire : ces tarifs sont relevés sur la grille
+# publique, pas sur une facture. Recoupement fait sur la consommation réelle du
+# compte — 671 593 tokens facturés 0,09 USD, soit 0,134 USD/M tous tokens
+# confondus, cohérent avec 0,14 en entrée pour un trafic très majoritairement
+# entrant. L'ordre de grandeur est bon ; ne pas s'en servir pour de la
+# refacturation.
+#
+# Le cache hit est 50x moins cher que le cache miss : sur ce pipeline, le prompt
+# système est constant d'un incident à l'autre, donc une part croissante de
+# l'entrée est mise en cache. On lit la ventilation renvoyée par l'API quand
+# elle est disponible ; sinon on compte TOUT en cache miss, ce qui majore le
+# coût (une estimation haute vaut mieux qu'une basse).
 LLM_COUT_USD_PAR_MTOKEN_IN = float(
-    os.environ.get("LLM_COUT_USD_PAR_MTOKEN_IN", "0"))
+    os.environ.get("LLM_COUT_USD_PAR_MTOKEN_IN", "0.14"))
+LLM_COUT_USD_PAR_MTOKEN_IN_CACHE = float(
+    os.environ.get("LLM_COUT_USD_PAR_MTOKEN_IN_CACHE", "0.0028"))
 LLM_COUT_USD_PAR_MTOKEN_OUT = float(
-    os.environ.get("LLM_COUT_USD_PAR_MTOKEN_OUT", "0"))
+    os.environ.get("LLM_COUT_USD_PAR_MTOKEN_OUT", "0.28"))
 
 # --- Réglage automatique des règles Wazuh (rule_tuning.py) ------------------
 #

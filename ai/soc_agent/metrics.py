@@ -52,17 +52,25 @@ def _index_du_jour(ts: datetime) -> str:
     return f"{config.METRICS_INDEX_PREFIX}-{ts.astimezone(timezone.utc):%Y.%m.%d}"
 
 
-def _cout(prompt_tokens, completion_tokens) -> float:
-    """Coût estimé en USD.
+def _cout(prompt_tokens, completion_tokens, cache_hit, cache_miss) -> float:
+    """Coût ESTIMÉ en USD, à partir des tarifs publics (cf. config).
 
-    Les tarifs sont en CONFIG et valent 0 par défaut : publier un chiffre faux
-    serait pire que ne rien publier. Renseigner
-    LLM_COUT_USD_PAR_MTOKEN_IN / _OUT avec le tarif réel du modèle utilisé pour
-    que la courbe de coût ait un sens.
+    Approximation assumée : les tarifs viennent de la grille publiée, pas d'une
+    facture. Recoupée sur la consommation réelle du compte (671 593 tokens pour
+    0,09 USD), elle donne le bon ordre de grandeur — pas de quoi refacturer.
+
+    Le cache hit est 50x moins cher que le cache miss. Quand l'API ventile
+    l'entrée, on l'utilise ; sinon on compte tout en cache miss, ce qui MAJORE
+    le coût. Une estimation haute est la seule erreur acceptable ici.
     """
-    entree = (prompt_tokens or 0) / 1_000_000 * config.LLM_COUT_USD_PAR_MTOKEN_IN
+    if cache_hit is not None or cache_miss is not None:
+        hit, miss = cache_hit or 0, cache_miss or 0
+    else:
+        hit, miss = 0, prompt_tokens or 0
+    entree = (miss / 1_000_000 * config.LLM_COUT_USD_PAR_MTOKEN_IN
+              + hit / 1_000_000 * config.LLM_COUT_USD_PAR_MTOKEN_IN_CACHE)
     sortie = (completion_tokens or 0) / 1_000_000 * config.LLM_COUT_USD_PAR_MTOKEN_OUT
-    return round(entree + sortie, 6)
+    return round(entree + sortie, 8)
 
 
 def _doc_llm(l: dict) -> dict:
@@ -79,9 +87,12 @@ def _doc_llm(l: dict) -> dict:
             # Total précalculé : une somme d'agrégation sur deux champs
             # séparés n'est pas exprimable dans une visualisation OSD simple.
             "total_tokens": (pt or 0) + (ct or 0),
+            "cache_hit_tokens": l["cache_hit_tokens"],
+            "cache_miss_tokens": l["cache_miss_tokens"],
             "max_tokens": l["max_tokens"],
             "duration_ms": l["duree_ms"],
-            "cost_usd": _cout(pt, ct),
+            "cost_usd": _cout(pt, ct, l["cache_hit_tokens"],
+                              l["cache_miss_tokens"]),
             "ok": l["ok"],
             "error": l["erreur"],
         },
