@@ -268,6 +268,22 @@ ENTITY_GAP_MINUTES = int(os.environ.get("ENTITY_GAP_MINUTES", "360"))
 # les 25 minutes fusionnerait une semaine entière en un seul incident illisible.
 MAX_INCIDENT_HOURS = int(os.environ.get("MAX_INCIDENT_HOURS", "6"))
 
+# --- Watchdog « capteur muet » (watchdog.py) ---------------------------------
+# Un capteur qui parlait puis se tait est un angle mort qu'aucune règle ne voit.
+# Groupes de règles surveillés : leur silence rend inertes des pans entiers du
+# ruleset (audit -> 1006xx/1007xx ; suricata -> détection réseau ; sshd/pam ->
+# brute-force). Ajout facile d'un groupe applicatif si besoin.
+WATCHDOG_CAPTEURS = tuple(os.environ.get(
+    "WATCHDOG_CAPTEURS", "audit,suricata,sshd,syscheck").split(","))
+# Fenêtre de référence : sur combien d'heures un capteur est jugé « établi ».
+WATCHDOG_REF_HEURES = int(os.environ.get("WATCHDOG_REF_HEURES", "168"))  # 7 j
+# Volume minimal sur la fenêtre de référence pour ne pas alerter sur un capteur
+# anecdotique (un unique event isolé n'est pas une base).
+WATCHDOG_BASELINE_MIN = int(os.environ.get("WATCHDOG_BASELINE_MIN", "20"))
+# Silence toléré avant de crier. 90 min : au-delà, ce n'est plus un creux de
+# trafic normal (Suricata/sshd émettent en continu sur ces hôtes).
+WATCHDOG_SILENCE_MINUTES = int(os.environ.get("WATCHDOG_SILENCE_MINUTES", "90"))
+
 # Reconstruction des commandes (rapport IRIS) : le compte compromis est souvent
 # aussi une session légitime (le même uid génère du bruit de login — gpg-agent,
 # générateurs systemd). On ne montre que les commandes RATTACHÉES à l'attaque :
