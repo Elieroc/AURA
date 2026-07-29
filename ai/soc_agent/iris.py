@@ -102,6 +102,21 @@ def _taguer(case, case_id: int, agent_name: str | None) -> None:
         log.debug("tag case #%s : %s", case_id, e)
 
 
+def _case_existe(case, case_id: int | None) -> bool:
+    """Le case est-il encore là ? False s'il a été supprimé dans IRIS.
+
+    Aucune exception ne remonte : ce test sert à DÉCIDER quoi faire ensuite, il
+    ne doit pas devenir lui-même une cause de panne.
+    """
+    if not case_id:
+        return False
+    try:
+        return bool(case.get_case(case_id).is_success())
+    except Exception as e:  # noqa: BLE001
+        log.debug("existence case #%s indéterminable : %s", case_id, e)
+        return False
+
+
 def _poser_iocs(case, case_id: int, alertes: list[dict]) -> dict[str, int]:
     """Met le case à jour : ajoute les IOC manquants, rafraîchit les descriptions.
 
@@ -1236,10 +1251,28 @@ def rafraichir_case(conn, incident: dict, triage: dict) -> int:
     note d'analyse et description remises à jour, tag hostname réaffirmé.
     """
     case_id = incident["iris_case_id"]
+    case = _client()
+
+    # Case supprimé côté IRIS : le lien en base pend dans le vide. On le remet
+    # à NULL et on recrée, plutôt que d'écrire indéfiniment dans un case_id qui
+    # n'existe plus.
+    #
+    # Le symptôme est trompeur : IRIS ne répond pas 404 mais **500**. Son
+    # contrôle d'accès, ne trouvant pas le case dans ceux de l'utilisateur,
+    # retombe sur « suis-je administrateur serveur ? », qui lit
+    # `session['permissions']` — absent en authentification par clé d'API
+    # (KeyError, cf. iris_engine/access_control/utils.py). Un case supprimé et
+    # un vrai défaut de droits produisent donc la même erreur illisible.
+    if not _case_existe(case, case_id):
+        log.warning("case IRIS #%s introuvable (supprimé ?) — incident #%s "
+                    "recréé", case_id, incident["id"])
+        conn.execute("UPDATE incidents SET iris_case_id = NULL WHERE id = %s",
+                     (incident["id"],))
+        conn.commit()
+        return creer_case(conn, dict(incident, iris_case_id=None), triage)
+
     alertes = _alertes(conn, incident["id"])
     fp = triage["verdict"] == "false_positive"
-
-    case = _client()
     desc = (f"Incident #{incident['id']} corrélé par le soc-agent, "
             f"{incident['alert_count']} alertes, niveau max "
             f"{incident['max_level']}/15. Verdict IA : {triage['verdict']}. "
@@ -1357,6 +1390,11 @@ def nettoyer_iocs(simulation: bool = True) -> list[tuple[int, str, str]]:
             # Tout ce qui est là-dedans mais plus dans `gardes` est un reliquat
             # de l'ancienne forme, replié depuis dans une description.
             connues = _valeurs_fichier(alertes)
+            if not _case_existe(case, inc["iris_case_id"]):
+                print(f"  case #{inc['iris_case_id']} : introuvable dans IRIS "
+                      f"(supprimé) — incident #{inc['id']} ignoré, il sera "
+                      "recréé au prochain rafraîchissement")
+                continue
             try:
                 presents = (case.list_iocs(inc["iris_case_id"]).get_data()
                             or {}).get("ioc") or []
