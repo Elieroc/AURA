@@ -40,6 +40,10 @@ SIMPLE_PATTERNS = {
     "wazuh-vpn-*": "wazuh-vpn-*",
     "wazuh-dns-*": "wazuh-dns-*",
     "wazuh-yara-*": "wazuh-yara-*",
+    # Métriques d'IA (soc-agent-metrics). Volontairement HORS du pattern
+    # combiné soc-ai-all-alerts : ce ne sont pas des alertes, les compter avec
+    # elles fausserait tous les totaux du dashboard Global.
+    "wazuh-ai-*": "wazuh-ai-*",
 }
 
 # Candidats du pattern combiné — filtrés à l'existence réelle avant de

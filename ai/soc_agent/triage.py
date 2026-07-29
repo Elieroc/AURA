@@ -125,9 +125,11 @@ def compter_tokens(texte: str) -> int:
     return len(texte) // 4
 
 
-def interroger(systeme: str, utilisateur: str) -> tuple[dict, dict]:
+def interroger(systeme: str, utilisateur: str,
+               incident_id: int | None = None) -> tuple[dict, dict]:
     """Appelle le modèle (DeepSeek) et valide la sortie. Retourne (verdict, m)."""
-    brut, m = completion(systeme, utilisateur, max_tokens=config.TRIAGE_MAX_TOKENS)
+    brut, m = completion(systeme, utilisateur, max_tokens=config.TRIAGE_MAX_TOKENS,
+                         usage="triage", incident_id=incident_id)
     verdict = _valider(brut)
     return verdict, m
 
@@ -205,7 +207,7 @@ def trier(limite: int, un_seul: int | None, tous: bool,
                       f"(plafond {PLAFOND_TOKENS}). Resserrer render.py.")
                 continue
 
-            verdict, m = interroger(systeme, utilisateur)
+            verdict, m = interroger(systeme, utilisateur, inc["id"])
             sauver_map(conn, inc["id"], anon.mapping)
             # Réhydratation : l'analyste doit lire les vraies valeurs, pas les
             # jetons. Seul DeepSeek a vu les pseudonymes.
