@@ -74,6 +74,14 @@ services:
     container_name: soc-agent-whitelist-task
     command: sh -c "while true; do python -m soc_agent.whitelist_task; sleep 60; done"
 
+  # Exporte les métriques d'utilisation du modèle vers l'index wazuh-ai-*
+  # (cf. metrics.py). Cadence 5 min, alignée sur le cycle : chaque passage
+  # réexporte une fenêtre glissante, l'export étant idempotent.
+  soc-agent-metrics:
+    <<: *soc-agent
+    container_name: soc-agent-metrics
+    command: sh -c "while true; do python -m soc_agent.metrics; sleep 300; done"
+
   # Génère des règles Wazuh d'exception à partir des FP récurrents, pour que le
   # bruit soit écarté DANS le moteur de règles et non après coup par le
   # soc-agent (cf. rule_tuning.py). Seul job à écrire dans le répertoire de

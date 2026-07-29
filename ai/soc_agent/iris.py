@@ -763,7 +763,9 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
         # (report.md) est un template dev constant, sans donnée client.
         verifier_fuite(utilisateur, interdits)
         rapport, _ = completion(systeme, utilisateur,
-                                max_tokens=config.REPORT_MAX_TOKENS)
+                                max_tokens=config.REPORT_MAX_TOKENS,
+                                usage="report",
+                                incident_id=incident["id"])
         sauver_map(conn, incident["id"], anon.mapping)
     except Exception as e:  # noqa: BLE001 — le case doit se créer même sans LLM
         log.warning("rapport LLM indisponible (#%s) : %s", incident["id"], e)
@@ -1020,7 +1022,8 @@ def _nommer_case(conn, incident: dict, triage: dict, alertes: list[dict]) -> str
         # Température plus haute : on veut de la variété dans les noms de code.
         rep, _ = completion(systeme, utilisateur,
                             max_tokens=config.CASE_NAME_MAX_TOKENS,
-                            temperature=0.8)
+                            temperature=0.8, usage="case_name",
+                            incident_id=incident["id"])
         sauver_map(conn, incident["id"], anon.mapping)
         operation = _nettoyer_operation(rep.get("operation") or "")
         titre = rehydrater(str(rep.get("titre") or "").strip(), anon.mapping)[:80]

@@ -240,3 +240,38 @@ CREATE INDEX IF NOT EXISTS mitigations_incident ON mitigations (incident_id);
 -- a déjà dépassé, donc `search_after` ne la renverra jamais. Le balayage
 -- périodique la récupère ; cette colonne en porte la cadence.
 ALTER TABLE ingest_cursor ADD COLUMN IF NOT EXISTS last_sweep_at timestamptz;
+
+-- ---------------------------------------------------------------------------
+-- Métriques d'utilisation du modèle
+-- ---------------------------------------------------------------------------
+
+-- UN appel LLM = UNE ligne, quel que soit l'appelant.
+--
+-- Table à part et non colonnes sur `triages` : le triage n'est qu'un des
+-- consommateurs du modèle. Le rapport IRIS, le nommage de case et le traitement
+-- des tâches de whitelist appellent DeepSeek eux aussi, et leurs tokens
+-- n'étaient comptés nulle part — `triages.prompt_tokens` ne voyait ni les
+-- tokens de sortie ni les autres appels. Impossible d'estimer un coût réel avec
+-- ça.
+--
+-- L'écriture est faite dans `llm.completion` lui-même, point de passage unique :
+-- un nouvel appelant est instrumenté sans qu'on ait à y penser. L'échec
+-- d'écriture n'interrompt jamais l'appel (métrique perdue > verdict perdu).
+CREATE TABLE IF NOT EXISTS llm_calls (
+    id                bigserial PRIMARY KEY,
+    ts                timestamptz NOT NULL DEFAULT now(),
+    -- Appelant : 'triage', 'report', 'case_name', 'whitelist_task'…
+    usage             text NOT NULL,
+    modele            text NOT NULL,
+    prompt_tokens     integer,
+    completion_tokens integer,
+    -- Budget demandé. Un `completion_tokens` qui le talonne explique un
+    -- finish_reason=length (content vide sur les modèles raisonnants).
+    max_tokens        integer,
+    duree_ms          integer,
+    incident_id       bigint,
+    ok                boolean NOT NULL DEFAULT true,
+    erreur            text
+);
+
+CREATE INDEX IF NOT EXISTS llm_calls_ts ON llm_calls (ts DESC);
