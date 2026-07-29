@@ -103,23 +103,39 @@ def _taguer(case, case_id: int, agent_name: str | None) -> None:
 
 
 def _poser_iocs(case, case_id: int, alertes: list[dict]) -> dict[str, int]:
-    """Ajoute les IOC manquants du case (dédup sur la valeur déjà présente).
+    """Met le case à jour : ajoute les IOC manquants, rafraîchit les descriptions.
 
     Renvoie la table valeur → ioc_id de TOUS les IOC du case (existants
     compris) : la timeline s'en sert pour rattacher chaque évènement à ses
     indicateurs, ce qui est la condition pour que l'onglet Graph d'IRIS ait
     quelque chose à dessiner (il ne lit que `case_events_ioc`).
+
+    La description est réécrite quand elle a changé. Sans ça, un case ne
+    converge jamais vers ce que le code produit : au repliage « un fichier = un
+    IOC », les hashs déjà présents ont gardé leur ancienne description et le
+    chemin du fichier — désormais porté par cette description — restait
+    introuvable dans le case.
     """
     ids: dict[str, int] = {}
+    descriptions: dict[str, str] = {}
     try:
         d = case.list_iocs(case_id).get_data() or {}
         for i in d.get("ioc") or []:
             if i.get("ioc_value") and i.get("ioc_id"):
                 ids[i["ioc_value"]] = i["ioc_id"]
+                descriptions[i["ioc_value"]] = i.get("ioc_description") or ""
     except Exception as e:  # noqa: BLE001
         log.debug("liste IOC case #%s : %s", case_id, e)
     for valeur, type_ioc, description in _iocs(alertes):
         if valeur in ids:
+            # Seulement si elle a changé : une écriture inutile par IOC et par
+            # rafraîchissement, sur tous les cases, chargerait IRIS pour rien.
+            if descriptions.get(valeur) != description:
+                try:
+                    case.update_ioc(ids[valeur], description=description,
+                                    cid=case_id)
+                except Exception as e:  # noqa: BLE001
+                    log.debug("MAJ description IOC %s : %s", valeur, e)
             continue
         try:
             r = case.add_ioc(value=valeur, ioc_type=type_ioc,
