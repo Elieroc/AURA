@@ -342,6 +342,18 @@ donc `decoder.name` ne discrimine rien. Ce test est placé **avant** celui de
   d'avoir vérifié le `count` de la destination** — un `_reindex` renvoie
   `"failures": []` même quand il n'a copié qu'une partie des documents
   (refresh non forcé), et l'original supprimé ne se récupère pas.
+- **Template d'index `wazuh-ai` — À CRÉER aussi**, même piège que `soc-ai-routing`
+  mais pour les métriques d'IA (`ai/soc_agent/metrics.py`). Sans lui, les
+  strings partent en `text` + `.keyword` et TOUTES les agrégations du dashboard
+  AI tombent à côté en silence. Le mapping est versionné :
+  ```bash
+  source .env
+  curl -sk -u admin:$INDEXER_PASSWORD -X PUT "https://localhost:9200/_template/wazuh-ai" \
+    -H "Content-Type: application/json" -d @config/wazuh_indexer/wazuh-ai-template.json
+  ```
+  `wazuh-ai-*` est un index pattern à part et reste **hors** du pattern combiné
+  `soc-ai-all-alerts` : ces documents ne sont pas des alertes, les y compter
+  fausserait tous les totaux du dashboard Global.
 - **Vérifier les visualisations après chaque import** : `_import` de saved
   objects réussit même quand les champs référencés n'existent pas — la visu
   s'ouvre ensuite sur « No results found » ou une erreur d'agrégation, sans
