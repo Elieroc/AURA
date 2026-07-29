@@ -43,7 +43,7 @@ done
 [ "$(id -u)" -ne 0 ] && { echo "ERREUR: à lancer en root"; exit 1; }
 command -v apt-get >/dev/null || { echo "ERREUR: apt requis (Debian/Ubuntu uniquement)"; exit 1; }
 
-echo "[1/5] Dépôt Wazuh"
+echo "[1/6] Dépôt Wazuh"
 apt-get update -qq
 apt-get install -y -qq gnupg curl sudo openssh-server >/dev/null
 if [ ! -f /usr/share/keyrings/wazuh.gpg ]; then
@@ -53,7 +53,7 @@ if [ ! -f /usr/share/keyrings/wazuh.gpg ]; then
   apt-get update -qq
 fi
 
-echo "[2/5] Agent Wazuh ${WAZUH_VERSION} -> manager ${MANAGER_IP}"
+echo "[2/6] Agent Wazuh ${WAZUH_VERSION} -> manager ${MANAGER_IP}"
 if dpkg -s wazuh-agent >/dev/null 2>&1; then
   echo "  déjà installé ($(dpkg -s wazuh-agent | awk '/^Version/{print $2}')), skip"
 else
@@ -64,7 +64,7 @@ fi
 systemctl daemon-reload
 systemctl enable --now wazuh-agent >/dev/null 2>&1
 
-echo "[3/5] auditd (socle de détection des règles Wazuh 1006xx/1007xx)"
+echo "[3/6] auditd (socle de détection des règles Wazuh 1006xx/1007xx)"
 apt-get install -y -qq auditd audispd-plugins >/dev/null
 # Le jeu de règles est versionné dans wazuh/config/agent/zz-audit-wazuh.rules.
 # Le préfixe `zz-` est OBLIGATOIRE : augenrules concatène rules.d/*.rules en
@@ -117,7 +117,25 @@ PYEOF
   systemctl restart wazuh-agent >/dev/null 2>&1
 fi
 
-echo "[4/5] User ${ADMIN_USER} (sudo, SSH par clé uniquement)"
+echo "[4/6] Scripts active-response (remédiation)"
+# Sans ces scripts sur l'agent, TOUTE remédiation échoue en SILENCE : l'ar.conf
+# poussé par le manager déclare bien firewall-drop.sh & consorts, l'API Wazuh
+# répond 200 (elle ne fait que transmettre), et rien ne se passe côté agent —
+# le seul indice est l'absence de ligne dans son active-responses.log.
+# Les binaires natifs livrés par le paquet ne remplacent pas ces scripts : ils
+# lisent la cible dans l'alerte (alert.data.srcip / dstuser) et échouent sur
+# tout appel piloté par extra_args (cf. wazuh/active-response/README).
+AR_SRC="$(dirname "$0")/../wazuh/active-response"
+if [ -d "$AR_SRC" ]; then
+  for f in "$AR_SRC"/*.sh; do
+    install -m 750 -o root -g wazuh "$f" "/var/ossec/active-response/bin/$(basename "$f")"
+  done
+  echo "  $(ls -1 "$AR_SRC"/*.sh | wc -l) script(s) déployé(s)"
+else
+  echo "  ERREUR: $AR_SRC introuvable" >&2; exit 1
+fi
+
+echo "[5/6] User ${ADMIN_USER} (sudo, SSH par clé uniquement)"
 if ! id "$ADMIN_USER" >/dev/null 2>&1; then
   useradd -m -s /bin/bash "$ADMIN_USER"
 fi
@@ -134,7 +152,7 @@ echo "${ADMIN_USER} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/${ADMIN_USER}"
 chmod 440 "/etc/sudoers.d/${ADMIN_USER}"
 visudo -cf "/etc/sudoers.d/${ADMIN_USER}" >/dev/null || { echo "ERREUR sudoers"; rm -f "/etc/sudoers.d/${ADMIN_USER}"; exit 1; }
 
-echo "[5/5] Vérifications"
+echo "[6/6] Vérifications"
 systemctl is-active wazuh-agent >/dev/null && echo "  agent: actif" || echo "  agent: INACTIF"
 systemctl is-active auditd >/dev/null && echo "  auditd: actif" || echo "  auditd: INACTIF"
 auditctl -l 2>/dev/null | grep -q "execveat" && echo "  règles audit: chargées ($(auditctl -l | wc -l))" || echo "  règles audit: ABSENTES"
@@ -142,6 +160,9 @@ auditctl -l 2>/dev/null | grep -q "execveat" && echo "  règles audit: chargées
   && echo "  audit noyau: activé" \
   || echo "  audit noyau: DÉSACTIVÉ (enabled != 1) — aucune règle 1006xx ne peut se déclencher"
 sudo -u "$ADMIN_USER" sudo -n true 2>/dev/null && echo "  sudo ${ADMIN_USER}: OK" || echo "  sudo ${ADMIN_USER}: ECHEC"
+[ -x /var/ossec/active-response/bin/firewall-drop.sh ] \
+  && echo "  active-response: scripts SOC-AI présents" \
+  || echo "  active-response: SCRIPTS ABSENTS — toute remédiation échouera en silence"
 echo
 echo "Terminé. Test depuis le serveur Wazuh :"
 echo "  ssh -i <clé_privée> ${ADMIN_USER}@$(hostname -I | awk '{print $1}') 'sudo -n whoami'"
