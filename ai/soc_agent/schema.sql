@@ -288,3 +288,14 @@ CREATE INDEX IF NOT EXISTS llm_calls_ts ON llm_calls (ts DESC);
 -- cache miss », soit une estimation haute.
 ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS cache_hit_tokens integer;
 ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS cache_miss_tokens integer;
+
+-- Machine sur laquelle une remédiation s'applique réellement. Un incident peut
+-- désormais couvrir PLUSIEURS agents (fusion campagne, approche A) : la cible
+-- (compte, IP, process) ne suffit plus à identifier une action — le même compte
+-- peut exister sur deux hôtes. On ancre donc chaque remédiation à son agent, et
+-- l'unicité passe de (incident, action, cible) à (incident, action, cible,
+-- agent). Défaut '' pour rétro-compat des lignes existantes.
+ALTER TABLE mitigations ADD COLUMN IF NOT EXISTS agent_id text NOT NULL DEFAULT '';
+ALTER TABLE mitigations DROP CONSTRAINT IF EXISTS mitigations_incident_id_action_cible_key;
+CREATE UNIQUE INDEX IF NOT EXISTS mitigations_uniq
+    ON mitigations (incident_id, action, cible, agent_id);

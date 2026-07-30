@@ -237,6 +237,17 @@ AGENTS_PROTEGES = {
     a.strip() for a in os.environ.get("AGENTS_PROTEGES", "000").split(",")
     if a.strip()}
 
+# Agents « capteur d'hôte » : leur télémétrie décrit l'activité d'AUTRES machines
+# (ex. l'auditd de l'hôte Proxmox voit les execve de ses conteneurs LXC et les
+# attribue à lui-même). Une remédiation ne doit JAMAIS viser un tel agent : le
+# vrai théâtre est ailleurs (le conteneur), et agir sur le capteur est soit
+# inutile (désactiver un compte qui n'y vit pas — le bug constaté), soit trop
+# large (isoler tout l'hôte pour un seul conteneur). Dans le doute sur la vraie
+# machine, on n'agit pas. Vide par défaut ; en prod, l'agent hôte Proxmox (009).
+AGENTS_CAPTEURS = {
+    a.strip() for a in os.environ.get("AGENTS_CAPTEURS", "").split(",")
+    if a.strip()}
+
 # Groupes Wazuh dont les agents ne sont JAMAIS isolés du réseau.
 #
 # L'isolation ne doit concerner que des ENDPOINTS — des machines dont on peut
@@ -284,6 +295,14 @@ ENTITY_GAP_MINUTES = int(os.environ.get("ENTITY_GAP_MINUTES", "360"))
 # Garde-fou contre le chaînage sans fin : sur un hôte bruyant, une alerte toutes
 # les 25 minutes fusionnerait une semaine entière en un seul incident illisible.
 MAX_INCIDENT_HOURS = int(os.environ.get("MAX_INCIDENT_HOURS", "6"))
+
+# Fenêtre de fusion CAMPAGNE (approche A) : incidents de plusieurs hôtes réunis
+# dans un seul case quand ils partagent un marqueur FORT appartenant à
+# l'attaquant (compte créé, IP C2 externe, fichier malveillant). Plus large que
+# MAX_INCIDENT_HOURS car une campagne s'étale sur des jours ; le risque de
+# sur-fusion est borné par l'exigence d'un marqueur d'attaquant partagé (jamais
+# une IP interne ni une entité générique). 0 désactive la fusion campagne.
+CAMPAGNE_GAP_HOURS = int(os.environ.get("CAMPAGNE_GAP_HOURS", "48"))
 
 # --- Watchdog « capteur muet » (watchdog.py) ---------------------------------
 # Un capteur qui parlait puis se tait est un angle mort qu'aucune règle ne voit.

@@ -42,9 +42,8 @@ import urllib3
 from psycopg.rows import dict_row
 
 from . import config
-from .anonymize import _est_interne
 from .anonymize import COMPTES_GENERIQUES
-from .iris import LIBELLE_ACTION, _client, _iocs
+from .iris import LIBELLE_ACTION, _client, _iocs, _ip_interne, _ip_ioc_valide
 
 log = logging.getLogger("mitigate")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -118,7 +117,8 @@ def _tracer_isolation(agent_id: str, isoler: bool, reason: str) -> None:
         for r in incs:
             conn.execute(INSERT_MITIG, {
                 "incident_id": r["id"], "action": action, "cible": cible,
-                "statut": statut, "details": f"{details} Motif : {reason}",
+                "agent_id": agent_id, "statut": statut,
+                "details": f"{details} Motif : {reason}",
                 "undo": undo, "iris_task_id": None})
         conn.commit()
 
@@ -481,51 +481,97 @@ def _compte_protege(brut: str) -> bool:
     return bool(m and int(m.group(1)) < 1000)
 
 
-def _cibles(action: str, incident: dict, alertes: list[dict]) -> list[str]:
-    """Cibles d'une action : agent pour l'isolation, IP externes pour le
-    blocage, comptes nommés pour la désactivation, process malveillants
-    (basename) pour le kill."""
+def _alertes_par_agent(alertes: list[dict]) -> dict[str, list[dict]]:
+    """Alertes regroupées par agent. Un incident peut couvrir plusieurs machines
+    (fusion campagne) : chaque preuve reste attachée à SA machine (agent de
+    l'alerte), qui est la seule où l'action correspondante a un sens."""
+    par: dict[str, list[dict]] = {}
+    for a in alertes:
+        ag = str(a.get("agent_id") or "")
+        if ag:
+            par.setdefault(ag, []).append(a)
+    return par
+
+
+def _cibles_par_machine(action: str, incident: dict,
+                        alertes: list[dict]) -> list[tuple[str, str]]:
+    """Cibles (agent_id, valeur) d'une action, résolues MACHINE PAR MACHINE à
+    partir de l'agent de l'alerte qui porte la preuve.
+
+    Garde-fous « dans le doute, on n'agit pas » :
+      - jamais un agent CAPTEUR d'hôte (config.AGENTS_CAPTEURS) : sa télémétrie
+        décrit l'activité d'autres machines (conteneurs), donc on ne sait pas sur
+        quelle machine agir — on s'abstient plutôt que de viser le mauvais hôte ;
+      - une preuve sans agent exploitable est écartée.
+    Chaque (machine, valeur) est explicite : pas d'ambiguïté sur « où » — l'action
+    part sur la machine où la preuve a été observée, et nulle part ailleurs."""
+    par_agent = _alertes_par_agent(alertes)
+    agents = [ag for ag in par_agent if ag not in config.AGENTS_CAPTEURS]
+    # Trace des capteurs écartés, pour l'analyste (garde-fou visible).
+    for ag in par_agent:
+        if ag in config.AGENTS_CAPTEURS:
+            log.info("#%s %s : agent capteur d'hôte %s écarté des cibles "
+                     "(théâtre réel = machine surveillée, remédiation non "
+                     "appliquée par sûreté)", incident.get("id"), action, ag)
+
     if action == "propose_isolate_host":
-        agent_id = str(incident["agent_id"])
-        # L'isolation ne vise que les ENDPOINTS : ni le manager, ni un pare-feu,
-        # proxy, DNS ou VPN (cf. raison_non_isolable). Filtré ici plutôt que
-        # dans le prompt — le modèle ne voit qu'un agent_id et n'a aucun moyen
-        # de savoir ce que la machine porte. Retourner une liste vide fait
-        # sauter l'action : `appliquer` ne trouve pas de cible et n'exécute rien.
-        refus = raison_non_isolable(agent_id)
-        if refus:
-            log.warning("isolation refusée : %s", refus)
-            return []
-        return [agent_id]
-    if action == "propose_kill_process":
-        # Nom exact (comm) des exécutables lancés depuis un répertoire suspect :
-        # l'implant, jamais un shell système. pkill -x matchera ce nom.
-        noms: set[str] = set()
-        for a in alertes:
-            raw = a.get("raw")
-            if not raw:
+        out = []
+        for ag in sorted(agents):
+            refus = raison_non_isolable(ag)
+            if refus:
+                log.warning("isolation refusée : %s", refus)
                 continue
-            data = (raw if isinstance(raw, dict) else json.loads(raw)).get("data", {})
-            audit = data.get("audit", {}) or {}
-            for chemin in (audit.get("exe"), a.get("entity")):
-                p = str(chemin or "")
-                if p.startswith(_DIRS_SUSPECTS):
-                    base = p.rsplit("/", 1)[-1]
-                    if base:
-                        noms.add(base[:15])   # comm est plafonné à 15 caractères
-        return sorted(noms)
+            out.append((ag, ag))
+        return out
+
+    if action == "propose_kill_process":
+        # Nom exact (comm) des exécutables lancés depuis un répertoire suspect,
+        # sur la machine qui l'a exécuté. pkill -x matchera ce nom.
+        out: set[tuple[str, str]] = set()
+        for ag in agents:
+            for a in par_agent[ag]:
+                raw = a.get("raw")
+                if not raw:
+                    continue
+                data = (raw if isinstance(raw, dict)
+                        else json.loads(raw)).get("data", {})
+                audit = data.get("audit", {}) or {}
+                for chemin in (audit.get("exe"), a.get("entity")):
+                    p = str(chemin or "")
+                    if p.startswith(_DIRS_SUSPECTS):
+                        base = p.rsplit("/", 1)[-1]
+                        if base:
+                            out.add((ag, base[:15]))  # comm plafonné à 15 car.
+        return sorted(out)
+
     if action == "propose_block_ip":
-        return sorted({a["srcip"] for a in alertes
-                       if a["srcip"] and not _est_interne(str(a["srcip"]))})
+        # IP C2 EXTERNE au parc, bloquée sur chaque endpoint qui l'a contactée.
+        # « Interne » = subnets du parc (cf. _ip_interne) et non RFC1918 : le C2
+        # du lab est lui-même privé et doit rester bloquable ; les IP invalides
+        # (none, loopback) sont écartées.
+        out = set()
+        for ag in agents:
+            for a in par_agent[ag]:
+                ip = a.get("srcip")
+                if ip and _ip_ioc_valide(str(ip)) and not _ip_interne(str(ip)):
+                    out.add((ag, str(ip)))
+        return sorted(out)
+
     if action == "propose_disable_user":
-        # srcuser d'une activité malveillante, MOINS les comptes protégés.
-        comptes = {_nom_compte(a["srcuser"]) for a in alertes if a["srcuser"]
-                   and not _compte_protege(a["srcuser"])}
-        # Comptes CRÉÉS par l'attaquant (useradd) : cibles les plus pertinentes
-        # d'une désactivation, jamais en srcuser. Extraits via _comptes_crees
-        # (proctitle auditd inclus — capte le backdoor sans l'alerte 5902).
-        comptes |= set(_comptes_crees(alertes))
-        return sorted(comptes)
+        # Compte compromis/créé, désactivé SUR la machine où il apparaît. Comptes
+        # protégés exclus. Un backdoor vu seulement par un capteur d'hôte (pas
+        # d'auditd dans le conteneur) n'a pas de machine exploitable ici → non
+        # désactivé automatiquement (garde-fou), à traiter par l'analyste.
+        out = set()
+        for ag in agents:
+            al = par_agent[ag]
+            comptes = {_nom_compte(a["srcuser"]) for a in al
+                       if a.get("srcuser") and not _compte_protege(a["srcuser"])}
+            comptes |= set(_comptes_crees(al))
+            for c in comptes:
+                if c:
+                    out.add((ag, c))
+        return sorted(out)
     return []
 
 
@@ -595,19 +641,27 @@ def _poser_assets(case, case_id: int, inc: dict, alertes: list[dict]) -> None:
         except Exception as e:  # noqa: BLE001
             log.debug("asset ignoré (%s) : %s", name, e)
 
-    ajouter(inc.get("agent_name") or str(inc["agent_id"]), "Linux - Server",
-            "Hôte touché par l'incident (cible d'isolation / kill de process).")
-    for compte in _cibles("propose_disable_user", inc, alertes):
+    # Une machine par agent réellement touché (hors capteurs d'hôte) : un
+    # incident de campagne en couvre plusieurs. Nom via l'alerte, à défaut l'id.
+    noms = {str(a["agent_id"]): (a.get("agent_name") or str(a["agent_id"]))
+            for a in alertes if a.get("agent_id")
+            and str(a["agent_id"]) not in config.AGENTS_CAPTEURS}
+    if not noms:  # aucun endpoint exploitable : au moins l'agent de l'incident.
+        noms = {str(inc["agent_id"]): inc.get("agent_name") or str(inc["agent_id"])}
+    for nom in sorted(set(noms.values())):
+        ajouter(nom, "Linux - Server",
+                "Hôte touché par l'incident (cible d'isolation / kill de process).")
+    for _ag, compte in _cibles_par_machine("propose_disable_user", inc, alertes):
         ajouter(compte, "Linux Account",
                 "Compte compromis ou créé par l'attaquant (cible de désactivation).")
 
 
 INSERT_MITIG = """
-INSERT INTO mitigations (incident_id, action, cible, statut, details, undo,
-                         iris_task_id)
-VALUES (%(incident_id)s, %(action)s, %(cible)s, %(statut)s, %(details)s,
-        %(undo)s, %(iris_task_id)s)
-ON CONFLICT (incident_id, action, cible) DO UPDATE
+INSERT INTO mitigations (incident_id, action, cible, agent_id, statut, details,
+                         undo, iris_task_id)
+VALUES (%(incident_id)s, %(action)s, %(cible)s, %(agent_id)s, %(statut)s,
+        %(details)s, %(undo)s, %(iris_task_id)s)
+ON CONFLICT (incident_id, action, cible, agent_id) DO UPDATE
 SET statut = EXCLUDED.statut, details = EXCLUDED.details, undo = EXCLUDED.undo,
     iris_task_id = EXCLUDED.iris_task_id, executed_at = now()
 RETURNING id
@@ -629,10 +683,12 @@ RETURNING id
 _STATUTS_FIGES = ("exécuté", "annulé", "annulation_impossible")
 
 
-def _deja_exec(conn, incident_id: int, action: str, cible: str) -> bool:
+def _deja_exec(conn, incident_id: int, action: str, cible: str,
+               agent_id: str) -> bool:
     r = conn.execute(
         "SELECT statut FROM mitigations WHERE incident_id=%s AND action=%s "
-        "AND cible=%s", (incident_id, action, cible)).fetchone()
+        "AND cible=%s AND agent_id=%s",
+        (incident_id, action, cible, agent_id)).fetchone()
     return bool(r and r["statut"] in _STATUTS_FIGES)
 
 
@@ -663,8 +719,8 @@ def executer(incident_id: int) -> list[dict]:
             return []
 
         alertes = conn.execute(
-            "SELECT srcip, srcuser, entity, raw FROM alerts WHERE incident_id = %s",
-            (incident_id,)).fetchall()
+            "SELECT agent_id, agent_name, srcip, srcuser, entity, raw "
+            "FROM alerts WHERE incident_id = %s", (incident_id,)).fetchall()
 
         remed = [a for a in triage["actions"] if a in REMEDIATIONS]
 
@@ -695,15 +751,18 @@ def executer(incident_id: int) -> list[dict]:
         print(f"  #{incident_id} {inc['agent_name']} — {mode} — "
               f"{len(remed)} action(s)")
 
-        ctx = {"agent_id": str(inc["agent_id"]),
-               "reason_court": (triage["reason"] or "")[:120]}
+        reason_court = (triage["reason"] or "")[:120]
 
         for action in sorted(remed, key=lambda a: ORDRE_EXEC.index(a)
                              if a in ORDRE_EXEC else 99):
-            for cible in _cibles(action, inc, alertes):
+            for machine, cible in _cibles_par_machine(action, inc, alertes):
+                # Contexte reconstruit PAR CIBLE : chaque remédiation part sur la
+                # machine où sa preuve a été observée, jamais sur un agent global.
+                ctx = {"agent_id": machine, "reason_court": reason_court}
                 if config.MITIGATE_EXECUTE and _deja_exec(
-                        conn, incident_id, action, cible):
-                    print(f"      {action} [{cible}] déjà exécuté, ignoré.")
+                        conn, incident_id, action, cible, machine):
+                    print(f"      {action} [{cible}@{machine}] déjà exécuté, "
+                          "ignoré.")
                     continue
                 try:
                     statut, canal, details, undo = EXECUTEURS[action](cible, ctx)
@@ -714,10 +773,13 @@ def executer(incident_id: int) -> list[dict]:
                     log.warning("échec %s [%s] : %s", action, cible, e)
 
                 # Chaque remédiation = une TASK (onglet Tasks), pas une note.
+                # La machine visée est dans le titre : un incident de campagne
+                # porte la même action sur plusieurs hôtes.
                 task_id = None
                 if case:
                     titre = ("[SIMULATION] " if statut == "dry_run" else "") + \
-                        f"Remédiation — {LIBELLE_ACTION.get(action, action)} ({cible})"
+                        f"Remédiation — {LIBELLE_ACTION.get(action, action)} " \
+                        f"({cible} @ {machine})"
                     rt = case.add_task(
                         title=titre,
                         status=_STATUT_TASK.get(statut, "To do"),
@@ -731,13 +793,13 @@ def executer(incident_id: int) -> list[dict]:
 
                 conn.execute(INSERT_MITIG, {
                     "incident_id": incident_id, "action": action, "cible": cible,
-                    "statut": statut, "details": details, "undo": undo,
-                    "iris_task_id": task_id})
+                    "agent_id": machine, "statut": statut, "details": details,
+                    "undo": undo, "iris_task_id": task_id})
                 conn.commit()
 
                 resultats.append({"action": action, "cible": cible,
-                                  "statut": statut})
-                print(f"      {action} [{cible}] -> {statut}  ({canal})")
+                                  "agent_id": machine, "statut": statut})
+                print(f"      {action} [{cible}@{machine}] -> {statut}  ({canal})")
     return resultats
 
 
@@ -763,7 +825,7 @@ def _commenter_tache(case, case_id: int, task_id: int, texte: str) -> None:
 
 SELECT_REVERSIBLES = """
 SELECT m.id, m.incident_id, m.action, m.cible, m.details, m.iris_task_id,
-       i.agent_id, i.iris_case_id
+       COALESCE(NULLIF(m.agent_id, ''), i.agent_id) AS agent_id, i.iris_case_id
   FROM mitigations m
   JOIN incidents i ON i.id = m.incident_id
  WHERE m.statut = 'exécuté'

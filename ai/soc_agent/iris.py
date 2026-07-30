@@ -1205,23 +1205,75 @@ def _fondre_si_doublon(conn, incident: dict) -> int | None:
         traits_f = _traits(conn, f["id"])
         if _distincts(traits_x, traits_f) or not _apparentes(traits_x, traits_f):
             continue
-        # Fusion : les alertes rejoignent le frère, agrégats recalculés, case du
-        # frère marqué à rafraîchir, incident doublon supprimé (CASCADE triages/
-        # mitigations/anon_map ; alertes déjà déplacées).
-        conn.execute("UPDATE alerts SET incident_id = %s WHERE incident_id = %s",
-                     (f["id"], incident["id"]))
-        agg = conn.execute(
-            "SELECT count(*) n, min(ts) f, max(ts) l, max(rule_level) lvl, "
-            "array_agg(DISTINCT rule_id) r FROM alerts WHERE incident_id = %s",
-            (f["id"],)).fetchone()
-        conn.execute(
-            "UPDATE incidents SET alert_count = %s, first_seen = %s, "
-            "last_seen = %s, max_level = %s, rule_ids = %s, needs_refresh = true "
-            "WHERE id = %s",
-            (agg["n"], agg["f"], agg["l"], agg["lvl"], sorted(agg["r"]), f["id"]))
-        conn.execute("DELETE FROM incidents WHERE id = %s", (incident["id"],))
-        conn.commit()
-        return f["iris_case_id"]
+        return _fusionner(conn, incident["id"], f["id"], f["iris_case_id"])
+    return None
+
+
+def _fusionner(conn, src_id: int, dst_id: int, dst_case: int | None) -> int | None:
+    """Fond l'incident src dans dst : les alertes de src rejoignent dst, les
+    agrégats de dst sont recalculés, dst est marqué à rafraîchir (son case sera
+    complété au cycle suivant, remédiation incluse), et src est supprimé (CASCADE
+    triages / mitigations / anon_map ; ses alertes ont déjà bougé). Renvoie
+    dst_case."""
+    conn.execute("UPDATE alerts SET incident_id = %s WHERE incident_id = %s",
+                 (dst_id, src_id))
+    agg = conn.execute(
+        "SELECT count(*) n, min(ts) f, max(ts) l, max(rule_level) lvl, "
+        "array_agg(DISTINCT rule_id) r FROM alerts WHERE incident_id = %s",
+        (dst_id,)).fetchone()
+    conn.execute(
+        "UPDATE incidents SET alert_count = %s, first_seen = %s, "
+        "last_seen = %s, max_level = %s, rule_ids = %s, needs_refresh = true "
+        "WHERE id = %s",
+        (agg["n"], agg["f"], agg["l"], agg["lvl"], sorted(agg["r"]), dst_id))
+    conn.execute("DELETE FROM incidents WHERE id = %s", (src_id,))
+    conn.commit()
+    return dst_case
+
+
+def _signature_campagne(alertes: list[dict]) -> set[str]:
+    """Marqueurs APPARTENANT à l'attaquant qui relient les hôtes d'une même
+    campagne : comptes créés, IP C2 externes, fichiers/hash malveillants.
+
+    Volontairement PAS les IP internes (le rebond admin 192.168.10.1 relierait
+    tout le parc) ni les entités génériques — la sur-fusion se contient en
+    n'admettant qu'un marqueur clairement attaquant. Réutilise `_iocs`."""
+    sig: set[str] = set()
+    for valeur, type_ioc, _desc in _iocs(alertes):
+        if type_ioc == "ip-any" and _ip_interne(str(valeur)):
+            continue                       # IP interne = pas un marqueur de campagne
+        sig.add(str(valeur))
+    return sig
+
+
+def _fondre_campagne(conn, incident: dict) -> int | None:
+    """Approche A : fond cet incident dans le case d'une campagne DÉJÀ ouverte
+    (y compris sur un autre hôte) dès qu'ils partagent un marqueur fort
+    appartenant à l'attaquant. Le case devient alors multi-machines ; la
+    remédiation les traite ensuite une par une (mitigate._cibles_par_machine),
+    et n'agit que là où la preuve est claire.
+
+    Refusé si l'incident n'a aucun marqueur d'attaquant (sans lui, rien ne prouve
+    la même campagne) ou si CAMPAGNE_GAP_HOURS = 0. Renvoie le case adopté."""
+    if config.CAMPAGNE_GAP_HOURS <= 0:
+        return None
+    sig = _signature_campagne(_alertes(conn, incident["id"]))
+    if not sig:
+        return None
+    marge = timedelta(hours=config.CAMPAGNE_GAP_HOURS)
+    candidats = conn.execute(
+        "SELECT id, iris_case_id FROM incidents WHERE id <> %s "
+        "AND iris_case_id IS NOT NULL AND last_seen >= %s AND first_seen <= %s "
+        "ORDER BY id",
+        (incident["id"], incident["first_seen"] - marge,
+         incident["last_seen"] + marge)).fetchall()
+    for c in candidats:
+        commun = _signature_campagne(_alertes(conn, c["id"])) & sig
+        if commun:
+            log.info("incident #%s fondu dans la campagne du case IRIS #%s "
+                     "(marqueur commun : %s)", incident["id"],
+                     c["iris_case_id"], ", ".join(sorted(commun))[:100])
+            return _fusionner(conn, incident["id"], c["id"], c["iris_case_id"])
     return None
 
 
@@ -1386,8 +1438,12 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     # IRIS (raté de _rattacher_existants), on réutilise son case au lieu d'en
     # ouvrir un second. L'incident doublon est fondu dans le frère.
     adopte = _fondre_si_doublon(conn, incident)
+    if adopte is None:
+        # Approche A : à défaut d'un doublon du même hôte, rattachement à une
+        # campagne déjà ouverte (autre hôte inclus) sur marqueur d'attaquant.
+        adopte = _fondre_campagne(conn, incident)
     if adopte is not None:
-        log.info("incident #%s doublon → fondu dans le case IRIS #%s "
+        log.info("incident #%s → fondu dans le case IRIS #%s "
                  "(pas de nouveau case)", incident["id"], adopte)
         return adopte
 
