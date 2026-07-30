@@ -164,13 +164,30 @@ IRIS_CUSTOMER = int(os.environ.get("IRIS_CUSTOMER", "1"))
 # défaut sur le nom d'hôte public plutôt que la loopback ; à ajuster.
 # Le chemin Discover dépend de la version du dashboard (OpenSearch Dashboards
 # 2.x sur Wazuh 4.9 = /app/data-explorer/discover) : surchargeable au besoin.
-WAZUH_DASHBOARD_URL = os.environ.get("WAZUH_DASHBOARD_URL", "https://localhost")
+# Défaut volontairement NON-loopback : les liens sont ouverts depuis le
+# navigateur de l'analyste, jamais depuis cet hôte — « localhost » y pointait
+# sur la machine de l'analyste et cassait le lien. Surcharger par l'env avec
+# l'URL réellement joignable du dashboard (ex. https://192.168.10.5).
+WAZUH_DASHBOARD_URL = os.environ.get("WAZUH_DASHBOARD_URL", "https://192.168.10.5")
 WAZUH_DASHBOARD_DISCOVER_PATH = os.environ.get(
     "WAZUH_DASHBOARD_DISCOVER_PATH", "/app/data-explorer/discover")
 # Index-pattern couvrant les indices réellement alimentés (cf. le routage
 # wazuh-linux/web). « soc-ai-all-alerts » existe déjà côté dashboard.
 WAZUH_DASHBOARD_INDEX_PATTERN = os.environ.get(
     "WAZUH_DASHBOARD_INDEX_PATTERN", "soc-ai-all-alerts")
+
+# --- Sous-réseaux internes du parc ------------------------------------------
+#
+# Sert à qualifier les IOC IP : une cible /dev/tcp ou une IP source DANS ces
+# plages = mouvement latéral interne, PAS un C2. Ne PAS assimiler « privé
+# RFC1918 » à « interne » : le C2 du lab est lui-même en RFC1918 (10.0.0.6,
+# 192.168.60.1) — le classer « interne » l'aurait blanchi. On liste donc
+# explicitement les subnets du parc, tout le reste (dont ces C2) est externe.
+RESEAUX_INTERNES = [
+    r.strip() for r in os.environ.get(
+        "RESEAUX_INTERNES",
+        "192.168.20.0/24,192.168.10.0/24,192.168.40.0/24").split(",")
+    if r.strip()]
 
 # --- Remédiation (exécution des actions) ------------------------------------
 #

@@ -16,6 +16,7 @@ serveur MCP IRIS, lui, sert l'investigation interactive.
 """
 
 import argparse
+import ipaddress
 import json
 import logging
 import re
@@ -333,6 +334,60 @@ _RE_USERADD = re.compile(r"\b(?:useradd|adduser)\b.*?([A-Za-z_][\w-]*)\s*$")
 # Préfixe du montage sshfs du scanner YARA : /mnt/yaritrust/<hôte>_<ip>/…
 _RE_MONTAGE_SCAN = re.compile(r"^/mnt/yaritrust/[^/]+/")
 
+# Réseaux internes du parc, précompilés une fois.
+_NETS_INTERNES = []
+for _cidr in config.RESEAUX_INTERNES:
+    try:
+        _NETS_INTERNES.append(ipaddress.ip_network(_cidr, strict=False))
+    except ValueError:
+        log.warning("RESEAUX_INTERNES: cidr invalide ignoré: %r", _cidr)
+
+
+def _ip_ioc_valide(ip: str) -> bool:
+    """IP exploitable comme IOC : ni 'none', ni loopback, ni non-spécifiée.
+
+    Écarte le bruit qui polluait la threat intel (`ip-any = none`, 0.0.0.0,
+    127.0.0.1, link-local, multicast)."""
+    try:
+        o = ipaddress.ip_address(str(ip).strip())
+    except ValueError:
+        return False
+    return not (o.is_loopback or o.is_unspecified or o.is_link_local
+                or o.is_multicast)
+
+
+def _ip_interne(ip: str) -> bool:
+    """Vrai si l'IP appartient à un subnet du parc (cf. config.RESEAUX_INTERNES).
+
+    Volontairement PAS `is_private` : le C2 du lab est en RFC1918 — seule
+    l'appartenance aux subnets déclarés du parc vaut « interne »."""
+    try:
+        o = ipaddress.ip_address(str(ip).strip())
+    except ValueError:
+        return False
+    return any(o in n for n in _NETS_INTERNES)
+
+
+# Coquilles d'accent récurrentes du modèle (français écrit sans accents),
+# corrigées de façon déterministe sur le récit LLM. Limité aux formes SANS
+# collision avec l'anglais/MITRE : « privilege » (Privilege Escalation) et
+# « elevation » sont donc EXCLUS. « reseau » n'a pas d'homographe anglais.
+_ACCENTS = {
+    "acces": "accès", "detecte": "détecté", "detectee": "détectée",
+    "detectes": "détectés", "detectees": "détectées", "deja": "déjà",
+    "reseau": "réseau", "reseaux": "réseaux",
+}
+_RE_ACCENTS = re.compile(r"\b(" + "|".join(_ACCENTS) + r")\b", re.IGNORECASE)
+
+
+def _corriger_accents(txt: str) -> str:
+    """Remplace les coquilles d'accent du récit LLM, en préservant la casse."""
+    def repl(m):
+        mot = m.group(0)
+        corr = _ACCENTS[mot.lower()]
+        return corr.capitalize() if mot[0].isupper() else corr
+    return _RE_ACCENTS.sub(repl, txt or "")
+
 
 def _decoder_proctitle(full_log: str) -> str:
     """Ligne de commande décodée depuis le proctitle hex d'un log auditd."""
@@ -454,15 +509,29 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
         audit = data.get("audit", {})
         full_log = raw.get("full_log") or ""
 
-        # C2 : cible d'un reverse shell, dans le log ou le proctitle décodé.
+        # Cible d'une redirection /dev/tcp|udp, dans le log ou le proctitle.
+        # On ne l'étiquette « C2 » que si elle est HORS parc : une cible interne
+        # (tout le /24 balayé sur le port 22) est du mouvement latéral / scan,
+        # pas un C2 — l'appeler C2 polluait la threat intel et pointait un
+        # blocage vers l'infra interne.
         for texte in (full_log, _decoder_proctitle(full_log),
                       a.get("rule_desc") or ""):
             for ip, port in _RE_REVSHELL.findall(texte):
-                ajouter(ip, "ip-any", f"IP C2 — cible reverse shell (port {port})")
+                if not _ip_ioc_valide(ip):
+                    continue
+                if _ip_interne(ip):
+                    ajouter(ip, "ip-any", "Cible interne — connexion /dev/tcp "
+                            f"(mouvement latéral / scan, port {port})")
+                else:
+                    ajouter(ip, "ip-any",
+                            f"IP C2 — cible reverse shell (port {port})")
 
-        # IP source d'une attaque réseau (ex. web).
-        if a.get("srcip"):
-            ajouter(a["srcip"], "ip-any", "IP source de l'attaque")
+        # IP source d'une attaque réseau (ex. web). Interne = pivot/latéral.
+        srcip = a.get("srcip")
+        if srcip and _ip_ioc_valide(srcip):
+            ajouter(srcip, "ip-any",
+                    "IP source interne (pivot / mouvement latéral)"
+                    if _ip_interne(srcip) else "IP source externe de l'attaque")
 
         # Compte créé/manipulé (useradd : dstuser + home/shell).
         dstuser = data.get("dstuser")
@@ -688,12 +757,37 @@ def _section_commandes(alertes: list[dict]) -> str:
         "",
         "```",
     ]
+    # Date incluse si les commandes s'étalent sur plusieurs jours UTC, sinon
+    # l'heure seule rend l'ordre chronologique ambigu (mêmes HH:MM d'un jour à
+    # l'autre).
+    jours = {ts.astimezone(timezone.utc).date() for ts, _ in cmds}
+    fmt = "%m-%d %H:%M:%S" if len(jours) > 1 else "%H:%M:%S"
     for ts, cmd in cmds[:80]:
-        lignes.append(f"{ts:%H:%M:%S}  {cmd[:200]}")
+        lignes.append(f"{ts.astimezone(timezone.utc):{fmt}}  {cmd[:200]}")
     if len(cmds) > 80:
         lignes.append(f"... (+{len(cmds) - 80} autres)")
     lignes.append("```")
     return "\n".join(lignes)
+
+
+def _fmt_intervalle(first, last) -> str:
+    """Fenêtre lisible. Ajoute la date (mm-jj) dès que l'intervalle franchit un
+    jour UTC — sans elle, `%H:%M:%S` seul faisait paraître un span multi-jours à
+    l'envers (ex. `15:44 → 13:47`, fin < début, alors que le dernier est le
+    lendemain). first ≤ last est garanti par min/max en amont."""
+    fu = first.astimezone(timezone.utc)
+    lu = last.astimezone(timezone.utc)
+    if lu == fu:
+        return f"{fu:%H:%M:%S}"
+    if fu.date() == lu.date():
+        return f"{fu:%H:%M:%S} → {lu:%H:%M:%S}"
+    return f"{fu:%m-%d %H:%M:%S} → {lu:%m-%d %H:%M:%S}"
+
+
+# Au-delà de ce nombre d'occurrences pour une même règle, le compte reflète des
+# tirs répétés (ex. une écriture /dev/tcp par cible balayée), pas autant
+# d'évènements distincts : on l'annote pour ne pas surestimer l'ampleur.
+_SEUIL_RAFALE = 500
 
 
 def _section_alertes(alertes: list[dict], agent_id: str) -> str:
@@ -715,12 +809,11 @@ def _section_alertes(alertes: list[dict], agent_id: str) -> str:
     ]
     refs = []
     for rid, e in _grouper_regles(alertes):
-        fen = f"{e['first']:%H:%M:%S}"
-        if e["last"] != e["first"]:
-            fen += f" → {e['last']:%H:%M:%S}"
+        fen = _fmt_intervalle(e["first"], e["last"])
+        occ = f"{e['n']} ⚠️rafale" if e["n"] >= _SEUIL_RAFALE else str(e["n"])
         desc = (e["desc"][:78] + "…") if len(e["desc"]) > 78 else e["desc"]
         label = f"w-{rid}"
-        lignes.append(f"| {e['level']} | {rid} | {e['n']} | {fen} | {desc} "
+        lignes.append(f"| {e['level']} | {rid} | {occ} | {fen} | {desc} "
                       f"| [🔎][{label}] |")
         refs.append(f"[{label}]: <{_lien_wazuh(agent_id, rid, e['first'], e['last'])}>")
     lignes.append("")
@@ -989,8 +1082,9 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
     rapport.setdefault("analyse", triage["reason"])
     rapport.setdefault("couverture", "")
     # Réhydratation : les jetons redeviennent les vraies valeurs pour l'analyste.
+    # Puis correction des coquilles d'accent récurrentes du modèle.
     for cle in ("resume", "analyse", "couverture"):
-        rapport[cle] = rehydrater(rapport[cle], anon.mapping)
+        rapport[cle] = _corriger_accents(rehydrater(rapport[cle], anon.mapping))
 
     cts = _conteneurs(alertes)
     lignes = [
@@ -1181,9 +1275,11 @@ def _timeline(case, case_id: int, alertes: list[dict], agent_id: str,
         titre = (e["desc"][:120] or f"Règle {rid}")
         if e["n"] > 1:
             titre = f"{titre} (x{e['n']})"
+        occ = f"{e['n']} occurrence(s)"
+        if e["n"] >= _SEUIL_RAFALE:
+            occ += " (rafale — tirs répétés, pas autant d'évènements distincts)"
         contenu = [f"Règle Wazuh **{rid}** — niveau {e['level']}/15",
-                   f"{e['n']} occurrence(s), de {e['first']:%H:%M:%S} à "
-                   f"{e['last']:%H:%M:%S} UTC"]
+                   f"{occ}, {_fmt_intervalle(e['first'], e['last'])} UTC"]
         if e["users"]:
             contenu.append("Comptes : " + ", ".join(sorted(e["users"])))
         if e["entities"]:
