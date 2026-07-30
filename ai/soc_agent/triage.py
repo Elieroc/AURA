@@ -27,8 +27,10 @@ from .render import motifs_injection, rendre
 PROMPTS = Path(__file__).parent / "prompts"
 
 # Plafond de taille de prompt : un budget de coût, et une borne contre un prompt
-# qui déraille (un incident à 500 alertes ne doit pas partir tel quel).
-PLAFOND_TOKENS = 1500
+# qui déraille. Trop bas, il faisait TAIRE les plus gros incidents (le plus grave
+# — 350 alertes, niveau 14 — n'avait ni triage ni case ni remédiation). Relevé à
+# 5000 ; env-surchargeable. Le préfiltrage/résumé reste souhaitable en amont.
+PLAFOND_TOKENS = config.PLAFOND_PROMPT_TOKENS
 
 # Enums de sortie. Rien ne les garantit à l'échantillonnage : DeepSeek ne
 # garantit que le JSON valide. On revalide donc ici — c'est la place correcte

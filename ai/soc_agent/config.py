@@ -129,6 +129,9 @@ DEEPSEEK_API_KEY = _requis("DEEPSEEK_API_KEY")
 # raisonnement → finish_reason=length et content VIDE. Il faut de la marge pour
 # le raisonnement + le JSON de verdict.
 TRIAGE_MAX_TOKENS = int(os.environ.get("TRIAGE_MAX_TOKENS", "3000"))
+# Plafond de taille du PROMPT de triage (entrée). Au-delà, l'incident était
+# ignoré — ce qui faisait taire les plus gros/graves. Relevé à 5000.
+PLAFOND_PROMPT_TOKENS = int(os.environ.get("TRIAGE_PROMPT_MAX_TOKENS", "5000"))
 # Le rapport TP est un récit markdown multi-sections, plus long que le verdict ;
 # avec le raisonnement en plus, il lui faut davantage de marge encore.
 REPORT_MAX_TOKENS = int(os.environ.get("REPORT_MAX_TOKENS", "4000"))
