@@ -1451,12 +1451,21 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     verdict = triage["verdict"]
     fp = verdict == "false_positive"
 
-    case = _client()
+    log.debug("incident #%s : création case IRIS (verdict=%s, alerts=%d)",
+              incident["id"], verdict, incident["alert_count"])
+    try:
+        case = _client()
+        log.debug("  client IRIS obtenu (url=%s)", config.IRIS_URL)
+    except Exception as e:
+        log.error("  client IRIS échoué : %s", e)
+        raise RuntimeError(f"client IRIS échoué : {e}") from e
+
     nom = _nommer_case(conn, incident, triage, alertes)
     desc = (f"Incident #{incident['id']} corrélé par le soc-agent, "
             f"{incident['alert_count']} alertes, niveau max "
             f"{incident['max_level']}/15. Verdict IA : {verdict}.")
 
+    log.debug("  appel add_case (nom=%s, cust=%s)", nom[:50], config.IRIS_CUSTOMER)
     r = case.add_case(
         case_name=nom,
         case_description=desc,
@@ -1464,7 +1473,9 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
         case_classification=_classification(incident, alertes),
         soc_id=f"SOC-AI-{incident['id']}",
     )
+    log.debug("  réponse add_case: success=%s", r.is_success())
     if not r.is_success():
+        log.error("  msg erreur IRIS: %s", r.get_msg())
         raise RuntimeError(f"création case échouée : {r.get_msg()}")
     case_id = r.get_data()["case_id"]
 
@@ -1630,20 +1641,30 @@ def creer_cases(un_seul: int | None = None) -> list[tuple[int, int, str]]:
         for inc in a_creer:
             triage = {k: inc[k] for k in
                       ("verdict", "confidence", "mitre", "actions", "reason")}
-            case_id = creer_case(conn, inc, triage)
-            faits.append((inc["id"], case_id, inc["verdict"]))
-            print(f"  incident #{inc['id']} -> case IRIS #{case_id} "
-                  f"({inc['verdict']})")
+            try:
+                case_id = creer_case(conn, inc, triage)
+                faits.append((inc["id"], case_id, inc["verdict"]))
+                print(f"  incident #{inc['id']} -> case IRIS #{case_id} "
+                      f"({inc['verdict']})")
+            except Exception as e:  # noqa: BLE001
+                log.error("création case incident #%s échouée : %s", inc["id"], e)
+                # mark incident so we retry next cycle
+                conn.execute("UPDATE incidents SET status = %s WHERE id = %s",
+                           ("case_creation_failed", inc["id"]))
+                conn.commit()
 
         a_rafraichir = conn.execute(
             SELECT_A_RAFRAICHIR, {"un_seul": un_seul}).fetchall()
         for inc in a_rafraichir:
             triage = {k: inc[k] for k in
                       ("verdict", "confidence", "mitre", "actions", "reason")}
-            case_id = rafraichir_case(conn, inc, triage)
-            faits.append((inc["id"], case_id, inc["verdict"]))
-            print(f"  incident #{inc['id']} -> case IRIS #{case_id} MAJ "
-                  f"({inc['verdict']}, {inc['alert_count']} alertes)")
+            try:
+                case_id = rafraichir_case(conn, inc, triage)
+                faits.append((inc["id"], case_id, inc["verdict"]))
+                print(f"  incident #{inc['id']} -> case IRIS #{case_id} MAJ "
+                      f"({inc['verdict']}, {inc['alert_count']} alertes)")
+            except Exception as e:  # noqa: BLE001
+                log.error("rafraîchissement case incident #%s échoué : %s", inc["id"], e)
     return faits
 
 
