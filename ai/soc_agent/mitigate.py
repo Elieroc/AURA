@@ -44,7 +44,8 @@ from psycopg.rows import dict_row
 
 from . import config
 from .anonymize import COMPTES_GENERIQUES
-from .iris import LIBELLE_ACTION, _client, _iocs, _ip_interne, _ip_ioc_valide
+from .iris import (LIBELLE_ACTION, _client, _iocs, _ip_interne,
+                   _ip_ioc_valide, _ips_revshell)
 
 log = logging.getLogger("mitigate")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -614,21 +615,32 @@ def _cibles_par_machine(action: str, incident: dict,
         # Puis on ORDONNE (IP publiques d'abord) sans réduire : un bruteforce
         # vient de N IP, toutes à bloquer.
         assets = _ips_agents()
+
+        def _bloquable(ip: str) -> bool:
+            ip = str(ip)
+            if not _ip_ioc_valide(ip) or _ip_interne(ip):
+                return False        # invalide, ou subnet du parc (victime/pivot)
+            if ip in assets:
+                log.info("#%s block_ip : %s écartée (IP d'un agent surveillé "
+                         "— victime/pivot, pas l'attaquant)",
+                         incident.get("id"), ip)
+                return False
+            return True
+
         out = set()
         for ag in agents:
             for a in par_agent[ag]:
+                # 1) IP source d'une attaque réseau (web, bruteforce…).
                 ip = a.get("srcip")
-                if not (ip and _ip_ioc_valide(str(ip))):
-                    continue
-                ip = str(ip)
-                if _ip_interne(ip):
-                    continue
-                if ip in assets:
-                    log.info("#%s block_ip : %s écartée (IP d'un agent "
-                             "surveillé — victime/pivot, pas l'attaquant)",
-                             incident.get("id"), ip)
-                    continue
-                out.add((ag, ip))
+                if ip and _bloquable(str(ip)):
+                    out.add((ag, str(ip)))
+                # 2) IP C2 cible d'un reverse shell /dev/tcp|/dev/udp, extraite
+                #    de la commande : l'execve auditd n'a pas de srcip, donc sans
+                #    ça un reverse shell détecté (100650) restait détecté mais
+                #    jamais bloqué (case 72 : 2667× vers 10.0.0.6, 0 blocage).
+                for c2 in _ips_revshell(a):
+                    if _bloquable(c2):
+                        out.add((ag, c2))
         return sorted(out, key=lambda t: (_ip_privee(t[1]), t[0], t[1]))
 
     if action == "propose_disable_user":

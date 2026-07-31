@@ -401,6 +401,26 @@ def _decoder_proctitle(full_log: str) -> str:
         return ""
 
 
+def _ips_revshell(alerte: dict) -> set[str]:
+    """IP cibles d'une redirection /dev/tcp|/dev/udp dans la commande de l'alerte.
+
+    Cherche dans le full_log en clair, le proctitle hex décodé et la description.
+    Ne filtre PAS interne/externe : l'appelant tranche (IOC de contexte vs cible
+    de blocage). C'est la seule source de l'IP du C2 pour un reverse shell
+    auditd — l'événement execve ne porte pas de `srcip`, donc sans ça le C2
+    détecté (rule 100650) n'était jamais bloqué (cf. case 72, 2026-07-31)."""
+    raw = alerte["raw"] if isinstance(alerte.get("raw"), dict) else json.loads(
+        alerte.get("raw") or "{}")
+    full_log = raw.get("full_log") or ""
+    ips: set[str] = set()
+    for texte in (full_log, _decoder_proctitle(full_log),
+                  alerte.get("rule_desc") or ""):
+        for ip, _port in _RE_REVSHELL.findall(texte):
+            if _ip_ioc_valide(ip):
+                ips.add(ip)
+    return ips
+
+
 def _chemin_cible(p: str | None) -> str | None:
     """Chemin réel sur la machine scannée, sans le préfixe du montage sshfs.
 

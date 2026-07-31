@@ -246,9 +246,16 @@ AGENTS_PROTEGES = {
 # vrai théâtre est ailleurs (le conteneur), et agir sur le capteur est soit
 # inutile (désactiver un compte qui n'y vit pas — le bug constaté), soit trop
 # large (isoler tout l'hôte pour un seul conteneur). Dans le doute sur la vraie
-# machine, on n'agit pas. Vide par défaut ; en prod, l'agent hôte Proxmox (009).
+# machine, on n'agit pas.
+#
+# Défaut = 010, l'agent hôte Proxmox (home-s-pve01) : son auditd voit les execve
+# de tous les conteneurs LXC et se les attribue. Sans cette exclusion, le case 72
+# (2026-07-31) a sorti `propose_isolate_host 010` sur un vrai reverse shell vu
+# dans un conteneur — isoler l'hôte Proxmox aurait coupé TOUT le parc de VM.
+# (C'était 009 avant, renuméroté 010 à la ré-inscription du 30/07 ; l'id peut
+# rebouger — surchargeable par l'env AGENTS_CAPTEURS.)
 AGENTS_CAPTEURS = {
-    a.strip() for a in os.environ.get("AGENTS_CAPTEURS", "").split(",")
+    a.strip() for a in os.environ.get("AGENTS_CAPTEURS", "010").split(",")
     if a.strip()}
 
 # Règles Wazuh qui signent une COMPROMISSION ACTIVE de l'hôte lui-même :
