@@ -1538,6 +1538,24 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     return case_id
 
 
+def _verdict_a_change(conn, incident_id: int) -> bool:
+    """Le verdict ou les actions ont-ils changé au dernier triage ?
+
+    Correctif #1 (explosion tokens du 2026-07-30) : sur un refresh où le triage
+    rejoué rend le MÊME verdict et les MÊMES actions que le précédent, le
+    rapport LLM ressortirait mot pour mot (verdict reproductible, temp 0.2 +
+    seed). On évite alors de régénérer l'appel `report` — le plus coûteux du
+    pipeline (~2000 tokens de complétion). Renvoie True (donc « régénérer »)
+    s'il n'existe qu'un seul triage : c'est la première analyse."""
+    rows = conn.execute(
+        "SELECT verdict, actions FROM triages WHERE incident_id = %s "
+        "ORDER BY created_at DESC LIMIT 2", (incident_id,)).fetchall()
+    if len(rows) < 2:
+        return True
+    return (rows[0]["verdict"] != rows[1]["verdict"]
+            or list(rows[0]["actions"]) != list(rows[1]["actions"]))
+
+
 def rafraichir_case(conn, incident: dict, triage: dict) -> int:
     """Met à jour le case existant d'un incident enrichi de nouvelles alertes.
 
@@ -1593,10 +1611,18 @@ def rafraichir_case(conn, incident: dict, triage: dict) -> int:
         except Exception as e:  # noqa: BLE001
             log.warning("remédiation refresh #%s : %s", incident["id"], e)
 
-    contenu = (_note_fp(triage, _regle_whitelist(conn, alertes)) if fp
-               else _note_tp(conn, incident, triage, alertes))
-    titre = "Analyse — Faux positif" if fp else "Rapport d'analyse"
-    _poser_note(case, case_id, titre, contenu)
+    # Note d'analyse. Le FP est cheap (pas d'appel LLM) -> toujours régénéré.
+    # Le rapport TP appelle le LLM : correctif #1, on ne le régénère que si le
+    # verdict/les actions ont changé depuis la note en place (sinon identique).
+    if fp:
+        _poser_note(case, case_id, "Analyse — Faux positif",
+                    _note_fp(triage, _regle_whitelist(conn, alertes)))
+    elif _verdict_a_change(conn, incident["id"]):
+        _poser_note(case, case_id, "Rapport d'analyse",
+                    _note_tp(conn, incident, triage, alertes))
+    else:
+        log.info("#%s rapport non régénéré : verdict inchangé depuis la note "
+                 "en place (économie de l'appel LLM report)", incident["id"])
 
     if not fp:
         _reconstruire_timeline(case, case_id, alertes, incident["agent_id"],

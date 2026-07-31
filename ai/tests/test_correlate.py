@@ -10,7 +10,8 @@ le plus cher, et elle doit rester vérifiable sans infrastructure.
 
 from datetime import datetime, timedelta, timezone
 
-from soc_agent.correlate import _graine_valide, _grouper, point_commun
+from soc_agent.correlate import (_graine_valide, _grouper, _signal_decisif,
+                                 point_commun)
 
 T0 = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
 
@@ -145,3 +146,35 @@ def test_graine_intrusion_reelle_acceptee():
                tactics=("Execution",))
     a["rule_desc"] = "Reverse shell probable : /dev/tcp"
     assert _graine_valide(a) is True
+
+
+# --- correctif #2 : needs_refresh ne repart que sur un signal décisif --------
+
+def test_signal_repetition_de_bruit_ne_declenche_pas():
+    """Une salve qui répète des règles déjà présentes, sans hausse de niveau,
+    n'est PAS un signal décisif : pas de re-triage + rapport (boucle tokens)."""
+    anciennes = {"100670", "100710"}
+    nouvelles = [alerte(rule="100670", level=12, groups=("attack",))]
+    assert _signal_decisif(anciennes, nouvelles, ancien_max=15) is False
+
+
+def test_signal_bruit_structurel_meme_regle_inedite_ne_declenche_pas():
+    """Une règle inédite MAIS structurelle (rootcheck/SCA/statut d'agent, ex.
+    100801 auditd absent) n'ouvre pas un refresh : ce n'est pas une graine."""
+    a = alerte(rule="510", level=12, groups=("rootcheck",), tactics=())
+    a["rule_desc"] = "Host-based anomaly detection event (rootcheck)."
+    assert _signal_decisif({"100670"}, [a], ancien_max=15) is False
+
+
+def test_signal_regle_inedite_reelle_declenche():
+    """Une règle d'intrusion inédite (non structurelle) = signal décisif."""
+    a = alerte(rule="100721", level=12, groups=("attack",),
+               tactics=("Execution",))
+    a["rule_desc"] = "Reverse shell probable : /dev/tcp"
+    assert _signal_decisif({"100670"}, [a], ancien_max=15) is True
+
+
+def test_signal_hausse_de_niveau_declenche():
+    """Une escalade de sévérité rouvre toujours un refresh, même règle connue."""
+    nouvelles = [alerte(rule="100670", level=14, groups=("attack",))]
+    assert _signal_decisif({"100670"}, nouvelles, ancien_max=12) is True

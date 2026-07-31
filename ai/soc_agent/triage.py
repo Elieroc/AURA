@@ -84,7 +84,13 @@ SELECT i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
   FROM incidents i
  WHERE (%(tous)s
         OR NOT EXISTS (SELECT 1 FROM triages t WHERE t.incident_id = i.id)
-        OR i.needs_refresh)          -- incident enrichi depuis son dernier triage
+        -- incident enrichi depuis son dernier triage, MAIS pas indéfiniment :
+        -- passé INCIDENT_REFRESH_TTL_HOURS depuis first_seen, on ne re-triage
+        -- plus (correctif #4 anti-boucle ; 0 = sans limite). La création d'un
+        -- incident jamais trié reste hors de ce plafond (clause NOT EXISTS).
+        OR (i.needs_refresh
+            AND (%(refresh_ttl)s <= 0
+                 OR i.first_seen > now() - make_interval(hours => %(refresh_ttl)s))))
    AND (%(un_seul)s::bigint IS NULL OR i.id = %(un_seul)s)
    AND i.max_level >= %(min_level)s
  ORDER BY i.max_level DESC, i.first_seen DESC
@@ -168,6 +174,7 @@ def trier(limite: int, un_seul: int | None, tous: bool,
         incidents = conn.execute(SELECT_INCIDENTS, {
             "tous": tous, "un_seul": un_seul,
             "min_level": config.MIN_LEVEL, "limite": limite,
+            "refresh_ttl": config.INCIDENT_REFRESH_TTL_HOURS,
         }).fetchall()
 
         if not incidents:

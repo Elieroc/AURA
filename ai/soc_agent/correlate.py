@@ -354,32 +354,55 @@ def _rattacher_existants(conn, alertes: list[dict]) -> tuple[list[dict], dict[in
     return restantes, ajouts, incs_par_id
 
 
+def _signal_decisif(anciennes_rules: set, nouvelles: list[dict],
+                    ancien_max: int) -> bool:
+    """Une salve rattachée apporte-t-elle un signal décisif nouveau ?
+
+    Vrai si le niveau max monte, OU si une règle inédite NON structurelle
+    apparaît. Faux pour une répétition de bruit (mêmes règles déjà présentes,
+    ou alertes structurelles SCA/rootcheck/statut d'agent — cf. _graine_valide) :
+    ne re-déclenche alors PAS le triage + le rapport LLM (correctif #2, boucle
+    de régénération à l'origine de l'explosion de tokens du 2026-07-30)."""
+    if max([ancien_max] + [a["rule_level"] for a in nouvelles]) > ancien_max:
+        return True
+    return any(a["rule_id"] not in anciennes_rules and _graine_valide(a)
+               for a in nouvelles)
+
+
 def _appliquer_ajouts(conn, incs_par_id: dict[int, dict],
                       ajouts: dict[int, list[dict]]) -> None:
     """Persiste les rattachements aux incidents existants et pose needs_refresh.
 
     Met à jour les agrégats de l'incident (fenêtre, compte, niveau max, unions
-    de règles/tactiques/objets) et marque `needs_refresh` : le triage rejouera
-    le verdict et IRIS mettra à jour le case au lieu d'en créer un doublon.
+    de règles/tactiques/objets). `needs_refresh` n'est posé que si la salve
+    apporte un SIGNAL DÉCISIF NOUVEAU (correctif #2, explosion tokens du
+    2026-07-30) : une règle inédite NON structurelle, ou une hausse du niveau
+    max. Une répétition de bruit (mêmes règles, ou alertes structurelles
+    SCA/rootcheck/statut d'agent) ne re-déclenche PLUS triage + rapport LLM —
+    c'était la boucle qui régénérait le rapport à vide à chaque cycle (5 min).
+    On ne rétrograde jamais un refresh déjà en attente (`OR` en SQL).
     """
     for iid, nouvelles in ajouts.items():
         inc = incs_par_id[iid]
         conn.execute("UPDATE alerts SET incident_id = %s WHERE id = ANY(%s)",
                      (iid, [a["id"] for a in nouvelles]))
-        rules = sorted(set(inc["rule_ids"]) | {a["rule_id"] for a in nouvelles})
+        anciennes_rules = set(inc["rule_ids"])
+        rules = sorted(anciennes_rules | {a["rule_id"] for a in nouvelles})
         tacs = sorted(set(inc["mitre_tactics"])
                       | {t for a in nouvelles for t in (a["mitre_tactics"] or [])})
         ents = sorted(set(inc["entities"])
                       | {a["entity"] for a in nouvelles if a["entity"]})[:50]
+        new_max = max([inc["max_level"]] + [a["rule_level"] for a in nouvelles])
+        signal = _signal_decisif(anciennes_rules, nouvelles, inc["max_level"])
         conn.execute(
             "UPDATE incidents SET last_seen = %s, first_seen = %s, "
             "alert_count = alert_count + %s, max_level = %s, rule_ids = %s, "
-            "mitre_tactics = %s, entities = %s, needs_refresh = true WHERE id = %s",
+            "mitre_tactics = %s, entities = %s, "
+            "needs_refresh = needs_refresh OR %s WHERE id = %s",
             (max([inc["last_seen"]] + [a["ts"] for a in nouvelles]),
              min([inc["first_seen"]] + [a["ts"] for a in nouvelles]),
-             len(nouvelles),
-             max([inc["max_level"]] + [a["rule_level"] for a in nouvelles]),
-             rules, tacs, ents, iid))
+             len(nouvelles), new_max,
+             rules, tacs, ents, signal, iid))
 
 
 def correler(min_level: int, attach_min_level: int | None = None) -> tuple[int, int]:

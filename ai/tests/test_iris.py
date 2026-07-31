@@ -17,7 +17,21 @@ from soc_agent.iris import (
     _note_tp,
     _poser_note,
     _taguer,
+    _verdict_a_change,
 )
+
+
+class _FakeConn:
+    """conn minimal : renvoie des lignes de triages canned pour execute()."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def execute(self, *a, **k):
+        return self
+
+    def fetchall(self):
+        return self._rows
 
 
 def _tr(**kw):
@@ -26,6 +40,34 @@ def _tr(**kw):
             "mitre_tactics": [], "rule_groups": []}
     base.update(kw)
     return base
+
+
+# --- correctif #1 : ne pas régénérer le rapport LLM si le verdict n'a pas bougé
+
+def test_verdict_a_change_stable_ne_regenere_pas():
+    """Deux triages identiques (verdict + actions) -> le rapport ressortirait
+    à l'identique, on ne régénère pas (False)."""
+    rows = [{"verdict": "true_positive", "actions": ["propose_block_ip", "open_case"]},
+            {"verdict": "true_positive", "actions": ["propose_block_ip", "open_case"]}]
+    assert _verdict_a_change(_FakeConn(rows), 1) is False
+
+
+def test_verdict_a_change_verdict_different_regenere():
+    rows = [{"verdict": "true_positive", "actions": ["open_case"]},
+            {"verdict": "needs_investigation", "actions": ["open_case"]}]
+    assert _verdict_a_change(_FakeConn(rows), 1) is True
+
+
+def test_verdict_a_change_actions_differentes_regenere():
+    rows = [{"verdict": "true_positive", "actions": ["propose_isolate_host", "open_case"]},
+            {"verdict": "true_positive", "actions": ["open_case"]}]
+    assert _verdict_a_change(_FakeConn(rows), 1) is True
+
+
+def test_verdict_a_change_premier_triage_regenere():
+    """Un seul triage (première analyse) : on régénère (True)."""
+    assert _verdict_a_change(_FakeConn([{"verdict": "true_positive",
+                                         "actions": ["open_case"]}]), 1) is True
 
 
 def test_section_commandes_ecarte_bruit_session():

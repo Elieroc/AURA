@@ -334,6 +334,18 @@ MAX_INCIDENT_HOURS = int(os.environ.get("MAX_INCIDENT_HOURS", "6"))
 # une IP interne ni une entité générique). 0 désactive la fusion campagne.
 CAMPAGNE_GAP_HOURS = int(os.environ.get("CAMPAGNE_GAP_HOURS", "48"))
 
+# Durée de vie du RE-TRIAGE automatique d'un incident (correctif #4, explosion
+# de tokens du 2026-07-30). Passé ce délai depuis `first_seen`, un incident déjà
+# trié n'est plus re-trié même s'il gagne des alertes (`needs_refresh`) : sinon
+# un incident du parc bruyant se fait ré-analyser par le LLM tous les 5 min à
+# vie (constaté : des incidents vieux de plusieurs jours brûlaient encore
+# 18-25 appels LLM/24h). Une intrusion nouvelle rouvre de toute façon un
+# incident neuf via les fenêtres de corrélation. 0 désactive le plafond (re-
+# triage sans limite d'âge). Ne touche PAS la création (un incident jamais trié
+# est toujours trié, quel que soit son âge).
+INCIDENT_REFRESH_TTL_HOURS = int(
+    os.environ.get("INCIDENT_REFRESH_TTL_HOURS", "48"))
+
 # --- Watchdog « capteur muet » (watchdog.py) ---------------------------------
 # Un capteur qui parlait puis se tait est un angle mort qu'aucune règle ne voit.
 # Groupes de règles surveillés : leur silence rend inertes des pans entiers du
