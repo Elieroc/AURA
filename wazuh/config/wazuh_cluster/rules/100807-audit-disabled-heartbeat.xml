@@ -1,0 +1,34 @@
+<!-- SOC-AI - rule 100807 (level 13). Domain: soc_selfcheck,wazuh,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="soc_selfcheck,wazuh,">
+
+  <!-- Kernel audit EXPLICITLY DISABLED, seen at the heartbeat: the status
+       command reports `audit_enabled=0` (a real 0, not an empty value). Someone
+       (or something) switched auditing off - every auditd rule (1006xx/1007xx)
+       is now inert. This is the hostile case T1562.001.
+
+       Split out of 100801 (2026-07-31): 100801 used to match both the empty
+       value (auditd absent) and `=0` (disabled) at level 13, which flooded on
+       auditd-less hosts. 100801 now keeps only the empty/absent case at MEDIUM;
+       this rule carries the genuine disable at HIGH.
+
+       Complements 100805 (CONFIG_CHANGE): 100805 is immediate and carries the
+       responsible auid, but only fires if the agent was already up when the
+       switch happened and the event was not lost. This heartbeat rule catches
+       the state even when audit was turned off BEFORE the agent started, or the
+       CONFIG_CHANGE was missed - the two are not duplicates.
+
+       Mutually exclusive with 100801 by value (`0` here, empty there): load
+       order does not arbitrate between them. -->
+
+  <rule id="100807" level="13">
+    <if_sid>100800</if_sid>
+    <match type="pcre2">audit_enabled=0\b</match>
+    <description>Blind sensor: kernel audit explicitly disabled (audit_enabled=0 at heartbeat)</description>
+    <mitre>
+      <id>T1562.001</id>
+      <id>T1562.006</id>
+    </mitre>
+  </rule>
+
+</group>

@@ -209,7 +209,22 @@ def trier(limite: int, un_seul: int | None, tous: bool,
                       f"(plafond {PLAFOND_TOKENS}). Resserrer render.py.")
                 continue
 
-            verdict, m = interroger(systeme, utilisateur, inc["id"])
+            # Un incident empoisonné ne casse pas le lot. L'appel LLM peut
+            # échouer sur CET incident (content vide si le raisonnement épuise
+            # max_tokens, JSON tronqué à la coupe de longueur, enum invalide) :
+            # sans ce filet, l'exception remontait jusqu'à cycle.py qui coupait
+            # le cycle ENTIER — donc la création de cases des incidents déjà
+            # triés. Et comme le lot est trié dans un ordre déterministe, le même
+            # incident repassait en tête à chaque cycle : blocage permanent. On
+            # journalise, on rollback l'incident, on passe au suivant ; il sera
+            # retenté au prochain tour et les autres avancent.
+            try:
+                verdict, m = interroger(systeme, utilisateur, inc["id"])
+            except Exception as e:  # noqa: BLE001
+                conn.rollback()
+                print(f"  #{inc['id']} SAUTÉ — triage LLM échoué : {e}")
+                continue
+
             sauver_map(conn, inc["id"], anon.mapping)
             # Réhydratation : l'analyste doit lire les vraies valeurs, pas les
             # jetons. Seul DeepSeek a vu les pseudonymes.
@@ -226,8 +241,15 @@ def trier(limite: int, un_seul: int | None, tous: bool,
             # injection dans les logs (3 charges sur 4, cf. tests) ; il ne peut
             # donc pas être le dernier mot sur une clôture.
             injections = motifs_injection(alertes)
+            # Compromission active de l'hôte : au moins une règle de
+            # post-exploitation dans l'incident (webshell qui exécute, reverse
+            # shell, rootkit, persistance root). Sur ce signal, le garde-fou ne
+            # rétrograde plus l'isolation vers un simple block_ip.
+            compromission_active = bool(
+                set(inc["rule_ids"] or []) & config.RULES_COMPROMISSION_HOTE)
             actions, garde_fous = appliquer_garde_fous(
-                verdict["verdict"], actions, inc["max_level"], bool(injections))
+                verdict["verdict"], actions, inc["max_level"], bool(injections),
+                compromission_active)
 
             conn.execute(INSERT_TRIAGE, {
                 "incoherences": incoherences,

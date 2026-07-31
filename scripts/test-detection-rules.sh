@@ -110,7 +110,8 @@ raw_case "100626 cgroup pids controller" 100626 "Jul 27 06:10:00 debian kernel: 
 raw_case "100626 forme shell"            100626 "Jul 27 06:10:00 debian bash[123]: fork: retry: Resource temporarily unavailable"
 
 echo "== Auto-surveillance du capteur =="
-raw_case "100801 audit desactive"  100801 "ossec: output: audit-status: audit_enabled=0 audit_rules=21"
+raw_case "100807 audit desactive (=0, HIGH)"  100807 "ossec: output: audit-status: audit_enabled=0 audit_rules=21"
+raw_case "100801 auditd absent (=vide, MEDIUM)" 100801 "ossec: output: audit-status: audit_enabled= audit_rules=0"
 raw_case "100802 regles purgees"   100802 "ossec: output: audit-status: audit_enabled=1 audit_rules=0"
 raw_case "100800 etat nominal"     100800 "ossec: output: audit-status: audit_enabled=1 audit_rules=21"
 

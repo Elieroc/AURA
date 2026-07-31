@@ -5,13 +5,17 @@
   <!-- auditd rules purged (`auditctl -D`) or never loaded. The versioned rule
        set (wazuh/config/agent/zz-audit-wazuh.rules) loads 21 of them, so a
        single-digit count means a purge, not normal variation.
-       Distinct from 100801: here the kernel is still auditing, but nothing is
+       Distinct from 100801: here the kernel IS STILL auditing, but nothing is
        instrumented any more - same blindness, different cause, different
-       remediation. -->
+       remediation. The `audit_enabled=1` guard is what makes it distinct: it
+       fires only when auditing is on but rules are gone. Without it, the
+       auditd-absent heartbeat (`audit_enabled= audit_rules=0`, matched by 100801
+       at MEDIUM) would ALSO trip this rule at level 13 and re-create the very
+       flood 100801 was downgraded to stop. -->
 
   <rule id="100802" level="13">
     <if_sid>100800</if_sid>
-    <match type="pcre2">audit_rules=[0-9]\b</match>
+    <match type="pcre2">audit_enabled=1 audit_rules=[0-9]\b</match>
     <description>Blind sensor: fewer than 10 auditd rules loaded - likely purge (auditctl -D)</description>
     <mitre>
       <id>T1562.001</id>

@@ -94,7 +94,12 @@ sur des événements présents. D'où deux mécanismes complémentaires.
   504 (déconnecté → 10, sous le seuil de triage IA : trop ambigu pour armer une
   remédiation autonome).
 
-Validé en conditions réelles : audit coupé → **100801 niveau 13 en ~5 min**.
+Validé en conditions réelles : audit coupé (`audit_enabled=0`) → **100807 niveau
+13 en ~5 min**. Depuis le 2026-07-31, 100801 ne porte plus que le cas *auditd
+absent/injoignable* (valeur vide) en **niveau 7 (MEDIUM)** : il inondait (982
+alertes/j) sur les hôtes sans auditd et avait déclenché une isolation à tort ;
+sous MIN_LEVEL, il n'ouvre plus d'incident. Le cas « coupé » (hostile) est passé
+à 100807, HIGH.
 
 ---
 

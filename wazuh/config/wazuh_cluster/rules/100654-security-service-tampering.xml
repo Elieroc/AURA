@@ -41,7 +41,8 @@
        `audit.key = audit-wazuh-c`: restricted to execve events, so that file
        watches are not captured (same pattern as 100653).
        A bare `kill <pid>` stays undetectable (no service name in the argv) -
-       that case is caught by the 100801/100802 heartbeat, not by this rule.
+       that case is caught by the 100807/100801/100802 heartbeat, not by this
+       rule.
 
        auditd purge: the three forms are covered explicitly. The former
        alternative `a\d+="(-D|0)"` missed the joined form `-e0` and matched any

@@ -5,7 +5,8 @@ la production. Ils doivent être vérifiables sans modèle ni base — c'est
 précisément ce qui les rend fiables.
 """
 
-from soc_agent.actions import deduire, actions_fort_impact
+from soc_agent.actions import (appliquer_garde_fous, deduire,
+                               actions_fort_impact)
 from soc_agent.coherence import verifier
 
 
@@ -51,6 +52,42 @@ def test_actions_a_fort_impact_signalees():
     assert "propose_kill_process" in fort          # tuer un process = fort impact
     # open_case est sans effet sur la production : pas une action à fort impact.
     assert "open_case" not in fort
+
+
+# --- garde-fous déterministes -----------------------------------------------
+
+def test_isolation_retiree_si_confinement_moins_invasif_suffit():
+    """Cas nominal : un scanner qui tape une URL (pas de compromission active)
+    -> bloquer l'IP suffit, l'isolation est retirée et un humain tranche."""
+    actions, motifs = appliquer_garde_fous(
+        "true_positive", ["propose_isolate_host", "propose_block_ip"],
+        max_level=12, injection_suspectee=False, compromission_active=False)
+    assert "propose_isolate_host" not in actions
+    assert "propose_block_ip" in actions
+    assert "escalate_human" in actions
+    assert any("isolation retirée" in m for m in motifs)
+
+
+def test_isolation_maintenue_si_compromission_active():
+    """Compromission active de l'hôte (webshell/reverse shell/rootkit) :
+    l'isolation est MAINTENUE malgré le block_ip — couper l'IP ne déloge pas un
+    attaquant déjà installé. Régression du purple-team du 2026-07-31 (.15)."""
+    actions, motifs = appliquer_garde_fous(
+        "true_positive", ["propose_isolate_host", "propose_block_ip"],
+        max_level=13, injection_suspectee=False, compromission_active=True)
+    assert "propose_isolate_host" in actions
+    assert "propose_block_ip" in actions
+    assert any("isolation MAINTENUE" in m for m in motifs)
+
+
+def test_cloture_refusee_sur_niveau_critique_meme_avec_compromission():
+    """La barrière anti-clôture prime : un FP de niveau >= 14 n'est jamais clos,
+    quel que soit le drapeau de compromission."""
+    actions, motifs = appliquer_garde_fous(
+        "false_positive", ["close_false_positive"],
+        max_level=15, injection_suspectee=False, compromission_active=True)
+    assert actions == ["escalate_human", "open_case"]
+    assert motifs
 
 
 # --- cohérence --------------------------------------------------------------

@@ -30,6 +30,7 @@ déterministes :
 """
 
 import argparse
+import ipaddress
 import json
 import logging
 import re
@@ -216,6 +217,62 @@ def _agent_ip(agent_id: str) -> str | None:
     r.raise_for_status()
     items = r.json().get("data", {}).get("affected_items", [])
     return items[0].get("ip") if items else None
+
+
+# IP de tous les agents du parc, mémoïsées le temps du process. L'inventaire ne
+# bouge pas à l'échelle d'un cycle de remédiation ; un appel API suffit.
+_IPS_AGENTS_CACHE: set[str] | None = None
+
+
+def _ips_agents() -> set[str]:
+    """IP de tous les agents Wazuh — nos propres assets surveillés.
+
+    Garde-fou de blocage : une IP d'agent n'est JAMAIS une cible de block_ip.
+    Un hôte du parc qui apparaît en srcip est une victime ou un pivot (l'attaque
+    a rebondi PAR lui), pas l'attaquant — on le contient sur SA machine
+    (isolation, désactivation de compte), on ne blackhole pas son IP chez un
+    voisin. Mesuré au purple-team du 2026-07-31 : block_ip a visé 192.168.30.46,
+    l'hôte pivot .46 (agent 013, une victime), parce que son subnet n'était pas
+    dans RESEAUX_INTERNES — l'exclusion par appartenance au parc est robuste
+    quel que soit le plan d'adressage, et laisse bloquable un attaquant qui
+    partagerait le même subnet sans être un agent.
+
+    En cas d'API injoignable : ensemble vide (on ne bloque pas la remédiation,
+    mais on trace — le repli est « bloquer sans exclusion d'asset », pas « ne
+    rien bloquer »)."""
+    global _IPS_AGENTS_CACHE
+    if _IPS_AGENTS_CACHE is not None:
+        return _IPS_AGENTS_CACHE
+    ips: set[str] = set()
+    try:
+        tok = _wazuh_token()
+        r = requests.get(f"{config.WAZUH_API_URL}/agents",
+                         params={"select": "ip", "limit": 1000},
+                         headers={"Authorization": f"Bearer {tok}"},
+                         verify=False, timeout=15)
+        r.raise_for_status()
+        for it in r.json().get("data", {}).get("affected_items", []):
+            ip = it.get("ip")
+            if ip:
+                ips.add(str(ip))
+    except (requests.RequestException, ValueError, KeyError) as e:
+        log.warning("inventaire IP des agents illisible (%s) : blocage sans "
+                    "exclusion d'asset ce tour-ci", e)
+    _IPS_AGENTS_CACHE = ips
+    return ips
+
+
+def _ip_privee(ip: str) -> bool:
+    """IP en plage privée RFC1918/loopback/link-local (pour l'ORDRE de blocage).
+
+    Sert uniquement à trier : les IP publiques d'abord. Ce n'est PAS un critère
+    d'exclusion — le C2 du lab est en RFC1918 et doit rester bloquable — juste
+    une priorité : un attaquant réel est le plus souvent hors RFC1918, une IP
+    privée résiduelle est plus probablement un rebond interne mal classé."""
+    try:
+        return ipaddress.ip_address(ip).is_private
+    except ValueError:
+        return False
 
 
 def _groupes_agent(agent_id: str) -> set[str] | None:
@@ -545,17 +602,34 @@ def _cibles_par_machine(action: str, incident: dict,
         return sorted(out)
 
     if action == "propose_block_ip":
-        # IP C2 EXTERNE au parc, bloquée sur chaque endpoint qui l'a contactée.
-        # « Interne » = subnets du parc (cf. _ip_interne) et non RFC1918 : le C2
-        # du lab est lui-même privé et doit rester bloquable ; les IP invalides
-        # (none, loopback) sont écartées.
+        # IP de l'ATTAQUANT, bloquée sur chaque endpoint qui l'a contactée.
+        # Trois filtres, du plus sûr au plus fin :
+        #  1. IP invalide (none, loopback, broadcast) écartée ;
+        #  2. IP d'un subnet du parc (_ip_interne) écartée — mouvement latéral
+        #     interne, pas un C2. « Interne » = subnets listés, PAS tout RFC1918
+        #     (le C2 du lab est privé et doit rester bloquable) ;
+        #  3. IP d'un AGENT surveillé écartée — une victime/un pivot n'est pas
+        #     l'attaquant (garde-fou ajouté après le purple-team du 2026-07-31,
+        #     où .46 — l'hôte pivot, agent 013 — a été bloqué à tort).
+        # Puis on ORDONNE (IP publiques d'abord) sans réduire : un bruteforce
+        # vient de N IP, toutes à bloquer.
+        assets = _ips_agents()
         out = set()
         for ag in agents:
             for a in par_agent[ag]:
                 ip = a.get("srcip")
-                if ip and _ip_ioc_valide(str(ip)) and not _ip_interne(str(ip)):
-                    out.add((ag, str(ip)))
-        return sorted(out)
+                if not (ip and _ip_ioc_valide(str(ip))):
+                    continue
+                ip = str(ip)
+                if _ip_interne(ip):
+                    continue
+                if ip in assets:
+                    log.info("#%s block_ip : %s écartée (IP d'un agent "
+                             "surveillé — victime/pivot, pas l'attaquant)",
+                             incident.get("id"), ip)
+                    continue
+                out.add((ag, ip))
+        return sorted(out, key=lambda t: (_ip_privee(t[1]), t[0], t[1]))
 
     if action == "propose_disable_user":
         # Compte compromis/créé, désactivé SUR la machine où il apparaît. Comptes

@@ -1,18 +1,32 @@
-<!-- SOC-AI - rule 100801 (level 13). Domain: soc_selfcheck,wazuh,
+<!-- SOC-AI - rule 100801 (level 7). Domain: soc_selfcheck,wazuh,
      Naming convention and load-order trap: see rules/README.md -->
 <group name="soc_selfcheck,wazuh,">
 
-  <!-- Kernel audit disabled, or auditctl unreachable (empty value). The `\b`
-       after the 0 avoids matching a future `audit_enabled=01`. -->
+  <!-- auditd NOT RUNNING or NOT INSTALLED: the heartbeat reports an EMPTY
+       audit_enabled value (`audit_enabled=` with no number, e.g.
+       `audit_enabled= audit_rules=0`). auditctl is unreachable - the kernel
+       audit subsystem is absent, not switched off by someone.
 
-  <rule id="100801" level="13">
+       This is a MONITORING BLIND SPOT, not confirmed tampering. It fires once
+       per heartbeat (every 5 min) on every host that never had auditd, so at
+       level 13 it flooded: 982 alerts/day across production hosts with no
+       auditd (nextcloud, wireguard, bookstack), and one of those false alarms
+       drove an autonomous host isolation of a production box (purple-team,
+       2026-07-31). MEDIUM (level 7) puts it below MIN_LEVEL (12): the soc-agent
+       no longer opens an incident from it, so it can no longer trigger an
+       autonomous action - it stays an operational signal ("install/start
+       auditd here") without masquerading as an attack.
+
+       The GENUINE runtime disable (`audit_enabled=0`, someone turned it off) is
+       a different, hostile case: rule 100807 (heartbeat) and rule 100805
+       (CONFIG_CHANGE, immediate + auid) carry it at HIGH. The regexes are
+       mutually exclusive on the value (empty here, `0` there), so load order
+       does not arbitrate between them. -->
+
+  <rule id="100801" level="7">
     <if_sid>100800</if_sid>
-    <match type="pcre2">audit_enabled=(?:0\b|\s|$)</match>
-    <description>Blind sensor: kernel audit disabled - every auditd rule (1006xx/1007xx) is inert</description>
-    <mitre>
-      <id>T1562.001</id>
-      <id>T1562.006</id>
-    </mitre>
+    <match type="pcre2">audit_enabled=(?:\s|$)</match>
+    <description>auditd not running or not installed - kernel audit status unavailable (monitoring blind spot, not confirmed tampering)</description>
   </rule>
 
 </group>

@@ -128,13 +128,13 @@ DEEPSEEK_API_KEY = _requis("DEEPSEEK_API_KEY")
 # 400, calé sur le chat non raisonnant) est intégralement consommé par le
 # raisonnement → finish_reason=length et content VIDE. Il faut de la marge pour
 # le raisonnement + le JSON de verdict.
-TRIAGE_MAX_TOKENS = int(os.environ.get("TRIAGE_MAX_TOKENS", "3000"))
+TRIAGE_MAX_TOKENS = int(os.environ.get("TRIAGE_MAX_TOKENS", "6000"))
 # Plafond de taille du PROMPT de triage (entrée). Au-delà, l'incident était
 # ignoré — ce qui faisait taire les plus gros/graves. Relevé à 5000.
 PLAFOND_PROMPT_TOKENS = int(os.environ.get("TRIAGE_PROMPT_MAX_TOKENS", "5000"))
 # Le rapport TP est un récit markdown multi-sections, plus long que le verdict ;
 # avec le raisonnement en plus, il lui faut davantage de marge encore.
-REPORT_MAX_TOKENS = int(os.environ.get("REPORT_MAX_TOKENS", "4000"))
+REPORT_MAX_TOKENS = int(os.environ.get("REPORT_MAX_TOKENS", "6000"))
 # Nom de case : sortie minuscule (nom de code + titre court) mais le modèle
 # raisonne quand même — il lui faut de quoi ne pas tronquer avant le JSON.
 CASE_NAME_MAX_TOKENS = int(os.environ.get("CASE_NAME_MAX_TOKENS", "1500"))
@@ -250,6 +250,33 @@ AGENTS_PROTEGES = {
 AGENTS_CAPTEURS = {
     a.strip() for a in os.environ.get("AGENTS_CAPTEURS", "").split(",")
     if a.strip()}
+
+# Règles Wazuh qui signent une COMPROMISSION ACTIVE de l'hôte lui-même :
+# post-exploitation avérée (l'attaquant exécute déjà du code sur la machine),
+# pas une simple tentative entrante. Sert au garde-fou d'isolation : sur ces
+# règles, l'isolation N'EST PLUS rétrogradée vers un confinement moins invasif
+# (bloquer une IP ne délogera pas un attaquant déjà installé — reverse shell,
+# rootkit, persistance root, webshell qui exécute). Mesuré au purple-team du
+# 2026-07-31 : l'hôte web .15, RCE + webshell + persistance root + rootkit en
+# cours, n'a reçu qu'un block_ip (isolation retirée) et est resté joignable.
+#
+# On liste des IDENTIFIANTS (stables), pas du texte de description (cf. le piège
+# rule_desc de correlate.py). Catégories : webshell qui exécute (100701/710/750),
+# reverse shell / C2 / tunnel (100650/651/652/764), rootkit / implant kernel /
+# ld.so.preload (100748/760/763/772, 521), persistance root (100740/741/742/
+# 749/770), accès aux identifiants (100643/653). PAS les probes web entrantes
+# seules (100700 RCE-attempt, 100702 LFI/SQLi) : un scanner qui tape une URL
+# n'est pas une compromission — c'est le cas que le garde-fou d'isolation
+# protège (block_ip suffit). L'ensemble est surchargable par l'env.
+RULES_COMPROMISSION_HOTE = {
+    r.strip() for r in os.environ.get(
+        "RULES_COMPROMISSION_HOTE",
+        "100701,100710,100750,"          # webshell : commande exécutée
+        "100650,100651,100652,100764,"   # reverse shell / C2 / tunnel sortant
+        "100748,100760,100763,100772,521,"  # rootkit / kernel / ld.so.preload
+        "100740,100741,100742,100749,100770,"  # persistance root
+        "100643,100653").split(",")      # accès /etc/shadow
+    if r.strip()}
 
 # Groupes Wazuh dont les agents ne sont JAMAIS isolés du réseau.
 #

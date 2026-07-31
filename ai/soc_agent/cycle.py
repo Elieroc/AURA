@@ -70,8 +70,13 @@ def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
             try:
                 triage.trier(limite_triage, None, False, False)
             except Exception as e:  # noqa: BLE001 — on veut tout rattraper ici
+                # Un échec du triage NE DOIT PAS couper la création de cases : les
+                # incidents déjà triés lors des cycles précédents attendent leur
+                # case (iris_case_id IS NULL) et n'ont plus besoin du LLM de
+                # triage. L'ancien `return 0` ici a gelé la création de cases
+                # pendant des heures dès que le LLM rendait un content vide. On
+                # journalise et on poursuit vers whitelist + cases IRIS.
                 log.warning("triage sauté (serveur LLM injoignable ?) : %s", e)
-                return 0
 
             # Boucle fermée : les FP récurrents deviennent des exceptions. Ne
             # tourne qu'après le triage, il lui faut des verdicts frais.

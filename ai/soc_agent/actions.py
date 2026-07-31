@@ -87,7 +87,9 @@ CONFINEMENT_MOINS_INVASIF = (
 
 
 def appliquer_garde_fous(verdict: str, actions: list[str], max_level: int,
-                         injection_suspectee: bool) -> tuple[list[str], list[str]]:
+                         injection_suspectee: bool,
+                         compromission_active: bool = False,
+                         ) -> tuple[list[str], list[str]]:
     """Barrière déterministe entre la sortie du modèle et une action réelle.
 
     Mesuré : trois charges d'injection sur quatre retournent le verdict du
@@ -104,7 +106,16 @@ def appliquer_garde_fous(verdict: str, actions: list[str], max_level: int,
     2. Un incident où des motifs d'injection ont été repérés ne peut pas être
        clos non plus — le verdict rendu sur un contexte manipulé ne vaut rien.
     3. L'isolation d'un hôte est un DERNIER RECOURS : elle ne part que si aucun
-       confinement moins invasif ne s'applique (cf. plus bas).
+       confinement moins invasif ne s'applique (cf. plus bas) — SAUF si l'hôte
+       est en compromission active (post-exploitation avérée), auquel cas
+       l'isolation est MAINTENUE malgré la présence d'un confinement moins
+       invasif (bloquer une IP ne déloge pas un attaquant déjà installé).
+
+    `compromission_active` : l'incident porte une règle de post-exploitation
+    (cf. config.RULES_COMPROMISSION_HOTE) — l'attaquant exécute déjà du code
+    sur la machine (webshell, reverse shell, rootkit, persistance root). Le
+    calcul du drapeau est fait par l'appelant (triage) à partir des rule_ids
+    de l'incident ; la barrière ici ne fait qu'en tenir compte.
 
     Retourne (actions effectives, motifs de l'intervention).
     """
@@ -143,7 +154,17 @@ def appliquer_garde_fous(verdict: str, actions: list[str], max_level: int,
     # ne tient pas face à un log hostile. Cette barrière, si.
     if "propose_isolate_host" in actions:
         moins_invasives = [a for a in CONFINEMENT_MOINS_INVASIF if a in actions]
-        if moins_invasives:
+        if moins_invasives and compromission_active:
+            # Compromission active de l'hôte : l'attaquant exécute déjà du code
+            # dessus (webshell, reverse shell, rootkit, persistance root). Un
+            # confinement moins invasif ne suffit pas — couper une IP laisse le
+            # foothold en place. L'isolation EST maintenue, en plus du reste.
+            motifs.append(
+                "isolation MAINTENUE : compromission active de l'hôte "
+                "(post-exploitation avérée) — le confinement moins invasif "
+                f"({', '.join(moins_invasives)}) ne déloge pas un attaquant "
+                "déjà installé")
+        elif moins_invasives:
             actions = [a for a in actions if a != "propose_isolate_host"]
             if "escalate_human" not in actions:
                 actions.append("escalate_human")
