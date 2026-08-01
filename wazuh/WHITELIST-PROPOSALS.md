@@ -317,9 +317,9 @@ Le dépôt de prod est sur l'hôte `soc-ai` (192.168.10.5), dans
 Deux jeux, rejoués sur le manager de prod :
 
 ```sh
-# 14 cas d'exclusion, construits depuis de VRAIES alertes puis mutés en attaquant
+# 16 cas d'exclusion, construits depuis de VRAIES alertes puis mutés en attaquant
 INDEXER_PASSWORD=... python3 scripts/build-exception-cases.py > /tmp/cases.tsv
-./scripts/test-rule-exceptions.sh /tmp/cases.tsv     # 14 OK, 0 FAIL
+./scripts/test-rule-exceptions.sh /tmp/cases.tsv     # 16 OK, 0 FAIL
 
 # non-régression du ruleset complet
 ./scripts/test-detection-rules.sh                    # 48 OK, 0 FAIL

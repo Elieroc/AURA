@@ -111,6 +111,13 @@ ajoute("100643 php-fpm lisant /etc/shadow (reel, VRAI POSITIF)", "100643",
 ajoute("100643 cat depuis un docroot (reel, VRAI POSITIF)", "100643",
        _full_log("100643", contient='comm="cat"'))
 
+# --- 100904 / 100901 : YARA. La page de diag pfSense est exclue, le web shell
+# du 2026-07-29 (supprimé depuis, mais l'alerte reste indexée) doit tirer.
+ajoute("100904 diag_command.php pfSense (reel, doit etre exclu)", "100904",
+       _full_log("100901", contient="diag_command.php"))
+ajoute("100901 web shell .status.php (reel, VRAI POSITIF)", "100901",
+       _full_log("100901", contient=".status.php"))
+
 # --- 100760 : niveau 7 depuis le 2026-08-01, plus 13.
 ajoute("100760 chargement de module (reel, doit etre niv 7)", "100760",
        _full_log("100760"))
