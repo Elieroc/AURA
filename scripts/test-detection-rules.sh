@@ -103,7 +103,7 @@ audit_case "100761 usermod -aG sudo"        100761 /usr/sbin/usermod 'argc=4 a0=
 audit_case "100768 setcap cap_setuid"       100768 /usr/sbin/setcap 'argc=3 a0="setcap" a1="cap_setuid+ep" a2="/usr/bin/python3"'
 audit_case "100763 history -c (hex)"        100763 /usr/bin/bash   'argc=3 a0="bash" a1="-c" a2="686973746F7279202D63"'
 # Controle negatif du pack : un ssh normal ne doit pas passer pour un tunnel.
-audit_case "NEG ssh normal"                 80792  /usr/bin/ssh    'argc=2 a0="ssh" a1="serveur.interne"'
+audit_case "NEG ssh normal"                 80700  /usr/bin/ssh    'argc=2 a0="ssh" a1="serveur.interne"'
 
 echo "== Fork bomb (messages noyau/shell, ligne unique) =="
 raw_case "100626 cgroup pids controller" 100626 "Jul 27 06:10:00 debian kernel: cgroup: fork rejected by pids controller in /user.slice/user-1001.slice"
@@ -115,13 +115,13 @@ raw_case "100801 auditd absent (=vide, MEDIUM)" 100801 "ossec: output: audit-sta
 raw_case "100802 regles purgees"   100802 "ossec: output: audit-status: audit_enabled=1 audit_rules=0"
 raw_case "100800 etat nominal"     100800 "ossec: output: audit-status: audit_enabled=1 audit_rules=21"
 
-echo "== Controles negatifs : doivent retomber en 80792 (niveau 3) =="
-audit_case "NEG rm -rf /tmp/build"          80792 /usr/bin/rm     'argc=3 a0="rm" a1="-rf" a2="/tmp/build"'
-audit_case "NEG systemctl restart apache2"  80792 /usr/bin/systemctl 'argc=3 a0="systemctl" a1="restart" a2="apache2"'
-audit_case "NEG dd of=/home/u/img.iso"      80792 /usr/bin/dd     'argc=3 a0="dd" a1="if=/dev/zero" a2="of=/home/u/img.iso"'
-audit_case "NEG apt-get install nginx"      80792 /usr/bin/apt-get 'argc=3 a0="apt-get" a1="install" a2="nginx"'
-audit_case "NEG chmod 755"                  80792 /usr/bin/chmod  'argc=3 a0="chmod" a1="755" a2="/usr/local/bin/x"'
-audit_case "NEG borg prune (retention)"     80792 /usr/bin/borg   'argc=3 a0="borg" a1="prune" a2="--keep-daily=7"'
+echo "== Controles negatifs : doivent retomber en 80700 (niveau 0) =="
+audit_case "NEG rm -rf /tmp/build"          80700 /usr/bin/rm     'argc=3 a0="rm" a1="-rf" a2="/tmp/build"'
+audit_case "NEG systemctl restart apache2"  80700 /usr/bin/systemctl 'argc=3 a0="systemctl" a1="restart" a2="apache2"'
+audit_case "NEG dd of=/home/u/img.iso"      80700 /usr/bin/dd     'argc=3 a0="dd" a1="if=/dev/zero" a2="of=/home/u/img.iso"'
+audit_case "NEG apt-get install nginx"      80700 /usr/bin/apt-get 'argc=3 a0="apt-get" a1="install" a2="nginx"'
+audit_case "NEG chmod 755"                  80700 /usr/bin/chmod  'argc=3 a0="chmod" a1="755" a2="/usr/local/bin/x"'
+audit_case "NEG borg prune (retention)"     80700 /usr/bin/borg   'argc=3 a0="borg" a1="prune" a2="--keep-daily=7"'
 
 echo
 echo "Resultat : $ok OK, $ko FAIL"

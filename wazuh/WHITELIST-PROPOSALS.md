@@ -48,14 +48,25 @@ Correctif : ne rendre insensible à la casse que les alternatives verbales.
 À valider par `wazuh-logtest` sur les deux sens : `nft -j -f -` ne doit plus
 matcher, `nft flush ruleset` et `iptables -F` doivent toujours matcher.
 
-### b. 100642 — exclusion inopérante pour 100653
+### b. 100642 → 100665 — exclusion inopérante pour 100653, deux fois
 
-L'exclusion filtre `audit.exe ^/var/ossec/`, mais le SCA appelle le `stat`
-système : `exe=/usr/bin/stat`. Ce qui identifie le scan, c'est le répertoire de
-travail du démon et l'absence de session de login.
+Deux défauts cumulés, dont un invisible :
+
+1. L'exclusion filtre `audit.exe ^/var/ossec/`, mais le SCA appelle le `stat`
+   système : `exe=/usr/bin/stat` (ou `/usr/bin/coreutils` sur les capteurs
+   Proxmox). Ce qui identifie le scan, c'est le répertoire de travail du démon
+   et l'absence de session de login.
+2. **L'identifiant lui-même.** Un enfant `if_sid` n'est rattaché que si sa
+   parente est **déjà chargée**, et les fichiers sont lus dans l'ordre des
+   identifiants : `100642` était lu avant que `100653` existe, donc rattaché à
+   rien. Aucune erreur au démarrage, rien dans `wazuh-logtest` — la règle était
+   simplement absente depuis le jour de son écriture. Vérifié en la
+   renumérotant : à contenu identique, `100665` matche immédiatement.
+   `rules/README.md` affirmait le contraire, il est corrigé et porte le
+   one-liner qui détecte le piège sur tout le ruleset (c'était le seul cas).
 
 ```xml
-<rule id="100642" level="0">
+<rule id="100665" level="0">
   <if_sid>100653</if_sid>
   <field name="audit.cwd" type="pcre2">^/var/ossec$</field>
   <field name="audit.auid" type="pcre2">^4294967295$</field>
@@ -277,20 +288,18 @@ Correctif proposé dans `noise.py` :
 
 ## 6. État d'application (2026-08-01)
 
-Écrit dans le dépôt, **pas encore déployé sur le manager de prod** :
-
 | Élément | Fichier | État |
 |---------|---------|------|
-| 2.a regex 100645 | `100645-firewall-flush-or-disable.xml` | dépôt ✔ / prod ✘ |
-| 2.b exclusion 100642 | `100642-exclusion-shadow-sca-rootcheck.xml` | dépôt ✔ / prod ✘ |
-| 2.c exclusion 100713 | `100713-exclusion-s6-overlay-container-supervision.xml` | dépôt ✔ / prod ✘ |
-| 2.d exclusion 100714 | `100714-exclusion-apt-privilege-drop.xml` | dépôt ✔ / prod ✘ |
-| 2.e exclusion 100649 | `100649-exclusion-shadow-debconf.xml` | dépôt ✔ / prod ✘ |
-| 2.g exclusion 100904 | `100904-exclusion-yara-pfsense-native-diag.xml` | dépôt ✔ / prod ✘ |
-| 100760 niveau 13 → 7 | `100760-kernel-module-load-or-unload.xml` | dépôt ✔ / prod ✘ |
+| 2.a regex 100645 | `100645-firewall-flush-or-disable.xml` | déployé |
+| 2.b exclusion 100642 → **100665** | `100665-exclusion-shadow-sca-rootcheck.xml` | déployé |
+| 2.c exclusion 100713 | `100713-exclusion-s6-overlay-container-supervision.xml` | déployé |
+| 2.d exclusion 100714 | `100714-exclusion-apt-privilege-drop.xml` | déployé |
+| 2.e exclusion 100649 | `100649-exclusion-shadow-debconf.xml` | déployé |
+| 2.g exclusion 100904 | `100904-exclusion-yara-pfsense-native-diag.xml` | déployé |
+| 100760 niveau 13 → 7 | `100760-kernel-module-load-or-unload.xml` | déployé |
 | 2.f exclusion 100743 | — | retirée (vrais positifs) |
+| Suppression de `.status.php` | — | fait (192.168.20.11) |
 | Section 5 (code) | — | à faire |
-| Suppression de `.status.php` | — | à faire, sur 192.168.20.11 |
 
 Le dépôt de prod est sur l'hôte `soc-ai` (192.168.10.5), dans
 `/opt/soc-ai/wazuh/config/wazuh_cluster/rules`, monté **directement** sur
@@ -303,15 +312,29 @@ Le dépôt de prod est sur l'hôte `soc-ai` (192.168.10.5), dans
 - le déploiement se fait donc par `git pull` sur l'hôte, puis
   `docker restart wazuh-wazuh.manager-1`.
 
-Validation à rejouer après déploiement — `wazuh-logtest` est utilisable par
-l'API (`PUT /logtest`) sans accès shell :
+### Validation
 
-- `nft flush ruleset` → 100645 doit toujours tirer ;
-- `nft -j -f -` → ne doit **plus** tirer ;
-- `stat /etc/shadow` avec `cwd=/var/ossec` + `auid=4294967295` → 100642 (niv 0) ;
-  le même avec `auid=1001` → 100653 (niv 12) ;
-- `/bin/sh -c` en `euid=911`, `cwd=/config`, `auid` non défini → 100713 (niv 0) ;
-  le même avec `cwd=/var/www/html` → 100711 (niv 12) ;
-- `awk` en `euid=42`, `auid=0` → 100714 (niv 0) ; en `euid=42`, `auid` non
-  défini → 100711 (niv 12) ;
-- puis `scripts/test-detection-rules.sh` en entier (43 cas).
+Deux jeux, rejoués sur le manager de prod :
+
+```sh
+# 14 cas d'exclusion, construits depuis de VRAIES alertes puis mutés en attaquant
+INDEXER_PASSWORD=... python3 scripts/build-exception-cases.py > /tmp/cases.tsv
+./scripts/test-rule-exceptions.sh /tmp/cases.tsv     # 14 OK, 0 FAIL
+
+# non-régression du ruleset complet
+./scripts/test-detection-rules.sh                    # 48 OK, 0 FAIL
+```
+
+Pourquoi un second script plutôt que des cas ajoutés au premier : les logs de
+synthèse de `test-detection-rules.sh` **perdent `euid`, `auid` et `cwd` au
+décodage** (vérifié en phase 2 de `wazuh-logtest` — le décodeur auditd est
+sensible à l'ordre des champs). Ce sont exactement les champs sur lesquels
+reposent les quatre exclusions : testées ainsi, elles paraîtraient toutes
+cassées. D'où le rejeu de `full_log` réels, mutés pour fabriquer le
+contre-exemple attaquant — chaque FP tu est apparié à un TP qui doit toujours
+tirer.
+
+Au passage, les 7 contrôles négatifs de `test-detection-rules.sh` attendaient
+`80792` et obtenaient `80700` (« Audit: Messages grouped. »). Vérifié sur le
+ruleset d'avant ces changements : l'écart préexistait, c'est le ruleset natif
+Wazuh qui a changé de règle fourre-tout. Attentes corrigées.
