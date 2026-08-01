@@ -30,7 +30,12 @@ ok=0; ko=0
 # $1 description  $2 rule_id attendu  $3 exe (comm deduit)  $4 arguments EXECVE
 audit_case() {
   desc="$1"; want="$2"; exe="$3"; args="$4"
-  comm=$(basename "$exe")
+  # Expansion du shell, PAS `basename "$exe"` : sur le manager, auditd voit
+  # l'execve de basename avec le chemin en argv, et nos propres regles matchent
+  # cet argv. Mesure du 2026-08-01 : un rejeu complet produisait 3 alertes de
+  # niveau 12 bien reelles (100769 sur /usr/bin/nmap et /usr/bin/masscan, 100764
+  # sur /usr/local/bin/chisel) - le test de detection se detectait lui-meme.
+  comm=${exe##*/}
   log="type=SYSCALL msg=audit(1785132000.100:99001): arch=c000003e syscall=59 success=yes exit=0 items=3 ppid=100 pid=101 auid=1001 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 ses=1 comm=\"$comm\" exe=\"$exe\" subj=unconfined key=\"audit-wazuh-c\" type=EXECVE msg=audit(1785132000.100:99001): $args"
   check "$desc" "$want" "$log"
 }
