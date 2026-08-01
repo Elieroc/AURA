@@ -317,9 +317,9 @@ Le dépôt de prod est sur l'hôte `soc-ai` (192.168.10.5), dans
 Deux jeux, rejoués sur le manager de prod :
 
 ```sh
-# 16 cas d'exclusion, construits depuis de VRAIES alertes puis mutés en attaquant
+# 18 cas d'exclusion, construits depuis de VRAIES alertes puis mutés en attaquant
 INDEXER_PASSWORD=... python3 scripts/build-exception-cases.py > /tmp/cases.tsv
-./scripts/test-rule-exceptions.sh /tmp/cases.tsv     # 16 OK, 0 FAIL
+./scripts/test-rule-exceptions.sh /tmp/cases.tsv     # 18 OK, 0 FAIL
 
 # non-régression du ruleset complet
 ./scripts/test-detection-rules.sh                    # 48 OK, 0 FAIL
@@ -360,11 +360,20 @@ s'exécute depuis le 2026-07-29 et produit **6 760 alertes de niveau 12 sur les
 dernières 24 h — 91 % de tout le volume HIGH** (le même événement est vu trois
 fois : par l'agent de `debian2` et par les deux capteurs Proxmox).
 
-C'est la persistance de la campagne du 2026-07-29, jamais nettoyée. Les cases
-60/61/62 ont été clos le 2026-08-01 alors que l'implant, lui, bat toujours.
-**À retirer** (`crontab -u devops -r` ou édition de la ligne) — et ce n'est pas
-une whitelist : tant que la crontab est là, taire l'alerte reviendrait à ne plus
+C'était la persistance de la campagne du 2026-07-29, jamais nettoyée. Les cases
+60/61/62 ont été clos le 2026-08-01 alors que l'implant, lui, battait toujours.
+Pas une whitelist : tant que la crontab est là, taire l'alerte revient à ne plus
 voir la seule chose qui signale l'implant.
+
+**Retiré le 2026-08-01** (décision opérateur) : sauvegarde du spool dans
+`/root/forensic-20260801/crontab-devops.bak` sur `debian2` (sha256
+`968a5a9b…`), puis `crontab -l -u devops | grep -v <la ligne> | crontab -u
+devops -`. Il ne reste que l'en-tête du fichier, et plus aucune référence à
+`/dev/tcp` sur l'hôte.
+
+**Restent en place, non traités** (même campagne, à arbitrer) : dans
+`/home/devops/.ssh/`, une paire de clés `svc_pivot` / `svc_pivot.pub` et un
+`authorized_keys`, déposés le 2026-07-31 — outillage de mouvement latéral.
 
 Constat de fond au passage : la remédiation autonome isole, bloque une IP,
 désactive un compte — elle **ne supprime pas une persistance**. Un case peut
@@ -384,19 +393,31 @@ C'est le snippet `gpg-agent` joué à chaque ouverture de session (donc à chaqu
 `/run/user/\d+/` **n'importe où dans le log** : ici le chemin n'est pas celui
 d'un script en tmpfs, c'est la **valeur d'une variable d'environnement**.
 
-Exclusion possible, non appliquée faute d'avoir été proposée avant :
+**Appliquée le 2026-08-01** (décision opérateur),
+`100636-exclusion-gpg-agent-session-snippet.xml` :
 
 ```xml
 <rule id="100636" level="0">
   <if_sid>100634</if_sid>
   <field name="audit.exe" type="pcre2">/(?:sh|dash|bash)$</field>
   <regex type="pcre2">SSH_AUTH_SOCK=/run/user/\d+/gnupg/S\.gpg-agent\.ssh</regex>
-  <description>Exclusion 100634: gpg-agent session snippet, tmpfs path is an env value not a script</description>
+  <description>Exclusion 100634: gpg-agent session snippet - the tmpfs path is an env value, not a script</description>
 </rule>
 ```
 
-Réserve honnête : la chaîne exclue est dans l'argv, donc contrôlable par un
-attaquant qui l'ajouterait à sa ligne de commande pour se cacher. Le correctif
-propre serait que 100634 ne matche pas un chemin tmpfs apparaissant dans une
-affectation `CLE=valeur` — plus juste, mais plus délicat à écrire en pcre2 sur
-le `full_log`. À arbitrer avant d'appliquer.
+Ancrée sur l'interpréteur **et** sur le chemin complet de la socket, pas sur
+`/run/user/` seul. Vérifiée dans les deux sens (cas 12 et 13 du rejeu) : le
+snippet réel sort en 100636 niveau 0, le même événement muté avec un vrai chemin
+d'implant (`/dev/shm/payload.sh`) ressort en 100634 niveau 12.
+
+Réserve, assumée et écrite dans le fichier : la chaîne exclue est dans l'argv,
+donc un attaquant qui l'ajoute à sa ligne de commande échappe à 100634. Le
+correctif propre serait que 100634 ne matche pas un chemin tmpfs apparaissant
+dans une affectation `CLE=valeur` — plus juste, mais délicat en pcre2 sur le
+`full_log`. Reste à faire ; d'ici là 100625/100635 couvrent les variantes en ELF
+natif quoi qu'il arrive.
+
+**Note de forme, payée une fois** : un commentaire XML ne peut pas contenir `--`.
+Le premier jet de ce fichier citait `gpgconf --list-options` et
+`systemctl --user`, et `wazuh-logtest` refusait le ruleset. Reformulé sans
+double tiret.

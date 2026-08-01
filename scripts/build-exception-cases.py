@@ -111,6 +111,15 @@ ajoute("100643 php-fpm lisant /etc/shadow (reel, VRAI POSITIF)", "100643",
 ajoute("100643 cat depuis un docroot (reel, VRAI POSITIF)", "100643",
        _full_log("100643", contient='comm="cat"'))
 
+# --- 100636 / 100634 : le snippet gpg-agent, et sa mutation en vrai implant
+# tmpfs (le chemin sort alors d'une affectation CLE=valeur).
+gpg = _full_log("100634", contient="gnupg/S.gpg-agent.ssh")
+ajoute("100636 snippet gpg-agent (reel: chemin tmpfs = valeur d'env)", "100636", gpg)
+if gpg:
+    ajoute("100634 script depuis /dev/shm (mute: vrai chemin d'implant)", "100634",
+           gpg.replace("SSH_AUTH_SOCK=/run/user/0/gnupg/S.gpg-agent.ssh",
+                       "/dev/shm/payload.sh"))
+
 # --- 100904 / 100901 : YARA. La page de diag pfSense est exclue, le web shell
 # du 2026-07-29 (supprimé depuis, mais l'alerte reste indexée) doit tirer.
 ajoute("100904 diag_command.php pfSense (reel, doit etre exclu)", "100904",

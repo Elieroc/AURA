@@ -1,0 +1,33 @@
+<!-- SOC-AI - rule 100636 (level 0). Domain: threat_hunting,linux,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,">
+
+  <!-- Exclusion for 100634: the gpg-agent session snippet, replayed at every
+       login session (so at every administration `ssh`). Measured 2026-08-01:
+       198 of 267 alerts on this rule over 4 days, seen through the Proxmox host
+       sensors.
+
+       Why the rule fires at all: its regex looks for `/run/user/<uid>/`
+       ANYWHERE in the log, and here the tmpfs path is not a script - it is the
+       VALUE of an environment variable. The argv is, in substance:
+         sh -c - SSH_AUTH_SOCK=/run/user/0/gnupg/S.gpg-agent.ssh
+         then a test on `gpgconf` output, else `systemctl` set-environment.
+
+       KNOWN WEAKNESS, accepted knowingly: the excluded string sits in the argv,
+       so an attacker who appends `SSH_AUTH_SOCK=/run/user/0/gnupg/S.gpg-agent.ssh`
+       to their own command line escapes 100634. The clean fix is for 100634 not
+       to match a tmpfs path inside a KEY=value assignment, which pcre2 on the
+       full_log makes awkward - hence this narrower stopgap, kept anchored on the
+       interpreter AND on the full socket path (not on `/run/user/` alone).
+       Dropping an implant in /dev/shm or /run/user and running it stays covered:
+       the path then appears outside an assignment, and 100625/100635 cover the
+       native-ELF variants regardless. -->
+
+  <rule id="100636" level="0">
+    <if_sid>100634</if_sid>
+    <field name="audit.exe" type="pcre2">/(?:sh|dash|bash)$</field>
+    <regex type="pcre2">SSH_AUTH_SOCK=/run/user/\d+/gnupg/S\.gpg-agent\.ssh</regex>
+    <description>Exclusion 100634: gpg-agent session snippet - the tmpfs path is an env value, not a script</description>
+  </rule>
+
+</group>
