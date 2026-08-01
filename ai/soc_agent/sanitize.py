@@ -20,7 +20,15 @@ import unicodedata
 MOTIFS_INJECTION = [
     (r"ignore[rz]?\s+(les\s+)?(instructions|consignes)", "consigne d'oubli"),
     (r"disregard\s+(all\s+)?(previous|prior)", "consigne d'oubli (en)"),
-    (r"\b(system|assistant|user)\s*:", "fausse balise de rôle"),
+    # `assistant:` seul : une vraie balise de rôle d'injection. On NE matche PLUS
+    # `system:`/`user:` : ils sont omniprésents dans la télémétrie Windows (labels
+    # de champs — « User:\ANONYMOUS LOGON », « System: »), ce qui suspendait à tort
+    # la remédiation d'incidents Windows légitimes (relevé purple-team 2026-08-01).
+    # Une vraie injection via system/user porte de toute façon d'autres marqueurs
+    # (verbe d'oubli, faux champ de sortie, délimiteur de chat) captés ci-dessous.
+    (r"\bassistant\s*:", "fausse balise de rôle"),
+    (r"<\|?(im_start|im_end|endoftext)\|?>", "délimiteur de chat"),
+    (r'"role"\s*:\s*"(system|assistant|user)"', "faux message de rôle"),
     (r"^\s*#{2,}", "fausse section"),
     (r'"\s*\}|\}\s*\]', "tentative de fermeture de structure"),
     (r'"(verdict|actions|confidence)"\s*:', "faux champ de sortie"),

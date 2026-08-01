@@ -61,6 +61,12 @@ param(
     [string]$WazuhVersion     = '4.9.2',
     [string]$SysmonConfigUrl  = 'https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml',
     [string]$SysmonConfigPath,
+    # Événements Sysmon désactivés (gros volume, faible valeur pour la détection
+    # d'attaque AD) : ImageLoad (EID7), DnsQuery (EID22), FileCreateStreamHash
+    # (EID15). Ils noyaient les incidents (méga-incident au purple-team) sans
+    # rien apporter au verdict. On garde ProcessCreate, ProcessAccess (lsass),
+    # FileCreate, RegistryEvent (persistance), CreateRemoteThread, NetworkConnect.
+    [string[]]$SysmonDisableEvents = @('ImageLoad', 'DnsQuery', 'FileCreateStreamHash'),
     [switch]$SkipSysmon
 )
 
@@ -179,6 +185,26 @@ if ($SkipSysmon) {
         Invoke-WebRequest -UseBasicParsing -Uri $SysmonConfigUrl -OutFile $smCfg
         Write-Ok 'Downloaded SwiftOnSecurity Sysmon config.'
     }
+
+    # Neutralise les événements bruyants : un élément passé en onmatch="include"
+    # SANS règle ne journalise plus rien pour ce type. Manipulation par le DOM XML
+    # (robuste), pas par regex.
+    if ($SysmonDisableEvents.Count) {
+        try {
+            [xml]$smXml = Get-Content $smCfg
+            $off = @()
+            foreach ($evt in $SysmonDisableEvents) {
+                foreach ($node in @($smXml.SelectNodes("//$evt"))) {
+                    $node.SetAttribute('onmatch', 'include')
+                    while ($node.HasChildNodes) { [void]$node.RemoveChild($node.FirstChild) }
+                    $off += $evt
+                }
+            }
+            $smXml.Save($smCfg)
+            if ($off.Count) { Write-Ok ("Sysmon events disabled (noise): {0}" -f (($off | Select-Object -Unique) -join ', ')) }
+        } catch { Write-Warn2 "Sysmon noise trim skipped: $($_.Exception.Message)" }
+    }
+
     # Sysmon prints its banner to stderr; with ErrorActionPreference=Stop a bare
     # `& $smExe` would surface that as a terminating NativeCommandError. Start-Process
     # isolates the native exit code instead.
