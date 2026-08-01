@@ -1,0 +1,88 @@
+<!--
+  Wazuh manager <command> blocks for the Windows/AD active-response scripts.
+
+  REQUIRED: the agent's execd validates every requested AR against shared\ar.conf,
+  which the manager generates from these <command> entries and pushes to agents.
+  Without them, an API call to `!win-block-ip.cmd` is silently refused (the script
+  never runs) — exactly the Linux firewall-drop/disable-account pattern.
+
+  Paste these blocks inside <ossec_config> on the manager (alongside the existing
+  Linux <command> blocks), then restart the manager so ar.conf propagates.
+  timeout_allowed is `no` everywhere: reversal is explicit (soc-agent replays the
+  symmetric reverse script), never a timeout.
+-->
+<ossec_config>
+  <command>
+    <name>win-host-isolate</name>
+    <executable>win-host-isolate.exe</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+  <command>
+    <name>win-host-unisolate</name>
+    <executable>win-host-unisolate.exe</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+  <command>
+    <name>win-kill-process</name>
+    <executable>win-kill-process.exe</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+  <command>
+    <name>win-quarantine-file</name>
+    <executable>win-quarantine-file.exe</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+  <command>
+    <name>win-restore-file</name>
+    <executable>win-restore-file.exe</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+  <command>
+    <name>win-block-ip</name>
+    <executable>win-block-ip.exe</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+  <command>
+    <name>win-allow-ip</name>
+    <executable>win-allow-ip.exe</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+  <command>
+    <name>ad-disable-account</name>
+    <executable>ad-disable-account.exe</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+  <command>
+    <name>ad-enable-account</name>
+    <executable>ad-enable-account.exe</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+  <command>
+    <name>ad-remove-group-member</name>
+    <executable>ad-remove-group-member.exe</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+  <command>
+    <name>ad-add-group-member</name>
+    <executable>ad-add-group-member.exe</executable>
+    <timeout_allowed>no</timeout_allowed>
+  </command>
+
+  <!--
+    execd only allows a command that is referenced by an <active-response>, even
+    for API-triggered runs. rules_id 999999 does not exist, so nothing auto-fires
+    — the action runs ONLY when the soc-agent (or MCP) calls the API. Same pattern
+    as the Linux commands above it.
+  -->
+  <active-response><disabled>no</disabled><command>win-host-isolate</command><location>local</location><rules_id>999999</rules_id></active-response>
+  <active-response><disabled>no</disabled><command>win-host-unisolate</command><location>local</location><rules_id>999999</rules_id></active-response>
+  <active-response><disabled>no</disabled><command>win-kill-process</command><location>local</location><rules_id>999999</rules_id></active-response>
+  <active-response><disabled>no</disabled><command>win-quarantine-file</command><location>local</location><rules_id>999999</rules_id></active-response>
+  <active-response><disabled>no</disabled><command>win-restore-file</command><location>local</location><rules_id>999999</rules_id></active-response>
+  <active-response><disabled>no</disabled><command>win-block-ip</command><location>local</location><rules_id>999999</rules_id></active-response>
+  <active-response><disabled>no</disabled><command>win-allow-ip</command><location>local</location><rules_id>999999</rules_id></active-response>
+  <active-response><disabled>no</disabled><command>ad-disable-account</command><location>local</location><rules_id>999999</rules_id></active-response>
+  <active-response><disabled>no</disabled><command>ad-enable-account</command><location>local</location><rules_id>999999</rules_id></active-response>
+  <active-response><disabled>no</disabled><command>ad-remove-group-member</command><location>local</location><rules_id>999999</rules_id></active-response>
+  <active-response><disabled>no</disabled><command>ad-add-group-member</command><location>local</location><rules_id>999999</rules_id></active-response>
+</ossec_config>
