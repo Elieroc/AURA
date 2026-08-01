@@ -16,12 +16,22 @@
        Anchored on `a\d+=` rather than `audit.exe`: `ufw` is a Python script and
        `firewall-cmd` a script too - their `audit.exe` is the interpreter, and the
        kernel rewrites the argv by inserting it first (see the detailed trap
-       description in the 100654 comment). -->
+       description in the 100654 comment).
+
+       CASE TRAP (fixed 2026-08-01, 410 false positives in 3 days). The option
+       list used to sit inside a single `(?i:...)` group, which made the
+       lower-case `-f` (read a ruleset from a file or from stdin) match `-F`
+       (flush). Every `nft -j -f -` from pve-firewall and every `nft -f -` from
+       our own active responses was therefore reported as "network filtering
+       flushed" at level 12 - and opened case 75. Short options are now
+       case-sensitive; only the verbal alternatives (flush, disable, delete,
+       table, policy) stay case-insensitive, since `nft FLUSH` is valid where
+       `-f` and `-F` are two different options. -->
 
   <rule id="100645" level="12">
     <if_group>audit</if_group>
     <field name="audit.key" type="pcre2">^audit-wazuh-c$</field>
-    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:iptables|ip6tables|iptables-restore|nft|ufw|firewall-cmd|nftables)"[^\n]*?(?:a\d+="(?i:-F|--flush|flush|-X|--delete-chain|disable|--policy)"|a\d+="(?i:delete)"[^\n]*?a\d+="(?i:table)"|a\d+="-P"[^\n]*?a\d+="ACCEPT")</regex>
+    <regex type="pcre2">a\d+="(?:[^"]*/)?(?i:iptables|ip6tables|iptables-restore|nft|ufw|firewall-cmd|nftables)"[^\n]*?(?:a\d+="(?:-F|--flush|(?i:flush)|-X|--delete-chain|(?i:disable)|--policy)"|a\d+="(?i:delete)"[^\n]*?a\d+="(?i:table)"|a\d+="-P"[^\n]*?a\d+="ACCEPT")</regex>
     <description>Defense evasion: network filtering flushed/disabled ($(audit.command)) - may cancel a host isolation</description>
     <mitre><id>T1562.004</id></mitre>
   </rule>

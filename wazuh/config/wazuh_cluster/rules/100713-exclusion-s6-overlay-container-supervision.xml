@@ -1,0 +1,34 @@
+<!-- SOC-AI - rule 100713 (level 0). Domain: audit,web_attack,web_shell,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="audit,web_attack,web_shell,">
+
+  <!-- Exclusion for 100711: the s6-overlay supervision tree of LinuxServer.io
+       container images. Their service accounts run inside the euid 1-999 range
+       that 100711 watches (`abc` = uid 911), and s6 spawns a shell for every
+       oneshot and every service directory - so a healthy container generates a
+       continuous stream of level-12 "service account got an interpreter".
+       Measured 2026-08-01: 958 alerts in 3 days, 926 of them from this single
+       pattern, seen through the Proxmox host sensors (agents 009/010) which
+       report the activity of every LXC and container on the box.
+
+       Two discriminants, both required:
+         - auid unset: no login session behind the execve (s6 is init, PID 1 of
+           the container). An operator or an attacker with a shell carries a
+           session.
+         - cwd: /config is the LinuxServer.io convention for the persistent
+           volume, and /run/s6-rc:s6-rc-init:*/servicedirs/* is s6's own service
+           directory - a path the supervisor builds itself at boot.
+
+       Residual risk, accepted: an attacker who obtains RCE inside such a
+       container AND whose payload runs with cwd=/config. The container escape
+       itself stays covered (100766), as does an interpreter started from any
+       other directory. -->
+
+  <rule id="100713" level="0">
+    <if_sid>100711</if_sid>
+    <field name="audit.auid" type="pcre2">^4294967295$</field>
+    <field name="audit.cwd" type="pcre2">^/config(?:/|$)|^/run/s6-rc</field>
+    <description>Exclusion 100711: s6-overlay supervision inside a LinuxServer container</description>
+  </rule>
+
+</group>

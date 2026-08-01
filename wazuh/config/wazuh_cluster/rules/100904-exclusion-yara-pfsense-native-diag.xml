@@ -1,0 +1,22 @@
+<!-- SOC-AI - rule 100904 (level 0). Domain: local,yara,yaritrust,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="local,yara,yaritrust,">
+
+  <!-- Exclusion for 100901: /usr/local/www/diag_command.php is the pfSense
+       webGUI diagnostic page. It runs a command supplied by the operator by
+       design, which is exactly what WEBSHELL_PHP_Generic_Eval looks for - loki
+       scores it 88 on every scan of home-r-pf01.
+
+       Pinned to the sha256 of the shipped file: a modified or backdoored version
+       has a different hash and alerts again. The hash must be updated on every
+       pfSense upgrade - if the alert comes back after one, compare the new hash
+       against the vendor's file before touching this rule. -->
+
+  <rule id="100904" level="0">
+    <if_sid>100901</if_sid>
+    <field name="file_path" type="pcre2">/usr/local/www/diag_command\.php$</field>
+    <field name="sha256" type="pcre2">^2eb5435eb702e7f25085b444af9cecdbaa1848dfaa9744d8f2d486a697a0d6ca$</field>
+    <description>Exclusion 100901: native pfSense webGUI diagnostic page (hash-pinned)</description>
+  </rule>
+
+</group>

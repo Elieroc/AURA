@@ -1,0 +1,27 @@
+<!-- SOC-AI - rule 100714 (level 0). Domain: audit,web_attack,web_shell,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="audit,web_attack,web_shell,">
+
+  <!-- Exclusion for 100711: APT drops its privileges to the `_apt` account
+       (uid 42) to run the helpers that touch untrusted data - apt-key, gpgv,
+       awk, and the `sh -c` wrappers around them. Observed on `debian` during an
+       `apt update`: exe=/usr/bin/mawk or /bin/dash, euid=42, auid=0, cwd=/tmp.
+
+       The pair of criteria is what makes this safe: euid=42 says the code runs
+       as _apt, auid=0 says the login session behind it is root's - i.e. root
+       started apt and apt dropped down, which is the design. A payload that
+       merely lands under uid 42 without a root session (a compromised
+       repository handler, say) keeps auid unset and still alerts.
+
+       Note: `ignore_src_users: _apt` already exists in noise_filter.yaml, but it
+       reads data.srcuser, a field auditd alerts do not carry - it filters
+       nothing here. -->
+
+  <rule id="100714" level="0">
+    <if_sid>100711</if_sid>
+    <field name="audit.euid" type="pcre2">^42$</field>
+    <field name="audit.auid" type="pcre2">^0$</field>
+    <description>Exclusion 100711: APT dropping privileges to _apt (apt-key, gpgv, awk)</description>
+  </rule>
+
+</group>

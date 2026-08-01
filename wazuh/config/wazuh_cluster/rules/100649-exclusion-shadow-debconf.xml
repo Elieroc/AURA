@@ -1,0 +1,23 @@
+<!-- SOC-AI - rule 100649 (level 0). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- Exclusion for 100643: debconf reads /etc/shadow while configuring a
+       package. Observed on `debian` (agent 011) during an apt install:
+       exe=/usr/bin/perl, comm=dpkg-preconfigu, auid=0, cwd=/tmp. 100644 could
+       not cover it - its list is anchored on the binary, and the binary here is
+       a generic interpreter.
+
+       Kept deliberately narrow (interpreter AND comm): `comm` is attacker
+       controllable by renaming the binary, so it must never be the only
+       criterion. The kernel truncates comm to 15 characters, hence
+       `dpkg-preconfigu` and not `dpkg-preconfigure`. -->
+
+  <rule id="100649" level="0">
+    <if_sid>100643</if_sid>
+    <field name="audit.exe" type="pcre2">/perl[0-9.]*$</field>
+    <field name="audit.command" type="pcre2">^dpkg-preconfigu$</field>
+    <description>Exclusion 100643: debconf (dpkg-preconfigure) reads /etc/shadow during a package install</description>
+  </rule>
+
+</group>
