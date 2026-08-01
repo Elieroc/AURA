@@ -14,10 +14,12 @@ confiance, et les remédiations qui s'appliquent.
 # humain, mais à les SIGNALER comme telles dans le rapport et à les ordonner
 # par urgence. Leur sûreté tient à des garde-fous déterministes, pas à un clic.
 ACTIONS_A_FORT_IMPACT = {
-    "propose_kill_process",     # tue un process en cours
-    "propose_isolate_host",     # coupe l'hôte du réseau
-    "propose_disable_user",     # verrouille un compte
-    "propose_block_ip",         # coupe un flux réseau
+    "propose_kill_process",              # tue un process en cours
+    "propose_isolate_host",              # coupe l'hôte du réseau
+    "propose_disable_user",              # verrouille un compte (local ou AD)
+    "propose_block_ip",                  # coupe un flux réseau
+    "propose_quarantine_file",           # met un fichier en quarantaine
+    "propose_remove_privileged_group",   # retire d'un groupe AD privilégié
 }
 
 # Ordre d'urgence pour la présentation à l'analyste. Tuer le process malveillant
@@ -27,8 +29,10 @@ ACTIONS_A_FORT_IMPACT = {
 # SSH par le manager, hors périmètre du triage automatique).
 ORDRE = [
     "propose_kill_process",
+    "propose_quarantine_file",
     "propose_isolate_host",
     "propose_disable_user",
+    "propose_remove_privileged_group",
     "propose_block_ip",
     "escalate_human",
     "open_case",
@@ -83,6 +87,8 @@ CONFINEMENT_MOINS_INVASIF = (
     "propose_block_ip",
     "propose_kill_process",
     "propose_disable_user",
+    "propose_quarantine_file",
+    "propose_remove_privileged_group",
 )
 
 

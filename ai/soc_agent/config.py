@@ -258,6 +258,29 @@ AGENTS_CAPTEURS = {
     a.strip() for a in os.environ.get("AGENTS_CAPTEURS", "010").split(",")
     if a.strip()}
 
+# Agents tournant sous Windows : la même action logique (isoler, bloquer, tuer,
+# désactiver un compte) part sur une active-response différente selon l'OS —
+# les scripts Windows/AD (wazuh/active-response/windows/) au lieu des .sh Linux.
+# Surchargeable ; défaut = le DC (014) et le poste (015) du lab.
+AGENTS_WINDOWS = {
+    a.strip() for a in os.environ.get("AGENTS_WINDOWS", "014,015").split(",")
+    if a.strip()}
+
+# Contrôleurs de domaine : EXÉCUTEURS des actions de domaine (désactiver un
+# compte AD, retirer d'un groupe privilégié). Une action de domaine ne part PAS
+# sur l'hôte membre compromis — le compte n'y est pas local — mais sur un DC,
+# quel que soit l'hôte où la preuve est apparue (analogue inverse d'AGENTS_CAPTEURS).
+AGENTS_DC = {
+    a.strip() for a in os.environ.get("AGENTS_DC", "014").split(",")
+    if a.strip()}
+
+# IP(s) que l'isolation d'un hôte Windows laisse joignables (le manager Wazuh,
+# pour que l'agent continue de reporter et que le SOC puisse investiguer en
+# WinRM). Passées en extra_args à win-host-isolate.exe.
+MITIGATE_ISOLATE_ALLOW = [
+    ip.strip() for ip in os.environ.get("MITIGATE_ISOLATE_ALLOW", "192.168.10.5").split(",")
+    if ip.strip()]
+
 # Règles Wazuh qui signent une COMPROMISSION ACTIVE de l'hôte lui-même :
 # post-exploitation avérée (l'attaquant exécute déjà du code sur la machine),
 # pas une simple tentative entrante. Sert au garde-fou d'isolation : sur ces

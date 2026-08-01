@@ -55,6 +55,8 @@ LIBELLE_ACTION = {
     "propose_isolate_host": "Isoler l'hôte du réseau",
     "propose_disable_user": "Désactiver le compte compromis",
     "propose_block_ip": "Bloquer l'IP source",
+    "propose_quarantine_file": "Mettre le fichier en quarantaine",
+    "propose_remove_privileged_group": "Retirer du groupe AD privilégié",
     "escalate_human": "Escalade analyste",
     "open_case": "Ouvrir un dossier",
     "close_false_positive": "Clôturer en faux positif",

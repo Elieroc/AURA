@@ -54,13 +54,22 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # close_false_positive, escalate_human) n'est pas une action machine. La
 # collecte forensique n'en fait PAS partie : elle n'est pas pilotée par l'IA.
 REMEDIATIONS = {"propose_isolate_host", "propose_block_ip",
-                "propose_disable_user", "propose_kill_process"}
+                "propose_disable_user", "propose_kill_process",
+                "propose_quarantine_file", "propose_remove_privileged_group"}
 
-# Ordre d'exécution : tuer le process malveillant et couper les flux/comptes
-# AVANT d'isoler ; isoler EN DERNIER (l'isolation coupe les canaux — API Wazuh,
-# Shuffle — dont dépendent les autres remédiations).
-ORDRE_EXEC = ["propose_kill_process", "propose_block_ip",
-              "propose_disable_user", "propose_isolate_host"]
+# Ordre d'exécution : tuer le process malveillant, mettre le fichier en
+# quarantaine et couper les flux/comptes AVANT d'isoler ; isoler EN DERNIER
+# (l'isolation coupe les canaux — API Wazuh, Shuffle — dont dépendent les autres
+# remédiations).
+ORDRE_EXEC = ["propose_kill_process", "propose_quarantine_file",
+              "propose_block_ip", "propose_disable_user",
+              "propose_remove_privileged_group", "propose_isolate_host"]
+
+# Actions PROPOSÉES seulement (jamais exécutées automatiquement, même en
+# MITIGATE_EXECUTE) : trop fort impact pour l'autonomie actuelle (retrait d'un
+# groupe privilégié AD). L'exécuteur rend 'dry_run' et l'analyste tranche via la
+# tâche IRIS. Cf. le palier d'autonomie « local + disable AD account auto ».
+ACTIONS_MANUELLES = {"propose_remove_privileged_group"}
 
 # Répertoires d'où un exécutable est un implant à tuer (jamais un binaire
 # système légitime). Sert à cibler le process malveillant, pas un shell normal.
@@ -391,7 +400,31 @@ def _confirmer(agent_id: str, attendu: bool, essais: int = 6) -> dict:
 # Chacun retourne (statut, canal, details, undo). En dry-run, il DÉCRIT l'action
 # sans la déclencher (statut 'dry_run'). Toute exception -> statut 'échec'.
 
+def _agent_windows(agent_id: str) -> bool:
+    """Vrai si l'agent tourne sous Windows (route vers les AR Windows/AD)."""
+    return str(agent_id) in config.AGENTS_WINDOWS
+
+
+def _un_dc() -> str | None:
+    """Un agent contrôleur de domaine (exécuteur des actions de domaine)."""
+    return sorted(config.AGENTS_DC)[0] if config.AGENTS_DC else None
+
+
 def _isolate(cible: str, ctx: dict):
+    if _agent_windows(ctx["agent_id"]):
+        canal = "API Wazuh → win-host-isolate.exe (Windows Firewall)"
+        details = (f"Isolation réseau de l'hôte Windows {ctx['agent_id']} : le "
+                   "pare-feu ne laisse joignable que le manager Wazuh "
+                   f"({', '.join(config.MITIGATE_ISOLATE_ALLOW)}). Un DC n'est "
+                   "jamais isolé (refus dans le script).")
+        undo = (f"Lever l'isolation : active-response win-host-unisolate.exe sur "
+                f"l'agent {ctx['agent_id']}.")
+        if config.MITIGATE_EXECUTE:
+            _wazuh_ar(ctx["agent_id"], "!win-host-isolate.exe",
+                      list(config.MITIGATE_ISOLATE_ALLOW))
+            return "exécuté", canal, details, undo
+        return "dry_run", canal, details, undo
+
     canal = "Shuffle → active-response host-isolate.sh (nftables)"
     details = ("Isolation réseau de l'hôte : nftables ne laisse joignable que le "
                "manager Wazuh (canal 1514). SSH et tout autre flux sont coupés, "
@@ -407,32 +440,53 @@ def _isolate(cible: str, ctx: dict):
 
 
 def _block_ip(cible: str, ctx: dict):
-    canal = "API Wazuh → active-response firewall-drop"
+    win = _agent_windows(ctx["agent_id"])
+    ar = "!win-block-ip.exe" if win else "!firewall-drop.sh"
+    canal = ("API Wazuh → win-block-ip.exe (Windows Firewall)" if win
+             else "API Wazuh → active-response firewall-drop")
     details = (f"Blocage du flux réseau de l'IP {cible} sur l'agent "
-               f"{ctx['agent_id']} (firewall-drop). Requiert l'AR firewall-drop "
-               "configurée sur l'agent ; sinon l'API renvoie une erreur.")
-    undo = (f"L'entrée firewall-drop expire au bout du timeout de l'AR. Pour un "
-            f"retrait immédiat : supprimer la règle visant {cible} dans le "
-            f"pare-feu de l'agent {ctx['agent_id']}.")
+               f"{ctx['agent_id']} ({ar}). Requiert l'AR configurée sur l'agent.")
+    undo = (f"Retrait : active-response "
+            f"{'win-allow-ip.exe' if win else 'firewall-allow'} visant {cible} "
+            f"sur l'agent {ctx['agent_id']}.")
     if config.MITIGATE_EXECUTE:
-        _wazuh_ar(ctx["agent_id"], "!firewall-drop.sh", [cible])
+        _wazuh_ar(ctx["agent_id"], ar, [cible])
         return "exécuté", canal, details, undo
     return "dry_run", canal, details, undo
 
 
 def _disable_user(cible: str, ctx: dict):
-    canal = "API Wazuh → active-response disable-account"
-    details = (f"Désactivation du compte {cible} sur l'agent {ctx['agent_id']} "
-               "(disable-account). Requiert l'AR disable-account configurée.")
-    undo = (f"Réactiver le compte {cible} sur l'agent {ctx['agent_id']} "
-            f"(passwd -u {cible} sous Linux, ou enable-account).")
+    # Sur une cible Windows, _cibles_par_machine a déjà routé ctx['agent_id']
+    # vers un DC : on désactive le compte DANS l'annuaire (ad-disable-account),
+    # pas localement sur l'hôte membre où le compte n'existe pas.
+    win = _agent_windows(ctx["agent_id"])
+    ar = "!ad-disable-account.exe" if win else "!disable-account.sh"
+    canal = ("API Wazuh → ad-disable-account.exe (Active Directory, sur DC)" if win
+             else "API Wazuh → active-response disable-account")
+    details = (f"Désactivation du compte {cible} "
+               f"{'dans AD (sur le DC ' + ctx['agent_id'] + ')' if win else 'sur agent ' + ctx['agent_id']} "
+               f"({ar}). Comptes protégés refusés par le script.")
+    undo = (f"Réactiver le compte {cible} : active-response "
+            f"{'ad-enable-account.exe' if win else 'enable-account'} sur l'agent "
+            f"{ctx['agent_id']}.")
     if config.MITIGATE_EXECUTE:
-        _wazuh_ar(ctx["agent_id"], "!disable-account.sh", [cible])
+        _wazuh_ar(ctx["agent_id"], ar, [cible])
         return "exécuté", canal, details, undo
     return "dry_run", canal, details, undo
 
 
 def _kill_process(cible: str, ctx: dict):
+    if _agent_windows(ctx["agent_id"]):
+        canal = "API Wazuh → win-kill-process.exe (Stop-Process)"
+        details = (f"Arrêt du process « {cible} » sur l'hôte Windows "
+                   f"{ctx['agent_id']}. La safelist du script protège les process "
+                   "critiques (lsass, services, agent Wazuh, Sysmon).")
+        undo = ("Action irréversible (pas d'« unkill »).")
+        if config.MITIGATE_EXECUTE:
+            _wazuh_ar(ctx["agent_id"], "!win-kill-process.exe", [cible])
+            return "exécuté", canal, details, undo
+        return "dry_run", canal, details, undo
+
     canal = "Shuffle → active-response kill-process.sh (pkill -x)"
     details = (f"Arrêt du process malveillant « {cible} » sur l'agent "
                f"{ctx['agent_id']} (pkill -x, nom exact). La safelist de l'AR "
@@ -445,11 +499,41 @@ def _kill_process(cible: str, ctx: dict):
     return "dry_run", canal, details, undo
 
 
+def _quarantine_file(cible: str, ctx: dict):
+    # Windows uniquement (analogue quarantine.sh côté Linux non exposé à l'IA).
+    canal = "API Wazuh → win-quarantine-file.exe (déplacement + deny ACL)"
+    details = (f"Mise en quarantaine du fichier {cible} sur l'hôte Windows "
+               f"{ctx['agent_id']} : hash SHA256, déplacement vers le dossier de "
+               "quarantaine, accès refusé. Les chemins système sont exclus.")
+    undo = (f"Restaurer : active-response win-restore-file.exe pour {cible} sur "
+            f"l'agent {ctx['agent_id']}.")
+    if config.MITIGATE_EXECUTE:
+        _wazuh_ar(ctx["agent_id"], "!win-quarantine-file.exe", [cible])
+        return "exécuté", canal, details, undo
+    return "dry_run", canal, details, undo
+
+
+def _remove_group_member(cible: str, ctx: dict):
+    # PROPOSE-ONLY (ACTIONS_MANUELLES) : jamais exécuté automatiquement, même en
+    # MITIGATE_EXECUTE. cible = "groupe|membre".
+    groupe, _, membre = cible.partition("|")
+    canal = "API Wazuh → ad-remove-group-member.exe (Active Directory, sur DC)"
+    details = (f"Retrait de « {membre} » du groupe privilégié « {groupe} » dans "
+               f"AD (sur le DC {ctx['agent_id']}). Action à FORT IMPACT — proposée "
+               "à l'analyste, exécution manuelle (palier d'autonomie actuel).")
+    undo = (f"Réintégrer : active-response ad-add-group-member.exe {groupe} "
+            f"{membre} sur l'agent {ctx['agent_id']}.")
+    # Toujours 'dry_run' : c'est une proposition, l'analyste exécute la tâche IRIS.
+    return "dry_run", canal, details, undo
+
+
 EXECUTEURS = {
     "propose_kill_process": _kill_process,
+    "propose_quarantine_file": _quarantine_file,
     "propose_isolate_host": _isolate,
     "propose_block_ip": _block_ip,
     "propose_disable_user": _disable_user,
+    "propose_remove_privileged_group": _remove_group_member,
 }
 
 
@@ -473,25 +557,42 @@ EXECUTEURS = {
 # 'dry_run'), donc un reverse ne touche que ce qui a vraiment été appliqué.
 
 def _revert_isolate(cible: str, ctx: dict) -> str:
+    if _agent_windows(ctx["agent_id"]):
+        _wazuh_ar(ctx["agent_id"], "!win-host-unisolate.exe", [])
+        return "API Wazuh → win-host-unisolate.exe (Windows Firewall)"
     fire_isolation(cible, False, ctx["reason_court"])
     return "Shuffle → active-response host-unisolate.sh (nftables)"
 
 
 def _revert_block_ip(cible: str, ctx: dict) -> str:
+    if _agent_windows(ctx["agent_id"]):
+        _wazuh_ar(ctx["agent_id"], "!win-allow-ip.exe", [cible])
+        return "API Wazuh → win-allow-ip.exe (Windows Firewall)"
     _wazuh_ar(ctx["agent_id"], "!firewall-allow.sh", [cible])
     return "API Wazuh → active-response firewall-allow"
 
 
 def _revert_disable_user(cible: str, ctx: dict) -> str:
+    if _agent_windows(ctx["agent_id"]):
+        _wazuh_ar(ctx["agent_id"], "!ad-enable-account.exe", [cible])
+        return "API Wazuh → ad-enable-account.exe (Active Directory, sur DC)"
     _wazuh_ar(ctx["agent_id"], "!enable-account.sh", [cible])
     return "API Wazuh → active-response enable-account"
 
 
+def _revert_quarantine_file(cible: str, ctx: dict) -> str:
+    _wazuh_ar(ctx["agent_id"], "!win-restore-file.exe", [cible])
+    return "API Wazuh → win-restore-file.exe"
+
+
 # Pas de propose_kill_process : un process tué n'a pas de reverse (« unkill »).
+# Pas de propose_remove_privileged_group : proposé seulement, jamais exécuté auto
+# (donc jamais 'exécuté' à défaire) ; ad-add-group-member reste dispo à la main.
 REVERSEURS = {
     "propose_isolate_host": _revert_isolate,
     "propose_block_ip": _revert_block_ip,
     "propose_disable_user": _revert_disable_user,
+    "propose_quarantine_file": _revert_quarantine_file,
 }
 
 
@@ -648,15 +749,55 @@ def _cibles_par_machine(action: str, incident: dict,
         # protégés exclus. Un backdoor vu seulement par un capteur d'hôte (pas
         # d'auditd dans le conteneur) n'a pas de machine exploitable ici → non
         # désactivé automatiquement (garde-fou), à traiter par l'analyste.
+        # Sur un hôte Windows, le compte est un compte de DOMAINE : la cible
+        # d'exécution devient un DC (ad-disable-account), pas l'hôte membre.
         out = set()
         for ag in agents:
             al = par_agent[ag]
             comptes = {_nom_compte(a["srcuser"]) for a in al
                        if a.get("srcuser") and not _compte_protege(a["srcuser"])}
             comptes |= set(_comptes_crees(al))
+            machine = ag
+            if _agent_windows(ag):
+                machine = _un_dc()
+                if not machine:      # pas de DC configuré : on ne sait pas où agir
+                    log.warning("#%s disable_user : hôte Windows %s mais aucun "
+                                "AGENTS_DC — compte non désactivé (garde-fou)",
+                                incident.get("id"), ag)
+                    continue
             for c in comptes:
                 if c:
-                    out.add((ag, c))
+                    out.add((machine, c))
+        return sorted(out)
+
+    if action == "propose_quarantine_file":
+        # Fichier malveillant déposé, mis en quarantaine SUR l'hôte Windows qui
+        # le porte. Chemins système exclus (le script refuse aussi de son côté).
+        out = set()
+        for ag in agents:
+            if not _agent_windows(ag):
+                continue
+            for v, t, _ in _iocs(par_agent[ag]):
+                p = str(v)
+                if t == "file" and ("\\" in p or "/" in p) \
+                        and not p.lower().startswith(("c:\\windows", "c:/windows")):
+                    out.add((ag, p))
+        return sorted(out)
+
+    if action == "propose_remove_privileged_group":
+        # Retrait d'un compte attaquant d'un groupe privilégié, exécuté sur un DC.
+        # PROPOSE-ONLY : heuristique volontairement large (l'analyste tranche) —
+        # les comptes créés par l'attaquant, retirés de « Domain Admins ».
+        dc = _un_dc()
+        if not dc:
+            return []
+        out = set()
+        for ag in agents:
+            if not _agent_windows(ag):
+                continue
+            for membre in _comptes_crees(par_agent[ag]):
+                if membre:
+                    out.add((dc, f"Domain Admins|{membre}"))
         return sorted(out)
     return []
 

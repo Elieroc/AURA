@@ -39,6 +39,7 @@ VERDICTS_OK = {"true_positive", "false_positive", "needs_investigation"}
 CONFIANCES_OK = {"low", "medium", "high"}
 ACTIONS_OK = {"propose_block_ip", "propose_isolate_host",
               "propose_disable_user", "propose_kill_process",
+              "propose_quarantine_file", "propose_remove_privileged_group",
               "escalate_human"}
 
 
