@@ -134,3 +134,20 @@ if __name__ == "__main__":
           WEBHOOK_ISOLATE, extra_arg_in_body=False)
     build("Wazuh - Kill Process", "webhook -> auth_wazuh -> run_active_response (kill)",
           WEBHOOK_KILL, extra_arg_in_body=True)
+
+    # Playbooks opérateur Windows/AD (déclenchés à la MAIN depuis l'UI Shuffle ;
+    # le chemin AUTONOME du soc-agent passe par l'API Wazuh directement). Le
+    # builder est générique : l'active-response à lancer est dans $exec.ar_command
+    # du payload webhook (p.ex. !win-host-isolate.exe, !ad-disable-account.exe),
+    # l'hôte dans $exec.agent_id, la cible dans $exec.extra_args. Optionnels :
+    # ne sont créés que si le webhook correspondant est fourni dans l'environnement.
+    if os.environ.get("SHUFFLE_WEBHOOK_WIN_ISOLATE"):
+        build("Windows - Host Isolation",
+              "webhook -> auth_wazuh -> win-host-isolate.exe (Windows Firewall)",
+              os.environ["SHUFFLE_WEBHOOK_WIN_ISOLATE"].removeprefix("webhook_"),
+              extra_arg_in_body=True)
+    if os.environ.get("SHUFFLE_WEBHOOK_AD_DISABLE"):
+        build("AD - Contain Account",
+              "webhook -> auth_wazuh -> ad-disable-account.exe (sur un DC)",
+              os.environ["SHUFFLE_WEBHOOK_AD_DISABLE"].removeprefix("webhook_"),
+              extra_arg_in_body=True)
