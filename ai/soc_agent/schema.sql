@@ -170,6 +170,25 @@ CREATE TABLE IF NOT EXISTS whitelist_rules (
 
 CREATE INDEX IF NOT EXISTS whitelist_active ON whitelist_rules (active);
 
+-- Réputation VirusTotal d'un hash de fichier, mise en cache. La réputation VT
+-- d'un exécutable sert de FILTRE déterministe avant corrélation : un exe jugé
+-- légitime (aucun moteur positif, hash connu de VT) fait suppress l'alerte qui
+-- le porte, pour qu'un binaire propre n'ouvre pas de case (cf. vt.py). Cache
+-- indispensable : l'API publique VT est plafonnée (4 req/min, 500/jour). TTL
+-- géré côté code (re-vérification au-delà de VT_CACHE_TTL_DAYS) — un hash peut
+-- passer de « inconnu » à « malveillant » avec le temps.
+CREATE TABLE IF NOT EXISTS vt_file_reputation (
+    sha256      text PRIMARY KEY,      -- hash normalisé en minuscules
+    malicious   integer NOT NULL DEFAULT 0,
+    suspicious  integer NOT NULL DEFAULT 0,
+    harmless    integer NOT NULL DEFAULT 0,
+    undetected  integer NOT NULL DEFAULT 0,
+    total       integer NOT NULL DEFAULT 0,   -- moteurs ayant analysé
+    verdict     text NOT NULL,          -- 'legit' | 'malicious' | 'unknown' | 'error'
+    permalink   text,
+    checked_at  timestamptz NOT NULL DEFAULT now()
+);
+
 -- Case IRIS créé pour l'incident (un par incident trié). NULL tant que non
 -- créé ; sert de garde anti-doublon au cycle.
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS iris_case_id bigint;

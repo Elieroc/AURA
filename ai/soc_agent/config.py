@@ -67,6 +67,40 @@ PG_DSN = os.environ.get(
 # réservée au signal fort.
 MIN_LEVEL = int(os.environ.get("MIN_LEVEL", "12"))
 
+# --- Filtre VirusTotal des exécutables légitimes -----------------------------
+#
+# Avant corrélation, une alerte qui porte un HASH d'exécutable (Sysmon, FIM,
+# intégration VT) est confrontée à la réputation VirusTotal du hash. Un binaire
+# jugé LÉGITIME (aucun moteur positif, hash connu de VT) fait suppress l'alerte :
+# un exe propre ne doit pas peser dans un case, ni en ouvrir un s'il est seul.
+# Filtre déterministe (pas le LLM) ; audit complet (suppress_reason + cache VT).
+#
+# Réutilise la clé de l'intégration VirusTotal de Wazuh. Sans clé, le filtre est
+# inactif (aucun appel, rien n'est suppressé).
+VT_API_KEY = os.environ.get("VT_API_KEY", "").strip()
+VT_URL = os.environ.get("VT_URL", "https://www.virustotal.com/api/v3")
+# Ne confronte à VT que les exécutables d'alertes d'au moins ce niveau : celles
+# qui pourraient graine/rejoindre un case. En dessous, le noise filter suffit.
+VT_EXE_MIN_LEVEL = int(os.environ.get("VT_EXE_MIN_LEVEL", "7"))
+# Un verdict VT est recalculé au-delà de cet âge (un hash inconnu peut devenir
+# malveillant). Sous ce TTL, on lit le cache.
+VT_CACHE_TTL_DAYS = int(os.environ.get("VT_CACHE_TTL_DAYS", "14"))
+# Plafond d'appels VT réseau par passage (API publique : 4 req/min, 500/jour).
+# Le cache absorbe le reste ; les non-résolus seront retentés au cycle suivant.
+VT_MAX_LOOKUPS = int(os.environ.get("VT_MAX_LOOKUPS", "4"))
+# Nombre minimal de moteurs ayant analysé le hash pour croire un verdict « clean »
+# (un hash à peine connu ne prouve pas la légitimité). En deçà : 'unknown', on ne
+# suppress pas (dans le doute, on garde l'alerte).
+VT_MIN_ENGINES = int(os.environ.get("VT_MIN_ENGINES", "5"))
+# Ne jamais suppress un exécutable situé dans un répertoire système : un binaire
+# signé de System32 (powershell.exe, certutil.exe…) est propre pour VT mais peut
+# être détourné (LOLBin) — la détection y est COMPORTEMENTALE, pas sur le fichier.
+# On ne filtre que les exécutables DÉPOSÉS ailleurs (temp, profils, /tmp, /home…).
+VT_DIRS_SYSTEME = tuple(d.lower() for d in os.environ.get(
+    "VT_DIRS_SYSTEME",
+    r"c:\windows,c:\program files,c:\program files (x86),"
+    "/usr/bin,/usr/sbin,/bin,/sbin,/usr/lib,/lib").split(","))
+
 # Enrichissement de périmètre : une fois un incident FORMÉ par une graine
 # (>= MIN_LEVEL), on lui rattache TOUTES les alertes du même agent dans sa
 # fenêtre à partir de ce niveau. Descendu à 3 pour capter l'audit de commande

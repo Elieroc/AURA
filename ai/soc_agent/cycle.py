@@ -18,7 +18,8 @@ import sys
 
 import psycopg
 
-from . import config, correlate, ingest, iris, triage, watchdog, whitelist
+from . import (config, correlate, ingest, iris, triage, vt, watchdog,
+               whitelist)
 
 # Journalisé sur stderr -> capté par `docker compose logs` du conteneur.
 logging.basicConfig(
@@ -50,6 +51,16 @@ def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
         try:
             n = ingest.ingerer(depuis, taille_lot)
             log.info("ingest : %d alertes traitées", n)
+
+            # Filtre VT AVANT corrélation : un exécutable jugé légitime est
+            # suppressé, donc il ne graine ni ne rejoint un case (correlate lit
+            # NOT suppressed). Best-effort : une panne VT ne casse pas le cycle.
+            try:
+                n_vt = vt.filtrer()
+                if n_vt:
+                    log.info("vt : %d alerte(s) écartée(s) (exe légitime)", n_vt)
+            except Exception as e:  # noqa: BLE001
+                log.warning("filtre VT sauté : %s", e)
 
             n_inc, n_alertes = correlate.correler(config.MIN_LEVEL)
             log.info("correlate : %d alertes -> %d incidents", n_alertes, n_inc)
