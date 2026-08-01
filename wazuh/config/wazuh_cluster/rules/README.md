@@ -7,9 +7,31 @@ alphabétique est l'ordre numérique des identifiants.
 
 ## Ce que l'ordre change, et ce qu'il ne change pas
 
-Il ne change **rien** pour une règle chaînée par `if_sid` / `if_group` /
-`if_matched_sid` : Wazuh résout la parenté entre fichiers, et une exclusion de
-niveau 0 est évaluée après sa parente quel que soit le fichier où elle vit.
+**Une règle chaînée par `if_sid` doit porter un identifiant SUPÉRIEUR à celui de
+sa parente.** Wazuh ne rattache l'enfant que si la parente est **déjà chargée**
+au moment où il lit le fichier ; comme les fichiers sont lus dans l'ordre des
+identifiants, un enfant numéroté avant sa parente n'est rattaché à rien. Il ne
+lève aucune erreur au démarrage, `wazuh-logtest` ne le mentionne pas : il est
+simplement absent.
+
+Mesuré le 2026-08-01 : l'exclusion `100642` (`<if_sid>100653</if_sid>`) était
+**morte depuis sa création** pour cette seule raison. Renumérotée en `100665`,
+elle matche immédiatement, à contenu identique. Vérification faite sur tout le
+ruleset, c'était le seul cas — à revérifier après toute création d'exclusion :
+
+```sh
+python3 - <<'EOF'
+import glob, re
+for f in sorted(glob.glob('*.xml')):
+    for m in re.finditer(r'<rule id="(\d+)"[^>]*>(.*?)</rule>', open(f).read(), re.S):
+        for p in re.findall(r'<if_sid>(\d+)</if_sid>', m.group(2)):
+            if int(p) >= 100000 and int(p) > int(m.group(1)):
+                print(f'MORTE {m.group(1)} (if_sid {p}) dans {f}')
+EOF
+```
+
+`if_group` et `if_matched_sid` ne sont pas concernés : ils ne référencent pas un
+identifiant à résoudre au chargement.
 
 Il change l'arbitrage entre règles **sœurs et indépendantes** qui pourraient
 matcher le même événement : la première chargée gagne. Deux cas réels rencontrés
@@ -67,7 +89,7 @@ Règles : 100625, 100629, 100626, 100630, 100632, 100631, 100633, 100634, 100635
 
 ### `threat_hunting,linux,mitre_gaps,`
 
-Règles : 100650, 100651, 100652, 100653, 100642, 100643, 100644, 100654, 100645, 100646, 100647, 100648, 100655, 100656, 100657, 100658, 100660, 100661, 100662, 100663, 100664
+Règles : 100650, 100651, 100652, 100653, 100665, 100643, 100644, 100649, 100654, 100645, 100646, 100647, 100648, 100655, 100656, 100657, 100658, 100660, 100661, 100662, 100663, 100664
 
 ```
 Pack "gaps MITRE" - techniques Linux non couvertes par le ruleset
@@ -200,7 +222,7 @@ TECHNIQUES POST-EXPLOITATION NON COUVERTES (auditd) - plage 100760-100779
 
 ### `audit,web_attack,web_shell,`
 
-Règles : 100710, 100711, 100712
+Règles : 100710, 100711, 100712, 100713, 100714
 
 ## Convention
 

@@ -1,0 +1,38 @@
+<!-- SOC-AI - rule 100665 (level 0). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- Exclusion for 100653: the Wazuh agent's SCA / rootcheck checks inspect the
+       permissions of /etc/shadow (CIS Debian policies) on every scan, in a burst
+       of four `stat` calls (/etc/shadow, /etc/shadow-, /etc/gshadow,
+       /etc/gshadow-).
+
+       WAS RULE 100642, RENUMBERED 2026-08-01 - and that renumbering is the
+       actual fix. An `if_sid` child is only linked if its parent is ALREADY
+       loaded, and files load in alphabetical (= numerical) order: 100642 was
+       read before 100653 existed, so this exclusion was never attached to
+       anything. It had been dead since the day it was written, silently. Any
+       exclusion must therefore carry an id GREATER than the rule it excludes -
+       verified for the whole ruleset, this was the only offender.
+
+       DISCRIMINANT CORRECTED at the same time (155 false positives in 3 days
+       across five hosts). The former version filtered on `audit.exe
+       ^/var/ossec/`, which would never have matched either: the scan runs the
+       SYSTEM binary, so audit.exe is /usr/bin/stat (or /usr/bin/coreutils on
+       the Proxmox sensors). What identifies the scan is the daemon's working
+       directory (/var/ossec, wazuh-modulesd's cwd) together with the absence of
+       a login session (auid unset - no human behind that execve).
+
+       Residual risk, accepted: a process with no login session that chdir's to
+       /var/ossec before running `stat /etc/shadow`. An actual READ of the file
+       is not covered by this exclusion - that path is the watch, i.e. rule
+       100643. -->
+
+  <rule id="100665" level="0">
+    <if_sid>100653</if_sid>
+    <field name="audit.cwd" type="pcre2">^/var/ossec$</field>
+    <field name="audit.auid" type="pcre2">^4294967295$</field>
+    <description>Exclusion 100653: Wazuh agent SCA/rootcheck check</description>
+  </rule>
+
+</group>

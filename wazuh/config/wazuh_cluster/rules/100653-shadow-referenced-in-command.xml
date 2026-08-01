@@ -22,7 +22,7 @@
        The legitimate reader (PAM/unix_chkpwd) NEVER passes /etc/shadow as a
        command-line argument: it opens the file directly. The residual FP we
        expect comes from the Wazuh agent's own SCA/rootcheck checks
-       (`stat /etc/shadow`) - excluded by 100642.
+       (`stat /etc/shadow`) - excluded by 100665.
 
        KEY SCOPING (mandatory, measured live): without
        `audit.key = audit-wazuh-c`, this rule ALSO catches the events of the
