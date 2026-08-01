@@ -6,6 +6,11 @@ extraites de la timeline de chaque case, puis relues dans l'indexer
 (`wazuh-*`, 3 derniers jours) pour récupérer les champs auditd que la timeline
 ne porte pas.
 
+**État au 2026-08-01 18:00 UTC** : tout est déployé sur le manager de prod, les
+sept cases ouverts sont clos avec une note de disposition chacun, le reverse
+shell de `debian2` est retiré et le web shell de `nginx-proxy-manager` supprimé.
+Ce qui reste à faire est listé en section 6.
+
 ## 1. Vue d'ensemble
 
 | Case | Règle | Niv | Agent | Signature observée | Verdict |
@@ -297,9 +302,16 @@ Correctif proposé dans `noise.py` :
 | 2.e exclusion 100649 | `100649-exclusion-shadow-debconf.xml` | déployé |
 | 2.g exclusion 100904 | `100904-exclusion-yara-pfsense-native-diag.xml` | déployé |
 | 100760 niveau 13 → 7 | `100760-kernel-module-load-or-unload.xml` | déployé |
+| 7.b exclusion 100636 | `100636-exclusion-gpg-agent-session-snippet.xml` | déployé |
 | 2.f exclusion 100743 | — | retirée (vrais positifs) |
 | Suppression de `.status.php` | — | fait (192.168.20.11) |
+| 7.a reverse shell `devops` | — | retiré (`debian2`, sauvegarde forensique) |
+| Clôture des cases IRIS | — | faite : 73 à 79 + le case démo, note de disposition par case |
 | Section 5 (code) | — | à faire |
+| Correctif propre de 100634 (`CLE=valeur`) | — | à faire |
+| auditd sur `wireguard` | — | à faire |
+| `100744` muette (5 comptes UID 0, 0 alerte) | — | à reprendre |
+| Clés `svc_pivot` dans `/home/devops/.ssh` | — | à arbitrer |
 
 Le dépôt de prod est sur l'hôte `soc-ai` (192.168.10.5), dans
 `/opt/soc-ai/wazuh/config/wazuh_cluster/rules`, monté **directement** sur
