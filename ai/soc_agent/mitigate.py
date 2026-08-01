@@ -601,8 +601,25 @@ _RE_UID_SUFFIXE = re.compile(r"\(uid=(\d+)\)")
 
 
 def _nom_compte(brut: str) -> str:
-    """Nom de compte nu, sans le suffixe (uid=NNNN) ni les espaces."""
-    return _RE_UID_SUFFIXE.sub("", str(brut)).strip()
+    """Nom de compte nu : sans (uid=NNNN), sans préfixe DOMAINE\\ ni @domaine.
+
+    Le préfixe de domaine Windows (`LAB\\Administrateur`, `Administrateur@lab`)
+    faisait échouer le filtre des comptes protégés (comparé à la forme nue) et
+    devenait une mauvaise cible d'action — ad-disable-account veut le SAM nu.
+    """
+    nom = _RE_UID_SUFFIXE.sub("", str(brut))
+    nom = re.split(r"[\\/]", nom)[-1]      # DOMAINE\user -> user
+    nom = nom.split("@", 1)[0]             # user@domaine -> user
+    return nom.strip()
+
+
+# Comptes Windows/AD intégrés à ne JAMAIS désactiver (COMPTES_GENERIQUES ne porte
+# que la forme anglaise « administrator »). Miroir du garde-fou de l'AR
+# (_ar-common.ps1 Test-ProtectedAccount) côté sélection de cible Python : sans
+# ça, l'IA tirait sur « Administrateur » et le compte machine « WIN-DC$ » (vus
+# comme srcuser dans les logons), rattrapés seulement par le script AR.
+_COMPTES_WINDOWS_PROTEGES = {"administrateur", "krbtgt", "defaultaccount",
+                             "wdagutilityaccount", "localservice"}
 
 
 def _comptes_crees(alertes: list[dict]) -> list[str]:
@@ -632,7 +649,9 @@ def _compte_protege(brut: str) -> bool:
     exact est désormais normalisé.
     """
     nom = _nom_compte(brut).lower()
-    if not nom or nom in COMPTES_GENERIQUES:
+    if not nom or nom in COMPTES_GENERIQUES or nom in _COMPTES_WINDOWS_PROTEGES:
+        return True
+    if nom.endswith("$"):        # compte machine / trust AD (ex. WIN-DC$)
         return True
     if nom in {str(config.SSH_USER).lower(), str(config.WAZUH_API_USER).lower()}:
         return True
