@@ -34,23 +34,27 @@ ScriptBlock (4103/4104).**
 | Kerberos Service Ticket | 4769 | ✅ (DC) | n/a |
 | Kerberos Auth | 4768 | ✅ (DC) | n/a |
 
-**Angles morts structurels avant tout test :**
-- **4688 désactivé partout** → aucune ligne de commande. Toute la Discovery par binaire
-  (`nltest`, `net.exe`, `whoami`, `nltest /domain_trusts`) est invisible. `procdump`,
-  `ntdsutil`, `reg save` → invisibles par cmdline.
-- **Pas de Sysmon** → accès LSASS (EID 10), image load, connexions réseau par process,
-  injection = aveugles. T1003.001 non détectable en l'état.
-- **Pas de 4104** → obfuscation PowerShell / download-cradle non détectables.
+### Mise à niveau télémétrie appliquée (2026-08-01) ✅
 
-**Ce qui EST détectable sans rien changer :** Kerberoasting (4769 RC4), création de
-compte domaine (4720), ajout groupe privilégié (4728/4732), DCSync (4662 réplication),
-brute force / logons anormaux (4624/4625), Golden/Silver ticket (anomalies 4769/4768).
+Le trou initial (4688 off, pas de Sysmon) a été comblé sur **winsrv ET win10** :
 
-**Reco avant campagne :** activer `Audit Process Creation` (Succès) + `Include command
-line in 4688` par GPO sur le domaine, et idéalement déployer Sysmon (config SwiftOnSecurity
-ou Olaf) remonté par Wazuh. Sans ça, ~40 % des 10 techniques AD proposées sont muettes
-par manque de source, pas par manque de règle. **Changement de config des hôtes lab →
-à valider avec l'opérateur avant application.**
+- **Audit Process Creation (4688) = activé (Succès)** — `auditpol /set` sous-catégorie
+  `{0CCE922B}`.
+- **Ligne de commande dans 4688 = activée** — reg
+  `HKLM\...\Policies\System\Audit\ProcessCreationIncludeCmdLine_Enabled = 1`.
+- **Sysmon v15.21 installé** avec config SwiftOnSecurity (`sysmonconfig-export.xml`),
+  service `Sysmon64` = Running.
+- **Wazuh collecte le canal Sysmon** — `<localfile>` `Microsoft-Windows-Sysmon/Operational`
+  ajouté à l'`ossec.conf` des deux agents, service redémarré.
+- **Chaîne validée bout en bout** : events Sysmon reçus au manager depuis les 2 agents,
+  règles déclenchées (92066, 92213 sur l'activité d'install elle-même).
+
+Config host-local (pas de GPO) → suffisant pour le lab ; une GPO de domaine serait la
+route durable si le lab grossit.
+
+**Reste aveugle (choix de config, non bloquant) :** PowerShell ScriptBlock 4104 non
+collecté → obfuscation PS avancée encore muette (Sysmon EID 1 capte quand même la
+cmdline du processus powershell.exe). À activer si on teste des cradles obfusqués.
 
 ## Légende détection
 
