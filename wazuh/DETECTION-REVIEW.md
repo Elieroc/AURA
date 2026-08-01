@@ -299,3 +299,51 @@ Vérifié après bascule : 82 fichiers chargés, 0 identifiant en double,
 `scripts/test-detection-rules.sh` à 43 OK / 0 FAIL, et la batterie d'attaques
 rejouée sur debian-vm redéclenche 100643, 100653, 100654, 100656, 100700,
 100701, 100711, 100748, 100767, 100770 et 100772 avec les libellés anglais.
+
+---
+
+## Addendum 2026-08-01 — exclusions des FP observés, et un `if_sid` mort
+
+Les FP « attendus non encore observés » de la section *Limites connues* se sont
+produits, mesurés sur 3 jours de prod : `100711` = 958 alertes, `100645` = 410,
+`100653` = 155. Traités par exclusions figées et non par la whitelist
+automatique, contrairement à ce que cette revue prévoyait — pour une raison
+structurelle : les alertes auditd ne portent **ni `data.srcuser` ni
+`data.command`** (tout est sous `data.audit.*`), or `whitelist._signature` ne
+discrimine que par ces champs et par `file`. Pour toute la famille
+1006xx/1007xx la signature se réduit donc à `rule_id` + `audit.exe`, et le
+garde-fou « rule_id seul refusé » rejette le reste. La boucle fermée ne peut pas
+exprimer ces FP tant que `noise.py` n'expose pas les champs auditd.
+
+Deux causes racines, toutes deux dans les règles et non dans un manque
+d'exception :
+
+- **`100645`** : le groupe `(?i:...)` englobait la liste d'options, donc `-f`
+  (charger un ruleset) matchait `-F` (flush). Chaque `nft -j -f -` de
+  `pve-firewall` et chaque `nft -f -` de nos propres active responses passait
+  pour un « filtrage réseau vidé » niveau 12.
+- **`100642`** (exclusion de `100653`) était **morte depuis sa création** : un
+  enfant `if_sid` n'est rattaché que si sa parente est déjà chargée, et les
+  fichiers sont lus dans l'ordre des identifiants. Renumérotée `100665`. Aucune
+  erreur au démarrage ne le signalait. Détail et détection dans
+  `rules/README.md`.
+
+Nouvelles exclusions : `100713` (s6-overlay des conteneurs LinuxServer),
+`100714` (apt qui descend en `_apt`), `100649` (debconf lisant `/etc/shadow`),
+`100904` (page de diag native pfSense, épinglée au sha256). `100760` passe de 13
+à 7 : charger un module est un effet de bord normal de l'administration.
+
+Chacune est ancrée sur **deux champs**, dont un non contrôlable par l'attaquant
+(`auid`, `euid`), et couverte par un rejeu dédié :
+`scripts/test-rule-exceptions.sh` (16 cas, 16 OK) — construit depuis de vraies
+alertes par `scripts/build-exception-cases.py`, parce que les logs de synthèse de
+`test-detection-rules.sh` perdent `euid`/`auid`/`cwd` au décodage et rendraient
+ces exclusions intestables. Chaque FP tu est apparié au même événement muté en
+attaquant, qui doit toujours tirer.
+
+**`100744` est confirmée muette en prod, pas seulement non validée.** Entre le
+2026-07-29 et le 2026-08-01, cinq comptes UID 0 ont été créés sur cinq hôtes
+(`svc-vpn`, `svc-dns`, `svc-proxy`, `svc-wiki`, `svc-backup`) et vus par le FIM :
+`100744` a produit **0 alerte**. Seule `100762` (`useradd` en execve) a tiré, et
+uniquement sur les capteurs Proxmox. Sur un hôte sans auditd, la création d'un
+compte root sort donc en niveau 12 (`100743`) au lieu de 14. À reprendre.
