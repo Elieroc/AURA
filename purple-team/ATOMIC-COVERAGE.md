@@ -46,15 +46,22 @@ Le trou initial (4688 off, pas de Sysmon) a été comblé sur **winsrv ET win10*
   service `Sysmon64` = Running.
 - **Wazuh collecte le canal Sysmon** — `<localfile>` `Microsoft-Windows-Sysmon/Operational`
   ajouté à l'`ossec.conf` des deux agents, service redémarré.
-- **Chaîne validée bout en bout** : events Sysmon reçus au manager depuis les 2 agents,
-  règles déclenchées (92066, 92213 sur l'activité d'install elle-même).
+- **PowerShell ScriptBlock (4104) = activé** — reg
+  `HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging\EnableScriptBlockLogging = 1`,
+  canal `Microsoft-Windows-PowerShell/Operational` ajouté aux agents. Vérifié : 16
+  alertes PowerShell reçues côté manager depuis winsrv, 14 depuis win10.
+- **Chaîne validée bout en bout** : events Sysmon + PowerShell reçus au manager depuis
+  les 2 agents, règles déclenchées (92066, 92213 sur l'activité d'install elle-même).
 
 Config host-local (pas de GPO) → suffisant pour le lab ; une GPO de domaine serait la
 route durable si le lab grossit.
 
-**Reste aveugle (choix de config, non bloquant) :** PowerShell ScriptBlock 4104 non
-collecté → obfuscation PS avancée encore muette (Sysmon EID 1 capte quand même la
-cmdline du processus powershell.exe). À activer si on teste des cradles obfusqués.
+**Script réutilisable :** `wazuh/config/agent/Install-WazuhAgent-Windows.ps1` déploie
+tout ce bloc (agent + audit 4688/cmdline + audit AD + 4104 + Sysmon + canaux Wazuh) en
+une passe idempotente sur un nouvel hôte Windows. Détecte automatiquement les DC pour
+activer l'audit Kerberos/DS Access. Validé en rejeu sur winsrv.
+
+Plus aucun angle mort de source pour les 10 techniques AD.
 
 ## Légende détection
 
