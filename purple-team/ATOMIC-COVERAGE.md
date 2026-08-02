@@ -78,6 +78,32 @@ Colonnes : `Test` = GUID/numéro Atomic testé. `Règle` = ID règle Wazuh qui a
 
 ---
 
+## Campagnes purple-team AD (10 techniques)
+
+Deux campagnes Atomic Red Team sur winsrv (DC, 014) + win10 (015).
+**#1 (2026-08-01)** : Defender bloquait les outils → 7/10 exécutées.
+**#2 (2026-08-02)** : Defender désactivé → 10/10 exécutées. Notes globales : #1 ≈63/100, #2 ≈64/100.
+
+| # | Technique | Exécutée | Détection générique | Détection spécifique | Remédiation |
+|---|-----------|:--------:|:-------------------:|:--------------------:|-------------|
+| 1 | T1558.003 Kerberoasting | #2 | 🟡 exe/PS | ❌ → **règle 100910** (4769 RC4) | — |
+| 2 | T1003.003 NTDS (ntdsutil) | ✅ | 🟡 process | ❌ → **règle 100921** | quarantine (fix) |
+| 3 | T1003.001 LSASS (comsvcs) | ✅ | 🟡 exe | ❌ → **règle 100918** (EID10) | kill (fix) |
+| 4 | T1136.002 Create Domain Account | ✅ | ✅ 60109/92040 L12 | ✅ | disable_user (fix : extraction 4720) |
+| 5 | T1098.007 Add Domain Admins | ✅ | ✅ 60110 L8 | 🟡 | remove-group (manuel) |
+| 6 | T1550.002 Pass the Hash | #2 | 🟡 exe | ❌ | — |
+| 7 | T1003.006 DCSync / T1558.001 Golden | #2 | 🟡 exe | ❌ → **règle 100915** (4662) | — |
+| 8 | T1482 Domain Trust Discovery | ✅ | ✅ 92031/discovery | 🟡 | — |
+| 9 | T1087.002 Domain Account Discovery | ✅ | ✅ 92039 net.exe | ✅ | — |
+| 10 | T1021.006 WinRM Lateral | ✅ | ✅ 91822 L12 | ✅ | — |
+
+**Constats & fixs (2026-08-02) :**
+- **Détection** : télémétrie présente (4769/4662/EID10/cmdline) mais **règles AD absentes** → 4 règles ajoutées (100910 Kerberoasting, 100915 DCSync, 100918 LSASS, 100921 NTDS/SAM).
+- **Remédiation** #1 : suspendue à tort (faux positif injection « User: »), cibles erronées (Administrateur). **Corrigé** (`sanitize.py`, `_compte_protege`).
+- **Remédiation** #2 : pipeline s'exécute mais résolution de cibles **Linux-centrée** → 0 cible Windows. **Corrigé** : `_iocs` extrait le compte Windows créé (4720 / `net user /add`) → filet déterministe `disable_user` ; `_cibles_par_machine` résout process (kill) et fichier (quarantine) Windows depuis Sysmon.
+
+---
+
 ## TA0001 — Initial Access
 
 | ID | Technique | Hôte | Test | Détection | Règle | Case | Notes |

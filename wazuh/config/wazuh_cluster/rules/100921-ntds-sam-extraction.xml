@@ -1,0 +1,25 @@
+<!--
+  NTDS.dit / SAM extraction (T1003.003, T1003.002): dumping the AD database or
+  local SAM hive to steal every credential. Detected on the command line (4688
+  with command-line auditing, or Sysmon event 1):
+    - ntdsutil "ac i ntds" ... "create full" / "ifm"   (native NTDS dump)
+    - vssadmin create shadow                            (VSS copy to reach ntds.dit)
+    - esentutl ... ntds.dit                             (raw copy of the DB)
+    - reg save hklm\sam | hklm\system | hklm\security   (SAM/SYSTEM hive dump)
+    - direct copy of ntds.dit
+  Command-line auditing (4688) and Sysmon EID1 are enabled; no rule flagged these.
+-->
+<group name="windows,attack,">
+
+  <rule id="100921" level="12">
+    <decoded_as>windows_eventchannel</decoded_as>
+    <field name="win.eventdata.commandLine">ntdsutil|vssadmin.+[Cc]reate [Ss]hadow|esentutl.+ntds\.?dit|reg.+save.+hklm.\\(sam|system|security)|ntds\.?dit</field>
+    <description>NTDS/SAM credential extraction attempt: $(win.eventdata.commandLine)</description>
+    <mitre>
+      <id>T1003.003</id>
+      <id>T1003.002</id>
+    </mitre>
+    <group>credential_access,ntds_dump,pci_dss_10.6.1,</group>
+  </rule>
+
+</group>

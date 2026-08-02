@@ -1,0 +1,36 @@
+<!--
+  DCSync (T1003.006): an account performs a directory replication request
+  (event 4662, Directory Service Access) accessing the DS-Replication-Get-Changes
+  control access rights. Only domain controllers legitimately replicate; any
+  other principal doing this is impersonating a DC to pull password hashes
+  (mimikatz lsadump::dcsync, secretsdump).
+
+  Properties GUIDs:
+    1131f6aa-9c07-11d1-f79f-00c04fc2dcd2  DS-Replication-Get-Changes
+    1131f6ad-9c07-11d1-f79f-00c04fc2dcd2  DS-Replication-Get-Changes-All
+    89e95b76-444d-4c62-991a-0facbeda640c  DS-Replication-Get-Changes-In-Filtered-Set
+
+  Audit "Directory Service Access" is enabled on the DC; no rule flagged it.
+-->
+<group name="windows,dcsync,attack,">
+
+  <rule id="100915" level="12">
+    <decoded_as>windows_eventchannel</decoded_as>
+    <field name="win.system.eventID">^4662$</field>
+    <field name="win.eventdata.properties">1131f6aa-9c07-11d1-f79f-00c04fc2dcd2|1131f6ad-9c07-11d1-f79f-00c04fc2dcd2|89e95b76-444d-4c62-991a-0facbeda640c</field>
+    <description>DCSync: directory replication rights used by $(win.eventdata.subjectUserName) - credential theft from AD</description>
+    <mitre>
+      <id>T1003.006</id>
+    </mitre>
+    <group>dcsync,credential_access,pci_dss_10.6.1,</group>
+  </rule>
+
+  <!-- Domain controller computer accounts replicate legitimately. -->
+  <rule id="100916" level="0">
+    <if_sid>100915</if_sid>
+    <field name="win.eventdata.subjectUserName">\$$</field>
+    <description>Directory replication by a machine account (DC-to-DC, expected)</description>
+    <group>dcsync,</group>
+  </rule>
+
+</group>

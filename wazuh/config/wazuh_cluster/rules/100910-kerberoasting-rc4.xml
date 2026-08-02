@@ -1,0 +1,40 @@
+<!--
+  Kerberoasting (T1558.003): a Kerberos service ticket (TGS, event 4769) is
+  requested with RC4 encryption (0x17). Attackers force RC4 because the resulting
+  ticket is crackable offline to recover the service account password. Machine
+  accounts (serviceName ending in $) legitimately use RC4 in many environments,
+  so they are downgraded to informational by the sibling exclusion below.
+
+  Telemetry was already collected (audit "Kerberos Service Ticket Operations" is
+  enabled on the DC) but no rule flagged it — purple-team 2026-08-02.
+-->
+<group name="windows,kerberos,attack,">
+
+  <rule id="100910" level="10">
+    <decoded_as>windows_eventchannel</decoded_as>
+    <field name="win.system.eventID">^4769$</field>
+    <field name="win.eventdata.ticketEncryptionType">^0x17$</field>
+    <description>Kerberoasting: RC4 (0x17) service ticket requested for $(win.eventdata.serviceName)</description>
+    <mitre>
+      <id>T1558.003</id>
+    </mitre>
+    <group>kerberoasting,pci_dss_10.6.1,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!-- Machine/computer accounts requesting RC4 are normal: not an attack. -->
+  <rule id="100911" level="0">
+    <if_sid>100910</if_sid>
+    <field name="win.eventdata.serviceName">\$$</field>
+    <description>Kerberos RC4 ticket for a machine account (expected, not kerberoasting)</description>
+    <group>kerberoasting,</group>
+  </rule>
+
+  <!-- Failure code 0x0 only; failed/other statuses are separate noise. -->
+  <rule id="100912" level="0">
+    <if_sid>100910</if_sid>
+    <field name="win.eventdata.status">^0x1[bB]$|^0x1[fF]$</field>
+    <description>Kerberos RC4 ticket request failed (not a successful roast)</description>
+    <group>kerberoasting,</group>
+  </rule>
+
+</group>

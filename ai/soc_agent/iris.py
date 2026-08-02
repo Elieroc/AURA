@@ -333,6 +333,9 @@ _RE_REVSHELL = re.compile(r"/dev/(?:tcp|udp)/(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,5})
 _RE_PROCTITLE = re.compile(r"proctitle=([0-9A-Fa-f]{8,})")
 # Création de compte dans une commande (dernier token = nom du compte).
 _RE_USERADD = re.compile(r"\b(?:useradd|adduser)\b.*?([A-Za-z_][\w-]*)\s*$")
+# Création de compte Windows en ligne de commande : « net user <nom> ... /add »
+# (avec ou sans /domain). Capte le backdoor AD quand seul le net.exe est vu.
+_RE_NETUSER_ADD = re.compile(r"\bnet\d?\s+user\s+([^\s/]+).*?/add", re.IGNORECASE)
 # Préfixe du montage sshfs du scanner YARA : /mnt/yaritrust/<hôte>_<ip>/…
 _RE_MONTAGE_SCAN = re.compile(r"^/mnt/yaritrust/[^/]+/")
 
@@ -570,6 +573,22 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
         m = _RE_USERADD.search(_decoder_proctitle(full_log))
         if m and m.group(1) not in _COMPTES_SYSTEME:
             ajouter(m.group(1), "account", "Compte créé par l'attaquant (useradd)")
+
+        # Compte Windows créé par l'attaquant : event 4720 (targetUserName) ou une
+        # ligne de commande « net user <nom> /add ». Sans ça, la création d'un
+        # backdoor AD (net user art-backdoor /add /domain) n'était pas un IOC
+        # « account », donc le filet déterministe de mitigate (compte créé ->
+        # disable_user) ne se déclenchait pas. Comptes machine ($) écartés.
+        wev = (data.get("win") or {}).get("eventdata") or {}
+        wsys = (data.get("win") or {}).get("system") or {}
+        tuser = wev.get("targetUserName")
+        if (str(wsys.get("eventID") or "") == "4720" and tuser
+                and not str(tuser).endswith("$")):
+            ajouter(tuser, "account", "Compte Windows créé par l'attaquant (4720)")
+        mw = _RE_NETUSER_ADD.search(str(wev.get("commandLine") or full_log or ""))
+        if mw and not mw.group(1).endswith("$"):
+            ajouter(mw.group(1), "account",
+                    "Compte créé par l'attaquant (net user /add)")
 
         # Fichier déposé dans un emplacement suspect (binaire droppé, webshell).
         fichier = (audit.get("file", {}) or {}).get("name") or a.get("entity")

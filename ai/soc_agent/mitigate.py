@@ -659,6 +659,32 @@ def _compte_protege(brut: str) -> bool:
     return bool(m and int(m.group(1)) < 1000)
 
 
+_WIN_EXE_EXT = (".exe", ".dll", ".ps1", ".bat", ".scr", ".com", ".vbs")
+
+
+def _win_fichiers_suspects(alertes: list[dict]) -> set[str]:
+    """Chemins d'exécutables Windows vus dans des emplacements NON système
+    (déposés ou lancés par l'attaquant). Cible de kill_process (nom) et de
+    quarantine (chemin plein). Les répertoires système sont exclus : un binaire
+    signé de System32 relève d'une détection comportementale, pas d'un implant à
+    tuer/quarantiner. Sources : Sysmon (image / targetFilename / *Image) + entity."""
+    out: set[str] = set()
+    for a in alertes:
+        raw = a.get("raw")
+        if not raw:
+            continue
+        data = ((raw if isinstance(raw, dict) else json.loads(raw)) or {}).get("data", {})
+        ev = (data.get("win") or {}).get("eventdata") or {}
+        for c in (ev.get("image"), ev.get("targetFilename"), ev.get("sourceImage"),
+                  ev.get("targetImage"), a.get("entity")):
+            p = str(c or "").strip()
+            pl = p.lower()
+            if ((":\\" in p or p.startswith("\\")) and pl.endswith(_WIN_EXE_EXT)
+                    and not pl.startswith(config.VT_DIRS_SYSTEME)):
+                out.add(p)
+    return out
+
+
 def _alertes_par_agent(alertes: list[dict]) -> dict[str, list[dict]]:
     """Alertes regroupées par agent. Un incident peut couvrir plusieurs machines
     (fusion campagne) : chaque preuve reste attachée à SA machine (agent de
@@ -704,9 +730,17 @@ def _cibles_par_machine(action: str, incident: dict,
 
     if action == "propose_kill_process":
         # Nom exact (comm) des exécutables lancés depuis un répertoire suspect,
-        # sur la machine qui l'a exécuté. pkill -x matchera ce nom.
+        # sur la machine qui l'a exécuté. pkill -x (Linux) / Stop-Process (Windows).
         out: set[tuple[str, str]] = set()
         for ag in agents:
+            if _agent_windows(ag):
+                # Windows : nom du binaire malveillant (déposé hors système),
+                # tiré de la télémétrie Sysmon. win-kill-process matche le nom.
+                for p in _win_fichiers_suspects(par_agent[ag]):
+                    base = p.replace("/", "\\").rsplit("\\", 1)[-1]
+                    if base:
+                        out.add((ag, base))
+                continue
             for a in par_agent[ag]:
                 raw = a.get("raw")
                 if not raw:
@@ -796,9 +830,13 @@ def _cibles_par_machine(action: str, incident: dict,
         for ag in agents:
             if not _agent_windows(ag):
                 continue
+            # Chemins pleins des exécutables déposés hors système (Sysmon), plus
+            # les fichiers signalés comme IOC. win-quarantine-file prend le chemin.
+            for p in _win_fichiers_suspects(par_agent[ag]):
+                out.add((ag, p))
             for v, t, _ in _iocs(par_agent[ag]):
                 p = str(v)
-                if t == "file" and ("\\" in p or "/" in p) \
+                if t in ("file", "filename") and ("\\" in p or "/" in p) \
                         and not p.lower().startswith(("c:\\windows", "c:/windows")):
                     out.add((ag, p))
         return sorted(out)
