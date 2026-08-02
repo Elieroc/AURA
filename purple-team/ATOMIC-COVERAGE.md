@@ -297,6 +297,41 @@ mismatch de décodeur — d'où l'échec **identique** de la couche spécifique.
 5. **[moyen/faible]** Purger les faux IOC (verdict VT porté par une clé de
    registre) du case 90.
 
+### Correctifs livrés post-#3 (2026-08-02, commit `9c66c55`)
+
+Axes 1, 3 (volet idempotence) et le drop de rafale d'AR, traités et **déployés
+sur le manager prod** :
+
+1. **Décodeur des 8 règles AD** (axe 1) — `<decoded_as>json</decoded_as>` →
+   `<decoded_as>windows_eventchannel</decoded_as>` sur 100910/100915/100918/
+   100921/100924/100925/100926/100928. Déployé, manager redémarré à 12:44 UTC.
+   **Validation partielle :** le nom du décodeur est confirmé — l'événement
+   `lsadump::dcsync` réel de la campagne porte bien `decoder=windows_eventchannel`
+   et la règle native 60000 (qui a fait tirer 67027 sur ce même événement)
+   utilise exactement cette porte ; la regex de 100924 était déjà prouvée (L13
+   sous le décodeur `json` dans le rapport #3). **Preuve observée manquante :**
+   `wazuh-logtest` ne peut PAS valider une règle eventchannel — un JSON fourni
+   sur stdin est routé vers le décodeur `json`, pas `windows_eventchannel` (aucune
+   règle eventchannel ne tire alors, même les natives). C'est précisément le
+   piège qui a laissé passer le « fix » de #2. Le ✅ demande un événement Windows
+   frais poussé dans le pipeline réel (un `echo` bénin portant `lsadump::dcsync`
+   dans sa ligne de commande suffit) — **à faire via WinRM, en attente**.
+
+2. **Idempotence `disable_user`** (axe 3, volet réémission) — `'émis'` n'est plus
+   un statut figé dans `_deja_exec` : une remédiation partie mais jamais confirmée
+   par un `ar-result` est retentée jusqu'à `MITIGATE_MAX_TENTATIVES` (3). Nouvelle
+   colonne `mitigations.tentatives`. Corrige le blocage de `art-backdoor` (compte
+   recréé sous un incident déjà ouvert, figé sur un `'émis'` hérité de #2). Le
+   volet « déclencher sur 4728/60159 » reste à faire.
+
+3. **Rafale d'AR tronquée** (nouvel axe, cause du mimikatz non quarantiné) —
+   sérialisation des envois dans `_wazuh_ar` (`MITIGATE_AR_GAP_SECONDS`, 1,5 s) :
+   une rafale de commandes rapprochées saturait `wazuh-execd`, qui en dropait une
+   partie avant le script.
+
+Restent ouverts : axe 2 (rafraîchir le case DC), axe 3 volet déterministe sur
+groupe admin, axe 4 (chemin quarantaine mimikatz), axe 5 (faux IOC case 90).
+
 ---
 
 ## TA0001 — Initial Access
