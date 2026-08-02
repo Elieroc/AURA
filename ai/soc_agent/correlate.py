@@ -80,6 +80,29 @@ ENTITES_GENERIQUES = {
     "/usr/bin/dash", "/bin/dash",
 }
 
+# Exécutables trop communs pour lier deux alertes ou fusionner deux hôtes : un
+# rebond d'administration (powershell, cmd, net) ou un shell relierait sinon
+# tout le parc. La campagne #4 a fusionné à tort deux hôtes sur
+# `...\WindowsPowerShell\v1.0\powershell.exe`. On compare sur le NOM de fichier,
+# backslashes doublés de l'eventchannel repliés — un vrai marqueur d'attaquant
+# (mimikatz.exe, un compte créé, une IP C2) reste, lui, discriminant.
+NOMS_GENERIQUES = {
+    "bash", "sh", "dash", "zsh",
+    "powershell.exe", "pwsh.exe", "cmd.exe", "conhost.exe", "net.exe",
+    "net1.exe", "wsmprovhost.exe", "svchost.exe", "explorer.exe",
+    "rundll32.exe", "wmiprvse.exe", "reg.exe", "dllhost.exe",
+}
+
+
+def entite_generique(entity: str | None) -> bool:
+    """Vrai si l'entité est trop générique pour lier/fusionner (basename)."""
+    if not entity:
+        return True
+    e = entity.replace("\\\\", "\\").replace("\\", "/").lower().rstrip("/")
+    if e in ENTITES_GENERIQUES:
+        return True
+    return e.rsplit("/", 1)[-1] in NOMS_GENERIQUES
+
 
 def point_commun(a: dict, b: dict) -> tuple[str, bool] | None:
     """Ce qui rattache deux alertes du même agent : (libellé, lien_fort).
@@ -99,7 +122,7 @@ def point_commun(a: dict, b: dict) -> tuple[str, bool] | None:
     if a["srcip"] and a["srcip"] == b["srcip"]:
         return "même IP source", True
     if (a["entity"] and a["entity"] == b["entity"]
-            and a["entity"] not in ENTITES_GENERIQUES):
+            and not entite_generique(a["entity"])):
         return "même objet", True
     if a["srcuser"] and a["srcuser"] == b["srcuser"]:
         return "même compte", True
@@ -264,7 +287,7 @@ def _enrichir(incidents: list[list[dict]], candidats: list[dict]) -> int:
                 for membre in inc:
                     meme_ip = c["srcip"] and c["srcip"] == membre["srcip"]
                     meme_objet = (c["entity"] and c["entity"] == membre["entity"]
-                                  and c["entity"] not in ENTITES_GENERIQUES)
+                                  and not entite_generique(c["entity"]))
                     if meme_ip or meme_objet:
                         titre = True
                         break

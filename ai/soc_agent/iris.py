@@ -1194,8 +1194,17 @@ def _regle_whitelist(conn, alertes: list[dict]) -> dict | None:
 # toute la flotte, les règles 1006xx muettes, et le case ne le disait pas.
 # « réseau / IDS (hôte) » : Suricata tourne au périmètre (pfSense), pas sur
 # l'hôte — de son point de vue, il n'a aucune visibilité sur son propre trafic.
+# « exécution de processus » n'est PAS que auditd : sur Windows la création de
+# processus (avec ligne de commande) vient de Sysmon EID1 et du 4688 de
+# l'eventchannel, et le contenu des scripts du canal PowerShell. La campagne #4
+# a montré le coût de l'omission : sur le DC (Sysmon présent), le rapport se
+# croyait aveugle aux lignes de commande et ratait DCSync/Golden/création de
+# Domain Admin, MITRE effondré sur T1059.001. Ces groupes rendent la présence
+# visible pour que le modèle analyse enfin les cmdlines.
 _CAPTEURS = (
-    ("exécution de processus (auditd)", {"audit"}),
+    ("exécution de processus (auditd / Sysmon EID1 / 4688)",
+     {"audit", "sysmon_event1", "sysmon_eid1_detections",
+      "windows_powershell", "powershell"}),
     ("intégrité fichier (FIM)", {"syscheck", "syscheck_file"}),
     ("authentification", {"sshd", "pam", "authentication_success",
                           "authentication_failed", "invalid_login"}),
@@ -1258,8 +1267,9 @@ def _incidents_lies(conn, incident: dict) -> list[dict]:
     # www-data, admin…) existe sur chaque hôte — lier dessus rapprocherait tous
     # les incidents entre eux. On écarte donc les comptes génériques, on garde
     # les shells génériques déjà exclus côté corrélation.
-    valeurs = {v for t in traits for v in (t["srcip"], t["entity"])
-               if v and v not in correlate.ENTITES_GENERIQUES}
+    valeurs = {t["srcip"] for t in traits if t["srcip"]}
+    valeurs |= {t["entity"] for t in traits
+                if t["entity"] and not correlate.entite_generique(t["entity"])}
     valeurs |= {t["srcuser"] for t in traits
                 if t["srcuser"] and t["srcuser"].lower() not in _COMPTES_GENERIQUES}
     if not valeurs:
@@ -1452,7 +1462,7 @@ def _apparentes(a: list[dict], b: list[dict]) -> bool:
         ips = {x["srcip"] for x in al if x.get("srcip")}
         users = {x["srcuser"] for x in al if x.get("srcuser")}
         ents = {x["entity"] for x in al if x.get("entity")
-                and x["entity"] not in correlate.ENTITES_GENERIQUES}
+                and not correlate.entite_generique(x["entity"])}
         tacs = {t for x in al for t in (x.get("mitre_tactics") or [])}
         grps = ({g for x in al for g in (x.get("rule_groups") or [])}
                 - correlate.GROUPES_GENERIQUES)

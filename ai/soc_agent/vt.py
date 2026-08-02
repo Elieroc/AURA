@@ -85,7 +85,10 @@ def _hash(data: dict, raw: dict) -> str | None:
 
 def _hors_systeme(chemin: str) -> bool:
     """Vrai si l'exécutable N'EST PAS dans un répertoire système (donc filtrable)."""
-    p = chemin.lower().replace("\\", "\\")
+    # L'eventchannel Windows double les backslashes (C:\\\\Windows\\\\...):
+    # les replier vers un seul, sinon le prefixe systeme ne matche jamais
+    # et un LOLBin propre de System32 (net1.exe...) est suppresse a tort.
+    p = chemin.lower().replace("\\\\", "\\")
     if not p:
         return False
     return not p.startswith(config.VT_DIRS_SYSTEME)
