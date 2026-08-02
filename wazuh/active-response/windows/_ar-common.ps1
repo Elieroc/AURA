@@ -21,10 +21,42 @@ function Get-ARLog {
     return (Join-Path (Split-Path $PSScriptRoot -Parent) 'active-responses.log')
 }
 
+function Add-ARLine {
+    <#
+        Appends one line to active-responses.log.
+
+        Add-Content CANNOT be used here. wazuh-execd keeps the file open for its
+        own "Starting"/"Ended" lines, and Add-Content asks for a share mode the
+        OS refuses: "le processus ne peut pas acceder au fichier, car il est en
+        cours d'utilisation par un autre processus". Every Write-ARLog call in
+        every Windows AR script had been failing that way since day one, and the
+        surrounding `catch {}` swallowed it - which is why the log only ever
+        contained execd's own lines, and why no Windows remediation could ever
+        be verified. Opening the stream ourselves with FileShare.ReadWrite
+        appends alongside execd without fighting it.
+
+        The catch stays (an AR must not die because it could not log) but it now
+        reports on stderr, which execd captures: a silent failure here blinds
+        the whole verification loop, so it must never be silent again.
+    #>
+    param([string]$Line)
+    $path = Get-ARLog
+    try {
+        $fs = New-Object IO.FileStream($path, [IO.FileMode]::Append,
+                                       [IO.FileAccess]::Write,
+                                       [IO.FileShare]::ReadWrite)
+        $sw = New-Object IO.StreamWriter($fs, [Text.Encoding]::UTF8)
+        $sw.WriteLine($Line)
+        $sw.Flush(); $sw.Close(); $fs.Close()
+    } catch {
+        [Console]::Error.WriteLine("ar-log write failed: $($_.Exception.Message)")
+    }
+}
+
 function Write-ARLog {
     param([string]$Tag, [string]$Message)
-    $line = ('{0} {1}: {2}' -f (Get-Date -Format 'yyyy/MM/dd HH:mm:ss'), $Tag, $Message)
-    try { Add-Content -Path (Get-ARLog) -Value $line -Encoding utf8 } catch { }
+    Add-ARLine ('{0} {1}: {2}' -f (Get-Date -Format 'yyyy/MM/dd HH:mm:ss'),
+                $Tag, $Message)
 }
 
 function Write-ARResult {
@@ -61,10 +93,9 @@ function Write-ARResult {
         [string]$Reason = ''
     )
     $clean = { param($s) ($s -replace '[\r\n"]', ' ').Trim() }
-    $line = ('{0} ar-result: script={1} status={2} target="{3}" reason="{4}"' -f `
-             (Get-Date -Format 'yyyy/MM/dd HH:mm:ss'), $Script, $Status,
-             (& $clean $Target), (& $clean $Reason))
-    try { Add-Content -Path (Get-ARLog) -Value $line -Encoding utf8 } catch { }
+    Add-ARLine ('{0} ar-result: script={1} status={2} target="{3}" reason="{4}"' -f `
+                (Get-Date -Format 'yyyy/MM/dd HH:mm:ss'), $Script, $Status,
+                (& $clean $Target), (& $clean $Reason))
 }
 
 function Read-ARInput {
