@@ -132,6 +132,153 @@ def test_cibles_kill_process_vise_implant_en_dir_suspect():
         ("001", ".kworker"), ("001", "malware")]
 
 
+# --- ciblage Windows (régression purple-team 2026-08-02) --------------------
+#
+# Les chemins de l'eventchannel Windows arrivent avec les backslashes DOUBLÉS et
+# Wazuh les stocke tels quels. Le filtre des répertoires système ne matchait
+# donc jamais : le soc-agent a envoyé 26 ordres de quarantaine sur des binaires
+# signés de System32 d'un contrôleur de domaine, et tué toutes les sessions
+# PowerShell et WinRM de la machine. Ces tests figent le comportement attendu.
+
+def _alerte_win(agent_id="014", image=None, cible_fichier=None, pid=None,
+                srcuser=None, eid="1"):
+    ev = {}
+    if image:
+        ev["image"] = image
+    if cible_fichier:
+        ev["targetFilename"] = cible_fichier
+    if pid:
+        ev["processId"] = pid
+    return {"agent_id": agent_id, "srcip": None, "srcuser": srcuser,
+            "entity": None,
+            "raw": json.dumps({"data": {"win": {"system": {"eventID": eid},
+                                                "eventdata": ev}}})}
+
+
+def _win(monkeypatch, agents=("014",), dcs=("014",)):
+    monkeypatch.setattr(mitigate.config, "AGENTS_WINDOWS", set(agents))
+    monkeypatch.setattr(mitigate.config, "AGENTS_DC", set(dcs))
+
+
+def test_norm_chemin_win_deplie_les_backslashes_doubles():
+    assert (mitigate._norm_chemin_win(r"C:\\Windows\\System32\\cmd.exe")
+            == r"C:\Windows\System32\cmd.exe")
+    assert mitigate._norm_chemin_win('"C:\\\\Temp\\\\a.exe"') == r"C:\Temp\a.exe"
+
+
+def test_quarantine_epargne_system32_malgre_backslashes_doubles(monkeypatch):
+    """Le cas exact du purple-team : cmd.exe et net.exe d'un DC ne doivent PAS
+    être des cibles, et l'implant déposé doit le rester."""
+    _win(monkeypatch)
+    alertes = [
+        _alerte_win(image=r"C:\\Windows\\System32\\cmd.exe"),
+        _alerte_win(image=r"C:\\Windows\\System32\\net.exe"),
+        _alerte_win(image=r"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"),
+        _alerte_win(image=r"C:\\AtomicRedTeam\\ExternalPayloads\\mimikatz\\x64\\mimikatz.exe"),
+    ]
+    cibles = _cibles_par_machine("propose_quarantine_file", {"id": 1}, alertes)
+    assert cibles == [("014", r"C:\AtomicRedTeam\ExternalPayloads\mimikatz\x64\mimikatz.exe")]
+
+
+def test_quarantine_ignore_les_sondes_applocker(monkeypatch):
+    _win(monkeypatch)
+    alertes = [_alerte_win(
+        cible_fichier=r"C:\\Users\\Admin\\AppData\\Local\\Temp\\__PSScriptPolicyTest_aokpwtrq.13g.ps1")]
+    assert _cibles_par_machine("propose_quarantine_file", {"id": 1}, alertes) == []
+
+
+def test_kill_windows_refuse_image_generique_sans_pid(monkeypatch):
+    """`powershell.exe` sans PID n'est pas une cible : tuer par nom couperait
+    toutes les sessions d'administration et WinRM de la machine."""
+    _win(monkeypatch)
+    alertes = [_alerte_win(image=r"C:\\Users\\Public\\powershell.exe")]
+    assert _cibles_par_machine("propose_kill_process", {"id": 1}, alertes) == []
+
+
+def test_kill_windows_cible_pid_et_image_attendue(monkeypatch):
+    _win(monkeypatch)
+    alertes = [_alerte_win(image=r"C:\\Users\\Public\\powershell.exe", pid="4321"),
+               _alerte_win(image=r"C:\\Temp\\mimikatz.exe", pid="777")]
+    assert _cibles_par_machine("propose_kill_process", {"id": 1}, alertes) == [
+        ("014", "mimikatz.exe#777"), ("014", "powershell.exe#4321")]
+
+
+def test_kill_windows_epargne_les_binaires_systeme(monkeypatch):
+    _win(monkeypatch)
+    alertes = [_alerte_win(image=r"C:\\Windows\\System32\\net.exe", pid="1234")]
+    assert _cibles_par_machine("propose_kill_process", {"id": 1}, alertes) == []
+
+
+def test_disable_user_windows_ignore_srcuser_des_logons(monkeypatch):
+    """Le srcuser d'un 4624 est la victime ou une identité système. Seuls les
+    comptes CRÉÉS par l'attaquant sont désactivables automatiquement."""
+    _win(monkeypatch)
+    alertes = [_alerte_win(srcuser="Système"),
+               _alerte_win(srcuser="ANONYMOUS LOGON"),
+               _alerte_win(srcuser="UMFD-0"),
+               _alerte_win(srcuser="jdupont")]
+    assert _cibles_par_machine("propose_disable_user", {"id": 1}, alertes) == []
+
+
+def test_disable_user_windows_garde_le_compte_cree(monkeypatch):
+    """Le compte créé par l'attaquant (4720) reste une cible, et l'action part
+    sur un DC — même noyée dans des logons d'identités système."""
+    _win(monkeypatch)
+    creation = {
+        "agent_id": "014", "srcip": None, "srcuser": "Administrateur",
+        "entity": None,
+        "raw": json.dumps({"data": {"win": {
+            "system": {"eventID": "4720"},
+            "eventdata": {"targetUserName": "art-backdoor"}}}}),
+    }
+    al = [creation, _alerte_win(srcuser="Système")]
+    assert _cibles_par_machine("propose_disable_user", {"id": 1}, al) == [
+        ("014", "art-backdoor")]
+
+
+def test_comptes_windows_bien_connus_proteges():
+    for nom in ("Système", "SYSTEM", "ANONYMOUS LOGON", "SERVICE LOCAL",
+                "LOCAL SERVICE", "UMFD-0", "DWM-1", "LAB\\WIN-DC$"):
+        assert mitigate._compte_protege(nom), nom
+
+
+# --- boucle de vérification des active responses ----------------------------
+
+def test_statuts_partis_couvrent_le_cycle_de_vie():
+    """« émis » n'est PAS un succès : l'API a pris la commande, rien de plus.
+    Le rapport IRIS du 2026-08-02 annonçait 26 quarantaines réussies qui
+    avaient toutes été refusées par le script."""
+    assert set(mitigate.STATUTS_PARTIS) == {
+        "émis", "confirmé", "sans_effet", "refusé_agent"}
+    # Seul un compte rendu de l'agent vaut « Done » côté IRIS.
+    assert mitigate._STATUT_TASK["confirmé"] == "Done"
+    assert mitigate._STATUT_TASK["émis"] != "Done"
+    assert mitigate._STATUT_TASK["refusé_agent"] == "Canceled"
+
+
+def test_statut_ar_mappe_les_quatre_issues():
+    assert mitigate._STATUT_AR == {"applied": "confirmé", "noop": "sans_effet",
+                                   "refused": "refusé_agent", "error": "échec"}
+
+
+def test_actions_partie_figees_mais_echec_rejouable():
+    """Un refus ne se rejoue pas (il serait redéclíné à chaque cycle) ; un
+    échec de canal, si."""
+    for s in mitigate.STATUTS_PARTIS:
+        assert s in mitigate._STATUTS_FIGES
+    assert "échec" not in mitigate._STATUTS_FIGES
+    assert "annulé" in mitigate._STATUTS_FIGES
+
+
+def test_chaque_action_remediable_a_un_script_ar():
+    """Sans entrée dans _SCRIPTS_AR, le compte rendu de l'agent n'est jamais
+    rapproché et la remédiation reste 'émis' pour toujours."""
+    for action in REMEDIATIONS:
+        if action in mitigate.ACTIONS_MANUELLES:
+            continue
+        assert action in mitigate._SCRIPTS_AR, action
+
+
 def test_open_case_et_escalade_hors_remediation():
     assert "open_case" not in REMEDIATIONS
     assert "close_false_positive" not in REMEDIATIONS
@@ -152,10 +299,10 @@ def test_taches_annulees_ne_garde_que_canceled():
 
 
 def test_reverse_pour_actions_reversibles_pas_pour_kill():
-    """Isolation, blocage IP et désactivation ont un reverse ; le kill non
-    (un process tué ne se « unkill » pas)."""
+    """Isolation, blocage IP, désactivation et quarantaine ont un reverse ; le
+    kill non (un process tué ne se « unkill » pas)."""
     assert set(REVERSEURS) == {"propose_isolate_host", "propose_block_ip",
-                               "propose_disable_user"}
+                               "propose_disable_user", "propose_quarantine_file"}
     assert "propose_kill_process" not in REVERSEURS
 
 

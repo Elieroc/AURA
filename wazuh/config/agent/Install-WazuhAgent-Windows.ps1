@@ -67,6 +67,13 @@ param(
     # rien apporter au verdict. On garde ProcessCreate, ProcessAccess (lsass),
     # FileCreate, RegistryEvent (persistance), CreateRemoteThread, NetworkConnect.
     [string[]]$SysmonDisableEvents = @('ImageLoad', 'DnsQuery', 'FileCreateStreamHash'),
+    # Ne pas injecter la règle ProcessAccess sur lsass (event 10). À n'utiliser
+    # que si un EDR tiers produit déjà cette télémétrie : sans elle, la règle
+    # Wazuh 100918 (vol de credentials dans lsass) est muette.
+    [switch]$SkipLsassAccess,
+    # Ne pas poser la SACL de réplication sur l'objet domaine (DC uniquement).
+    # Sans elle, aucun 4662 n'est émis et la règle 100915 (DCSync) est muette.
+    [switch]$SkipDcsyncAudit,
     [switch]$SkipSysmon
 )
 
@@ -146,6 +153,57 @@ foreach ($guid in $audit.Keys) {
 Write-Ok ("Audit policy set ({0} subcategories, DC={1})." -f $audit.Count, $isDC)
 $report['audit'] = "$($audit.Count) subcategories (DC=$isDC)"
 
+# 2b. SACL on the domain object, so that DS Access actually emits 4662.
+#
+# Enabling the "Directory Service Access" subcategory above is necessary and NOT
+# sufficient: 4662 is only written for objects that carry a matching audit ACE.
+# The domain head has none by default, so a DCSync against it is silent. That is
+# exactly what happened on 2026-08-02: the subcategory was on, rule 100915 was
+# deployed, mimikatz ran `lsadump::dcsync` on the DC, and the manager received
+# zero 4662. Auditing the three replication extended rights is what turns the
+# rule on. Volume stays low - legitimate replication is DC-to-DC and rule
+# 100916 drops it as a machine account.
+if ($isDC -and -not $SkipDcsyncAudit) {
+    Write-Step 'DCSync audit (SACL on the domain object)'
+    try {
+        Import-Module ActiveDirectory -ErrorAction Stop
+        $dn   = (Get-ADDomain).DistinguishedName
+        $path = "AD:\$dn"
+        $acl  = Get-Acl -Path $path -Audit
+        $everyone = New-Object System.Security.Principal.SecurityIdentifier 'S-1-1-0'
+        $rights = @{
+            '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2' = 'Replicating Directory Changes'
+            '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2' = 'Replicating Directory Changes All'
+            '89e95b76-444d-4c62-991a-0facbeda640c' = 'Replicating Directory Changes In Filtered Set'
+        }
+        $added = 0
+        foreach ($guid in $rights.Keys) {
+            $deja = $acl.GetAuditRules($true, $true, [System.Security.Principal.SecurityIdentifier]) |
+                    Where-Object { $_.ObjectType -eq [guid]$guid -and
+                                   $_.IdentityReference -eq $everyone }
+            if ($deja) { continue }
+            $ace = New-Object System.DirectoryServices.ActiveDirectoryAuditRule(
+                $everyone,
+                [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight,
+                [System.Security.AccessControl.AuditFlags]::Success,
+                [guid]$guid,
+                [System.DirectoryServices.ActiveDirectorySecurityInheritance]::None)
+            $acl.AddAuditRule($ace)
+            $added++
+        }
+        if ($added) {
+            Set-Acl -Path $path -AclObject $acl
+            Write-Ok "DCSync audit ACEs added on $dn ($added of $($rights.Count))."
+        } else {
+            Write-Ok "DCSync audit ACEs already present on $dn."
+        }
+        $report['dcsync_sacl'] = "ok (+$added)"
+    } catch {
+        Write-Warn2 "DCSync SACL not applied: $($_.Exception.Message)"
+        $report['dcsync_sacl'] = 'failed'
+    }
+}
+
 # 3. Command line in 4688
 $auditKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
 New-Item -Path $auditKey -Force | Out-Null
@@ -205,6 +263,48 @@ if ($SkipSysmon) {
         } catch { Write-Warn2 "Sysmon noise trim skipped: $($_.Exception.Message)" }
     }
 
+    # ProcessAccess (event 10) on lsass.exe.
+    #
+    # The SwiftOnSecurity config ships ProcessAccess as onmatch="include" with no
+    # rule inside, which logs NOTHING - and an empty include is indistinguishable
+    # from "enabled" when you only check that the node exists. Measured cost of
+    # that assumption: rule 100918 (LSASS credential dumping) was written,
+    # deployed and reviewed against telemetry the estate never emitted, and the
+    # purple-team campaign of 2026-08-02 dumped lsass without a single event 10.
+    #
+    # We inject one narrow rule instead of enabling the whole event type: only
+    # handles opened on lsass, and only with the access masks that allow reading
+    # its memory. That is what mimikatz, procdump and comsvcs MiniDump ask for,
+    # and it keeps the volume near zero on an idle host - the reason
+    # SwiftOnSecurity left it empty in the first place.
+    if (-not $SkipLsassAccess) {
+        try {
+            [xml]$smXml = Get-Content $smCfg
+            $pa = $smXml.SelectSingleNode('//ProcessAccess')
+            if (-not $pa) {
+                $parent = $smXml.SelectSingleNode('//EventFiltering')
+                if ($parent) { $pa = $parent.AppendChild($smXml.CreateElement('ProcessAccess')) }
+            }
+            if ($pa) {
+                $pa.SetAttribute('onmatch', 'include')
+                while ($pa.HasChildNodes) { [void]$pa.RemoveChild($pa.FirstChild) }
+                $rule = $smXml.CreateElement('Rule')
+                $rule.SetAttribute('groupRelation', 'and')
+                $ti = $smXml.CreateElement('TargetImage')
+                $ti.SetAttribute('condition', 'image'); $ti.InnerText = 'lsass.exe'
+                $ga = $smXml.CreateElement('GrantedAccess')
+                $ga.SetAttribute('condition', 'is any')
+                $ga.InnerText = '0x1010;0x1410;0x1438;0x143a;0x1f1fff;0x1f2fff;0x1fffff'
+                [void]$rule.AppendChild($ti); [void]$rule.AppendChild($ga)
+                [void]$pa.AppendChild($rule)
+                $smXml.Save($smCfg)
+                Write-Ok 'Sysmon ProcessAccess (event 10) enabled for lsass.exe memory-read masks.'
+            } else {
+                Write-Warn2 'Sysmon config has no EventFiltering node - ProcessAccess not enabled.'
+            }
+        } catch { Write-Warn2 "Sysmon ProcessAccess rule skipped: $($_.Exception.Message)" }
+    }
+
     # Sysmon prints its banner to stderr; with ErrorActionPreference=Stop a bare
     # `& $smExe` would surface that as a terminating NativeCommandError. Start-Process
     # isolates the native exit code instead.
@@ -244,6 +344,23 @@ foreach ($ch in $channels) {
         $added += $ch
     }
 }
+# Active-response outcome log.
+#
+# The Wazuh AR channel is fire-and-forget: the API returns as soon as the
+# command is queued and the script's exit code never comes back. Shipping this
+# file is what lets the manager learn whether a remediation actually happened.
+# Without it, `mitigations.statut` only ever means "the API accepted it" - the
+# IRIS report of 2026-08-02 announced 26 successful quarantines of System32
+# binaries on this very DC, every one of which the script had refused.
+# Decoder `ar-result`, rules 100930-100935, consumed by soc_agent.reconcile.
+# One line per remediation, so the volume is nil in normal operation.
+$arLog = Join-Path (Split-Path $ossecCfg -Parent) 'active-response\active-responses.log'
+if ($c -notmatch [regex]::Escape('active-responses.log')) {
+    $block = "  <localfile>`r`n    <location>$arLog</location>`r`n    <log_format>syslog</log_format>`r`n  </localfile>`r`n</ossec_config>"
+    $c = $c -replace '</ossec_config>', $block
+    $added += 'active-responses.log'
+}
+
 if ($added.Count) {
     Set-Content -Path $ossecCfg -Value $c -Encoding UTF8
     Write-Ok ("Added channels: {0}" -f ($added -join ', '))

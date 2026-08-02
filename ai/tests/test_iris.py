@@ -236,17 +236,72 @@ def test_classification_defaut():
 
 def test_iocs_dedupliques_et_types():
     import json
+    vt = {"found": "62", "malicious": "48", "source": {"sha256": "abc",
+                                                       "file": "/tmp/x"}}
     alertes = [
         {"srcip": "45.134.26.87", "entity": "/tmp/x",
-         "raw": json.dumps({"data": {"virustotal": {"source": {"sha256": "abc"}}}})},
+         "raw": json.dumps({"data": {"virustotal": vt}})},
         {"srcip": "45.134.26.87", "entity": "/tmp/x",   # doublon
          "raw": json.dumps({"data": {}})},
     ]
     iocs = _iocs(alertes)
     valeurs = {v for v, _, _ in iocs}
     types = {t for _, t, _ in iocs}
-    assert valeurs == {"45.134.26.87", "/tmp/x", "abc"}   # dédupliqué
+    # Dédupliqué : l'IP et le chemin n'apparaissent qu'une fois malgré deux
+    # alertes ; le fichier signalé par VT est porté par son hash.
+    assert valeurs == {"45.134.26.87", "/tmp/x", "abc"}
     assert "ip-any" in types and "sha256" in types
+
+
+def test_iocs_ignore_verdict_vt_non_malveillant():
+    """Un hash que VirusTotal ne connaît même pas n'est pas un indicateur de
+    compromission. Deux des trois IOC du case 90 (purple-team 2026-08-02)
+    étaient des `found=0, malicious=0` étiquetés « signalé par VirusTotal »."""
+    import json
+    raw = json.dumps({"data": {"virustotal": {
+        "found": "0", "malicious": "0",
+        "source": {"sha1": "3f35b3515a5aeff3998b084846c4d37aa0fb9233",
+                   "file": "C:\\\\Temp\\\\x.exe"}}}})
+    assert _iocs([{"srcip": None, "entity": None, "raw": raw}]) == []
+
+
+def test_iocs_ignore_les_cles_de_registre():
+    """L'intégration VT suit aussi le FIM du registre : une clé n'a pas de
+    contenu analysable, et le hash qui l'accompagne ne désigne aucun binaire."""
+    import json
+    raw = json.dumps({"data": {"virustotal": {
+        "found": "5", "malicious": "3",
+        "source": {"sha1": "deadbeef",
+                   "file": "HKEY_LOCAL_MACHINE\\\\System\\\\CurrentControlSet"
+                           "\\\\Services\\\\bam\\\\State"}}}})
+    assert _iocs([{"srcip": None, "entity": None, "raw": raw}]) == []
+
+
+def test_iocs_capte_lexecutable_windows_depose():
+    """mimikatz.exe manquait aux IOC du case 90 alors qu'il était cité par une
+    dizaine d'alertes — et son absence empêchait aussi la fusion de campagne
+    entre les deux hôtes qui l'exécutaient."""
+    import json
+    chemin = r"C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\mimikatz\\x64\\mimikatz.exe"
+    raw = json.dumps({"data": {"win": {"system": {"eventID": "1"},
+                                       "eventdata": {"image": chemin}}}})
+    valeurs = {v for v, _, _ in _iocs([{"srcip": None, "entity": None,
+                                        "raw": raw}])}
+    assert valeurs == {chemin.replace("\\\\", "\\")}
+
+
+def test_iocs_epargne_les_binaires_systeme_et_sondes():
+    import json
+
+    def alerte(image):
+        return {"srcip": None, "entity": None,
+                "raw": json.dumps({"data": {"win": {
+                    "system": {"eventID": "1"},
+                    "eventdata": {"image": image}}}})}
+
+    assert _iocs([alerte(r"C:\\Windows\\System32\\cmd.exe")]) == []
+    assert _iocs([alerte(r"C:\\Users\\a\\AppData\\Local\\Temp"
+                         r"\\__PSScriptPolicyTest_ab.cd.ps1")]) == []
 
 
 def test_taguer_ajoute_hostname():

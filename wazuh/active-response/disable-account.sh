@@ -17,9 +17,19 @@
 set -u
 
 LOG_FILE="/var/ossec/logs/active-responses.log"
+SCRIPT_NAME="disable-account"
 
 log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') disable-account: $1" >> "$LOG_FILE"
+}
+
+# Compte rendu structuré, lu par le decodeur Wazuh 100930 puis par
+# soc_agent.reconcile. statut : applied | refused | noop | error.
+ar_result() {   # $1 statut  $2 cible  $3 motif
+    printf '%s ar-result: script=%s status=%s target="%s" reason="%s"\n' \
+        "$(date '+%Y/%m/%d %H:%M:%S')" "$SCRIPT_NAME" "$1" \
+        "$(printf '%s' "$2" | tr -d '\r\n"')" \
+        "$(printf '%s' "$3" | tr -d '\r\n"')" >> "$LOG_FILE"
 }
 
 read -r INPUT_JSON
@@ -29,9 +39,13 @@ case "$COMMAND" in
     add) ;;
     # execd émet "delete" à l'expiration du timeout. Une désactivation de compte
     # ne doit PAS se lever toute seule : seul enable-account.sh la défait.
-    delete) exit 0 ;;
+    delete)
+        ar_result noop "" "commande delete (expiration timeout), seul enable-account leve le verrou"
+        exit 0
+        ;;
     *)
         log "commande invalide: '$COMMAND'"
+        ar_result error "" "commande invalide: $COMMAND"
         exit 1
         ;;
 esac
@@ -40,6 +54,7 @@ USER=$(echo "$INPUT_JSON" | sed -n 's/.*"extra_args"[[:space:]]*:[[:space:]]*\[[
 
 if [ -z "$USER" ]; then
     log "ERREUR: aucun utilisateur fourni (extra_args vide)"
+    ar_result error "" "aucun utilisateur fourni (extra_args vide)"
     exit 1
 fi
 
@@ -50,12 +65,14 @@ fi
 case "$USER" in
     root|wazuh|wazuh-admin)
         log "REFUS: désactivation du compte protégé '$USER' refusée"
+        ar_result refused "$USER" "compte protege (root/wazuh/wazuh-admin)"
         exit 1
         ;;
 esac
 
 if ! id "$USER" >/dev/null 2>&1; then
     log "ERREUR: utilisateur '$USER' inexistant"
+    ar_result noop "$USER" "compte inexistant sur cet hote"
     exit 1
 fi
 
@@ -67,6 +84,7 @@ if command -v usermod >/dev/null 2>&1; then
         FAIT="${FAIT} usermod -L"
     else
         log "ERREUR: usermod -L a échoué sur '$USER'"
+        ar_result error "$USER" "usermod -L a echoue"
         exit 1
     fi
 fi
@@ -75,14 +93,17 @@ if command -v chage >/dev/null 2>&1; then
         FAIT="${FAIT} chage -E 1"
     else
         log "ERREUR: chage -E 1 a échoué sur '$USER'"
+        ar_result error "$USER" "chage -E 1 a echoue"
         exit 1
     fi
 fi
 
 if [ -z "$FAIT" ]; then
     log "ERREUR: ni usermod ni chage disponibles, compte '$USER' NON désactivé"
+    ar_result error "$USER" "ni usermod ni chage disponibles"
     exit 1
 fi
 
 log "compte '$USER' désactivé ($FAIT)"
+ar_result applied "$USER" "compte desactive ($FAIT)"
 exit 0

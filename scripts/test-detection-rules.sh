@@ -120,6 +120,42 @@ raw_case "100801 auditd absent (=vide, MEDIUM)" 100801 "ossec: output: audit-sta
 raw_case "100802 regles purgees"   100802 "ossec: output: audit-status: audit_enabled=1 audit_rules=0"
 raw_case "100800 etat nominal"     100800 "ossec: output: audit-status: audit_enabled=1 audit_rules=21"
 
+echo "== AD / Windows : ligne de commande (campagne purple-team 2026-08-02) =="
+# Ces cas figent la lecon de la campagne : quatre regles AD avaient ete livrees
+# sans preuve de tir, et aucune n'a matche l'attaque reelle. 100921 exigeait
+# `vssadmin\s+create` alors que le 4688 porte "vssadmin.exe  create shadow"
+# (suffixe .exe, deux espaces). On rejoue donc les lignes de commande EXACTES
+# relevees dans les events 4688 / Sysmon EID1 de la campagne, y compris leurs
+# doubles espaces - c'est precisement la forme qui avait echappe aux regles.
+win_case() {
+  desc="$1"; want="$2"; cmd="$3"; eid="${4:-1}"
+  chan="Microsoft-Windows-Sysmon/Operational"
+  [ "$eid" = "4688" ] && chan="Security"
+  log="{\"win\":{\"system\":{\"channel\":\"$chan\",\"eventID\":\"$eid\",\"computer\":\"WIN-DC.lab.local\",\"providerName\":\"x\"},\"eventdata\":{\"commandLine\":\"$cmd\",\"image\":\"C:\\\\\\\\Temp\\\\\\\\t.exe\",\"processId\":\"4321\"}}}"
+  check "$desc" "$want" "$log"
+}
+
+win_case "100921 vssadmin (forme reelle 4688)" 100921 "vssadmin.exe  create shadow /for=C:" 4688
+win_case "100921 ntdsutil ifm"                 100921 "ntdsutil.exe \\\"ac i ntds\\\" ifm \\\"create full c:/temp\\\"" 4688
+win_case "100921 reg save hklm sam"            100921 "reg.exe save hklm\\\\\\\\sam c:\\\\\\\\temp\\\\\\\\sam.hive" 4688
+win_case "100924 mimikatz lsadump::dcsync"     100924 "mimikatz.exe \\\"lsadump::dcsync /domain:lab.local /user:krbtgt@lab.local\\\" \\\"exit\\\""
+win_case "100924 mimikatz kerberos::golden"    100924 "mimikatz.exe \\\"kerberos::golden /domain:lab.local /sid:S-1-5-21-1 /krbtgt:aa\\\""
+win_case "100924 mimikatz sekurlsa::pth"       100924 "mimikatz.exe \\\"sekurlsa::pth /user:Administrator /ntlm:cc36cf7a\\\""
+win_case "100926 outil nomme sans module"      100926 "cmd.exe /c echo %tmp%\\\\\\\\mimikatz\\\\\\\\x64\\\\\\\\mimikatz.exe"
+win_case "100925 Invoke-Kerberoast"            100925 "powershell.exe -c Invoke-Kerberoast -OutputFormat Hashcat"
+# Satisfait AUSSI 100926 (le mot « rubeus ») : verifie que la regle specifique
+# gagne, c'est-a-dire que l'ordre de declaration dans le fichier tient.
+win_case "100925 Rubeus kerberoast"            100925 "Rubeus.exe kerberoast /outfile:h.txt"
+win_case "100928 nltest /domain_trusts"        100928 "nltest.exe  /domain_trusts" 4688
+win_case "100928 Get-ADTrust"                  100928 "powershell.exe -c Get-ADTrust -Filter *"
+# Controles negatifs : l'administration quotidienne ne declenche AUCUNE regle.
+# On n'attend pas un identifiant de repli : l'evenement de synthese ne porte pas
+# les champs (image parente, utilisateur) dont les regles generiques Windows ont
+# besoin. Ce qui est teste ici, c'est l'absence de faux positif de NOS regles.
+win_case "NEG vssadmin list shadows"           "" "vssadmin.exe list shadows" 4688
+win_case "NEG net use partage"                 "" "net.exe use z: \\\\\\\\srv\\\\\\\\data" 4688
+win_case "NEG dsquery user (recon banale)"     "" "dsquery.exe user -limit 10" 4688
+
 echo "== Controles negatifs : doivent retomber en 80700 (niveau 0) =="
 audit_case "NEG rm -rf /tmp/build"          80700 /usr/bin/rm     'argc=3 a0="rm" a1="-rf" a2="/tmp/build"'
 audit_case "NEG systemctl restart apache2"  80700 /usr/bin/systemctl 'argc=3 a0="systemctl" a1="restart" a2="apache2"'

@@ -11,17 +11,24 @@ $in   = Read-ARInput
 $path = ($in.Args | Select-Object -First 1)
 $qdir = Join-Path (Split-Path $PSScriptRoot -Parent) 'quarantine'
 
-if ($in.Command -eq 'delete') { Write-ARLog 'win-quarantine-file' 'delete: no-op'; exit 0 }
-if ($in.Command -ne 'add')    { Write-ARLog 'win-quarantine-file' "invalid command '$($in.Command)'"; exit 1 }
-if (-not $path)               { Write-ARLog 'win-quarantine-file' 'ERROR: no path (extra_args empty)'; exit 1 }
+$S = 'win-quarantine-file'
+if ($in.Command -eq 'delete') { Write-ARLog $S 'delete: no-op'; Write-ARResult $S 'noop' $path 'delete command'; exit 0 }
+if ($in.Command -ne 'add')    { Write-ARLog $S "invalid command '$($in.Command)'"; Write-ARResult $S 'error' $path 'invalid command'; exit 1 }
+if (-not $path)               { Write-ARLog $S 'ERROR: no path (extra_args empty)'; Write-ARResult $S 'error' '' 'no target'; exit 1 }
 
 $protected = @("$env:SystemRoot", (Join-Path $env:SystemRoot 'System32'),
                "$env:ProgramFiles\ossec-agent", "${env:ProgramFiles(x86)}\ossec-agent")
 foreach ($d in $protected) {
-    if ($path -like "$d*") { Write-ARLog 'win-quarantine-file' "REFUSED: '$path' under protected dir '$d'"; exit 1 }
+    if ($path -like "$d*") {
+        Write-ARLog $S "REFUSED: '$path' under protected dir '$d'"
+        Write-ARResult $S 'refused' $path "protected directory $d"
+        exit 1
+    }
 }
 if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-    Write-ARLog 'win-quarantine-file' "file '$path' not found - nothing to quarantine"; exit 0
+    Write-ARLog $S "file '$path' not found - nothing to quarantine"
+    Write-ARResult $S 'noop' $path 'file not found'
+    exit 0
 }
 
 if (-not (Test-Path $qdir)) { New-Item -ItemType Directory -Path $qdir -Force | Out-Null }
@@ -33,5 +40,6 @@ $qfile = Join-Path $qdir "$hash.quar"
 Move-Item -LiteralPath $path -Destination $qfile -Force
 # Strip inheritance and deny everyone: the sample cannot be read or executed.
 & icacls.exe $qfile /inheritance:r /deny '*S-1-1-0:(F)' > $null 2>&1
-Write-ARLog 'win-quarantine-file' "quarantined '$path' (sha256=$hash) -> $qfile"
+Write-ARLog $S "quarantined '$path' (sha256=$hash) -> $qfile"
+Write-ARResult $S 'applied' $path "sha256=$hash"
 exit 0

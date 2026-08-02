@@ -168,7 +168,15 @@ TRIAGE_MAX_TOKENS = int(os.environ.get("TRIAGE_MAX_TOKENS", "6000"))
 PLAFOND_PROMPT_TOKENS = int(os.environ.get("TRIAGE_PROMPT_MAX_TOKENS", "5000"))
 # Le rapport TP est un récit markdown multi-sections, plus long que le verdict ;
 # avec le raisonnement en plus, il lui faut davantage de marge encore.
-REPORT_MAX_TOKENS = int(os.environ.get("REPORT_MAX_TOKENS", "6000"))
+#
+# 6000 ne suffisait pas. Mesuré sur le purple-team du 2026-08-02 : les deux
+# rapports des incidents AD (2411 et 46 alertes, 20 règles montrées au modèle)
+# ont rendu `finish_reason=length` avec un content VIDE — le raisonnement avait
+# mangé tout le budget. Le repli écrivait alors `triage.reason` À LA FOIS dans
+# `resume` et dans `analyse`, d'où les deux sections identiques du case 90.
+# Les rapports qui ont abouti consommaient déjà 4000-5700 tokens de content :
+# 6000 ne laissait aucune place au raisonnement. 14000 donne la marge.
+REPORT_MAX_TOKENS = int(os.environ.get("REPORT_MAX_TOKENS", "14000"))
 # Nom de case : sortie minuscule (nom de code + titre court) mais le modèle
 # raisonne quand même — il lui faut de quoi ne pas tronquer avant le JSON.
 CASE_NAME_MAX_TOKENS = int(os.environ.get("CASE_NAME_MAX_TOKENS", "1500"))

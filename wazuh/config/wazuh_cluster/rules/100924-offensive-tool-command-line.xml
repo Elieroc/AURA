@@ -1,0 +1,74 @@
+<!--
+  Offensive credential tooling seen on the command line (T1003.001, T1003.006,
+  T1558.001, T1550.002, T1207).
+
+  Why this rule exists. The purple-team campaign of 2026-08-02 ran mimikatz on
+  the domain controller with these exact command lines:
+    mimikatz.exe "lsadump::dcsync /domain:lab.local /user:krbtgt@lab.local"
+    mimikatz.exe "kerberos::golden /domain:lab.local /sid:S-1-5-21-... "
+    mimikatz.exe "sekurlsa::pth /user:Administrator /ntlm:cc36cf..."
+  All three were captured in full by 4688 and Sysmon EID 1, and the highest
+  alert any of them produced was level 4. The three dedicated rules written for
+  those techniques all depend on telemetry the estate does not emit:
+    - 100915 (DCSync)  needs event 4662, which requires a SACL on the domain
+      object that is not set;
+    - 100918 (LSASS)   needs Sysmon event 10 (ProcessAccess), filtered out of
+      the SwiftOnSecurity config;
+    - 100910 (roasting) needs an RC4 4769 the DC never logged.
+  A command line, by contrast, is always there. This rule is the floor under
+  all of them: it matches on the module names of the tooling itself, which an
+  attacker must type whatever the audit configuration of the host.
+
+  It is deliberately a rule about TOOL SYNTAX, not about behaviour. Module names
+  such as `sekurlsa::` or `lsadump::` have no legitimate use, so the false
+  positive rate is close to zero and the level can be high. Behavioural
+  detection of the same techniques stays the job of 100910/100915/100918 - this
+  rule does not replace them, it catches what they miss.
+-->
+<group name="windows,attack,">
+
+  <rule id="100924" level="13">
+    <decoded_as>json</decoded_as>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(sekurlsa|lsadump|kerberos|crypto|privilege|token|misc|vault|process)::[a-z]</field>
+    <description>Credential dumping tool syntax on the command line: $(win.eventdata.commandLine)</description>
+    <mitre>
+      <id>T1003.001</id>
+      <id>T1003.006</id>
+      <id>T1558.001</id>
+      <id>T1550.002</id>
+    </mitre>
+    <group>credential_access,mimikatz,pci_dss_10.6.1,gdpr_IV_35.7.d,</group>
+  </rule>
+
+  <!-- Kerberoasting driven from the command line. Complements 100910, which
+       needs an RC4 4769: during the 2026-08-02 campaign the DC logged no such
+       ticket at all, so the roasting attempt left only this trace.
+
+       Declared BEFORE the generic tool-name rule below, and deliberately so:
+       `Rubeus.exe kerberoast` satisfies both, and analysisd keeps the first
+       match in load order. Sibling rules are made mutually exclusive by
+       putting the specific one first, never by hoping for an ordering. -->
+  <rule id="100925" level="12">
+    <decoded_as>json</decoded_as>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(invoke-kerberoast|get-?domainspnticket|getuserspns|rubeus(\.exe)?\s+kerberoast|setspn\s+-[qQ]\s)</field>
+    <description>Kerberoasting from the command line: $(win.eventdata.commandLine)</description>
+    <mitre>
+      <id>T1558.003</id>
+    </mitre>
+    <group>credential_access,kerberoasting,pci_dss_10.6.1,</group>
+  </rule>
+
+  <!-- Same tooling, named on the command line without a module (download,
+       copy, rename). Lower level: naming the tool is not yet running it. -->
+  <rule id="100926" level="10">
+    <decoded_as>json</decoded_as>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)\b(mimikatz|mimilib|rubeus|safetykatz|sharpkatz|nanodump|lazagne|secretsdump|procdump.+lsass|comsvcs\.dll.+minidump)\b</field>
+    <description>Known credential dumping tool named on the command line: $(win.eventdata.commandLine)</description>
+    <mitre>
+      <id>T1003.001</id>
+      <id>T1588.002</id>
+    </mitre>
+    <group>credential_access,mimikatz,pci_dss_10.6.1,</group>
+  </rule>
+
+</group>

@@ -156,8 +156,17 @@ def _doc_snapshot(conn, maintenant: datetime) -> dict:
             "triages_total": un("SELECT count(*) AS n FROM triages"),
             "whitelist_rules_active": un(
                 "SELECT count(*) AS n FROM whitelist_rules WHERE active"),
-            "mitigations_executed": un(
-                "SELECT count(*) AS n FROM mitigations WHERE statut = 'exécuté'"),
+            # Trois compteurs, pas un : « la commande est partie » et « l'agent
+            # confirme que c'est fait » sont deux choses différentes, et les
+            # confondre est ce qui a permis au rapport du 2026-08-02 d'annoncer
+            # 26 quarantaines réussies qui avaient toutes été refusées.
+            "mitigations_sent": un(
+                "SELECT count(*) AS n FROM mitigations WHERE statut = 'émis'"),
+            "mitigations_confirmed": un(
+                "SELECT count(*) AS n FROM mitigations WHERE statut = 'confirmé'"),
+            "mitigations_refused": un(
+                "SELECT count(*) AS n FROM mitigations "
+                "WHERE statut = 'refusé_agent'"),
             "labels_total": un("SELECT count(*) AS n FROM labels"),
         },
     }

@@ -15,9 +15,19 @@ QUARANTINE_DIR="/var/ossec/quarantine"
 LOG_FILE="/var/ossec/logs/active-responses.log"
 # Chemins jamais mis en quarantaine : casser ça rend l'hôte ou l'agent inutilisable.
 PROTECTED="/bin /sbin /lib /lib64 /usr/bin /usr/sbin /usr/lib /etc /boot /var/ossec/bin"
+SCRIPT_NAME="quarantine"
 
 log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') quarantine: $1" >> "$LOG_FILE"
+}
+
+# Compte rendu structuré, lu par le decodeur Wazuh 100930 puis par
+# soc_agent.reconcile. statut : applied | refused | noop | error.
+ar_result() {   # $1 statut  $2 cible  $3 motif
+    printf '%s ar-result: script=%s status=%s target="%s" reason="%s"\n' \
+        "$(date '+%Y/%m/%d %H:%M:%S')" "$SCRIPT_NAME" "$1" \
+        "$(printf '%s' "$2" | tr -d '\r\n"')" \
+        "$(printf '%s' "$3" | tr -d '\r\n"')" >> "$LOG_FILE"
 }
 
 read -r INPUT_JSON
@@ -25,9 +35,13 @@ COMMAND=$(echo "$INPUT_JSON" | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\(
 
 case "$COMMAND" in
     add) ;;
-    delete) exit 0 ;;
+    delete)
+        ar_result noop "" "commande delete (expiration timeout), seul restore sort de quarantaine"
+        exit 0
+        ;;
     *)
         log "commande invalide: '$COMMAND'"
+        ar_result error "" "commande invalide: $COMMAND"
         exit 1
         ;;
 esac
@@ -47,6 +61,7 @@ fi
 
 if [ -z "$TARGET" ]; then
     log "ERREUR: aucun chemin de fichier fourni"
+    ar_result error "" "aucun chemin de fichier fourni ($ACTION)"
     exit 1
 fi
 
@@ -54,6 +69,7 @@ case "$TARGET" in
     /*) ;;
     *)
         log "ERREUR: chemin non absolu refusé: '$TARGET'"
+        ar_result error "$TARGET" "chemin non absolu ($ACTION)"
         exit 1
         ;;
 esac
@@ -66,6 +82,7 @@ if [ "$ACTION" = "quarantine" ]; then
         case "$TARGET" in
             "$dir"/*)
                 log "REFUS: '$TARGET' est dans un répertoire système protégé ($dir)"
+                ar_result refused "$TARGET" "repertoire systeme protege ($dir)"
                 exit 1
                 ;;
         esac
@@ -73,6 +90,7 @@ if [ "$ACTION" = "quarantine" ]; then
 
     if [ ! -f "$TARGET" ]; then
         log "fichier '$TARGET' introuvable, rien à faire"
+        ar_result noop "$TARGET" "fichier introuvable sur cet hote"
         exit 0
     fi
 
@@ -80,31 +98,37 @@ if [ "$ACTION" = "quarantine" ]; then
 
     if ! mv "$TARGET" "$STORED"; then
         log "ERREUR: échec du déplacement de '$TARGET'"
+        ar_result error "$TARGET" "echec du deplacement vers $STORED"
         exit 1
     fi
     chmod 000 "$STORED"
     echo "$TARGET" > "$STORED.path"
     log "fichier '$TARGET' mis en quarantaine ($STORED)"
+    ar_result applied "$TARGET" "mis en quarantaine ($STORED)"
     exit 0
 fi
 
 # restore
 if [ ! -f "$STORED" ]; then
     log "ERREUR: '$TARGET' absent de la quarantaine"
+    ar_result noop "$TARGET" "absent de la quarantaine, rien a restaurer"
     exit 1
 fi
 
 ORIG=$(cat "$STORED.path" 2>/dev/null || echo "$TARGET")
 if [ -e "$ORIG" ]; then
     log "ERREUR: '$ORIG' existe déjà, restauration annulée"
+    ar_result error "$ORIG" "le chemin d'origine existe deja, restauration annulee"
     exit 1
 fi
 
 if ! mv "$STORED" "$ORIG"; then
     log "ERREUR: échec de la restauration vers '$ORIG'"
+    ar_result error "$ORIG" "echec du deplacement depuis la quarantaine"
     exit 1
 fi
 chmod 600 "$ORIG"
 rm -f "$STORED.path"
 log "fichier '$ORIG' restauré depuis la quarantaine"
+ar_result applied "$ORIG" "restaure depuis la quarantaine"
 exit 0

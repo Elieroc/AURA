@@ -11,6 +11,7 @@
 set -u
 
 LOG_FILE="/var/ossec/logs/active-responses.log"
+SCRIPT_NAME="firewall-allow"
 IPT="/usr/sbin/iptables"
 IPT6="/usr/sbin/ip6tables"
 NFT="/usr/sbin/nft"
@@ -20,14 +21,27 @@ log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') firewall-allow: $1" >> "$LOG_FILE"
 }
 
+# Compte rendu structuré, lu par le decodeur Wazuh 100930 puis par
+# soc_agent.reconcile. statut : applied | refused | noop | error.
+ar_result() {   # $1 statut  $2 cible  $3 motif
+    printf '%s ar-result: script=%s status=%s target="%s" reason="%s"\n' \
+        "$(date '+%Y/%m/%d %H:%M:%S')" "$SCRIPT_NAME" "$1" \
+        "$(printf '%s' "$2" | tr -d '\r\n"')" \
+        "$(printf '%s' "$3" | tr -d '\r\n"')" >> "$LOG_FILE"
+}
+
 read -r INPUT_JSON
 COMMAND=$(echo "$INPUT_JSON" | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 
 case "$COMMAND" in
     add) ;;
-    delete) exit 0 ;;
+    delete)
+        ar_result noop "" "commande delete (expiration timeout), aucune action"
+        exit 0
+        ;;
     *)
         log "commande invalide: '$COMMAND'"
+        ar_result error "" "commande invalide: $COMMAND"
         exit 1
         ;;
 esac
@@ -38,12 +52,14 @@ IP=$(echo "$IP" | sed 's/^-srcip[[:space:]]*//')
 
 if [ -z "$IP" ]; then
     log "ERREUR: aucune IP fournie (extra_args vide)"
+    ar_result error "" "aucune IP fournie (extra_args vide)"
     exit 1
 fi
 
 case "$IP" in
     *[!0-9.:a-fA-F]*)
         log "ERREUR: IP invalide '$IP'"
+        ar_result error "$IP" "IP invalide"
         exit 1
         ;;
 esac
@@ -57,6 +73,7 @@ esac
 if [ ! -x "$BIN" ]; then
     if [ ! -x "$NFT" ]; then
         log "ERREUR: ni $BIN ni $NFT trouvés"
+        ar_result error "$IP" "ni $BIN ni $NFT trouves"
         exit 1
     fi
     REMOVED=0
@@ -73,9 +90,11 @@ if [ ! -x "$BIN" ]; then
     done
     if [ "$REMOVED" -eq 0 ]; then
         log "aucune règle nft drop pour '$IP', rien à faire"
+        ar_result noop "$IP" "aucune regle nft drop pour cette IP"
         exit 0
     fi
     log "IP '$IP' débloquée (nft, $REMOVED règle(s) supprimée(s))"
+    ar_result applied "$IP" "debloquee (nft, $REMOVED regle(s) supprimee(s))"
     exit 0
 fi
 
@@ -91,8 +110,10 @@ done
 
 if [ "$REMOVED" -eq 0 ]; then
     log "aucune règle DROP pour '$IP', rien à faire"
+    ar_result noop "$IP" "aucune regle iptables DROP pour cette IP"
     exit 0
 fi
 
 log "IP '$IP' débloquée ($REMOVED règle(s) supprimée(s))"
+ar_result applied "$IP" "debloquee ($REMOVED regle(s) supprimee(s))"
 exit 0

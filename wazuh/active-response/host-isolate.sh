@@ -25,6 +25,7 @@ MANAGER_IP="$WAZUH_MANAGER_IP"
 NFT="/usr/sbin/nft"
 TABLE="wazuh_isolation"
 LOG_FILE="/var/ossec/logs/active-responses.log"
+SCRIPT_NAME="host-isolate"
 # Marqueur d'état robuste. Deux formes, complémentaires :
 #  - MARKER : fichier local, vérité terrain inspectable même hors réseau (le
 #    manager garde SSH). Contient un JSON état + horodatage.
@@ -33,8 +34,21 @@ LOG_FILE="/var/ossec/logs/active-responses.log"
 # La présence de la table nftables reste l'autorité ; le marqueur la reflète.
 MARKER="/var/ossec/isolated"
 
+# Cible du compte rendu : c'est l'hôte lui-même qui est isolé (miroir du
+# $env:COMPUTERNAME utilisé par win-host-isolate.ps1).
+HOST_NAME=$(hostname 2>/dev/null || echo "unknown")
+
 log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') host-isolate: $1" >> "$LOG_FILE"
+}
+
+# Compte rendu structuré, lu par le decodeur Wazuh 100930 puis par
+# soc_agent.reconcile. statut : applied | refused | noop | error.
+ar_result() {   # $1 statut  $2 cible  $3 motif
+    printf '%s ar-result: script=%s status=%s target="%s" reason="%s"\n' \
+        "$(date '+%Y/%m/%d %H:%M:%S')" "$SCRIPT_NAME" "$1" \
+        "$(printf '%s' "$2" | tr -d '\r\n"')" \
+        "$(printf '%s' "$3" | tr -d '\r\n"')" >> "$LOG_FILE"
 }
 
 # Écrit le marqueur d'isolation (état "isolated") de façon atomique.
@@ -54,16 +68,19 @@ case "$COMMAND" in
     add) ;;
     delete)
         # Pas de timeout géré ici : la dé-isolation passe par host-unisolate.sh
+        ar_result noop "$HOST_NAME" "commande delete (expiration timeout), la de-isolation passe par host-unisolate"
         exit 0
         ;;
     *)
         log "commande invalide: '$COMMAND'"
+        ar_result error "$HOST_NAME" "commande invalide: $COMMAND"
         exit 1
         ;;
 esac
 
 if [ ! -x "$NFT" ]; then
     log "ERREUR: $NFT introuvable, isolation impossible"
+    ar_result error "$HOST_NAME" "$NFT introuvable, isolation impossible"
     exit 1
 fi
 
@@ -79,6 +96,7 @@ fi
 # manager, puisque la machine porte elle-même son refus.
 if [ "${SOC_AI_NO_ISOLATE:-0}" = "1" ]; then
     log "REFUS: hôte d'infrastructure (SOC_AI_NO_ISOLATE=1 dans $CONF_FILE) — isolation refusée"
+    ar_result refused "$HOST_NAME" "hote d'infrastructure (SOC_AI_NO_ISOLATE=1)"
     exit 1
 fi
 
@@ -93,6 +111,7 @@ fi
 if [ -n "$MANAGER_IP" ] && command -v ip >/dev/null 2>&1 \
    && ip -o addr show 2>/dev/null | grep -qw "$MANAGER_IP"; then
     log "REFUS: $MANAGER_IP est une adresse locale — auto-isolation du manager refusée"
+    ar_result refused "$HOST_NAME" "auto-isolation du manager refusee ($MANAGER_IP est locale)"
     exit 1
 fi
 
@@ -102,6 +121,7 @@ fi
 if "$NFT" list table inet "$TABLE" >/dev/null 2>&1; then
     poser_marqueur
     log "déjà isolé (table $TABLE présente)"
+    ar_result noop "$HOST_NAME" "deja isole (table $TABLE presente)"
     exit 0
 fi
 
@@ -129,8 +149,10 @@ EOF
 if [ $? -eq 0 ]; then
     poser_marqueur
     log "hôte isolé du réseau (exceptions: lo, manager $MANAGER_IP 1514/1515, SSH depuis manager)"
+    ar_result applied "$HOST_NAME" "isole (exceptions: lo, manager $MANAGER_IP 1514/1515, SSH depuis manager)"
     exit 0
 else
     log "ERREUR: échec application ruleset nftables"
+    ar_result error "$HOST_NAME" "echec application du ruleset nftables"
     exit 1
 fi

@@ -1,0 +1,72 @@
+<!--
+  Outcome of an active response, reported back by the agent (decoder ar-result).
+
+  These rules are not detections. They exist so that what a remediation script
+  actually did on the host comes back to the manager as an event the soc-agent
+  can read. Until 2026-08-02 nothing did: the Wazuh AR channel is
+  fire-and-forget, so `mitigations.statut` only ever meant "the API accepted the
+  command", and an IRIS report claimed 26 successful quarantines of System32
+  binaries on a domain controller that the script had refused one by one.
+
+  Levels are chosen so that the loop is visible without being noisy:
+    100931 applied - level 3, informational, the change was made.
+    100932 refused - level 7. A guardrail firing is not an incident, but it IS
+           something an analyst must see: it means the soc-agent aimed at
+           something it should not have, and the last line of defence caught it.
+    100933 error   - level 7, the action was attempted and failed.
+    100934 noop    - level 3. Nothing to do (target absent, already in state).
+           It has to be 3, not 0: Wazuh writes no alert below log_alert_level,
+           so a level-0 rule never reaches the indexer and `reconcile` would
+           never see it - the mitigation would sit at 'emis' forever. Level 3
+           is the floor that gets an event recorded without alerting anyone.
+    100935 delete  - level 0, the execd timeout expiring on a no-op. Pure
+           plumbing, would otherwise drown the real results.
+
+  Ordering matters here: 100935 and 100934 are declared as children of the
+  parent so the specific cases win over the generic ones by condition, never by
+  position in the file.
+-->
+<group name="active_response,soc-ai,">
+
+  <rule id="100930" level="0">
+    <decoded_as>ar-result</decoded_as>
+    <description>Active response result reported by the agent</description>
+  </rule>
+
+  <rule id="100931" level="3">
+    <if_sid>100930</if_sid>
+    <field name="ar_status">^applied$</field>
+    <description>Active response applied: $(ar_script) on $(ar_target)</description>
+    <group>ar_applied,</group>
+  </rule>
+
+  <rule id="100932" level="7">
+    <if_sid>100930</if_sid>
+    <field name="ar_status">^refused$</field>
+    <description>Active response refused by a guardrail: $(ar_script) on $(ar_target) - $(ar_reason)</description>
+    <group>ar_refused,</group>
+  </rule>
+
+  <rule id="100933" level="7">
+    <if_sid>100930</if_sid>
+    <field name="ar_status">^error$</field>
+    <description>Active response failed: $(ar_script) on $(ar_target) - $(ar_reason)</description>
+    <group>ar_error,</group>
+  </rule>
+
+  <rule id="100934" level="3">
+    <if_sid>100930</if_sid>
+    <field name="ar_status">^noop$</field>
+    <description>Active response had nothing to do: $(ar_script) on $(ar_target) - $(ar_reason)</description>
+    <group>ar_noop,</group>
+  </rule>
+
+  <!-- Timeout expiry of a no-op `delete`: plumbing, never of interest. -->
+  <rule id="100935" level="0">
+    <if_sid>100934</if_sid>
+    <field name="ar_reason">^delete command</field>
+    <description>Active response timeout expiry (no-op)</description>
+    <group>ar_noop,</group>
+  </rule>
+
+</group>

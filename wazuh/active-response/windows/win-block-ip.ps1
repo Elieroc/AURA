@@ -23,23 +23,32 @@ function Test-IpBlockable([string]$x) {
     return $true
 }
 
+$S = 'win-block-ip'
 switch ($in.Command) {
     'delete' {
         Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue |
             Remove-NetFirewallRule -ErrorAction SilentlyContinue
-        Write-ARLog 'win-block-ip' "rules '$rule' removed (timeout)"
+        Write-ARLog $S "rules '$rule' removed (timeout)"
+        # Not 'applied': the block is being LIFTED here, reporting applied would
+        # read as a successful block on the reconcile side.
+        Write-ARResult $S 'noop' $ip 'delete command: block rules removed (timeout)'
         exit 0
     }
     'add' { }
-    default { Write-ARLog 'win-block-ip' "invalid command '$($in.Command)'"; exit 1 }
+    default {
+        Write-ARLog $S "invalid command '$($in.Command)'"
+        Write-ARResult $S 'error' $ip 'invalid command'
+        exit 1
+    }
 }
 
-if (-not $ip)                    { Write-ARLog 'win-block-ip' 'ERROR: no IP (extra_args empty)'; exit 1 }
-if (-not (Test-IpBlockable $ip)) { Write-ARLog 'win-block-ip' "REFUSED: '$ip' not a blockable IP"; exit 1 }
+if (-not $ip)                    { Write-ARLog $S 'ERROR: no IP (extra_args empty)'; Write-ARResult $S 'error' '' 'no target'; exit 1 }
+if (-not (Test-IpBlockable $ip)) { Write-ARLog $S "REFUSED: '$ip' not a blockable IP"; Write-ARResult $S 'refused' $ip 'not a blockable IP'; exit 1 }
 
 if (-not (Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue)) {
     New-NetFirewallRule -DisplayName $rule -Direction Inbound  -RemoteAddress $ip -Action Block -Profile Any | Out-Null
     New-NetFirewallRule -DisplayName $rule -Direction Outbound -RemoteAddress $ip -Action Block -Profile Any | Out-Null
 }
-Write-ARLog 'win-block-ip' "IP '$ip' blocked (inbound+outbound)"
+Write-ARLog $S "IP '$ip' blocked (inbound+outbound)"
+Write-ARResult $S 'applied' $ip 'blocked inbound+outbound'
 exit 0

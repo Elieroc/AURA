@@ -27,5 +27,7 @@ if (Test-Path $stateFile) {
 if (-not $restored) {
     Set-NetFirewallProfile -All -DefaultInboundAction Block -DefaultOutboundAction Allow
 }
-Write-ARLog 'win-host-unisolate' "isolation lifted (restored from state: $restored)"
+$S = 'win-host-unisolate'
+Write-ARLog $S "isolation lifted (restored from state: $restored)"
+Write-ARResult $S 'applied' $env:COMPUTERNAME "isolation lifted (restored from state: $restored)"
 exit 0

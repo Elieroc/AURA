@@ -1,0 +1,39 @@
+<!--
+  Compte rendu d'active response (active-responses.log), Linux et Windows.
+
+  POURQUOI. Le canal d'active response de Wazuh est fire-and-forget : l'API rend
+  la main dès que la commande est mise en file, et le code de retour du script
+  ne remonte jamais. Le soc-agent enregistrait donc toute remédiation comme
+  « exécutée » dès que l'API avait accepté la commande. Le 2026-08-02, ça a
+  produit un rapport IRIS annonçant 26 mises en quarantaine réussies sur un
+  contrôleur de domaine, alors que le script les avait TOUTES refusées (chemins
+  sous System32). L'analyste lisait « fait » sur du non-fait.
+
+  Ce décodeur est le retour d'information manquant. Les scripts d'AR écrivent
+  désormais, à chaque sortie, une ligne à format fixe :
+
+    2026/08/02 09:21:11 ar-result: script=win-quarantine-file status=refused
+    target="C:\Windows\System32\cmd.exe" reason="protected directory ..."
+
+  Le format est identique côté shell (`ar_result()`) et côté PowerShell
+  (`Write-ARResult` dans _ar-common.ps1) — un seul décodeur pour les deux.
+  `soc_agent.reconcile` corrèle ensuite ces alertes avec la table `mitigations`
+  et remplace le statut « émis » par ce qui s'est réellement passé.
+
+  `status` est un ensemble fermé : applied | refused | noop | error.
+
+  DEUX PIÈGES, tous deux payés en aller-retours avec wazuh-logtest :
+
+  1. `offset="after_prematch"` n'est valide que si le `prematch` est dans LE
+     MÊME décodeur. Découpé en parent + enfant, Wazuh refuse de démarrer :
+     « ERROR: (2120): Invalid offset value: 'after_prematch' ». D'où un décodeur
+     unique plutôt que la paire parent/enfant habituelle.
+  2. La syntaxe par défaut est OS_Regex, qui n'a PAS les classes négatives.
+     `[^"]*` y est silencieusement faux, alors qu'il est indispensable ici : une
+     cible est un chemin Windows, avec des espaces. D'où `type="pcre2"`.
+-->
+<decoder name="ar-result">
+  <prematch>ar-result: script=</prematch>
+  <regex type="pcre2" offset="after_prematch">^(\S+) status=(\w+) target="([^"]*)" reason="([^"]*)"</regex>
+  <order>ar_script,ar_status,ar_target,ar_reason</order>
+</decoder>

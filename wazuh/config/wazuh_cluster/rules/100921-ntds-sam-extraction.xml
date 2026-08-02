@@ -8,12 +8,20 @@
     - reg save hklm\sam | hklm\system | hklm\security   (SAM/SYSTEM hive dump)
     - direct copy of ntds.dit
   Command-line auditing (4688) and Sysmon EID1 are enabled; no rule flagged these.
+
+  Beware the exact shape of the command line. The purple-team campaign of
+  2026-08-02 ran the technique and this rule stayed silent: the real 4688 reads
+    "vssadmin.exe  create shadow /for=C:"
+  with the .exe suffix AND two spaces, while the pattern required
+  `vssadmin\s+create`. Every tool name below now accepts an optional .exe and
+  arbitrary whitespace. Never write a command-line pattern against the command
+  you typed - write it against the command line the event actually carries.
 -->
 <group name="windows,attack,">
 
   <rule id="100921" level="12">
     <decoded_as>json</decoded_as>
-    <field name="win.eventdata.commandLine" type="pcre2">(?i)ntdsutil|vssadmin\s+create\s+shadow|esentutl.+ntds\.?dit|reg\s+save\s+hk(lm|cu).+(sam|system|security)|ntds\.dit</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)ntdsutil(\.exe)?\b|vssadmin(\.exe)?\s+create\s+shadow|esentutl(\.exe)?.+ntds\.?dit|reg(\.exe)?\s+save\s+hk(lm|cu).+(sam|system|security)|ntds\.dit|diskshadow(\.exe)?\b</field>
     <description>NTDS/SAM credential extraction attempt: $(win.eventdata.commandLine)</description>
     <mitre>
       <id>T1003.003</id>

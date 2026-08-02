@@ -231,11 +231,34 @@ def _poser_asset_machine(case, case_id: int, incident: dict,
     return []
 
 
+# Marque d'un rapport écrit sans analyse LLM (repli sur la raison du triage).
+# Sert aussi de garde : un rapport dégradé n'écrase pas un rapport abouti.
+MARQUE_DEGRADE = "⚠️ **Rapport dégradé"
+
+
+def _note_est_degradee(case, case_id: int, note_id: int) -> bool:
+    """Vrai si la note existante est déjà un repli (ou illisible)."""
+    try:
+        d = case.get_note(note_id, cid=case_id).get_data() or {}
+        return MARQUE_DEGRADE in (d.get("note_content") or "")
+    except Exception as e:  # noqa: BLE001 — dans le doute, on n'écrase pas
+        log.debug("lecture note %s : %s", note_id, e)
+        return False
+
+
 def _poser_note(case, case_id: int, titre: str, contenu: str) -> None:
     """Crée ou MET À JOUR la note d'analyse dans le répertoire « Analyse IA ».
 
     Au rafraîchissement d'un case, on remplace le contenu de la note existante
     plutôt que d'en empiler une deuxième : le dossier reste lisible.
+
+    UNE exception : un rapport DÉGRADÉ (analyse LLM en échec, repli sur la
+    raison du triage) n'écrase jamais un rapport abouti. Un incident est
+    re-trié à chaque nouvelle alerte, donc le rapport est réécrit en boucle ;
+    le 2026-08-02, le rapport complet des cases 90 et 91 a été remplacé par le
+    repli de deux lignes parce que le dernier appel avait épuisé son budget de
+    tokens. Perdre une analyse réussie à cause d'un échec ultérieur est une
+    régression pure, jamais un rafraîchissement.
     """
     dir_id = None
     note_id = None
@@ -251,6 +274,11 @@ def _poser_note(case, case_id: int, titre: str, contenu: str) -> None:
     except Exception as e:  # noqa: BLE001
         log.debug("liste notes case #%s : %s", case_id, e)
     if note_id is not None:
+        if (MARQUE_DEGRADE in contenu
+                and not _note_est_degradee(case, case_id, note_id)):
+            log.warning("case #%s : rapport dégradé NON écrit, la note "
+                        "existante est une analyse aboutie", case_id)
+            return
         try:
             case.update_note(note_id=note_id, note_content=contenu, cid=case_id)
             return
@@ -494,6 +522,128 @@ def _ioc_fichier(chemin: str | None, hashes: dict, contexte: str
     return str(valeur), type_ioc, description
 
 
+# Extensions retenues pour un « exécutable » Windows déposé.
+_EXE_WIN = (".exe", ".dll", ".ps1", ".bat", ".scr", ".com", ".vbs", ".js")
+
+
+def _mitre_observes(alertes: list[dict]) -> set[str]:
+    """Identifiants ATT&CK portés par les règles qui ont tiré sur l'incident."""
+    out: set[str] = set()
+    for a in alertes:
+        for t in (a.get("mitre_ids") or []):
+            if t:
+                out.add(str(t).strip())
+    return out - {""}
+
+
+# Techniques dont la remédiation ne se déduit d'AUCUNE action d'active
+# response : elles laissent l'attaquant capable de revenir même une fois l'hôte
+# nettoyé. Le case 90 du purple-team a détecté `kerberos::golden` sans que rien
+# nulle part ne dise que le secret krbtgt était à changer — l'incident était
+# clos avec un ticket forgé valable dix ans.
+_REMEDIATIONS_HORS_PORTEE = {
+    "T1558.001": (
+        "Golden Ticket — le hash du compte **krbtgt** est compromis",
+        "Aucune action automatique ne corrige cela. Tant que le secret n'est "
+        "pas renouvelé, l'attaquant peut forger un TGT pour n'importe quel "
+        "compte du domaine, y compris après nettoyage complet des hôtes. "
+        "**Renouveler le mot de passe de krbtgt DEUX fois**, en laissant "
+        "s'écouler au moins la durée de vie maximale d'un ticket (10 h par "
+        "défaut) entre les deux : le premier renouvellement seul laisse "
+        "l'ancienne clé valide."),
+    "T1003.006": (
+        "DCSync — la base de comptes du domaine a pu être répliquée",
+        "Considérer TOUS les secrets du domaine comme divulgués (comptes de "
+        "service, krbtgt, comptes machine). Renouveler krbtgt deux fois et les "
+        "mots de passe des comptes à privilèges."),
+    "T1003.003": (
+        "NTDS.dit — la base Active Directory a pu être copiée",
+        "Même portée qu'un DCSync : tous les hashs du domaine sont à "
+        "considérer comme connus de l'attaquant."),
+    "T1550.002": (
+        "Pass-the-Hash — un hash NTLM valide est entre les mains de l'attaquant",
+        "Renouveler le mot de passe du compte concerné. Désactiver le compte "
+        "ne suffit pas si le hash sert ailleurs dans le domaine."),
+}
+
+
+def _section_remediation_hors_portee(triage: dict,
+                                     alertes: list[dict]) -> str:
+    """Ce que l'automatisation ne peut PAS réparer, et qu'il faut faire à la main.
+
+    Une remédiation autonome isole, bloque, tue et désactive. Elle ne renouvelle
+    pas un secret de domaine. Quand la chaîne d'attaque contient un vol de
+    credentials AD, l'incident n'est pas terminé une fois l'hôte nettoyé, et le
+    rapport doit le dire en toutes lettres.
+    """
+    vues = _mitre_observes(alertes) | {(triage.get("mitre") or "").strip()}
+    concernees = [(t, _REMEDIATIONS_HORS_PORTEE[t])
+                  for t in sorted(_REMEDIATIONS_HORS_PORTEE) if t in vues]
+    if not concernees:
+        return ""
+    lignes = [
+        "## À faire à la main — hors de portée de la remédiation automatique",
+        "",
+        "Les actions automatiques (isolation, blocage, arrêt de process, "
+        "désactivation de compte) ne corrigent PAS ce qui suit. Tant que ces "
+        "points ne sont pas traités, l'attaquant garde un moyen de revenir.",
+        "",
+    ]
+    for tech, (titre, quoi) in concernees:
+        lignes += [f"### {tech} — {titre}", "", quoi, ""]
+    return "\n".join(lignes)
+
+
+def _norm_chemin_win(brut) -> str:
+    """Chemin Windows aux backslashes simples.
+
+    Le JSON de l'eventchannel arrive avec les backslashes DOUBLÉS et Wazuh les
+    conserve : `C:\\\\Windows\\\\System32\\\\cmd.exe` est stocké avec deux
+    caractères entre chaque segment. Tout test de préfixe sur un répertoire
+    système échoue silencieusement sans cette normalisation — c'est ce qui a
+    envoyé 26 ordres de quarantaine sur des binaires de System32 le
+    2026-08-02 (cf. `mitigate._norm_chemin_win`, même correctif).
+    """
+    p = str(brut or "").strip().strip('"')
+    while "\\\\" in p:
+        p = p.replace("\\\\", "\\")
+    return p
+
+
+def _exe_windows_suspect(chemin: str) -> bool:
+    """Exécutable Windows hors répertoire système : candidat IOC.
+
+    Un binaire signé de System32 lancé par l'attaquant relève de la détection
+    comportementale, pas de l'indicateur : le chasser sur le parc ne
+    donnerait que du bruit. Ce qui se chasse, c'est ce qu'il a APPORTÉ.
+    """
+    pl = chemin.lower()
+    return bool(chemin and ":\\" in chemin and pl.endswith(_EXE_WIN)
+                and not pl.startswith(config.VT_DIRS_SYSTEME)
+                and "__psscriptpolicytest_" not in pl)
+
+
+def _est_cle_registre(chemin: str | None) -> bool:
+    """Vrai pour une clé de registre Windows (pas un fichier, donc pas un IOC)."""
+    return str(chemin or "").upper().startswith(("HKEY_", "HKLM\\", "HKCU\\",
+                                                 "HKLM/", "HKCU/"))
+
+
+def _vt_malveillant(vt: dict) -> bool:
+    """Vrai si VirusTotal a bien rendu un verdict POSITIF.
+
+    L'intégration écrit `found` (VT connaît-il ce hash) et `malicious` (nombre
+    de moteurs positifs), tous deux en chaîne. Sans ce test, un hash inconnu de
+    VT devenait un indicateur de compromission dans le case.
+    """
+    def _n(v):
+        try:
+            return int(str(v).strip() or 0)
+        except ValueError:
+            return 0
+    return _n(vt.get("found")) > 0 and _n(vt.get("malicious")) > 0
+
+
 def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
     """Vrais indicateurs d'attaque, dédupliqués. Best-effort.
 
@@ -595,6 +745,23 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
         if _chemin_suspect(fichier):
             ajouter(fichier, "filename", "Fichier déposé (emplacement suspect)")
 
+        # Outil offensif Windows, exécuté ou déposé hors des répertoires
+        # système. Sans ce bloc, le case 90 du purple-team n'avait qu'UN seul
+        # IOC (le compte créé) : `mimikatz.exe`, lancé sur le contrôleur de
+        # domaine et cité dans une dizaine d'alertes, n'y figurait pas — alors
+        # que c'est l'artefact qu'un analyste cherche en premier et le seul
+        # qu'il puisse chasser sur le reste du parc. Le case 91 n'avait, lui,
+        # aucun IOC du tout.
+        for champ in ("image", "targetFilename", "sourceImage"):
+            chemin = _norm_chemin_win(wev.get(champ))
+            if _exe_windows_suspect(chemin):
+                ajouter_fichier(chemin,
+                                {"sha256": wev.get("sha256"),
+                                 "sha1": wev.get("sha1"),
+                                 "md5": wev.get("md5")},
+                                "Exécutable lancé ou déposé hors des "
+                                "répertoires système (Windows)")
+
         # Match YARA (scanner YARITRUST). Cas à part, et c'est voulu : le
         # filtre `_chemin_suspect` ne s'applique PAS ici. Ailleurs, un chemin
         # ne devient un indicateur que par son emplacement, faute de mieux —
@@ -628,12 +795,28 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
 
         # Fichier jugé malveillant par VirusTotal. Même raison que pour YARA de
         # ne pas filtrer sur le répertoire : la qualification vient du moteur.
-        vt = data.get("virustotal", {}).get("source", {})
-        if vt.get("sha256") or vt.get("file"):
+        #
+        # DEUX conditions, apprises du case 90 (purple-team 2026-08-02), où deux
+        # des trois IOC étaient du bruit pur :
+        #
+        #  1. VirusTotal doit avoir RENDU un verdict de malveillance. Le bloc
+        #     ne testait que la présence d'un hash, si bien qu'une réponse
+        #     `found=0, malicious=0` — VT ne connaît même pas le fichier —
+        #     produisait un IOC intitulé « Fichier signalé par VirusTotal ».
+        #     Un hash inconnu de VT n'est pas un indicateur de compromission.
+        #  2. La cible doit être un FICHIER. L'intégration VT de Wazuh suit les
+        #     événements FIM, registre compris : `source.file` valait ici
+        #     `HKEY_LOCAL_MACHINE\System\...\bam\State\...`, une clé de registre.
+        #     Une clé n'a pas de contenu à faire analyser, et le hash qui
+        #     l'accompagne ne désigne aucun binaire.
+        vt_bloc = data.get("virustotal", {}) or {}
+        vt = vt_bloc.get("source", {}) or {}
+        if _vt_malveillant(vt_bloc) and not _est_cle_registre(vt.get("file")):
             ajouter_fichier(vt.get("file"),
                             {"sha256": vt.get("sha256"), "sha1": vt.get("sha1"),
                              "md5": vt.get("md5")},
-                            "Fichier signalé par VirusTotal")
+                            "Fichier signalé par VirusTotal "
+                            f"({vt_bloc.get('malicious')} moteurs positifs)")
 
         # Fichier suspect modifié (FIM) : ici le répertoire compte, aucun moteur
         # n'a jugé le contenu.
@@ -880,12 +1063,24 @@ def _section_iocs(alertes: list[dict]) -> str:
     return "\n".join(lignes)
 
 
-# Rendu lisible du statut d'une remédiation exécutée.
+# Rendu lisible du statut d'une remédiation.
+#
+# Ne JAMAIS afficher « ✅ » sur autre chose qu'un compte rendu de l'agent. Le
+# canal d'active response est fire-and-forget : au moment de l'appel, tout ce
+# qu'on sait est que l'API a pris la commande. L'ancien libellé « ✅ exécuté »
+# était accolé à ce simple accusé de réception, et le rapport du case 90
+# (purple-team 2026-08-02) affirmait à l'analyste que 26 binaires System32 d'un
+# contrôleur de domaine avaient été mis en quarantaine — le script les avait
+# tous refusés. Un rapport qui ment est pire qu'un rapport incomplet.
 _STATUT_REMED = {
-    "exécuté": "✅ exécuté",
+    "émis": "📤 commande émise (effet non encore confirmé)",
+    "confirmé": "✅ confirmé par l'agent",
+    "sans_effet": "⚪ sans effet (rien à faire sur cette cible)",
+    "refusé_agent": "🛑 refusé par le garde-fou de l'agent",
     "dry_run": "🟡 simulé (dry-run)",
     "sans_canal": "📄 documenté (manuel)",
     "échec": "❌ échec",
+    "annulé": "↩️ annulé (défait)",
 }
 
 
@@ -899,7 +1094,7 @@ def _section_remediations(conn, incident_id: int, triage: dict) -> str:
     rows = conn.execute(
         "SELECT action, cible, statut FROM mitigations WHERE incident_id = %s "
         "ORDER BY id", (incident_id,)).fetchall()
-    lignes = ["## Remédiations exécutées"]
+    lignes = ["## Remédiations"]
 
     if not rows:
         remed = [a for a in triage.get("actions", [])
@@ -920,6 +1115,13 @@ def _section_remediations(conn, incident_id: int, triage: dict) -> str:
         "case. Procédures d'annulation détaillées dans le répertoire "
         "« Remédiations ».",
         "",
+        "Le statut est celui **rapporté par l'agent**, pas celui de l'appel "
+        "d'API : le canal d'active response ne renvoie pas le code de retour du "
+        "script, donc une commande partie n'est pas une action faite. Une ligne "
+        "« commande émise » qui ne se confirme pas signale un script mort avant "
+        "son compte rendu, ou un agent qui ne remonte pas "
+        "`active-responses.log`.",
+        "",
         "| Action | Cible | Statut |",
         "|:---|:---|:---:|",
     ]
@@ -927,6 +1129,16 @@ def _section_remediations(conn, incident_id: int, triage: dict) -> str:
         libelle = LIBELLE_ACTION.get(r["action"], r["action"])
         statut = _STATUT_REMED.get(r["statut"], r["statut"])
         lignes.append(f"| {libelle} | `{r['cible']}` | {statut} |")
+
+    refuses = [r for r in rows if r["statut"] == "refusé_agent"]
+    if refuses:
+        lignes += [
+            "",
+            f"> **{len(refuses)} action(s) refusée(s) par un garde-fou de "
+            "l'agent.** Le garde-fou a fait son travail, mais le soc-agent a "
+            "visé une cible qu'il n'aurait pas dû retenir : la résolution de "
+            "cibles est à revoir pour ce type d'incident.",
+        ]
     return "\n".join(lignes)
 
 
@@ -1119,6 +1331,14 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
         log.warning("rapport LLM indisponible (#%s) : %s", incident["id"], e)
         rapport = {}
     # DeepSeek ne garantit pas les clés du schéma : on tolère les absences.
+    #
+    # Le repli met la MÊME phrase dans `resume` et dans `analyse` — c'est
+    # inévitable, on n'a que `triage.reason`. Mais il ne doit pas se faire
+    # passer pour un rapport : le case 90 du purple-team affichait deux sections
+    # identiques sans rien signaler, et l'analyste ne pouvait pas savoir qu'il
+    # lisait un repli plutôt qu'une analyse. `_degrade` déclenche plus bas le
+    # bandeau d'avertissement, ET empêche d'écraser un rapport déjà écrit.
+    degrade = "analyse" not in rapport
     rapport.setdefault("resume", triage["reason"])
     rapport.setdefault("analyse", triage["reason"])
     rapport.setdefault("couverture", "")
@@ -1134,11 +1354,30 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
         f"**Verdict IA** : vrai positif (confiance {triage['confidence']})"
         + (f" — technique {triage['mitre']}" if triage.get("mitre") else ""),
     ]
+    # Le triage ne rend QU'UNE technique, celle qui a emporté sa décision. Le
+    # case 90 se résumait ainsi à « T1059.001 PowerShell » alors que les mêmes
+    # alertes portaient dcsync, golden ticket et pass-the-hash. On complète par
+    # ce que les règles Wazuh ont réellement mappé : c'est factuel, et c'est ce
+    # sur quoi une couverture ATT&CK se construit.
+    autres = _mitre_observes(alertes) - {(triage.get("mitre") or "").strip()}
+    if autres:
+        lignes.append("**Autres techniques observées** (mappées par les règles "
+                      "Wazuh) : " + ", ".join(sorted(autres)))
     # Attribution conteneur : l'agent est l'hôte Proxmox (pve) ; le vrai théâtre
     # est le conteneur LXC résolu par l'enrichisseur auditd.
     if cts:
         lignes.append(f"**Conteneur(s) concerné(s)** : {', '.join(cts)} "
                       f"(exécution vue par l'auditd de l'hôte {incident['agent_name']})")
+    if degrade:
+        lignes += [
+            "",
+            "> ⚠️ **Rapport dégradé — l'analyse LLM n'a pas abouti.** Les deux "
+            "sections ci-dessous reprennent la justification du triage, faute "
+            "de mieux. Il n'y a donc PAS eu de reconstitution de la chaîne "
+            "d'attaque ici : voir la table des alertes et les IOC plus bas. "
+            "Cause la plus fréquente : budget de tokens épuisé par le "
+            "raisonnement du modèle (`REPORT_MAX_TOKENS`).",
+        ]
     lignes += [
         "",
         "## Résumé",
@@ -1162,6 +1401,8 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
         _section_iocs(alertes),
         "",
         _section_remediations(conn, incident["id"], triage),
+        "",
+        _section_remediation_hors_portee(triage, alertes),
     ]
     return "\n".join(lignes)
 
@@ -1278,7 +1519,15 @@ def _signature_campagne(alertes: list[dict]) -> set[str]:
 
     Volontairement PAS les IP internes (le rebond admin 192.168.10.1 relierait
     tout le parc) ni les entités génériques — la sur-fusion se contient en
-    n'admettant qu'un marqueur clairement attaquant. Réutilise `_iocs`."""
+    n'admettant qu'un marqueur clairement attaquant. Réutilise `_iocs`.
+
+    Cette fonction ne vaut donc que ce que vaut `_iocs`, et c'est ce qui a
+    manqué au purple-team du 2026-08-02 : les incidents #1993 (winsrv) et #1995
+    (win10) exécutaient le MÊME `mimikatz.exe`, au même chemin, à la même
+    minute, et sont restés deux cases séparés — parce que `_iocs` n'extrayait
+    aucun exécutable Windows, l'un n'avait qu'un marqueur (le compte créé) et
+    l'autre aucun. Ajouter les binaires déposés hors système aux IOC répare les
+    deux d'un coup : la liste d'indicateurs du case ET la fusion de campagne."""
     sig: set[str] = set()
     for valeur, type_ioc, _desc in _iocs(alertes):
         if type_ioc == "ip-any" and _ip_interne(str(valeur)):

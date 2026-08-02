@@ -27,6 +27,46 @@ function Write-ARLog {
     try { Add-Content -Path (Get-ARLog) -Value $line -Encoding utf8 } catch { }
 }
 
+function Write-ARResult {
+    <#
+        Structured outcome of an active response, on ONE line, machine-readable.
+
+            2026/08/02 09:21:11 ar-result: script=win-kill-process status=refused
+            target="cmd.exe" reason="critical process"
+
+        Why this exists. The Wazuh AR channel is fire-and-forget: the API
+        returns as soon as the command is queued and the script's exit code
+        never comes back. The soc-agent therefore recorded every action as
+        'executed'. On 2026-08-02 that produced an IRIS report claiming 26
+        quarantines of System32 binaries had succeeded, when the script had
+        refused all 26. The analyst read "done" on undone work - the single
+        worst defect of that campaign.
+
+        This line is what closes the loop: the agent ships
+        active-responses.log, decoder 100930 parses these fields, and
+        `soc_agent.reconcile` turns them back into a real status on the
+        mitigation and its IRIS task.
+
+        status is a closed set: applied | refused | noop | error.
+          applied - the change was made on the host.
+          refused - a guardrail declined (protected account, system path...).
+          noop    - nothing to do (target absent, already in that state).
+          error   - the action was attempted and failed.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Script,
+        [Parameter(Mandatory)][ValidateSet('applied', 'refused', 'noop', 'error')]
+        [string]$Status,
+        [string]$Target = '',
+        [string]$Reason = ''
+    )
+    $clean = { param($s) ($s -replace '[\r\n"]', ' ').Trim() }
+    $line = ('{0} ar-result: script={1} status={2} target="{3}" reason="{4}"' -f `
+             (Get-Date -Format 'yyyy/MM/dd HH:mm:ss'), $Script, $Status,
+             (& $clean $Target), (& $clean $Reason))
+    try { Add-Content -Path (Get-ARLog) -Value $line -Encoding utf8 } catch { }
+}
+
 function Read-ARInput {
     # Returns [pscustomobject]@{ Command; Args } from the stdin JSON.
     $raw = [Console]::In.ReadToEnd()
@@ -46,8 +86,19 @@ function Read-ARInput {
 $script:ProtectedLocalNames = @(
     'administrateur', 'administrator', 'krbtgt', 'guest', 'defaultaccount',
     'wdagutilityaccount', 'system', 'localsystem', 'networkservice',
-    'localservice', 'wazuh', 'wazuh-admin'
+    'localservice', 'wazuh', 'wazuh-admin',
+    # Well-known identities that show up as the "account" of a 4624/4634 but are
+    # not accounts at all. A French-locale DC spells them differently; both
+    # spellings are listed. Purple-team 2026-08-02 sent ad-disable-account on
+    # 'Systeme', 'SERVICE LOCAL' and 'ANONYMOUS LOGON'.
+    'anonymous logon', 'connexion anonyme', 'local service', 'service local',
+    'network service', 'service reseau', 'service r' + [char]0xE9 + 'seau',
+    'syst' + [char]0xE8 + 'me', 'invit' + [char]0xE9, 'iusr',
+    'everyone', 'tout le monde'
 )
+
+# Indexed session pseudo-accounts (UMFD-0, DWM-1, ...): never real accounts.
+$script:ProtectedNamePattern = '^(umfd|dwm)-\d+$'
 
 # Domain groups whose members are treated as protected (never auto-disabled):
 # disabling a legitimate privileged admin caught in the incident would lock out
@@ -78,6 +129,7 @@ function Test-ProtectedAccount {
     $sam = (Get-SamName $Raw).ToLower()
     if (-not $sam) { return $true }
     if ($script:ProtectedLocalNames -contains $sam) { return $true }
+    if ($sam -match $script:ProtectedNamePattern) { return $true }
     if ($sam.EndsWith('$')) { return $true }   # machine / trust account
 
     if (Get-Command Get-ADUser -ErrorAction SilentlyContinue) {

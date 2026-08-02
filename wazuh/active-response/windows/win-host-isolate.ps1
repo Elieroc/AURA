@@ -17,11 +17,15 @@ $allow = @($in.Args | Where-Object { $_ -as [ipaddress] })
 if (-not $allow -or $allow.Count -eq 0) { $allow = @('192.168.10.5') }
 $stateFile = Join-Path (Split-Path $PSScriptRoot -Parent) 'soc-ai-isolation.state'
 
-if ($in.Command -eq 'delete') { Write-ARLog 'win-host-isolate' 'delete: no-op (use unisolate)'; exit 0 }
-if ($in.Command -ne 'add')    { Write-ARLog 'win-host-isolate' "invalid command '$($in.Command)'"; exit 1 }
+$S    = 'win-host-isolate'
+$host_name = $env:COMPUTERNAME
+
+if ($in.Command -eq 'delete') { Write-ARLog $S 'delete: no-op (use unisolate)'; Write-ARResult $S 'noop' $host_name 'delete command'; exit 0 }
+if ($in.Command -ne 'add')    { Write-ARLog $S "invalid command '$($in.Command)'"; Write-ARResult $S 'error' $host_name 'invalid command'; exit 1 }
 
 if (Confirm-DomainController) {
-    Write-ARLog 'win-host-isolate' 'REFUSED: host is a domain controller - isolation would break the domain'
+    Write-ARLog $S 'REFUSED: host is a domain controller - isolation would break the domain'
+    Write-ARResult $S 'refused' $host_name 'host is a domain controller'
     exit 1
 }
 
@@ -41,5 +45,6 @@ foreach ($ip in ($allow | Select-Object -Unique)) {
 }
 Set-NetFirewallProfile -All -DefaultInboundAction Block -DefaultOutboundAction Block
 
-Write-ARLog 'win-host-isolate' ("host isolated; reachable IPs: {0}" -f ($allow -join ', '))
+Write-ARLog $S ("host isolated; reachable IPs: {0}" -f ($allow -join ', '))
+Write-ARResult $S 'applied' $host_name ("isolated; reachable IPs: {0}" -f ($allow -join ' '))
 exit 0

@@ -14,6 +14,7 @@
 set -u
 
 LOG_FILE="/var/ossec/logs/active-responses.log"
+SCRIPT_NAME="firewall-drop"
 IPT="/usr/sbin/iptables"
 IPT6="/usr/sbin/ip6tables"
 NFT="/usr/sbin/nft"
@@ -27,6 +28,15 @@ log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') firewall-drop: $1" >> "$LOG_FILE"
 }
 
+# Compte rendu structuré, lu par le decodeur Wazuh 100930 puis par
+# soc_agent.reconcile. statut : applied | refused | noop | error.
+ar_result() {   # $1 statut  $2 cible  $3 motif
+    printf '%s ar-result: script=%s status=%s target="%s" reason="%s"\n' \
+        "$(date '+%Y/%m/%d %H:%M:%S')" "$SCRIPT_NAME" "$1" \
+        "$(printf '%s' "$2" | tr -d '\r\n"')" \
+        "$(printf '%s' "$3" | tr -d '\r\n"')" >> "$LOG_FILE"
+}
+
 read -r INPUT_JSON
 COMMAND=$(echo "$INPUT_JSON" | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 
@@ -34,9 +44,13 @@ case "$COMMAND" in
     add) ;;
     # execd émet "delete" à l'expiration du timeout. On ne lève pas le blocage
     # tout seul : seul firewall-allow.sh le fait, sur demande explicite.
-    delete) exit 0 ;;
+    delete)
+        ar_result noop "" "commande delete (expiration timeout), seul firewall-allow leve le blocage"
+        exit 0
+        ;;
     *)
         log "commande invalide: '$COMMAND'"
+        ar_result error "" "commande invalide: $COMMAND"
         exit 1
         ;;
 esac
@@ -47,12 +61,14 @@ IP=$(echo "$IP" | sed 's/^-srcip[[:space:]]*//')
 
 if [ -z "$IP" ]; then
     log "ERREUR: aucune IP fournie (extra_args vide)"
+    ar_result error "" "aucune IP fournie (extra_args vide)"
     exit 1
 fi
 
 case "$IP" in
     *[!0-9.:a-fA-F]*)
         log "ERREUR: IP invalide '$IP'"
+        ar_result error "$IP" "IP invalide"
         exit 1
         ;;
 esac
@@ -64,6 +80,7 @@ esac
 case "$IP" in
     127.*|::1|0.0.0.0)
         log "REFUS: blocage de '$IP' (loopback) refusé"
+        ar_result refused "$IP" "loopback"
         exit 1
         ;;
 esac
@@ -71,6 +88,7 @@ esac
 MANAGER=$(sed -n 's/.*<address>\([^<]*\)<\/address>.*/\1/p' "$OSSEC_CONF" 2>/dev/null | head -1)
 if [ -n "$MANAGER" ] && [ "$IP" = "$MANAGER" ]; then
     log "REFUS: blocage du manager '$IP' refusé (couperait la supervision)"
+    ar_result refused "$IP" "IP du manager Wazuh"
     exit 1
 fi
 
@@ -85,6 +103,7 @@ esac
 if [ ! -x "$BIN" ]; then
     if [ ! -x "$NFT" ]; then
         log "ERREUR: ni $BIN ni $NFT trouvés"
+        ar_result error "$IP" "ni $BIN ni $NFT trouves"
         exit 1
     fi
     "$NFT" list table inet "$NFT_TABLE" >/dev/null 2>&1 \
@@ -97,13 +116,16 @@ if [ ! -x "$BIN" ]; then
     if "$NFT" list chain inet "$NFT_TABLE" input 2>/dev/null \
             | grep -q "$FAM saddr $IP drop"; then
         log "IP '$IP' déjà bloquée (nft), rien à faire"
+        ar_result noop "$IP" "deja bloquee (regle nft presente)"
         exit 0
     fi
     if ! "$NFT" add rule inet "$NFT_TABLE" input "$FAM" saddr "$IP" drop 2>/dev/null; then
         log "ERREUR: échec de l'ajout de la règle nft drop pour '$IP'"
+        ar_result error "$IP" "echec ajout regle nft drop"
         exit 1
     fi
     log "IP '$IP' bloquée (nft inet $NFT_TABLE input drop)"
+    ar_result applied "$IP" "bloquee (nft inet $NFT_TABLE input drop)"
     exit 0
 fi
 
@@ -112,13 +134,16 @@ fi
 # firewall-allow.sh doit boucler pour toutes les retirer.
 if "$BIN" -C INPUT -s "$IP" -j DROP >/dev/null 2>&1; then
     log "IP '$IP' déjà bloquée, rien à faire"
+    ar_result noop "$IP" "deja bloquee (regle iptables presente)"
     exit 0
 fi
 
 if ! "$BIN" -I INPUT -s "$IP" -j DROP >/dev/null 2>&1; then
     log "ERREUR: échec de l'ajout de la règle DROP pour '$IP'"
+    ar_result error "$IP" "echec ajout regle INPUT DROP"
     exit 1
 fi
 
 log "IP '$IP' bloquée (INPUT DROP)"
+ar_result applied "$IP" "bloquee (INPUT DROP)"
 exit 0

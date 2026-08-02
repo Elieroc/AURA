@@ -1,0 +1,27 @@
+<!--
+  Domain trust and AD topology discovery (T1482, T1018, T1069.002).
+
+  Enumerating trusts is how an attacker finds the next domain to pivot into.
+  During the purple-team campaign of 2026-08-02 the commands below ran on the
+  domain controller and produced nothing above level 4 - the generic Windows
+  ruleset sees "a process was created", not "someone is mapping our forest".
+
+  Level 8 on purpose, not 12. On its own this is reconnaissance an
+  administrator also performs; what makes it an incident is its company. Level
+  8 is above the correlation floor, so the soc-agent attaches it to whatever
+  incident is already open on the host and the LLM gets to see the recon step
+  in the same context as the credential theft that follows it.
+-->
+<group name="windows,attack,">
+
+  <rule id="100928" level="8">
+    <decoded_as>json</decoded_as>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(nltest(\.exe)?\s+.*/(domain_trusts|dclist|dsgetdc)|dsquery(\.exe)?\s+.*(trustedDomain|objectClass=trustedDomain)|get-adtrust|get-domaintrust|\.getalltrustrelationships)</field>
+    <description>Domain trust discovery: $(win.eventdata.commandLine)</description>
+    <mitre>
+      <id>T1482</id>
+    </mitre>
+    <group>discovery,ad_discovery,pci_dss_10.6.1,</group>
+  </rule>
+
+</group>

@@ -422,7 +422,7 @@ def _isolate(cible: str, ctx: dict):
         if config.MITIGATE_EXECUTE:
             _wazuh_ar(ctx["agent_id"], "!win-host-isolate.exe",
                       list(config.MITIGATE_ISOLATE_ALLOW))
-            return "exécuté", canal, details, undo
+            return "émis", canal, details, undo
         return "dry_run", canal, details, undo
 
     canal = "Shuffle → active-response host-isolate.sh (nftables)"
@@ -435,7 +435,7 @@ def _isolate(cible: str, ctx: dict):
             f"\"!host-unisolate.sh\", \"reason\": \"incident clos\"}}'")
     if config.MITIGATE_EXECUTE:
         fire_isolation(cible, True, ctx["reason_court"])
-        return "exécuté", canal, details, undo
+        return "émis", canal, details, undo
     return "dry_run", canal, details, undo
 
 
@@ -451,7 +451,7 @@ def _block_ip(cible: str, ctx: dict):
             f"sur l'agent {ctx['agent_id']}.")
     if config.MITIGATE_EXECUTE:
         _wazuh_ar(ctx["agent_id"], ar, [cible])
-        return "exécuté", canal, details, undo
+        return "émis", canal, details, undo
     return "dry_run", canal, details, undo
 
 
@@ -471,20 +471,31 @@ def _disable_user(cible: str, ctx: dict):
             f"{ctx['agent_id']}.")
     if config.MITIGATE_EXECUTE:
         _wazuh_ar(ctx["agent_id"], ar, [cible])
-        return "exécuté", canal, details, undo
+        return "émis", canal, details, undo
     return "dry_run", canal, details, undo
 
 
 def _kill_process(cible: str, ctx: dict):
     if _agent_windows(ctx["agent_id"]):
+        # Cible « image.exe#pid » (cf. _win_process_suspects) : on envoie le PID
+        # en premier argument et l'image attendue en second. Le script tue le
+        # PID SEULEMENT s'il porte encore cette image — un PID est réutilisé, et
+        # il s'écoule jusqu'à 5 min entre l'alerte et la remédiation.
+        image, _, pid = cible.partition("#")
+        args = [pid, image] if pid else [image]
+        precision = (f"PID {pid} (image attendue « {image} », vérifiée par le "
+                     "script avant l'arrêt)" if pid
+                     else f"toutes les instances de « {image} »")
         canal = "API Wazuh → win-kill-process.exe (Stop-Process)"
-        details = (f"Arrêt du process « {cible} » sur l'hôte Windows "
-                   f"{ctx['agent_id']}. La safelist du script protège les process "
-                   "critiques (lsass, services, agent Wazuh, Sysmon).")
+        details = (f"Arrêt du process sur l'hôte Windows {ctx['agent_id']} : "
+                   f"{precision}. La safelist du script protège les process "
+                   "critiques (lsass, services, agent Wazuh, Sysmon) et les "
+                   "images génériques (powershell, cmd, net, wsmprovhost), qui "
+                   "ne sont tuables que par PID.")
         undo = ("Action irréversible (pas d'« unkill »).")
         if config.MITIGATE_EXECUTE:
-            _wazuh_ar(ctx["agent_id"], "!win-kill-process.exe", [cible])
-            return "exécuté", canal, details, undo
+            _wazuh_ar(ctx["agent_id"], "!win-kill-process.exe", args)
+            return "émis", canal, details, undo
         return "dry_run", canal, details, undo
 
     canal = "Shuffle → active-response kill-process.sh (pkill -x)"
@@ -495,7 +506,7 @@ def _kill_process(cible: str, ctx: dict):
             "légitime, le relancer manuellement sur l'hôte.")
     if config.MITIGATE_EXECUTE:
         fire_kill(ctx["agent_id"], cible, ctx["reason_court"])
-        return "exécuté", canal, details, undo
+        return "émis", canal, details, undo
     return "dry_run", canal, details, undo
 
 
@@ -509,7 +520,7 @@ def _quarantine_file(cible: str, ctx: dict):
             f"l'agent {ctx['agent_id']}.")
     if config.MITIGATE_EXECUTE:
         _wazuh_ar(ctx["agent_id"], "!win-quarantine-file.exe", [cible])
-        return "exécuté", canal, details, undo
+        return "émis", canal, details, undo
     return "dry_run", canal, details, undo
 
 
@@ -618,8 +629,25 @@ def _nom_compte(brut: str) -> str:
 # (_ar-common.ps1 Test-ProtectedAccount) côté sélection de cible Python : sans
 # ça, l'IA tirait sur « Administrateur » et le compte machine « WIN-DC$ » (vus
 # comme srcuser dans les logons), rattrapés seulement par le script AR.
-_COMPTES_WINDOWS_PROTEGES = {"administrateur", "krbtgt", "defaultaccount",
-                             "wdagutilityaccount", "localservice"}
+#
+# Les libellés de « compte » qui apparaissent dans les events de logon Windows
+# ne sont pas tous des comptes : `Système`, `ANONYMOUS LOGON`, `SERVICE LOCAL`,
+# `UMFD-0` sont des identités bien connues (well-known SID) ou des sessions de
+# service. Le purple-team du 2026-08-02 a envoyé `ad-disable-account` sur trois
+# d'entre elles (seul le script AR a refusé). Les deux graphies sont listées :
+# le DC du lab est en français, un DC anglais renvoie l'autre.
+_COMPTES_WINDOWS_PROTEGES = {
+    "administrateur", "krbtgt", "defaultaccount", "wdagutilityaccount",
+    "localservice",
+    # identités système, graphie EN puis FR
+    "system", "système", "local service", "service local",
+    "network service", "service réseau", "anonymous logon",
+    "connexion anonyme", "iusr", "invité", "guest",
+    "openssh_users", "tout le monde", "everyone",
+}
+
+# Comptes techniques de session dont le nom est indexé (UMFD-0, DWM-1, DWM-2…).
+_RE_COMPTE_SESSION = re.compile(r"^(umfd|dwm)-\d+$", re.IGNORECASE)
 
 
 def _comptes_crees(alertes: list[dict]) -> list[str]:
@@ -653,6 +681,8 @@ def _compte_protege(brut: str) -> bool:
         return True
     if nom.endswith("$"):        # compte machine / trust AD (ex. WIN-DC$)
         return True
+    if _RE_COMPTE_SESSION.match(nom):   # UMFD-0, DWM-1 : sessions, pas des comptes
+        return True
     if nom in {str(config.SSH_USER).lower(), str(config.WAZUH_API_USER).lower()}:
         return True
     m = _RE_UID_SUFFIXE.search(str(brut))
@@ -660,6 +690,58 @@ def _compte_protege(brut: str) -> bool:
 
 
 _WIN_EXE_EXT = (".exe", ".dll", ".ps1", ".bat", ".scr", ".com", ".vbs")
+
+# Sondes AppLocker créées par PowerShell lui-même à chaque lancement dans
+# %TEMP% : ce ne sont ni un implant, ni un process de l'attaquant. Le
+# purple-team du 2026-08-02 en a tué et mis en quarantaine dix.
+_RE_SONDE_PS = re.compile(r"__PSScriptPolicyTest_", re.IGNORECASE)
+
+# Noms de process trop génériques pour être tués « par nom » : Stop-Process
+# -Name tue TOUTES les instances de la machine. Sur le DC du purple-team, le
+# kill de `powershell` et `wsmprovhost` a coupé les sessions d'administration
+# et toutes les sessions WinRM légitimes. Ces process ne sont tuables que par
+# PID, avec vérification de l'image côté script AR.
+_NOMS_PROCESS_GENERIQUES = {
+    "powershell.exe", "powershell_ise.exe", "pwsh.exe", "cmd.exe", "net.exe",
+    "net1.exe", "wsmprovhost.exe", "conhost.exe", "explorer.exe", "runas.exe",
+    "rundll32.exe", "regsvr32.exe", "mshta.exe", "wmic.exe", "cscript.exe",
+    "wscript.exe", "svchost.exe", "dllhost.exe", "taskhostw.exe",
+    "werfault.exe", "msiexec.exe", "schtasks.exe", "reg.exe", "sc.exe",
+}
+
+
+def _norm_chemin_win(brut: str) -> str:
+    """Chemin Windows normalisé : séparateurs simples, sans guillemets.
+
+    Le JSON de l'eventchannel Windows arrive avec les backslashes DOUBLÉS et
+    Wazuh les conserve tels quels — `C:\\\\Windows\\\\System32\\\\cmd.exe` est
+    stocké avec deux caractères backslash entre chaque segment. Le test
+    d'exclusion des répertoires système comparait donc `c:\\\\windows...` à
+    `c:\\windows` : jamais vrai. Résultat mesuré au purple-team du 2026-08-02 :
+    26 ordres de quarantaine sur des binaires signés de System32 d'un
+    contrôleur de domaine (cmd.exe, net.exe, powershell.exe, dsquery.exe…),
+    rattrapés uniquement par la safelist du script AR. Normaliser ici est la
+    PREMIÈRE barrière ; celle du script reste la dernière.
+    """
+    p = str(brut or "").strip().strip('"')
+    while "\\\\" in p:
+        p = p.replace("\\\\", "\\")
+    return p
+
+
+def _chemin_win_hors_systeme(p: str) -> bool:
+    """Vrai si `p` est un chemin Windows plausible, hors répertoire système et
+    hors sonde AppLocker. Ne présume rien de l'extension : un webshell ou un
+    payload sans extension exécutable reste quarantainable."""
+    pl = p.lower()
+    return bool((":\\" in p or p.startswith("\\"))
+                and not pl.startswith(config.VT_DIRS_SYSTEME)
+                and not _RE_SONDE_PS.search(p))
+
+
+def _chemin_win_suspect(p: str) -> bool:
+    """Vrai si `p` est un EXÉCUTABLE Windows hors répertoire système."""
+    return bool(_chemin_win_hors_systeme(p) and p.lower().endswith(_WIN_EXE_EXT))
 
 
 def _win_fichiers_suspects(alertes: list[dict]) -> set[str]:
@@ -670,19 +752,79 @@ def _win_fichiers_suspects(alertes: list[dict]) -> set[str]:
     tuer/quarantiner. Sources : Sysmon (image / targetFilename / *Image) + entity."""
     out: set[str] = set()
     for a in alertes:
-        raw = a.get("raw")
-        if not raw:
-            continue
-        data = ((raw if isinstance(raw, dict) else json.loads(raw)) or {}).get("data", {})
-        ev = (data.get("win") or {}).get("eventdata") or {}
-        for c in (ev.get("image"), ev.get("targetFilename"), ev.get("sourceImage"),
-                  ev.get("targetImage"), a.get("entity")):
-            p = str(c or "").strip()
-            pl = p.lower()
-            if ((":\\" in p or p.startswith("\\")) and pl.endswith(_WIN_EXE_EXT)
-                    and not pl.startswith(config.VT_DIRS_SYSTEME)):
+        for c in _champs_chemin_win(a):
+            p = _norm_chemin_win(c)
+            if _chemin_win_suspect(p):
                 out.add(p)
     return out
+
+
+def _eventdata(alerte: dict) -> dict:
+    """Bloc `data.win.eventdata` d'une alerte Windows (vide si absent)."""
+    raw = alerte.get("raw")
+    if not raw:
+        return {}
+    data = ((raw if isinstance(raw, dict) else json.loads(raw)) or {}).get("data", {})
+    return (data.get("win") or {}).get("eventdata") or {}
+
+
+def _champs_chemin_win(alerte: dict) -> tuple:
+    ev = _eventdata(alerte)
+    return (ev.get("image"), ev.get("targetFilename"), ev.get("sourceImage"),
+            ev.get("targetImage"), alerte.get("entity"))
+
+
+def _win_process_suspects(alertes: list[dict]) -> set[tuple[str, str]]:
+    """Process Windows à tuer, sous la forme (nom d'image, pid).
+
+    Le PID vient de Sysmon EID 1 (`processId`, décimal) ou de l'event 4688
+    (`newProcessId`, hexadécimal). Il est indispensable pour les images
+    génériques : `Stop-Process -Name powershell` tue toutes les sessions de la
+    machine, y compris celles de l'administrateur et de WinRM. Un process dont
+    l'image est générique ET dont on n'a pas le PID n'est PAS une cible : dans
+    le doute, on n'agit pas.
+
+    Le pid est retourné à côté du nom pour que le script AR puisse vérifier que
+    le PID porte bien cette image avant de tuer (un PID est réutilisable, et il
+    peut s'écouler plusieurs minutes entre l'alerte et la remédiation).
+    """
+    out: set[tuple[str, str]] = set()
+    for a in alertes:
+        ev = _eventdata(a)
+        image = _norm_chemin_win(ev.get("image") or "")
+        if not image or not _chemin_win_suspect(image):
+            # Image système/inconnue : on retombe sur les chemins suspects vus
+            # ailleurs dans l'alerte (dépôt de fichier, targetFilename…).
+            continue
+        base = image.rsplit("\\", 1)[-1]
+        pid = _pid_alerte(ev)
+        if not pid and base.lower() in _NOMS_PROCESS_GENERIQUES:
+            log.info("kill_process : '%s' sans PID exploitable et nom générique "
+                     "— non ciblé (tuer par nom couperait les sessions "
+                     "légitimes)", base)
+            continue
+        out.add((base, pid))
+    # Implants déposés hors système et vus sans event de création de process :
+    # tuables par nom, le nom n'étant pas générique.
+    for p in _win_fichiers_suspects(alertes):
+        base = p.rsplit("\\", 1)[-1]
+        if base.lower() in _NOMS_PROCESS_GENERIQUES:
+            continue
+        if not any(n == base for n, _ in out):
+            out.add((base, ""))
+    return out
+
+
+def _pid_alerte(ev: dict) -> str:
+    """PID décimal du process créé, depuis Sysmon EID 1 ou l'event 4688."""
+    pid = str(ev.get("processId") or "").strip()
+    if pid.isdigit():
+        return pid
+    brut = str(ev.get("newProcessId") or "").strip()   # 4688 : "0x1a4c"
+    try:
+        return str(int(brut, 16)) if brut.lower().startswith("0x") else ""
+    except ValueError:
+        return ""
 
 
 def _alertes_par_agent(alertes: list[dict]) -> dict[str, list[dict]]:
@@ -734,12 +876,13 @@ def _cibles_par_machine(action: str, incident: dict,
         out: set[tuple[str, str]] = set()
         for ag in agents:
             if _agent_windows(ag):
-                # Windows : nom du binaire malveillant (déposé hors système),
-                # tiré de la télémétrie Sysmon. win-kill-process matche le nom.
-                for p in _win_fichiers_suspects(par_agent[ag]):
-                    base = p.replace("/", "\\").rsplit("\\", 1)[-1]
+                # Windows : « image#pid » (le pid peut être vide). Le script AR
+                # tue le PID après avoir vérifié qu'il porte bien cette image ;
+                # sans pid il retombe sur le nom, ce que _win_process_suspects
+                # n'autorise que pour un nom non générique.
+                for base, pid in _win_process_suspects(par_agent[ag]):
                     if base:
-                        out.add((ag, base))
+                        out.add((ag, f"{base}#{pid}" if pid else base))
                 continue
             for a in par_agent[ag]:
                 raw = a.get("raw")
@@ -807,17 +950,27 @@ def _cibles_par_machine(action: str, incident: dict,
         out = set()
         for ag in agents:
             al = par_agent[ag]
-            comptes = {_nom_compte(a["srcuser"]) for a in al
-                       if a.get("srcuser") and not _compte_protege(a["srcuser"])}
-            comptes |= set(_comptes_crees(al))
             machine = ag
             if _agent_windows(ag):
+                # Windows : SEULS les comptes CRÉÉS par l'attaquant sont des
+                # cibles. Le `srcuser` d'un 4624/4634 est l'identité qui s'est
+                # connectée — donc la victime, ou une identité système. Le
+                # purple-team du 2026-08-02 en a tiré `Système`, `SERVICE LOCAL`
+                # et `ANONYMOUS LOGON` : trois ordres de désactivation dans AD,
+                # refusés seulement par le script. Sur Linux, le srcuser reste
+                # exploitable (il provient de l'audit de commande, pas d'un
+                # logon), on le garde.
+                comptes = set(_comptes_crees(al))
                 machine = _un_dc()
                 if not machine:      # pas de DC configuré : on ne sait pas où agir
                     log.warning("#%s disable_user : hôte Windows %s mais aucun "
                                 "AGENTS_DC — compte non désactivé (garde-fou)",
                                 incident.get("id"), ag)
                     continue
+            else:
+                comptes = {_nom_compte(a["srcuser"]) for a in al
+                           if a.get("srcuser") and not _compte_protege(a["srcuser"])}
+                comptes |= set(_comptes_crees(al))
             for c in comptes:
                 if c:
                     out.add((machine, c))
@@ -835,9 +988,9 @@ def _cibles_par_machine(action: str, incident: dict,
             for p in _win_fichiers_suspects(par_agent[ag]):
                 out.add((ag, p))
             for v, t, _ in _iocs(par_agent[ag]):
-                p = str(v)
+                p = _norm_chemin_win(v)
                 if t in ("file", "filename") and ("\\" in p or "/" in p) \
-                        and not p.lower().startswith(("c:\\windows", "c:/windows")):
+                        and _chemin_win_hors_systeme(p):
                     out.add((ag, p))
         return sorted(out)
 
@@ -865,12 +1018,49 @@ def _cibles_par_machine(action: str, incident: dict,
 # TASK (onglet Tasks) et les cibles concrètes (hôte, comptes) des ASSETS
 # (onglet Assets). L'onglet Notes reste réservé à l'analyse (rapport LLM).
 
+# Cycle de vie d'une remédiation.
+#
+# Le canal d'active response de Wazuh est fire-and-forget : l'API rend la main
+# dès que la commande est mise en file, et le code de retour du script ne
+# revient jamais. Il n'y a donc PAS un statut « exécuté » mais deux moments
+# distincts, et les confondre est ce qui a produit le pire défaut du
+# purple-team du 2026-08-02 — un rapport IRIS annonçant 26 quarantaines
+# réussies de binaires System32 sur un contrôleur de domaine, quand le script
+# les avait toutes refusées :
+#
+#   émis         l'API Wazuh a pris la commande. C'est TOUT ce qu'on sait à
+#                l'instant de l'appel. Ce n'est pas un succès.
+#   confirmé     l'agent a renvoyé `ar-result status=applied` : le changement
+#                a réellement eu lieu sur l'hôte.
+#   sans_effet   `status=noop` : il n'y avait rien à faire (cible absente,
+#                déjà dans cet état). Ni succès ni échec — souvent le signe
+#                d'une cible mal résolue, donc surtout pas « Done ».
+#   refusé_agent `status=refused` : un garde-fou du script a décliné. La
+#                dernière ligne de défense a tenu, et le soc-agent a visé ce
+#                qu'il n'aurait pas dû : à voir par l'analyste.
+#   échec        le canal lui-même a échoué, ou `status=error`.
+#
+# Le passage de « émis » à l'un des trois états réels est fait par
+# `reconcilier_resultats_ar()`, alimenté par les règles 100930-100935.
+STATUTS_PARTIS = ("émis", "confirmé", "sans_effet", "refusé_agent")
+
 # Statut de remédiation -> statut de tâche IRIS.
 _STATUT_TASK = {
-    "exécuté": "Done",
+    "émis": "In progress",     # commande partie, effet pas encore confirmé
+    "confirmé": "Done",
+    "sans_effet": "On hold",   # rien à faire sur cette cible : à regarder
+    "refusé_agent": "Canceled",
     "dry_run": "To do",        # simulé : l'action réelle reste à faire
     "échec": "Canceled",
     "annulé": "Canceled",
+}
+
+# Statut d'AR renvoyé par l'agent -> statut de remédiation.
+_STATUT_AR = {
+    "applied": "confirmé",
+    "noop": "sans_effet",
+    "refused": "refusé_agent",
+    "error": "échec",
 }
 
 
@@ -953,7 +1143,12 @@ RETURNING id
 
 
 # Statuts qui interdisent de rejouer une action sur le même couple
-# (incident, cible). 'exécuté' pour l'idempotence évidente ; 'annulé' et
+# (incident, cible). Les quatre statuts « la commande est partie » pour
+# l'idempotence évidente — y compris 'refusé_agent' : une action que le script
+# a déclinée par garde-fou serait redemandée à chaque cycle, et redéclinée,
+# indéfiniment. Un refus est une réponse, pas une erreur transitoire.
+# 'échec' n'y est PAS : un canal qui tombe mérite un nouvel essai.
+# 'annulé' et
 # 'annulation_impossible' parce qu'une action ANNULÉE ne doit pas revenir : un
 # incident gagne de nouvelles alertes en continu (needs_refresh), donc le triage
 # est rejoué, donc la remédiation aussi — l'analyste qui passe la tâche IRIS en
@@ -964,7 +1159,7 @@ RETURNING id
 # rien ne repart tout seul. C'est le bon défaut (l'analyste a tranché en
 # connaissance de cause) et il reste rattrapable à la main :
 # `mitigate --isoler <agent>`, ou suppression de la ligne pour rouvrir le droit.
-_STATUTS_FIGES = ("exécuté", "annulé", "annulation_impossible")
+_STATUTS_FIGES = STATUTS_PARTIS + ("annulé", "annulation_impossible")
 
 
 def _deja_exec(conn, incident_id: int, action: str, cible: str,
@@ -1107,12 +1302,133 @@ def _commenter_tache(case, case_id: int, task_id: int, texte: str) -> None:
         log.debug("commentaire tâche %s : %s", task_id, e)
 
 
+# --- réconciliation : ce que l'agent a VRAIMENT fait ------------------------
+#
+# Script d'active response par action, Windows puis Linux. C'est la clé de
+# rapprochement entre une ligne de `mitigations` et l'alerte `ar-result`
+# renvoyée par l'agent (règles 100931-100934).
+_SCRIPTS_AR = {
+    "propose_isolate_host":    ("win-host-isolate", "host-isolate"),
+    "propose_block_ip":        ("win-block-ip", "firewall-drop"),
+    "propose_disable_user":    ("ad-disable-account", "disable-account"),
+    "propose_kill_process":    ("win-kill-process", "kill-process"),
+    "propose_quarantine_file": ("win-quarantine-file", "quarantine"),
+}
+
+# Règles qui portent un compte rendu d'AR exploitable. 100935 (expiration du
+# timeout execd) est en niveau 0 : elle ne produit pas d'alerte, donc n'arrive
+# jamais ici — c'est voulu, un `delete` no-op ne dit rien de l'action initiale.
+_REGLES_AR = ("100931", "100932", "100933", "100934")
+
+SELECT_AR_RESULTS = """
+SELECT a.ts,
+       a.agent_id,
+       a.raw#>>'{data,ar_script}' AS ar_script,
+       a.raw#>>'{data,ar_status}' AS ar_status,
+       a.raw#>>'{data,ar_target}' AS ar_target,
+       a.raw#>>'{data,ar_reason}' AS ar_reason
+  FROM alerts a
+ WHERE a.rule_id = ANY(%(regles)s)
+   AND a.ts > now() - interval '24 hours'
+ ORDER BY a.ts
+"""
+
+
+def reconcilier_resultats_ar() -> list[dict]:
+    """Remplace le statut « émis » par ce que l'agent a réellement fait.
+
+    L'API Wazuh est fire-and-forget : au moment de l'appel, tout ce qu'on sait
+    est que la commande est partie. Les scripts d'AR écrivent maintenant une
+    ligne `ar-result` à chaque sortie, l'agent la remonte, les règles
+    100931-100934 en font des alertes ; ici on les rapproche de la table
+    `mitigations` sur (agent, script, cible) et on fige le vrai statut.
+
+    Sans cette boucle, un refus du script était invisible : le rapport IRIS du
+    2026-08-02 annonçait 26 quarantaines réussies de binaires System32 sur un
+    contrôleur de domaine, quand le script les avait toutes déclinées.
+
+    Une remédiation qui ne reçoit AUCUN compte rendu reste 'émis' — jamais
+    promue en succès. C'est le bon défaut : un script qui meurt avant d'écrire
+    sa ligne (exception PowerShell) ne doit pas être lu comme un succès.
+    """
+    resultats: list[dict] = []
+    with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
+        lignes = conn.execute(SELECT_AR_RESULTS,
+                              {"regles": list(_REGLES_AR)}).fetchall()
+        if not lignes:
+            return []
+
+        case = None
+        for r in lignes:
+            statut = _STATUT_AR.get(r["ar_status"] or "")
+            if not statut or not r["ar_script"] or r["ar_target"] is None:
+                continue
+            # Actions candidates : celles dont l'un des deux scripts (Windows ou
+            # Linux) porte ce nom. `host-isolation.sh` n'est qu'un aiguilleur,
+            # c'est le script délégué qui signe le compte rendu.
+            actions = [a for a, scripts in _SCRIPTS_AR.items()
+                       if r["ar_script"] in scripts]
+            if not actions:
+                continue
+            horodatage = r["ts"].strftime("%Y-%m-%d %H:%M:%S")
+            maj = conn.execute("""
+                UPDATE mitigations m
+                   SET statut = %(statut)s,
+                       details = m.details || %(suffixe)s
+                 WHERE m.statut = 'émis'
+                   AND m.agent_id = %(agent)s
+                   AND m.action = ANY(%(actions)s)
+                   AND m.cible = %(cible)s
+                   AND m.executed_at <= %(ts)s + interval '5 minutes'
+             RETURNING m.id, m.incident_id, m.action, m.iris_task_id
+            """, {
+                "statut": statut,
+                "suffixe": (f"\n\nCompte rendu de l'agent ({horodatage} UTC) : "
+                            f"{r['ar_status']}"
+                            + (f" — {r['ar_reason']}" if r["ar_reason"] else "")),
+                "agent": r["agent_id"],
+                "actions": actions,
+                "cible": r["ar_target"],
+                "ts": r["ts"],
+            }).fetchall()
+            if not maj:
+                continue
+            conn.commit()
+
+            for m in maj:
+                resultats.append({"id": m["id"], "action": m["action"],
+                                  "cible": r["ar_target"], "statut": statut})
+                log.info("#%s %s [%s@%s] : émis -> %s (%s)", m["incident_id"],
+                         m["action"], r["ar_target"], r["agent_id"], statut,
+                         r["ar_reason"] or "-")
+                if not m["iris_task_id"]:
+                    continue
+                case = case or _client()
+                cid = conn.execute(
+                    "SELECT iris_case_id FROM incidents WHERE id = %s",
+                    (m["incident_id"],)).fetchone()["iris_case_id"]
+                if not cid:
+                    continue
+                try:
+                    case.update_task(task_id=m["iris_task_id"],
+                                     status=_STATUT_TASK.get(statut, "To do"),
+                                     cid=cid)
+                except Exception as e:  # noqa: BLE001 — best-effort
+                    log.debug("maj tâche %s : %s", m["iris_task_id"], e)
+                _commenter_tache(
+                    case, cid, m["iris_task_id"],
+                    f"Compte rendu de l'agent : **{r['ar_status']}**"
+                    + (f" — {r['ar_reason']}" if r["ar_reason"] else "")
+                    + f"\n\nStatut de la remédiation : `émis` → `{statut}`.")
+    return resultats
+
+
 SELECT_REVERSIBLES = """
 SELECT m.id, m.incident_id, m.action, m.cible, m.details, m.iris_task_id,
        COALESCE(NULLIF(m.agent_id, ''), i.agent_id) AS agent_id, i.iris_case_id
   FROM mitigations m
   JOIN incidents i ON i.id = m.incident_id
- WHERE m.statut = 'exécuté'
+ WHERE m.statut IN ('émis', 'confirmé', 'sans_effet')
    AND m.iris_task_id IS NOT NULL
    AND i.iris_case_id IS NOT NULL
    AND (%(inc)s::bigint IS NULL OR m.incident_id = %(inc)s)
@@ -1135,12 +1451,14 @@ def reconcilier(incident_id: int | None = None) -> list[dict]:
     L'analyste garde la main a posteriori : mettre une tâche de remédiation en
     'Canceled' dans IRIS demande au soc-agent de DÉFAIRE l'action — désisoler
     l'hôte, débloquer l'IP, réactiver le compte. Boucle fermée : la tâche IRIS
-    est le signal, la table `mitigations` la mémoire (statut 'exécuté' = à
-    surveiller ; 'annulé' = déjà défait, plus repris). Le kill de process n'a
-    pas de reverse : on le documente une fois et on le marque terminal.
+    est le signal, la table `mitigations` la mémoire (une action partie — 'émis',
+    'confirmé' ou 'sans_effet' — est à surveiller ; 'annulé' = déjà défait, plus
+    repris). Le kill de process n'a pas de reverse : on le documente une fois et
+    on le marque terminal. Une action 'refusé_agent' n'est pas défaisable : le
+    script l'a déclinée, il n'y a rien à remettre en état.
 
     Idempotent : une remédiation déjà annulée n'est plus sélectionnée ; un
-    reverse en échec reste 'exécuté' et sera retenté au cycle suivant.
+    reverse en échec garde son statut et sera retenté au cycle suivant.
     """
     resultats: list[dict] = []
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
@@ -1151,6 +1469,16 @@ def reconcilier(incident_id: int | None = None) -> list[dict]:
             log.info("réconciliation déjà en cours, on passe ce tour")
             return []
         try:
+            # D'abord, ce que les agents ont réellement fait : sans ça, une
+            # remédiation refusée par le script resterait 'émis' et le rapport
+            # IRIS continuerait d'annoncer une action qui n'a pas eu lieu.
+            # Même verrou : les deux passes écrivent dans `mitigations`.
+            try:
+                reconcilier_resultats_ar()
+            except Exception as e:  # noqa: BLE001 — ne doit pas empêcher les
+                # annulations demandées par l'analyste, qui sont prioritaires.
+                log.warning("réconciliation des comptes rendus d'AR : %s", e)
+
             rows = conn.execute(SELECT_REVERSIBLES,
                                 {"inc": incident_id}).fetchall()
             if not rows:

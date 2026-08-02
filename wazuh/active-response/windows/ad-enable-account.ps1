@@ -7,14 +7,20 @@
 Import-Module ActiveDirectory -ErrorAction SilentlyContinue
 $in   = Read-ARInput
 $user = Get-SamName ($in.Args | Select-Object -First 1)
-if (-not $user) { Write-ARLog 'ad-enable-account' 'ERROR: no user (extra_args empty)'; exit 1 }
+$S = 'ad-enable-account'
+if (-not $user) { Write-ARLog $S 'ERROR: no user (extra_args empty)'; Write-ARResult $S 'error' '' 'no target'; exit 1 }
 if (-not (Confirm-DomainController)) {
-    Write-ARLog 'ad-enable-account' 'REFUSED: not a domain controller'; exit 1
+    Write-ARLog $S 'REFUSED: not a domain controller'
+    Write-ARResult $S 'refused' $user 'not a domain controller'
+    exit 1
 }
 if (-not (Get-ADUser -Identity $user -ErrorAction SilentlyContinue)) {
-    Write-ARLog 'ad-enable-account' "ERROR: account '$user' not found"; exit 1
+    Write-ARLog $S "ERROR: account '$user' not found"
+    Write-ARResult $S 'noop' $user 'account not found in AD'
+    exit 1
 }
 Clear-ADAccountExpiration -Identity $user -ErrorAction SilentlyContinue
 Enable-ADAccount -Identity $user -ErrorAction Stop
-Write-ARLog 'ad-enable-account' "AD account '$user' re-enabled and un-expired"
+Write-ARLog $S "AD account '$user' re-enabled and un-expired"
+Write-ARResult $S 'applied' $user 'enabled and un-expired'
 exit 0
