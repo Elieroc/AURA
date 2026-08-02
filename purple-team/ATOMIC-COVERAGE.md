@@ -175,14 +175,26 @@ suivant :
    était faux : les actions n'ont jamais atteint le script. Le garde-fou n'a pas
    sauvé la situation, il n'a simplement jamais été sollicité.
 
-**Piège restant, non résolu.** Sur ces agents Windows, une active response
-n'est exécutée qu'au **redémarrage du service** de l'agent : quatre AR envoyées
-sur un agent stable et connecté sont restées en attente plus de quatre minutes,
-puis se sont toutes exécutées dans la seconde suivant un `Restart-Service
-WazuhSvc`. Reproduit quatre fois. Tant que ce point n'est pas élucidé, la
-remédiation Windows est fiable en contenu mais pas en délai — inacceptable pour
-un XDR censé agir en quelques minutes. À creuser avant de conclure quoi que ce
-soit sur la remédiation Windows d'une campagne.
+**Le « délai » de la remédiation Windows était un interblocage.** Symptôme :
+une AR n'était exécutée qu'au redémarrage du service de l'agent. Cause :
+`ar-wrapper.exe` lisait son entrée standard avec `Console.In.ReadToEnd()`, donc
+attendait un EOF — or `wazuh-execd` ne ferme pas le tube avant la sortie du
+fils, et attend cette sortie. Chacun attendait l'autre. Le thread d'active
+response de l'agent restant bloqué derrière ce fils, **toutes** les
+remédiations suivantes s'empilaient sans jamais partir ; le redémarrage du
+service fermait le tube et libérait d'un coup un wrapper vieux de plusieurs
+minutes, ce qui donnait l'illusion d'une simple latence.
+
+Preuve : un `win-kill-process.exe` vivant et bloqué a été trouvé sur les deux
+hôtes. Les scripts Linux, eux, ont toujours lu **une seule ligne**
+(`read -r INPUT_JSON`) — c'est le contrat, et c'est la seule lecture qui rend
+la main. Le wrapper lit désormais une ligne (`ReadLine`) et ferme lui-même le
+tube du script PowerShell.
+
+Après correctif, sans aucun redémarrage : exécution immédiate, et **5 AR
+envoyées en rafale traitées en 2 secondes** sur le DC, chacune remontée au
+manager en règle 100934 avec ses champs. La remédiation Windows agit
+maintenant en secondes.
 
 **Correctifs livrés** (commit « Purple-team 2026-08-02 : remédiation qui vise
 juste, et qui dit vrai ») : normalisation des chemins Windows, kill par PID avec

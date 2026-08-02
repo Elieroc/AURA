@@ -99,8 +99,18 @@ function Write-ARResult {
 }
 
 function Read-ARInput {
-    # Returns [pscustomobject]@{ Command; Args } from the stdin JSON.
-    $raw = [Console]::In.ReadToEnd()
+    <#
+        Returns [pscustomobject]@{ Command; Args } from the stdin JSON.
+
+        ONE line, like the Linux scripts (`read -r INPUT_JSON`), never
+        ReadToEnd. The AR message is a single line, and a reader that waits for
+        EOF hangs whenever the caller keeps the pipe open - which is exactly
+        what wazuh-execd does. ar-wrapper.exe does close our stdin, so this
+        would work either way through the normal path; it stays a single-line
+        read so that a .ps1 invoked directly by execd cannot deadlock the whole
+        active-response thread the way the wrapper used to.
+    #>
+    $raw = [Console]::In.ReadLine()
     if (-not $raw) { return [pscustomobject]@{ Command = ''; Args = @() } }
     try {
         $j = $raw | ConvertFrom-Json

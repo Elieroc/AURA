@@ -45,6 +45,13 @@ for ip in $AGENTS; do
     done
 
     # 2. compile the wrapper once, copy to <action>.exe for every logic script
+    #
+    # Kill any wrapper still running first. A wrapper that is stuck holds its
+    # own .exe open, so the copy below fails with "file in use" — and a stuck
+    # wrapper is exactly what an out-of-date binary produces (see the stdin
+    # contract in ar-wrapper.cs: reading to EOF deadlocks against execd and
+    # freezes the agent's whole active-response thread).
+    winrm "$ip" -X "Get-CimInstance Win32_Process | Where-Object { \$_.Name -match '^(win-|ad-|ar-wrapper)' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -EA SilentlyContinue }" >/dev/null
     push_file "$ip" "$HERE/ar-wrapper.cs" "ar-wrapper.cs"
     winrm "$ip" -X "& '$CSC' /nologo /target:exe /out:\"$BIN\\ar-wrapper.exe\" \"$BIN\\ar-wrapper.cs\" 2>&1 | Out-Null" >/dev/null
     for ps1 in "$HERE"/*.ps1; do
@@ -55,5 +62,17 @@ for ip in $AGENTS; do
     done
 done
 
-echo "Now register the <command>/<active-response> blocks on the manager ($MANAGER)"
-echo "from register-commands.xml (executables are the .exe), then restart the manager."
+echo
+echo "Now declare the <command>/<active-response> blocks on the manager ($MANAGER):"
+echo "  ssh root@$MANAGER 'cd /opt/soc-ai && python3 scripts/patch-manager-ar-windows.py'"
+echo "then copy the config into the container and restart it. Without those"
+echo "blocks the agent's execd silently ignores every Windows AR: the API still"
+echo "answers 200, and nothing whatsoever runs on the host."
+echo
+echo "Verify end to end — never trust the API's 200 nor the mitigations table:"
+echo "  1. fire a harmless AR   (!win-kill-process.exe on a name that is not running)"
+echo "  2. the agent's active-response\\active-responses.log must gain an"
+echo "     'ar-result: ... status=noop' line WITHIN SECONDS, with no service restart"
+echo "  3. the manager must raise rule 100934 carrying ar_script/ar_status/ar_target"
+echo "A line that only appears after a 'Restart-Service WazuhSvc' means the"
+echo "wrapper is deadlocked on stdin — an out-of-date ar-wrapper.exe."
