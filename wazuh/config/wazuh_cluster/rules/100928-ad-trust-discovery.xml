@@ -15,7 +15,7 @@
 <group name="windows,attack,">
 
   <rule id="100928" level="8">
-    <decoded_as>windows_eventchannel</decoded_as>
+    <if_group>sysmon_event1</if_group>
     <field name="win.eventdata.commandLine" type="pcre2">(?i)(nltest(\.exe)?\s+.*/(domain_trusts|dclist|dsgetdc)|dsquery(\.exe)?\s+.*(trustedDomain|objectClass=trustedDomain)|get-adtrust|get-domaintrust|\.getalltrustrelationships)</field>
     <description>Domain trust discovery: $(win.eventdata.commandLine)</description>
     <mitre>

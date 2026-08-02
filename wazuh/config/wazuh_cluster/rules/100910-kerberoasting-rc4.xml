@@ -11,7 +11,7 @@
 <group name="windows,kerberos,attack,">
 
   <rule id="100910" level="10">
-    <decoded_as>windows_eventchannel</decoded_as>
+    <if_sid>60103</if_sid>
     <field name="win.system.eventID">^4769$</field>
     <field name="win.eventdata.ticketEncryptionType">^0x17$</field>
     <description>Kerberoasting: RC4 (0x17) service ticket requested for $(win.eventdata.serviceName)</description>

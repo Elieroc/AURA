@@ -20,7 +20,7 @@
 <group name="windows,attack,">
 
   <rule id="100921" level="12">
-    <decoded_as>windows_eventchannel</decoded_as>
+    <if_group>sysmon_event1</if_group>
     <field name="win.eventdata.commandLine" type="pcre2">(?i)ntdsutil(\.exe)?\b|vssadmin(\.exe)?\s+create\s+shadow|esentutl(\.exe)?.+ntds\.?dit|reg(\.exe)?\s+save\s+hk(lm|cu).+(sam|system|security)|ntds\.dit|diskshadow(\.exe)?\b</field>
     <description>NTDS/SAM credential extraction attempt: $(win.eventdata.commandLine)</description>
     <mitre>
