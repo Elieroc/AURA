@@ -150,6 +150,40 @@ remédiations que les scripts avaient refusées.
   « Analyse ». `mimikatz.exe` ne figurait dans aucun IOC ; son absence a aussi
   empêché la fusion de campagne entre les deux hôtes qui l'exécutaient.
 
+**La remédiation Windows n'exécutait rien du tout** (établi le 2026-08-02
+après-midi, en instrumentant le DC). Trois défauts empilés, chacun masquant le
+suivant :
+
+1. Les onze commandes d'active response Windows/AD n'étaient pas déclarées dans
+   la configuration du manager, donc absentes du `shared\ar.conf` poussé aux
+   agents. `wazuh-execd` ignore en silence toute commande absente de ce
+   fichier — vérifié au débogueur : le message est bien reçu
+   (`receive_msg: '#!-execd ... "command": "!soc-probe.exe"'`) mais aucune ligne
+   `ExecdRun` ne suit. L'API répond pourtant 200. Les blocs existaient dans
+   `wazuh/active-response/windows/register-commands.xml`, qui documentait déjà
+   ce piège ; ils n'avaient jamais été reportés, très probablement parce que
+   `wazuh_manager.conf` est gitignoré (clés d'API) et échappe donc au `git pull`.
+   Posés désormais par `scripts/patch-manager-ar-windows.py`.
+2. Aucun script d'AR Windows ne pouvait écrire dans `active-responses.log` :
+   `wazuh-execd` garde le fichier ouvert, `Add-Content` demande un partage que
+   l'OS refuse, et le `catch {}` avalait l'erreur. D'où un journal ne contenant
+   que les lignes d'execd lui-même, et l'impossibilité totale de vérifier quoi
+   que ce soit. Corrigé par un `FileStream` en `FileShare.ReadWrite`.
+3. Preuve terrain : `art-backdoor`, le compte de domaine créé par l'attaquant,
+   **est toujours actif** sur le DC, et `C:\Windows\System32\cmd.exe` n'a jamais
+   bougé. Le diagnostic du matin — « refusées par la safelist du script » —
+   était faux : les actions n'ont jamais atteint le script. Le garde-fou n'a pas
+   sauvé la situation, il n'a simplement jamais été sollicité.
+
+**Piège restant, non résolu.** Sur ces agents Windows, une active response
+n'est exécutée qu'au **redémarrage du service** de l'agent : quatre AR envoyées
+sur un agent stable et connecté sont restées en attente plus de quatre minutes,
+puis se sont toutes exécutées dans la seconde suivant un `Restart-Service
+WazuhSvc`. Reproduit quatre fois. Tant que ce point n'est pas élucidé, la
+remédiation Windows est fiable en contenu mais pas en délai — inacceptable pour
+un XDR censé agir en quelques minutes. À creuser avant de conclure quoi que ce
+soit sur la remédiation Windows d'une campagne.
+
 **Correctifs livrés** (commit « Purple-team 2026-08-02 : remédiation qui vise
 juste, et qui dit vrai ») : normalisation des chemins Windows, kill par PID avec
 vérification d'image, `disable_user` restreint aux comptes créés, boucle de
