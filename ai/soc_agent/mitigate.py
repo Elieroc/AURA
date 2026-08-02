@@ -1489,6 +1489,33 @@ def reconcilier(incident_id: int | None = None) -> list[dict]:
     return resultats
 
 
+def _case_supprime(conn, case, case_id: int) -> bool:
+    """Le case IRIS a-t-il disparu ? Si oui, on coupe la référence morte.
+
+    Un case supprimé à la main dans IRIS laisse `incidents.iris_case_id` qui
+    pointe dans le vide. Et IRIS ne répond pas proprement 404 sur un case
+    inexistant : son contrôle d'accès plante en `KeyError: 'permissions'`
+    (session Flask absente sur un appel par jeton d'API) et rend un 500. Le
+    reconcile retentait donc à chaque minute, indéfiniment — 28 343 traces
+    d'erreur en six jours dans les journaux d'IRIS, qui noyaient tout le reste.
+
+    On ne coupe la référence QUE si `get_case` échoue lui aussi : une panne
+    passagère d'IRIS ne doit pas faire perdre le lien vers un case vivant.
+    """
+    try:
+        if case.get_case(case_id).is_success():
+            return False
+    except Exception:  # noqa: BLE001 — pas de case lisible : voir ci-dessous
+        pass
+    conn.execute("UPDATE incidents SET iris_case_id = NULL "
+                 "WHERE iris_case_id = %s", (case_id,))
+    conn.commit()
+    log.warning("case IRIS #%s introuvable (supprimé ?) — référence coupée sur "
+                "les incidents concernés, plus de réconciliation dessus",
+                case_id)
+    return True
+
+
 def _reconcilier_rows(conn, rows: list[dict]) -> list[dict]:
     """Cœur de la réconciliation, verrou déjà pris par l'appelant."""
     resultats: list[dict] = []
@@ -1501,8 +1528,10 @@ def _reconcilier_rows(conn, rows: list[dict]) -> list[dict]:
                 d = case.list_tasks(cid).get_data() or {}
                 annulees[cid] = _taches_annulees(d.get("tasks"))
             except Exception as e:  # noqa: BLE001 — IRIS KO ne casse rien
-                log.warning("list_tasks case #%s : %s", cid, e)
                 annulees[cid] = set()
+                if _case_supprime(conn, case, cid):
+                    continue
+                log.warning("list_tasks case #%s : %s", cid, e)
         if r["iris_task_id"] not in annulees[cid]:
             continue   # tâche pas (encore) annulée par l'analyste
 

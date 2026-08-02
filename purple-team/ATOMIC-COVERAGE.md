@@ -73,6 +73,25 @@ Plus aucun angle mort de source pour les 10 techniques AD.
 | ❌ | Angle mort — aucune télémétrie / pas de détection |
 | ⛔ | Non applicable sur ce lab |
 
+### Ce qui autorise à cocher ✅
+
+Une règle **écrite** n'est pas une règle **qui détecte**. Les quatre règles AD
+du 2026-08-02 ont été notées comme des correctifs le jour même, et **aucune n'a
+tiré** sur l'attaque réelle qui a suivi : l'une avait une regex qui ne matchait
+pas la ligne de commande réelle, deux attendaient une télémétrie que le parc
+n'émet pas. Un ✅ demande donc **trois** preuves, pas une :
+
+1. la règle est **chargée** (`Total rules enabled` a augmenté après le
+   redémarrage du manager) ;
+2. elle **tire** sur l'événement réel — `wazuh-logtest` rejoué sur un
+   `full_log` extrait de la campagne, pas sur un log de synthèse ;
+3. l'effet attendu **existe** : alerte au niveau visé, case IRIS créé, et pour
+   une remédiation un compte rendu d'agent (`ar-result status=applied`), pas un
+   simple accusé de réception de l'API.
+
+Idem côté remédiation : `mitigations.statut = 'émis'` signifie « l'API a pris la
+commande », rien de plus. Seul `confirmé` vaut ✅.
+
 Colonnes : `Test` = GUID/numéro Atomic testé. `Règle` = ID règle Wazuh qui a tiré.
 `Case` = numéro case IRIS généré (le cas échéant).
 
@@ -82,25 +101,63 @@ Colonnes : `Test` = GUID/numéro Atomic testé. `Règle` = ID règle Wazuh qui a
 
 Deux campagnes Atomic Red Team sur winsrv (DC, 014) + win10 (015).
 **#1 (2026-08-01)** : Defender bloquait les outils → 7/10 exécutées.
-**#2 (2026-08-02)** : Defender désactivé → 10/10 exécutées. Notes globales : #1 ≈63/100, #2 ≈64/100.
+**#2 (2026-08-02, 09:19 UTC)** : Defender désactivé → 10/10 exécutées, en 8 secondes.
 
-| # | Technique | Exécutée | Détection générique | Détection spécifique | Remédiation |
-|---|-----------|:--------:|:-------------------:|:--------------------:|-------------|
-| 1 | T1558.003 Kerberoasting | #2 | 🟡 exe/PS | ❌ → **règle 100910** (4769 RC4) | — |
-| 2 | T1003.003 NTDS (ntdsutil) | ✅ | 🟡 process | ❌ → **règle 100921** | quarantine (fix) |
-| 3 | T1003.001 LSASS (comsvcs) | ✅ | 🟡 exe | ❌ → **règle 100918** (EID10) | kill (fix) |
-| 4 | T1136.002 Create Domain Account | ✅ | ✅ 60109/92040 L12 | ✅ | disable_user (fix : extraction 4720) |
-| 5 | T1098.007 Add Domain Admins | ✅ | ✅ 60110 L8 | 🟡 | remove-group (manuel) |
-| 6 | T1550.002 Pass the Hash | #2 | 🟡 exe | ❌ | — |
-| 7 | T1003.006 DCSync / T1558.001 Golden | #2 | 🟡 exe | ❌ → **règle 100915** (4662) | — |
-| 8 | T1482 Domain Trust Discovery | ✅ | ✅ 92031/discovery | 🟡 | — |
-| 9 | T1087.002 Domain Account Discovery | ✅ | ✅ 92039 net.exe | ✅ | — |
-| 10 | T1021.006 WinRM Lateral | ✅ | ✅ 91822 L12 | ✅ | — |
+Note de la campagne #2, **réévaluée sur preuves** le 2026-08-02 après-midi :
+**54/100** (détection 22/40, analyse IRIS 15/30, remédiation 17/30). Le 64/100
+noté à chaud créditait les quatre règles AD — dont aucune n'a tiré — et des
+remédiations que les scripts avaient refusées.
 
-**Constats & fixs (2026-08-02) :**
-- **Détection** : télémétrie présente (4769/4662/EID10/cmdline) mais **règles AD absentes** → 4 règles ajoutées (100910 Kerberoasting, 100915 DCSync, 100918 LSASS, 100921 NTDS/SAM).
-- **Remédiation** #1 : suspendue à tort (faux positif injection « User: »), cibles erronées (Administrateur). **Corrigé** (`sanitize.py`, `_compte_protege`).
-- **Remédiation** #2 : pipeline s'exécute mais résolution de cibles **Linux-centrée** → 0 cible Windows. **Corrigé** : `_iocs` extrait le compte Windows créé (4720 / `net user /add`) → filet déterministe `disable_user` ; `_cibles_par_machine` résout process (kill) et fichier (quarantine) Windows depuis Sysmon.
+| # | Technique | Détection au moment de #2 | Après correctifs |
+|---|-----------|---------------------------|------------------|
+| 1 | T1558.003 Kerberoasting | ❌ L4 — aucun 4769 émis, 100910 inerte | 🟡 **100925** sur la ligne de commande |
+| 2 | T1003.003 NTDS (vssadmin) | ❌ L4 — 100921 exigeait `vssadmin\s+create`, le 4688 porte `vssadmin.exe  create shadow` | ✅ **100921** corrigée, rejeu OK |
+| 3 | T1003.001 LSASS | ❌ L6 — aucun Sysmon EID 10 (ProcessAccess vidé par SwiftOnSecurity) | ✅ **100924** + EID 10 activé à l'install |
+| 4 | T1136.002 Create Domain Account | ✅ 4720 + 92040 L12 | ✅ |
+| 5 | T1098.007 Add Domain Admins | 🟡 60110 L8 | 🟡 **laissé en Medium, choix assumé** |
+| 6 | T1550.002 Pass the Hash | 🟡 L6 — `sekurlsa::pth` visible en cmdline, aucune règle | ✅ **100924** |
+| 7 | T1003.006 DCSync / T1558.001 Golden | 🟡 L15 par effet de bord (dépôt d'exe) — aucun 4662, 100915 inerte | ✅ **100924** + SACL de réplication posée à l'install |
+| 8 | T1482 Domain Trust Discovery | ❌ L4 | ✅ **100928** L8 |
+| 9 | T1087.002 Domain Account Discovery | ✅ 92039 / 92040 L12 | ✅ |
+| 10 | T1021.006 WinRM Lateral | ✅ 91822 L12 | ✅ |
+
+**Ce qui a réellement échoué, et pourquoi (2026-08-02) :**
+
+- **Détection.** Les 4 règles AD étaient chargées (manager redémarré à 09:09,
+  campagne à 09:19) et ont tiré **zéro fois**. Deux causes distinctes : une
+  regex écrite contre la commande *tapée* et non contre la ligne de commande
+  *journalisée* (100921), et deux règles adossées à une télémétrie absente
+  (4662 sans SACL, Sysmon EID 10 filtré). Les modules mimikatz
+  (`lsadump::dcsync`, `kerberos::golden`, `sekurlsa::pth`) étaient pourtant en
+  clair dans les 4688 — d'où **100924**, qui détecte la syntaxe de l'outil et
+  couvre trois techniques d'un coup sans dépendre de la configuration d'audit.
+- **Remédiation.** 58 actions, toutes enregistrées « exécutées ». En réalité 26
+  ordres de quarantaine visaient des binaires signés de System32 d'un
+  contrôleur de domaine (`cmd.exe`, `net.exe`, `powershell.exe`, `dsquery`,
+  `klist`…), tous refusés par la safelist du script AR — la dernière ligne de
+  défense, pas la première. Cause unique : les chemins de l'eventchannel
+  arrivent avec les backslashes doublés, le filtre des répertoires système ne
+  matchait donc jamais. Les kills, eux, sont bien partis : `powershell.exe` et
+  `wsmprovhost.exe` tués **par nom** sur le DC ont coupé toutes les sessions
+  d'administration et WinRM de la machine.
+- **Compte rendu.** Aucun moyen de savoir tout cela depuis le manager : le
+  canal d'AR est fire-and-forget. Le rapport IRIS affirmait « ✅ exécuté » sur
+  26 actions non faites. C'est le défaut le plus grave de la campagne — un
+  rapport faux est pire qu'un rapport incomplet.
+- **Analyse.** Le rapport LLM des deux cases a échoué (`finish_reason=length`,
+  raisonnement au-delà des 6000 tokens) et le repli a écrasé un rapport abouti
+  par la raison du triage, recopiée à l'identique dans « Résumé » et
+  « Analyse ». `mimikatz.exe` ne figurait dans aucun IOC ; son absence a aussi
+  empêché la fusion de campagne entre les deux hôtes qui l'exécutaient.
+
+**Correctifs livrés** (commit « Purple-team 2026-08-02 : remédiation qui vise
+juste, et qui dit vrai ») : normalisation des chemins Windows, kill par PID avec
+vérification d'image, `disable_user` restreint aux comptes créés, boucle de
+compte rendu d'AR (`ar-result` → décodeur → règles 100930-100935 →
+`reconcilier_resultats_ar`), règles 100924-100926 et 100928, SACL DCSync et
+Sysmon EID 10 dans le script d'install, budget de rapport à 14000 tokens,
+protection contre l'écrasement d'un rapport abouti, IOC des exécutables
+Windows, et section « à faire à la main » (double reset de krbtgt).
 
 ---
 
