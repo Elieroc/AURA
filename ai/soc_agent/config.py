@@ -247,6 +247,18 @@ RESEAUX_INTERNES = [
 # Une action à fort impact sur la prod ne doit pas s'armer par accident.
 MITIGATE_EXECUTE = os.environ.get("MITIGATE_EXECUTE", "false").lower() == "true"
 
+# Nombre max d'émissions d'une même remédiation restée 'émis' (partie mais jamais
+# confirmée par un `ar-result`). Au-delà, on cesse de réémettre : un canal
+# fire-and-forget qui ne confirme jamais ne doit pas être sollicité à chaque
+# cycle indéfiniment. 3 : deux retentatives après le premier essai.
+MITIGATE_MAX_TENTATIVES = int(os.environ.get("MITIGATE_MAX_TENTATIVES", "3"))
+
+# Intervalle minimal (s) entre deux active-responses Wazuh émises. Une rafale
+# d'AR de même commande vers un même agent sature `wazuh-execd`, qui en drope
+# silencieusement une partie AVANT le script (purple-team #3 : 2 quarantaines/
+# agent perdues, ni log ni `ar-result`). On sérialise les envois côté émetteur.
+MITIGATE_AR_GAP_SECONDS = float(os.environ.get("MITIGATE_AR_GAP_SECONDS", "1.5"))
+
 SHUFFLE_URL = os.environ.get("SHUFFLE_URL", "http://localhost:5001")
 SHUFFLE_WEBHOOK_ISOLATE = os.environ.get(
     "SHUFFLE_WEBHOOK_ISOLATE", "webhook_00000000-0000-0000-0000-00000000a001")

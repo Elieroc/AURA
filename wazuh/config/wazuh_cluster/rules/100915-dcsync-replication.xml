@@ -15,7 +15,7 @@
 <group name="windows,dcsync,attack,">
 
   <rule id="100915" level="12">
-    <decoded_as>json</decoded_as>
+    <decoded_as>windows_eventchannel</decoded_as>
     <field name="win.system.eventID">^4662$</field>
     <field name="win.eventdata.properties">1131f6aa-9c07-11d1-f79f-00c04fc2dcd2|1131f6ad-9c07-11d1-f79f-00c04fc2dcd2|89e95b76-444d-4c62-991a-0facbeda640c</field>
     <description>DCSync: directory replication rights used by $(win.eventdata.subjectUserName) - credential theft from AD</description>

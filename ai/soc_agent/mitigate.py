@@ -184,6 +184,26 @@ def _wazuh_token() -> str:
     return r.text.strip()
 
 
+# Horodatage (monotone) de la dernière AR émise, pour sérialiser les rafales.
+_dernier_ar_ts: float = 0.0
+
+
+def _throttle_ar() -> None:
+    """Espace les émissions d'AR d'au moins MITIGATE_AR_GAP_SECONDS.
+
+    `wazuh-execd` traite les active-responses en file ; une rafale de commandes
+    rapprochées vers le même agent en fait droper une partie avant même le
+    script (purple-team #3). On tient un intervalle minimal entre deux envois.
+    """
+    global _dernier_ar_ts
+    gap = config.MITIGATE_AR_GAP_SECONDS
+    if gap > 0:
+        reste = gap - (time.monotonic() - _dernier_ar_ts)
+        if reste > 0:
+            time.sleep(reste)
+    _dernier_ar_ts = time.monotonic()
+
+
 def _wazuh_ar(agent_id: str, command: str, arguments: list[str]) -> dict:
     """Déclenche une active-response Wazuh sur un agent (API directe).
 
@@ -198,6 +218,7 @@ def _wazuh_ar(agent_id: str, command: str, arguments: list[str]) -> dict:
     script lui-même soit correct (cf. wazuh/active-response/), la vérification
     de bout en bout ne pouvant se faire qu'en lisant l'état réel de l'hôte.
     """
+    _throttle_ar()
     tok = _wazuh_token()
     r = requests.put(
         f"{config.WAZUH_API_URL}/active-response",
@@ -1137,7 +1158,8 @@ VALUES (%(incident_id)s, %(action)s, %(cible)s, %(agent_id)s, %(statut)s,
         %(details)s, %(undo)s, %(iris_task_id)s)
 ON CONFLICT (incident_id, action, cible, agent_id) DO UPDATE
 SET statut = EXCLUDED.statut, details = EXCLUDED.details, undo = EXCLUDED.undo,
-    iris_task_id = EXCLUDED.iris_task_id, executed_at = now()
+    iris_task_id = EXCLUDED.iris_task_id, executed_at = now(),
+    tentatives = mitigations.tentatives + 1
 RETURNING id
 """
 
@@ -1159,16 +1181,31 @@ RETURNING id
 # rien ne repart tout seul. C'est le bon défaut (l'analyste a tranché en
 # connaissance de cause) et il reste rattrapable à la main :
 # `mitigate --isoler <agent>`, ou suppression de la ligne pour rouvrir le droit.
-_STATUTS_FIGES = STATUTS_PARTIS + ("annulé", "annulation_impossible")
+# Statuts TERMINAUX : on connaît l'issue, on ne rejoue jamais. 'émis' n'en fait
+# PAS partie — c'est « la commande est partie », pas « elle a eu l'effet voulu ».
+# Une action restée 'émis' (aucun `ar-result` de confirmation) est retentée
+# jusqu'à MITIGATE_MAX_TENTATIVES : sans quoi un compte attaquant recréé sous un
+# incident déjà ouvert n'est jamais désactivé (purple-team #2/#3 : `art-backdoor`
+# figé sur un 'émis' hérité, disable_user jamais rejoué). 'confirmé'/'sans_effet'
+# sont, eux, des réponses de l'agent : terminaux.
+_STATUTS_FIGES = ("confirmé", "sans_effet", "refusé_agent",
+                  "annulé", "annulation_impossible")
 
 
 def _deja_exec(conn, incident_id: int, action: str, cible: str,
                agent_id: str) -> bool:
     r = conn.execute(
-        "SELECT statut FROM mitigations WHERE incident_id=%s AND action=%s "
-        "AND cible=%s AND agent_id=%s",
+        "SELECT statut, tentatives FROM mitigations WHERE incident_id=%s "
+        "AND action=%s AND cible=%s AND agent_id=%s",
         (incident_id, action, cible, agent_id)).fetchone()
-    return bool(r and r["statut"] in _STATUTS_FIGES)
+    if not r:
+        return False
+    if r["statut"] in _STATUTS_FIGES:
+        return True
+    # 'émis' non confirmé : rejouable tant que le plafond n'est pas atteint.
+    if r["statut"] == "émis":
+        return r["tentatives"] >= config.MITIGATE_MAX_TENTATIVES
+    return False
 
 
 SELECT_TRIAGE = """

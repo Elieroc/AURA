@@ -318,3 +318,15 @@ ALTER TABLE mitigations ADD COLUMN IF NOT EXISTS agent_id text NOT NULL DEFAULT 
 ALTER TABLE mitigations DROP CONSTRAINT IF EXISTS mitigations_incident_id_action_cible_key;
 CREATE UNIQUE INDEX IF NOT EXISTS mitigations_uniq
     ON mitigations (incident_id, action, cible, agent_id);
+
+-- Compteur d'émissions d'une même remédiation. Une action restée 'émis' (la
+-- commande est partie mais aucun `ar-result` n'a confirmé l'effet) n'est PAS
+-- terminale : elle doit être réémise au cycle suivant, sinon un compte
+-- attaquant recréé n'est jamais désactivé (purple-team #2/#3 : `art-backdoor`
+-- figé sur un enregistrement 'émis' hérité, disable_user jamais rejoué). Mais
+-- une réémission sans borne inonderait un canal fire-and-forget qui ne confirme
+-- jamais : on plafonne à MITIGATE_MAX_TENTATIVES. Le job reconcile (1 min) fait
+-- passer 'émis' -> 'confirmé'/'sans_effet' bien avant le cycle suivant (5 min)
+-- quand le canal répond ; ne restent 'émis' que les actions réellement sans
+-- retour, qu'on retente jusqu'au plafond.
+ALTER TABLE mitigations ADD COLUMN IF NOT EXISTS tentatives int NOT NULL DEFAULT 1;

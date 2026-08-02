@@ -28,7 +28,7 @@
 <group name="windows,attack,">
 
   <rule id="100924" level="13">
-    <decoded_as>json</decoded_as>
+    <decoded_as>windows_eventchannel</decoded_as>
     <field name="win.eventdata.commandLine" type="pcre2">(?i)(sekurlsa|lsadump|kerberos|crypto|privilege|token|misc|vault|process)::[a-z]</field>
     <description>Credential dumping tool syntax on the command line: $(win.eventdata.commandLine)</description>
     <mitre>
@@ -49,7 +49,7 @@
        match in load order. Sibling rules are made mutually exclusive by
        putting the specific one first, never by hoping for an ordering. -->
   <rule id="100925" level="12">
-    <decoded_as>json</decoded_as>
+    <decoded_as>windows_eventchannel</decoded_as>
     <field name="win.eventdata.commandLine" type="pcre2">(?i)(invoke-kerberoast|get-?domainspnticket|getuserspns|rubeus(\.exe)?\s+kerberoast|setspn\s+-[qQ]\s)</field>
     <description>Kerberoasting from the command line: $(win.eventdata.commandLine)</description>
     <mitre>
@@ -61,7 +61,7 @@
   <!-- Same tooling, named on the command line without a module (download,
        copy, rename). Lower level: naming the tool is not yet running it. -->
   <rule id="100926" level="10">
-    <decoded_as>json</decoded_as>
+    <decoded_as>windows_eventchannel</decoded_as>
     <field name="win.eventdata.commandLine" type="pcre2">(?i)\b(mimikatz|mimilib|rubeus|safetykatz|sharpkatz|nanodump|lazagne|secretsdump|procdump.+lsass|comsvcs\.dll.+minidump)\b</field>
     <description>Known credential dumping tool named on the command line: $(win.eventdata.commandLine)</description>
     <mitre>
