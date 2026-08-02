@@ -473,6 +473,59 @@ T1003.001), tickets Kerberos purgés (`klist purge`), `golden.bat` déjà
 auto-supprimé. Binaires prereq Atomic (mimikatz/procdump dans `ExternalPayloads`)
 laissés en place comme en #3.
 
+### Correctifs livrés post-#4 (2026-08-02, commits `daf3b56` + `9117bca`)
+
+Les axes 1 à 5 traités, **déployés sur le prod ET vérifiés**, pas seulement
+proposés.
+
+1. **Règles AD ré-ancrées dans l'arbre eventchannel** (axe 1) — le
+   `<decoded_as>windows_eventchannel</decoded_as>` nu ne fait jamais tirer une
+   règle : Wazuh n'émet qu'une règle par événement, la plus **profonde**, et un
+   `decoded_as` frère de la racine 60000 perd toujours face aux sous-arbres
+   natifs (`if_sid 60103`, `if_group sysmon_event1`). `if_sid 60000` ne suffit
+   pas non plus (trop haut). Chaque règle ré-ancrée à la profondeur de la
+   gagnante native (elle charge après → gagne) : 100921/100924/100925/100926/
+   100928 → `if_group sysmon_event1` ; 100918 → `if_group sysmon_event_10` ;
+   100910/100915 → `if_sid 60103`. **Vérifié en réel** (echo bénins poussés via
+   WinRM sur le DC, pipeline complet) : **100921, 100924 (×2), 100928 tirent**
+   enfin dans `alerts.json`. Manager redéployé + redémarré.
+
+2. **VT ne supprime plus une détection comportementale sur LOLBin propre**
+   (cause du `disable_user` manquant) — `vt._hors_systeme` faisait un
+   `replace("\", "\")` **no-op** ; le chemin eventchannel à backslashes doublés
+   (`C:\\Windows\\System32\\net1.exe`) ne matchait jamais le préfixe système, si
+   bien que `net1.exe` (LOLBin propre de System32) était traité comme un payload
+   déposé et l'alerte 92040 (création de Domain Admin, L12) supprimée. Backslashes
+   doublés repliés avant le test. **Vérifié** : `net1.exe` de System32 redevient
+   « dans système / protégé ». 92040 survivra → corrélée → alimente le triage et
+   la cible du `disable_user`.
+
+3. **Rapport LLM : « exécution de processus » n'est plus câblée sur le seul
+   auditd** (axe analyse) — `iris._CAPTEURS` reconnaît maintenant Sysmon EID1 et
+   PowerShell comme télémétrie d'exécution de processus. Sur les hôtes Windows le
+   rapport ne se déclarera plus aveugle aux lignes de commande — c'est ce qui
+   effondrait le MITRE sur T1059.001 et masquait DCSync/Golden/création de
+   Domain Admin.
+
+4. **Fusion de campagne : plus de marqueur générique** — `powershell.exe`/`cmd.exe`
+   et consorts ne peuvent plus lier deux hôtes (nouveau `correlate.entite_generique`,
+   comparaison sur le nom de fichier, branché aux 4 points d'usage). Un vrai
+   marqueur d'attaquant (mimikatz.exe, compte créé, IP C2) reste discriminant.
+
+5. **IOC et ciblage de remédiation, corrigés en cascade par l'axe 1** — les
+   règles 100924 (L13) / 100926 (L10) tirant enfin sur les événements
+   `image=mimikatz.exe`, ceux-ci entrent dans le case : `iris._iocs` extrait
+   `mimikatz.exe` (le code d'extraction existait déjà mais ne voyait que du L3
+   sous le seuil), et `mitigate` dispose du vrai chemin à quarantiner.
+
+Déploiement : 6 règles copiées sur le manager prod + redémarrage ; image
+`soc-agent:latest` reconstruite, conteneurs recréés ; fixes confirmés à
+l'import. **Restent en durcissement** : `disable_user` **déterministe** sur
+60159/4728 (aujourd'hui encore dépendant du verdict LLM) ; robustesse du cycle
+(un incident backlog périmé avorte toute la transaction de création de cases —
+`FK anonymization_map`) ; ciblage des artefacts persistants plutôt que des
+fichiers transitoires (golden.bat).
+
 ---
 
 ## TA0001 — Initial Access
