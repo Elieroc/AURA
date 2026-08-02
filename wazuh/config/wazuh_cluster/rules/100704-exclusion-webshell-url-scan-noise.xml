@@ -1,0 +1,32 @@
+<!--
+  Whitelist / tuning of rule 100701 (probable web shell access).
+
+  100701 reasons on the URL only: it fires whenever a web-shell-looking path is
+  requested, REGARDLESS of the HTTP status. So a 404/403 to /shell.php from an
+  internet scanner (e.g. Palo Alto Networks Expanse probing common web-shell
+  names) triggered a level-12 "web shell access" -> the soc-agent isolated the
+  web server (bookstack) on a pure false positive (case 87, 2026-08-02).
+
+  A web shell "access" that returns 4xx/5xx served NOTHING: the file does not
+  exist (404), is forbidden (403), or errored (5xx). It is scan noise, not an
+  access. These drop those to level 0 while a genuine 2xx access to a web-shell
+  path stays at level 12 - detection of real web shells is preserved. The status
+  code is the decoded `id` field for web access logs (same as rule 31101).
+-->
+<group name="web,attack,web_attack_soc,">
+
+  <rule id="100704" level="0">
+    <if_sid>100701</if_sid>
+    <id>^4</id>
+    <description>Web shell URL probed but server returned $(id) - nothing served (scan noise, not a real access)</description>
+    <group>web_shell,scan_noise,</group>
+  </rule>
+
+  <rule id="100705" level="0">
+    <if_sid>100701</if_sid>
+    <id>^5</id>
+    <description>Web shell URL probed but server returned $(id) - server error, nothing served</description>
+    <group>web_shell,scan_noise,</group>
+  </rule>
+
+</group>
