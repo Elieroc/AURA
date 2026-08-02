@@ -12,8 +12,8 @@
 <group name="windows,attack,">
 
   <rule id="100921" level="12">
-    <decoded_as>windows_eventchannel</decoded_as>
-    <field name="win.eventdata.commandLine">ntdsutil|vssadmin.+[Cc]reate [Ss]hadow|esentutl.+ntds\.?dit|reg.+save.+hklm.\\(sam|system|security)|ntds\.?dit</field>
+    <decoded_as>json</decoded_as>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)ntdsutil|vssadmin\s+create\s+shadow|esentutl.+ntds\.?dit|reg\s+save\s+hk(lm|cu).+(sam|system|security)|ntds\.dit</field>
     <description>NTDS/SAM credential extraction attempt: $(win.eventdata.commandLine)</description>
     <mitre>
       <id>T1003.003</id>
