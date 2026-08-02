@@ -334,6 +334,147 @@ groupe admin, axe 4 (chemin quarantaine mimikatz), axe 5 (faux IOC case 90).
 
 ---
 
+### Campagne #4 (2026-08-02, 19:52 UTC) — premier vrai test du fix décodeur
+
+Mêmes 10 techniques rejouées sur winsrv (014) + win10 (015), Defender déjà
+désactivé (service Defender arrêté sur le DC, RTP off sur win10), **10/10
+exécutées avec preuve d'effet** : shadow copy `{de80768b…}` créée, LSASS dumpé
+160 Mo (DC) / 60 Mo (win10) sur disque, DCSync a sorti le hash krbtgt
+(`c07ddde68e603a57ba200ac1f68b4203` + clés aes256), Golden ticket
+`goldenticketfakeuser` généré et soumis (`/ptt`), compte `T1136.002_Admin` créé
+`Enabled=True` + ajouté à « Admins du domaine » (RID-512, confirmé), dsquery
+trustedDomain + net user /domain exécutés, WinRM invoke-command tenté. Numéros
+Atomic identiques à #3. État remis à zéro avant la campagne : cases neufs à
+partir de **#97**.
+
+**Notes réévaluées sur preuves : Détection 44/100 · Analyse IRIS 30/100 ·
+Remédiation 10/100.**
+
+**RÉSULTAT CLÉ — le fix décodeur (9c66c55) est NÉCESSAIRE mais INSUFFISANT.**
+Les 8 règles AD custom (100910/100915/100918/100921/100924/100925/100926/100928)
+portent bien `<decoded_as>windows_eventchannel</decoded_as>` (déployé,
+manager redémarré 12:44 ; `Total rules enabled: 136040`, aucune erreur de
+chargement), et les événements réels de la campagne sont bien décodés
+`windows_eventchannel` **avec** la ligne de commande dans
+`data.win.eventdata.commandLine` (ex. `mimikatz.exe "lsadump::dcsync
+/domain:lab.local /user:krbtgt@lab.local"`, regex 100924 satisfaite). Pourtant :
+scan de `alerts.json` sur 34 événements de campagne qui matchent → **0 tir** des
+8 règles (comme #2 et #3). **Cause racine nouvelle et prouvée** : la racine de
+l'arbre eventchannel est la règle native **60000** (`<decoded_as>windows_eventchannel</decoded_as>` + `<category>ossec</category>`), et **toutes** les règles
+natives qui tirent sur ces événements s'y accrochent par `<if_sid>`/`<if_group>`
+(67027→`if_sid 60103`, 92052→`if_group sysmon_event1`, 60009→`if_sid 60000`).
+Les 8 règles custom n'ont **qu'un `<decoded_as>` nu, sans `if_sid`/`if_group`** :
+un second `decoded_as` frère de 60000 n'est jamais évalué sur les événements
+eventchannel. Le fix de #3 a corrigé le nom du décodeur mais laissé les règles
+détachées de l'arbre.
+
+| # | Technique | Exéc. | Détection #4 (règle, niveau) | Statut | Remédiation (état réel) |
+|---|-----------|:-----:|------------------------------|:------:|-------------------------|
+| 1 | T1558.003 Kerberoasting | ✅ | L4 scriptblock PS générique — 100910/100925 muettes | ❌ | — |
+| 2 | T1003.003 NTDS vssadmin | ✅ | 67027/92032 L3, 92052 L4, 60702 L5 — **100921 muette** | ❌ | shadow non ciblée, aucune AR |
+| 3 | T1003.001 LSASS | ✅ | 92213 L15 (dépôt exe) + génériques — **92900 muette cette fois (aucun Sysmon EID10), 100918 muette** | 🟡 | ❌ procdump non quarantiné (0 AR) |
+| 4 | T1136.002 Create Domain Account | ✅ | 92040 L12 a **tiré** mais l'alerte est **VT-supprimée** → jamais corrélée | ❌ | ❌ `disable_user` jamais proposé — compte resté Enabled + Domain Admin |
+| 5 | T1098.007 Add Domain Admins | ✅ | **60159 L12** « Domain Admins Group Changed » (incident 2180 isolé) | 🟡 | ❌ 2180 trié needs_investigation→escalate_human, pas de disable |
+| 6 | T1003.006 DCSync | ✅ | 67027/92032 L3 + 92213 L15 (exe) — **100924/100915 muettes, aucun 4662** | 🟡 | mimikatz non retiré |
+| 7 | T1558.001 Golden Ticket | ✅ | 67027/92032 L3 + 92213 L15 — **100924 muette** | 🟡 | krbtgt double-reset non signalé |
+| 8 | T1482 Trust Discovery | ✅ | 92031/92033 L3, 92103 L6 — **100928 muette** | 🟡 | — |
+| 9 | T1087.002 Account Discovery | ✅ | 92039 L3 générique | 🟡 | — |
+| 10 | T1021.006 WinRM Lateral | ✅ | **91822 L12 / 91823 L14** | ✅ | — |
+
+**Détection (44/100).** Télémétrie présente pour les 10 ; incidents L15/L14
+créés et triés TP sur les deux hôtes → le SOC « voit » la compromission en HIGH.
+Mais la couche technique-spécifique AD reste **0/8 règles custom**, et les trois
+techniques credential-access les plus graves (DCSync, Golden, Kerberoasting) ne
+produisent aucune alerte nommant la technique — seulement un « exe déposé »
+générique (92213). Deux régressions vs #3 : **92900/Sysmon EID10 muet** (aucun
+`ProcessAccess` LSASS cette campagne) et **92040 VT-supprimée**.
+
+**Analyse IRIS (30/100).** Deux cases neufs, TP, rapports structurés
+(résumé ≠ analyse — défaut #3 corrigé), honnêtes sur les limites et sur le
+statut de remédiation (« 📤 émise, effet non confirmé »), **aucun faux IOC**.
+MAIS : **MITRE réduit à T1059.001** sur les deux (au lieu de l'union d'une
+dizaine de techniques), rapport **aveugle au credential access** (ni krbtgt, ni
+golden ticket, ni Domain Admin créé sur le case DC #97). Cause : le heuristique
+de disponibilité télémétrie déclare à tort « exécution de processus
+(auditd)=ABSENT » sur les hôtes Windows (il ne connaît qu'auditd/Linux, pas
+Sysmon/4688) → le LLM se croit privé des lignes de commande et n'analyse pas les
+cmdlines mimikatz pourtant présentes. IOC quasi nuls : #97 = 1 (golden.bat,
+fichier transitoire), #98 = 0 ; mimikatz.exe (SHA256 dans les events),
+procdump.exe, hash krbtgt, compte `T1136.002_Admin` **tous absents**. **Pas de
+fusion campagne** : deux cases séparés (#97 DC, #98 win10), le lien inter-hôte
+cite `powershell.exe` de System32 (binaire légitime, mauvais marqueur).
+
+**Remédiation (10/100).** **1 seule action émise** sur toute la campagne :
+quarantaine `golden.bat` (case #97, statut `émis`, **0 ar-result**, et le fichier
+avait déjà été auto-supprimé par l'atomic → **aucun effet**). win10 (#98) :
+2 actions décidées au triage (kill + quarantaine) mais « pas de cible
+exploitable » → rien émis. **`disable_user` jamais proposé** : l'alerte pivot
+92040 (création `T1136.002_Admin`, L12) est **VT-supprimée** (voir plus bas),
+et 60159 (Domain Admins) arrive seule dans l'incident 2180 sans contexte, trié
+`needs_investigation→escalate_human`. État hôte post-cycle (vérifié) : compte
+**Enabled=True + toujours Domain Admin**, mimikatz.exe/procdump.exe/lsass_dump.dmp
+**tous encore sur disque**. **0 `ar-result status=applied` sur la campagne** —
+strictement rien de remédié (pire que #3, qui confirmait 6 quarantaines
+procdump). Points non nuls : verdict/ouverture de case corrects, statuts
+honnêtes (aucun faux « ✅ exécuté »), aucun mauvais ciblage de binaire System32.
+
+**Trou de correspondance — le backlog empoisonne le cycle.** Les 148 incidents
+backlog (re-corrélés) saturent la phase triage (~1,5 triage/min → ~90 min avant
+que la création de cases, dernière étape du cycle, démarre) ; et un incident
+backlog périmé (#1488, purgé) a **avorté toute la transaction de création de
+cases** au cycle 19:50 (`FK anonymization_map` → « création de cases IRIS
+sautée »). Les cases #97/#98 ont donc été obtenus en ciblant le même code du
+pipeline (`iris --incident 2176/2177`), les autres incidents de campagne
+(2178 WinRM, 2179, 2180) restant sans case au moment du rapport.
+
+**Cause racine du `disable_user` manquant (nouvelle, prouvée) :** l'alerte 92040
+(L12, « net1.exe executed a user creation command », cmdline nommant
+`T1136.002_Admin`) est **VT-supprimée** —
+`suppress_reason = vt_legit_exe: 0/75 moteurs positifs`. Le filtre VT a haché
+`net1.exe` (LOLBin Microsoft signé, propre) et supprimé l'alerte, alors que
+92040 est une détection **comportementale** (la malveillance est dans l'action,
+pas le binaire). L'exemption « LOLBin propre de System32 reste analysé » n'a pas
+matché parce que l'entité arrive avec backslashes doublés
+(`C:\\Windows\\System32\\net1.exe`) et l'exemption teste `C:\Windows\System32` —
+même famille de bug backslash que #2. Résultat : le signal le plus clair
+(« un compte de domaine vient d'être créé ») est silencieusement jeté.
+
+**Axes de correction #4 (par valeur/effort) :**
+1. **[fort/faible]** Ré-ancrer les 8 règles AD dans l'arbre eventchannel :
+   remplacer le `<decoded_as>` nu par `<if_sid>60103</if_sid>` (canal Security
+   4688) **et** un frère `<if_group>sysmon_event1</if_group>` (Sysmon EID1),
+   ou `<if_sid>60000</if_sid>`. C'est LE correctif qui ressuscite toute la
+   couche spécifique — le `decoded_as` seul ne suffit pas, prouvé par #4.
+2. **[fort/faible]** VT filter : ne jamais supprimer une alerte dont le binaire
+   est un LOLBin de System32, et normaliser les backslashes doublés avant le
+   test de répertoire système. Corrige la suppression de 92040 → rend possible
+   le `disable_user`.
+3. **[fort/moyen]** Rapport LLM : reconnaître Sysmon EID1/4688 comme télémétrie
+   d'« exécution de processus » sur les hôtes Windows (le heuristique est câblé
+   sur auditd) — sinon tout rapport Windows reste aveugle aux lignes de commande
+   et le MITRE s'effondre sur T1059.001.
+4. **[fort/moyen]** `disable_user` déterministe sur 60159/4728 (ajout groupe
+   admin) même sans re-triage LLM ; et corréler 92040 (création) avec 60159 dans
+   un même incident (marqueur = nom de compte).
+5. **[moyen/moyen]** IOC : extraire `image`/hash Sysmon des alertes 92213/92032
+   (mimikatz.exe, procdump.exe, leur SHA256) et les promouvoir en IOC + marqueur
+   de fusion campagne, au lieu de `powershell.exe`.
+6. **[moyen/faible]** Robustesse cycle : ignorer (au lieu d'avorter la
+   transaction) un incident dont la ligne a disparu ; borner/prioriser le triage
+   pour que le backlog ne retarde pas la création de cases des incidents récents.
+7. **[moyen/faible]** Ciblage remédiation : préférer les artefacts persistants
+   (mimikatz.exe, procdump.exe, lsass_dump.dmp) aux fichiers transitoires
+   (golden.bat, auto-supprimé) ; croiser cible vs chemins réels de l'alerte.
+
+**Nettoyage confirmé :** `T1136.002_Admin` supprimé de l'AD (retire aussi de
+Domain Admins), shadow copy supprimée (`vssadmin delete` + Atomic `-Cleanup`
+T1003.003), `lsass_dump.dmp` supprimé sur les deux hôtes (+ `-Cleanup`
+T1003.001), tickets Kerberos purgés (`klist purge`), `golden.bat` déjà
+auto-supprimé. Binaires prereq Atomic (mimikatz/procdump dans `ExternalPayloads`)
+laissés en place comme en #3.
+
+---
+
 ## TA0001 — Initial Access
 
 | ID | Technique | Hôte | Test | Détection | Règle | Case | Notes |
