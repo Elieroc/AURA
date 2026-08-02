@@ -207,6 +207,98 @@ Windows, et section « à faire à la main » (double reset de krbtgt).
 
 ---
 
+### Campagne #3 (2026-08-02, 12:11 UTC) — rejeu des 10 techniques
+
+Mêmes 10 techniques rejouées sur winsrv (014) + win10 (015), Defender déjà
+désactivé, **10/10 exécutées avec preuve d'effet** (shadow copy créée, LSASS
+dumpé 159 Mo / 60 Mo, DCSync a sorti le hash krbtgt, Golden ticket généré et
+soumis, compte `T1136.002_Admin` créé + ajouté aux Domain Admins, mimikatz
+`sekurlsa::pth` en R/W sur win10). Numéros Atomic : T1558.003-1, T1003.003-1,
+T1003.001-1, T1136.002-1, T1098.007 (manuel `net`/`Add-ADGroupMember`),
+T1003.006-1, T1558.001-1, T1482-1, T1087.002-1, T1021.006-2.
+
+**Pas de nouveaux cases** : dans la fenêtre de lien fort (6 h), les alertes #3
+ont rejoint les incidents ouverts de #2 → **case 90** (winsrv/1993) et **case 91**
+(win10/1995), toujours **deux cases séparés** (fusion campagne non faite).
+
+**Notes réévaluées sur preuves : Détection 50/100 · Analyse IRIS 48/100 ·
+Remédiation 45/100.**
+
+| # | Technique | Exéc. | Détection #3 (règle, niveau) | Statut | Remédiation (état réel) |
+|---|-----------|:-----:|------------------------------|:------:|-------------------------|
+| 1 | T1558.003 Kerberoasting | ✅ | L4 scriptblock PS uniquement — 100910 (4769 RC4) et 100925 morts | ❌ | — |
+| 2 | T1003.003 NTDS vssadmin | ✅ | 67027 L3 générique ; 60702 L5 (VSS idle) — **100921 mort** | ❌ | shadow auto-nettoyée (timeout VSS), aucune AR |
+| 3 | T1003.001 LSASS | ✅ | **92900 L12** (Sysmon EID 10, accès lsass) sur 014 ET 015 | ✅ | procdump quarantiné, **ar-result applied** (3/hôte) |
+| 4 | T1136.002 Create Domain Account | ✅ | **92040 L12** + 60109 L8 | 🟡 | ❌ `disable_user` **jamais proposé** — compte resté actif |
+| 5 | T1098.007 Add Domain Admins | ✅ | **60159 L12** « Domain Admins Group Changed » + 60148 L5 | ✅ | — |
+| 6 | T1550.002 Pass the Hash (win10) | ✅ | 92900 L12 (accès lsass par mimikatz) — **100924 mort** | 🟡 | quarantaine mimikatz **émise, non confirmée** |
+| 7 | T1003.006 DCSync + T1558.001 Golden | ✅ | 92213 L15 (dépôt exe) + 92900 L12 — **100915/100924 morts, aucun 4662** | 🟡 | **mimikatz NON quarantiné** (chemin faux) ; reset krbtgt non signalé |
+| 8 | T1482 Trust Discovery | ✅ | 92031/92033 L3, 92103 L6 — **100928 mort** | 🟡 | — |
+| 9 | T1087.002 Account Discovery | ✅ | 92039 L3 générique (bas) | 🟡 | — |
+| 10 | T1021.006 WinRM Lateral | ✅ | **91822 L12 / 91823 L14** | ✅ | kill powershell/wsmprovhost émis |
+
+**Cause racine de la détection spécifique nulle (nouvelle, non vue en #2) :** les
+**8 règles AD custom** (100910, 100915, 100918, 100921, 100924, 100925, 100926,
+100928) déclarent toutes `<decoded_as>json</decoded_as>`. Or les événements
+Windows réels sont décodés par le décodeur **`windows_eventchannel`**, jamais par
+le décodeur générique `json`. Ce préfiltre ne matche donc **jamais** : les règles
+sont chargées mais **jamais évaluées** sur la vraie télémétrie. Prouvé : la
+cmdline `"cmd.exe" /c ...mimikatz.exe "lsadump::dcsync ..."` est bien présente
+dans `data.win.eventdata.commandLine` (regex 100924 satisfaite) mais l'alerte
+émise est 92052 L4 ; scan de `alerts.json` sur la fenêtre → **0** occurrence de
+100910/100915/100921/100924/100925/100926/100928. Les règles built-in qui, elles,
+tirent s'accrochent correctement à l'arbre (`<if_group>sysmon_event1</if_group>`,
+`<if_sid>60103</if_sid>`). Le « fix » de #2 a corrigé les regex mais laissé ce
+mismatch de décodeur — d'où l'échec **identique** de la couche spécifique.
+**Correctif : remplacer `<decoded_as>json</decoded_as>` par
+`<decoded_as>windows_eventchannel</decoded_as>`** (ou attacher via
+`if_group sysmon_event1` + un frère pour le canal Security 4688).
+
+**Remédiation — ce qui marche enfin, ce qui manque :**
+- La remédiation Windows **s'exécute et se confirme** vraiment : 6 `ar-result
+  status=applied` (rule 100931) pour la quarantaine de procdump sur 014 et 015 —
+  le défaut central de #2 (« n'exécutait rien ») est corrigé. Cibles justes cette
+  fois : **vrais outils** (procdump/mimikatz dans `AtomicRedTeam\ExternalPayloads`),
+  routage par agent correct (014→1993, 015→1995), **aucun System32** dans les
+  actions #3.
+- **mimikatz.exe non retiré** : la cible dérivée `...\ExternalPayloads\x64\mimikatz.exe`
+  a perdu le segment `mimikatz\` (vrai chemin `...\ExternalPayloads\mimikatz\x64\mimikatz.exe`)
+  → aucun `ar-result applied` → **binaire toujours sur disque** (vérifié).
+- **Compte attaquant non désactivé** : `T1136.002_Admin`, créé et promu Domain
+  Admin cette campagne, est resté `Enabled=True` (vérifié) — **aucun**
+  `disable_user` proposé (l'incident DC 1993 n'a pas été re-trié après 12:11).
+- Reset krbtgt (Golden Ticket) non signalé à l'analyste sur le case DC.
+
+**Analyse IRIS — deux cases, deux qualités :**
+- **Case 91 (win10) : bon rapport, régénéré par le triage #3 (12:17).** Chaîne
+  d'attaque reconstituée, MITRE en union (T1550.002, T1003.001, T1562.001,
+  T1021.006, …), IOC mimikatz présent, **statuts de remédiation honnêtes**
+  (« 📤 commande émise, effet non confirmé » + avertissement explicite), section
+  « couverture et limites ». C'est la preuve que les correctifs de #2 tiennent
+  quand un triage frais tourne.
+- **Case 90 (DC) : rapport dégradé de #2, non régénéré.** Résumé = Analyse
+  (copie mot pour mot), MITRE unique **T1059.001**, faux « ✅ exécuté » sur des
+  binaires System32 et sur `Système`/`ANONYMOUS LOGON`, 1 seul IOC. + 2 **faux
+  IOC** (sha1 attribués à des clés de registre BITS/BAM « signalées par VT »),
+  IOC compte périmés (art-backdoor/soc-test-bad de #2, pas `T1136.002_Admin`).
+  L'hôte le plus critique porte le rapport le plus faux.
+
+**Axes de correction #3 (par valeur/effort) :**
+1. **[fort/faible]** `decoded_as json` → `windows_eventchannel` sur les 8 règles
+   AD : ressuscite toute la couche de détection spécifique en une passe.
+2. **[fort/moyen]** Rafraîchir/re-trier l'incident DC quand de nouvelles alertes
+   s'y rattachent (poser `needs_refresh`), sinon le case le plus grave reste figé
+   sur un vieux rapport faux.
+3. **[fort/moyen]** `disable_user` doit se déclencher sur tout compte vu créé
+   (4720/92040) puis ajouté à un groupe admin (4728/60159), indépendamment d'un
+   re-triage LLM.
+4. **[moyen/faible]** Corriger la dérivation du chemin de quarantaine mimikatz
+   (segment de répertoire perdu) ; croiser cible vs chemins réels de l'alerte.
+5. **[moyen/faible]** Purger les faux IOC (verdict VT porté par une clé de
+   registre) du case 90.
+
+---
+
 ## TA0001 — Initial Access
 
 | ID | Technique | Hôte | Test | Détection | Règle | Case | Notes |
