@@ -25,6 +25,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 DASHBOARD_URL = "https://localhost"
 INDEXER_URL = "https://localhost:9200"
@@ -33,6 +34,7 @@ AUTH = f"admin:{os.environ['INDEXER_PASSWORD']}"
 # Doit rester synchro avec les IDX_* de gen_dashboard.py.
 SIMPLE_PATTERNS = {
     "wazuh-linux-*": "wazuh-linux-*",
+    "wazuh-windows-*": "wazuh-windows-*",
     "wazuh-web-*": "wazuh-web-*",
     "wazuh-firewall-*": "wazuh-firewall-*",
     "wazuh-proxy-*": "wazuh-proxy-*",
@@ -56,12 +58,27 @@ ALL_ALERTS_CANDIDATES = [
 
 
 def req(method, path, data=None, base=DASHBOARD_URL, extra_headers=None):
+    """Le corps passe par un FICHIER (`-d @...`), jamais par argv.
+
+    La liste de champs mise en cache du pattern combiné dépasse la limite
+    d'argv du noyau : `curl ... -d '<json>'` levait `OSError: [Errno 7]
+    Argument list too long` — et seulement pour soc-ai-all-alerts, donc après
+    la création réussie des patterns simples.
+    """
     cmd = ["curl", "-sk", "-u", AUTH, "-X", method, base + path]
     for h in (extra_headers or ["osd-xsrf: true"]):
         cmd += ["-H", h]
-    if data is not None:
-        cmd += ["-H", "Content-Type: application/json", "-d", json.dumps(data)]
-    out = subprocess.run(cmd, capture_output=True, text=True).stdout
+    tmp = None
+    try:
+        if data is not None:
+            tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+            json.dump(data, tmp)
+            tmp.close()
+            cmd += ["-H", "Content-Type: application/json", "-d", "@" + tmp.name]
+        out = subprocess.run(cmd, capture_output=True, text=True).stdout
+    finally:
+        if tmp is not None:
+            os.unlink(tmp.name)
     return json.loads(out) if out else {}
 
 
