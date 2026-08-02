@@ -528,6 +528,90 @@ fichiers transitoires (golden.bat).
 
 ---
 
+### Campagne #5 (2026-08-02, 20:46 UTC) — validation des correctifs #4
+
+Cases IRIS purgés, incidents #4 supprimés, mêmes 10 techniques rejouées sur
+winsrv (014) + win10 (015), **10/10 exécutées avec preuve** (compte
+`T1136.002_Admin` créé + Domain Admin, shadow copy, LSASS 160/60 Mo, krbtgt
+dumpé, Golden ticket soumis). Pipeline piloté à la main (cycle stoppé pour
+éviter la saturation par le backlog), même code que le cycle.
+
+**Notes : Détection 78/100 · Analyse IRIS 72/100 · Remédiation 28/100**
+(contre 44 / 30 / 10 en #4). Les correctifs tiennent sur une campagne réelle.
+
+| # | Technique | Détection #5 (règle, niveau) | Δ vs #4 |
+|---|-----------|------------------------------|:-------:|
+| 1 | T1558.003 Kerberoasting | L4 scriptblock — 100910/100925 ne matchent pas l'atomic PowerShell (pas de 4769 RC4 ni outil nommé) | = |
+| 2 | T1003.003 NTDS vssadmin | **100921 L12** tire (+ génériques) | ✅ |
+| 3 | T1003.001 LSASS | **100918 L12** (Sysmon EID10) tire — dans le case | ✅ |
+| 4 | T1136.002 Create Domain Account | **92040 L12 non supprimée**, corrélée | ✅ |
+| 5 | T1098.007 Add Domain Admins | 60159 L12 | = |
+| 6 | T1003.006 DCSync | **100915 L12 + 100924 L13** tirent | ✅✅ |
+| 7 | T1558.001 Golden Ticket | **100924 L13** (kerberos::golden) | ✅ |
+| 8 | T1482 Trust Discovery | **100928 L8** tire | ✅ |
+| 9 | T1087.002 Account Discovery | 92039 L3 générique | = |
+| 10 | T1021.006 WinRM Lateral | 91823 L14 / 91822 L12 | = |
+
+**Détection (78).** **6 des 8 règles AD custom tirent enfin** sur la vraie
+télémétrie et **entrent dans le case** : 100915 (DCSync), 100918 (LSASS),
+100921 (NTDS), 100924 (syntaxe mimikatz, L13), 100926 (outil nommé), 100928
+(trust). DCSync a désormais une détection **spécifique** (100915 4662 + 100924).
+92040 (création de compte) survit au filtre VT et est corrélée. Restent hors
+couverture : Kerberoasting (l'atomic PowerShell ne déclenche ni 4769 RC4 ni
+100925 — écart atomic/règle, pas un bug) et l'account discovery (générique).
+
+**Analyse (72).** Rapport du case fusionné **#111** (les deux hôtes réunis —
+fusion campagne **réussie**, marqueur = `mimikatz.exe` et non plus
+`powershell.exe`). Chaîne credential-access **reconstituée avec justesse** :
+procdump→lsass (100918), mimikatz (100924), DCSync avec droits de réplication
+(100915), création de compte (92040), Invoke-Command latéral (91823). Ligne de
+télémétrie corrigée (« exécution de processus (auditd / Sysmon EID1 / 4688)=
+présent »). **6 IOC** dont `mimikatz.exe` (2 chemins) et le compte
+`T1136.002_Admin`. Section « à faire à la main » avec le **double reset krbtgt**
+(DCSync). Défauts résiduels : l'en-tête « technique » reste mono-valeur
+(T1003.006) alors que le corps couvre l'union ; le **nom** de case n'a pas été
+généré (`finish_reason=length`, budget du nom à 1500 tokens trop court).
+
+**Remédiation (28).** La **proposition** est enfin juste (cascade des fixes) :
+`disable_user` ciblant `T1136.002_Admin`, quarantaine des **vrais chemins**
+mimikatz.exe/procdump, kills par PID — 13 actions, toutes en tâches IRIS. Mais
+l'**effet ne se pose toujours pas** (0 `ar-result applied` utile ; compte resté
+Enabled, mimikatz resté sur disque), pour **deux causes nouvelles isolées** :
+- **Rafale d'AR tronquée par execd.** Sur 13 actions émises (gap 1,5 s), 9
+  seulement remontent un `ar-result` (kills « not running » car process déjà
+  terminés ; quarantaines de fichiers transitoires « file not found »). Les **4
+  actions à effet réel** (quarantaine mimikatz ×2, quarantaine procdump,
+  `disable_user`) n'ont **aucune ligne** dans `active-responses.log` — droppées.
+  Le mécanisme marche pourtant (quarantaine d'un Sysmon.exe de Temp = `applied`
+  observée hors rafale). La sérialisation 1,5 s ne suffit pas.
+- **Garde-fou anti-lockout qui refuse le compte attaquant.** Testé isolément,
+  `ad-disable-account` **s'exécute mais REFUSE** : `account is member of
+  protected group 'Admins du domaine' - refused`. Or le compte est Domain Admin
+  précisément parce que l'attaquant l'y a ajouté (T1098.007) — le garde-fou
+  censé protéger les admins légitimes bloque la remédiation du compte malveillant.
+
+**Axes de correction #5 (par valeur/effort) :**
+1. **[fort/moyen]** Fiabiliser l'émission des AR : attendre le compte rendu de
+   chaque AR avant d'envoyer la suivante (ou augmenter nettement le gap /
+   dédupliquer), pour que les actions à effet réel de fin de rafale ne soient
+   plus droppées par `wazuh-execd`.
+2. **[fort/faible]** `ad-disable-account` : distinguer un compte **système/admin
+   légitime** (RID 500, comptes préexistants) d'un compte **créé par l'attaquant
+   puis promu** (vu en 4720/92040 dans la fenêtre). Le garde-fou protégé ne doit
+   pas couvrir ce dernier ; sinon tout compte escaladé en Domain Admin devient
+   ineffaçable automatiquement.
+3. **[moyen/faible]** Budget du **nom** de case (générateur court) à relever
+   comme le rapport (le corps, lui, passe à 14000).
+4. **[moyen/faible]** En-tête MITRE du rapport : porter l'**union** des
+   techniques, pas la seule graine du triage.
+5. **[faible/faible]** Dérivation de chemin procdump (`procdump64.exe` inexistant
+   ciblé) — mineur, la vraie détection LSASS passe par 100918.
+
+**Nettoyage confirmé :** compte `T1136.002_Admin` supprimé, shadow copy + dumps
+supprimés (Atomic `-Cleanup`), tickets purgés, cycle soc-agent redémarré.
+
+---
+
 ## TA0001 — Initial Access
 
 | ID | Technique | Hôte | Test | Détection | Règle | Case | Notes |
