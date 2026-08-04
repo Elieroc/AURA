@@ -16,6 +16,8 @@ serveur MCP IRIS, lui, sert l'investigation interactive.
 """
 
 import argparse
+import base64
+import html
 import ipaddress
 import json
 import logging
@@ -894,6 +896,101 @@ _RE_BRUIT_SESSION = re.compile(
     re.I)
 
 
+# Bruit d'exécution Windows : commandes émises par la machinerie de l'endpoint,
+# jamais par l'attaquant. Le fils `net1 user …` lancé par l'agent Wazuh (SCA,
+# collecte d'inventaire) tirait les mêmes règles 92039 que l'énumération d'un
+# attaquant et remplissait la section. Le parent est le discriminant : on ne
+# masque une commande que sur ce que son PARENT est, pas sur son texte.
+_RE_BRUIT_WIN_PARENT = re.compile(r"ossec-agent|wazuh-agent\.exe", re.I)
+# Télémétrie/maintenance Microsoft, elle ancrée sur le binaire appelé.
+_RE_BRUIT_WIN = re.compile(
+    r"\b(?:CompatTelRunner|MpCmdRun|MpSigStub|TrustedInstaller|"
+    r"consent|conhost)\.exe\b", re.I)
+
+
+def _win_eventdata(raw: dict) -> dict:
+    return ((raw.get("data", {}) or {}).get("win", {}) or {}).get("eventdata", {}) or {}
+
+
+def _deswap_win(txt: str) -> str:
+    """Les champs eventdata arrivent doublement échappés (`C:\\\\Windows`, `\\"`)
+    du fait du double encodage JSON côté eventchannel, et les redirections sont
+    entités-HTML (`&gt;`, `&amp;`). Rendu lisible pour l'analyste, sans toucher
+    aux valeurs stockées."""
+    return html.unescape(txt.replace("\\\\", "\\").replace('\\"', '"'))
+
+
+# `powershell -enc <base64>` : la charge utile est en UTF-16LE. Non décodée, la
+# ligne ne dit RIEN à l'analyste (et l'attaquant compte là-dessus). Les formes
+# abrégées acceptées par PowerShell vont de `-e` à `-encodedcommand`.
+_RE_ENCODEDCMD = re.compile(
+    r"(-(?:e|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|"
+    r"encodedcomm|encodedcomma|encodedcomman|encodedcommand)\s+)"
+    r"([A-Za-z0-9+/=]{40,})", re.I)
+
+
+def _decoder_encodedcommand(cmd: str) -> str:
+    """Remplace la charge base64 d'un `-EncodedCommand` par son texte."""
+    def repl(m):
+        b64 = m.group(2)
+        try:
+            txt = base64.b64decode(b64 + "=" * (-len(b64) % 4)).decode("utf-16-le")
+        except Exception:  # noqa: BLE001 — un blob non décodable reste tel quel
+            return m.group(0)
+        return f"{m.group(1)}<décodé> {' '.join(txt.split())}"
+    return _RE_ENCODEDCMD.sub(repl, cmd)
+
+
+def _users_suspects_win(alertes: list[dict]) -> set[str]:
+    """Comptes Windows sous lesquels l'activité malveillante a tiré.
+
+    Équivalent de `_uids_suspects` côté eventchannel. Pas d'exclusion analogue à
+    celle de root : sous Windows le post-exploit tourne LÉGITIMEMENT en SYSTEM
+    (service, tâche planifiée, PsExec), écarter SYSTEM effacerait l'attaque.
+    """
+    users: set[str] = set()
+    for a in alertes:
+        if a["rule_level"] < config.MIN_LEVEL:
+            continue
+        raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
+        ed = _win_eventdata(raw)
+        u = ed.get("user") or ed.get("subjectUserName")
+        if u:
+            users.add(_deswap_win(str(u)))
+    return users
+
+
+def _cmds_windows(alertes: list[dict]) -> tuple[list[tuple], set[str]]:
+    """(ts, commande) reconstitués depuis Sysmon EID 1 / Security 4688.
+
+    Pendant Windows de la reconstitution auditd : la section « Commandes
+    exécutées » disait « aucune commande » sur TOUS les cases Windows, alors que
+    la ligne de commande complète est dans `data.win.eventdata.commandLine`.
+    Retourne aussi les comptes retenus, pour la phrase de portée.
+    """
+    users = _users_suspects_win(alertes)
+    occ: list[tuple] = []
+    for a in alertes:
+        raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
+        ed = _win_eventdata(raw)
+        if not ed:
+            continue
+        u = ed.get("user") or ed.get("subjectUserName")
+        if users and (not u or _deswap_win(str(u)) not in users):
+            continue
+        parent = _deswap_win(str(ed.get("parentCommandLine")
+                                 or ed.get("parentImage") or ""))
+        if parent and _RE_BRUIT_WIN_PARENT.search(parent):
+            continue
+        cmd = (ed.get("commandLine") or ed.get("processCommandLine")
+               or ed.get("newProcessName") or ed.get("image") or "")
+        cmd = _decoder_encodedcommand(_deswap_win(str(cmd)).strip())
+        if not cmd or _RE_BRUIT_WIN.search(cmd):
+            continue
+        occ.append((a["ts"], cmd))
+    return occ, users
+
+
 def _clusters_lies_attaque(occ: list[tuple], anchors: list, gap) -> list[tuple]:
     """Ne garde que les commandes rattachées à l'attaque.
 
@@ -924,7 +1021,9 @@ def _clusters_lies_attaque(occ: list[tuple], anchors: list, gap) -> list[tuple]:
 
 
 def _section_commandes(alertes: list[dict]) -> str:
-    """Historique des commandes de l'attaquant, reconstitué depuis auditd.
+    """Historique des commandes de l'attaquant : auditd (Linux) ET Sysmon EID 1 /
+    Security 4688 (Windows), fusionnés dans une seule chronologie — un case de
+    campagne couvre les deux OS.
 
     Le proctitle (règle 80792, niv. 3) porte la ligne de commande complète. En
     descendant ATTACH_MIN_LEVEL à 3, ces alertes entrent dans l'incident : on
@@ -956,6 +1055,9 @@ def _section_commandes(alertes: list[dict]) -> str:
             continue
         occ.append((a["ts"], cmd))
 
+    occ_win, users_win = _cmds_windows(alertes)
+    occ = sorted(occ + occ_win, key=lambda o: o[0])
+
     # Rattachement à l'attaque, PUIS dédup (une commande vue dans le bruit ET
     # dans l'attaque doit être conservée avec son ts d'attaque).
     occ = _clusters_lies_attaque(occ, anchors, gap)
@@ -971,8 +1073,9 @@ def _section_commandes(alertes: list[dict]) -> str:
         return ("## Commandes exécutées\n\nAucune commande "
                 "reconstituée (pas d'alerte d'audit de commande dans le "
                 "périmètre).")
-    portee = (f"sous l'uid compromis {', '.join(sorted(uids))}" if uids
-              else "tous uids (compte compromis non identifié)")
+    comptes = [f"uid {u}" for u in sorted(uids)] + sorted(users_win)
+    portee = (f"sous le(s) compte(s) compromis {', '.join(comptes)}" if comptes
+              else "tous comptes (compte compromis non identifié)")
     lignes = [
         "## Commandes exécutées",
         "",
@@ -987,7 +1090,7 @@ def _section_commandes(alertes: list[dict]) -> str:
     jours = {ts.astimezone(timezone.utc).date() for ts, _ in cmds}
     fmt = "%m-%d %H:%M:%S" if len(jours) > 1 else "%H:%M:%S"
     for ts, cmd in cmds[:80]:
-        lignes.append(f"{ts.astimezone(timezone.utc):{fmt}}  {cmd[:200]}")
+        lignes.append(f"{ts.astimezone(timezone.utc):{fmt}}  {cmd[:300]}")
     if len(cmds) > 80:
         lignes.append(f"... (+{len(cmds) - 80} autres)")
     lignes.append("```")
@@ -1456,12 +1559,13 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
     lignes = [
         "# Rapport d'analyse — Vrai positif",
         "",
-        f"**Verdict IA** : vrai positif (confiance {triage['confidence']})"
-        + (f" — technique {triage['mitre']}" if triage.get("mitre") else ""),
+        f"**Verdict IA** : vrai positif (confiance {triage['confidence']})",
     ]
-    # Le triage ne rend QU'UNE technique, celle qui a emporté sa décision ; la
-    # couverture ATT&CK complète est dans la section « Techniques MITRE ATT&CK »
-    # plus bas, construite sur ce que les règles ont réellement mappé.
+    # Plus de technique en en-tête : le triage n'en rend QU'UNE, celle qui a
+    # emporté sa décision, et elle n'est même pas toujours dans le mapping des
+    # règles (case 129 : en-tête T1098, table ATT&CK sans T1098). La couverture
+    # ATT&CK est la section « Techniques MITRE ATT&CK », construite sur ce que
+    # les règles ont réellement mappé. `triages.mitre` reste tracé en base.
     # Attribution conteneur : l'agent est l'hôte Proxmox (pve) ; le vrai théâtre
     # est le conteneur LXC résolu par l'enrichisseur auditd.
     if cts:
