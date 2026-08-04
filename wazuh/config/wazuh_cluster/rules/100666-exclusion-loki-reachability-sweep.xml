@@ -1,0 +1,38 @@
+<!-- SOC-AI - rule 100666 (level 0). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- Exclusion for 100650: the monitoring stack running in the `loki` LXC
+       probes the reachability of the lab hosts with `timeout 1 bash -c 'echo >
+       /dev/tcp/<ip>/22'`. That is exactly the bash network redirection 100650
+       hunts for, and one sweep fires once per scanned address: incident 2317
+       (case 142) alone was 2633 alerts, all of them this single loop.
+
+       Matching notes (validated on the live full_log, see
+       wazuh/DETECTION-REVIEW.md):
+         - the payload of `bash -c '...'` contains spaces, so auditd HEX-encodes
+           the whole argv entry - `/dev/tcp` never appears in clear text.
+           6563686F203E202F6465762F7463702F3139322E3136382E
+           = "echo > /dev/tcp/192.168." and 2F3232 = "/22".
+         - the container name is only in full_log (`lxc_ct=loki`, added by the
+           auditd enricher of the Proxmox host): there is no decoded field for
+           it, and the agent is the host sensor (home-s-pve01), so the agent id
+           cannot discriminate.
+
+       Three conditions, all required - the exclusion is narrow on purpose:
+       the binary (/usr/bin/timeout), the container (loki), and the exact
+       command shape (echo to a 192.168.x address on port 22 only).
+
+       Residual risk, accepted: an attacker with code execution inside the loki
+       container who reproduces this exact command shape - a port-22 knock on an
+       RFC1918 address of the lab range, through /usr/bin/timeout. Any other
+       target, port or binary stays covered by 100650. -->
+
+  <rule id="100666" level="0">
+    <if_sid>100650</if_sid>
+    <field name="audit.exe">^/usr/bin/timeout$</field>
+    <regex type="pcre2">(?s)lxc_ct=loki\b.*?a4=6563686F203E202F6465762F7463702F3139322E3136382E[0-9A-F]*2F3232(?:\s|$)</regex>
+    <description>Exclusion 100650: loki monitoring reachability sweep (bash /dev/tcp to 192.168.x:22)</description>
+  </rule>
+
+</group>
