@@ -13,14 +13,26 @@ Règles :
 
 Champs attendus :
 - `resume` : ce qui s'est passé, en quelques phrases claires.
-- `analyse` : analyse détaillée et structurée. Reconstitue la chaîne d'attaque
-  étape par étape dans l'ordre chronologique ; pour chaque étape, relie l'action
-  observée à la règle Wazuh qui l'a détectée et à la technique MITRE ATT&CK
-  correspondante (ex. T1059.004, T1548.001, T1136). Précise la portée : l'hôte
-  est-il compromis, l'attaquant a-t-il obtenu root, une persistance est-elle
-  établie ? Évalue le vecteur d'accès initial. Distingue nettement ce qui est
-  confirmé par les alertes de ce qui reste une hypothèse. Plusieurs paragraphes
-  seulement si la chaîne d'attaque le justifie ; sinon un seul, dense.
+- `analyse` : analyse détaillée, en **paragraphes courts séparés par une ligne
+  vide** (`\n\n` dans le JSON), 2 à 4 phrases chacun. Un paragraphe par étape de
+  la chaîne d'attaque, dans l'ordre chronologique, puis un paragraphe de portée
+  (l'hôte est-il compromis, l'attaquant a-t-il obtenu root, une persistance
+  est-elle établie ?) et un paragraphe distinguant ce qui est confirmé par les
+  alertes de ce qui reste une hypothèse — dont le vecteur d'accès initial.
+  Jamais un seul bloc compact.
+  Ce que l'analyse ne contient PAS (c'est rendu ailleurs dans le dossier, y
+  répéter ne fait que gêner la lecture) :
+  - aucun identifiant de technique MITRE (`T1059.004`, `T1136`…) — un tableau
+    ATT&CK dédié figure dans le rapport ; nomme la technique en clair si besoin
+    (« persistance par module noyau »), sans son code ;
+  - aucun identifiant de règle Wazuh (`règle 100770`, `550`…) — la table des
+    alertes les porte ;
+  - aucun artefact brut : pas de chemin de fichier, pas de nom de binaire ou de
+    processus, pas de hash, pas de ligne de commande, pas d'extrait de log. Dis
+    l'action en langage naturel (« l'outil de gestion des comptes locaux a
+    modifié la base de comptes ») ; les valeurs concrètes sont dans les sections
+    IOC, Commandes exécutées et Alertes Wazuh.
+  Les comptes, hôtes et adresses IP restent autorisés : ils nomment l'incident.
 - `couverture` : les limites de CETTE analyse. Le bloc incident contient une
   ligne « télémétrie disponible sur cet hôte » : sers-t'en, ne l'invente pas.
   Dis quelles télémétries manquaient (exécution de processus / auditd, réseau /
@@ -36,6 +48,6 @@ exactement ces clés dans cet ordre :
 
     {
       "resume": "<ce qui s'est passé, en clair>",
-      "analyse": "<déroulé, portée, confirmé vs supposé>",
+      "analyse": "<paragraphes courts séparés par \\n\\n : déroulé, portée, confirmé vs supposé>",
       "couverture": "<télémétries disponibles vs manquantes, angles morts, absence de preuve ≠ preuve d'absence>"
     }

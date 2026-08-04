@@ -968,16 +968,16 @@ def _section_commandes(alertes: list[dict]) -> str:
         cmds.append((ts, cmd))
 
     if not cmds:
-        return ("## Commandes exécutées (auditd)\n\nAucune commande "
+        return ("## Commandes exécutées\n\nAucune commande "
                 "reconstituée (pas d'alerte d'audit de commande dans le "
                 "périmètre).")
     portee = (f"sous l'uid compromis {', '.join(sorted(uids))}" if uids
               else "tous uids (compte compromis non identifié)")
     lignes = [
-        "## Commandes exécutées (auditd)",
+        "## Commandes exécutées",
         "",
-        f"{len(cmds)} commandes distinctes reconstituées depuis le proctitle "
-        f"auditd ({portee}), rattachées à l'attaque, ordre chronologique :",
+        f"{len(cmds)} commandes distinctes reconstituées depuis la télémétrie "
+        f"d'exécution ({portee}), rattachées à l'attaque, ordre chronologique :",
         "",
         "```",
     ]
@@ -1012,6 +1012,67 @@ def _fmt_intervalle(first, last) -> str:
 # tirs répétés (ex. une écriture /dev/tcp par cible balayée), pas autant
 # d'évènements distincts : on l'annote pour ne pas surestimer l'ampleur.
 _SEUIL_RAFALE = 500
+
+
+def _lien_attaque(tid: str) -> str:
+    """URL ATT&CK d'une technique. Une sous-technique T1547.006 vit sous
+    `/techniques/T1547/006/`, pas `/techniques/T1547.006/`."""
+    base, _, sous = tid.partition(".")
+    return (f"https://attack.mitre.org/techniques/{base}/{sous}/" if sous
+            else f"https://attack.mitre.org/techniques/{base}/")
+
+
+def _section_mitre(alertes: list[dict]) -> str:
+    """Tableau ATT&CK des techniques du case (déterministe, pas le LLM).
+
+    Ce que les RÈGLES ont mappé, pas la seule technique retenue au triage : le
+    triage n'en rend qu'une (celle qui a emporté sa décision), et le case 90 se
+    résumait ainsi à « T1059.001 PowerShell » alors que les mêmes alertes
+    portaient dcsync, golden ticket et pass-the-hash.
+
+    Le nom et la tactique sortent de `rule.mitre` du log brut (les colonnes
+    n'en gardent que les identifiants et les tactiques) ; ordre = première
+    occurrence, le tableau se lit donc comme la progression de l'attaque.
+    """
+    techs: dict[str, dict] = {}
+    for a in alertes:
+        raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
+        mitre = (raw.get("rule") or {}).get("mitre") or {}
+        ids = list(mitre.get("id") or a.get("mitre_ids") or [])
+        noms = list(mitre.get("technique") or [])
+        tactiques = list(mitre.get("tactic") or a.get("mitre_tactics") or [])
+        for i, tid in enumerate(ids):
+            tid = str(tid).strip()
+            if not tid:
+                continue
+            e = techs.setdefault(tid, {"nom": "", "tactiques": set(),
+                                       "n": 0, "first": a["ts"]})
+            # Les listes id/technique sont parallèles quand la règle mappe
+            # plusieurs techniques ; on ne prend le nom que s'il est en face.
+            if not e["nom"] and i < len(noms):
+                e["nom"] = str(noms[i]).strip()
+            e["tactiques"].update(str(t).strip() for t in tactiques if t)
+            e["n"] += 1
+            e["first"] = min(e["first"], a["ts"])
+
+    if not techs:
+        return ("## Techniques MITRE ATT&CK\n\nAucune technique mappée par les "
+                "règles déclenchées sur cet incident.")
+    lignes = [
+        "## Techniques MITRE ATT&CK",
+        "",
+        f"{len(techs)} technique(s) mappée(s) par les règles Wazuh qui ont "
+        "tiré, par ordre d'apparition :",
+        "",
+        "| Technique | Nom | Tactique(s) | Alertes |",
+        "|:---|:---|:---|:---:|",
+    ]
+    for tid, e in sorted(techs.items(), key=lambda kv: (kv[1]["first"], kv[0])):
+        nom = e["nom"] or "—"
+        tac = ", ".join(sorted(e["tactiques"])) or "—"
+        lignes.append(f"| [{tid}]({_lien_attaque(tid)}) | {nom} | {tac} "
+                      f"| {e['n']} |")
+    return "\n".join(lignes)
 
 
 def _section_alertes(alertes: list[dict], agent_id: str) -> str:
@@ -1252,13 +1313,20 @@ def _conteneurs(alertes: list[dict]) -> list[str]:
 
 
 def _incidents_lies(conn, incident: dict) -> list[dict]:
-    """Incidents sur d'AUTRES agents partageant une entité forte (même IP, même
-    fichier, même compte) dans une fenêtre ±ENTITY_GAP autour de celui-ci.
+    """Cases IRIS ouverts sur d'AUTRES agents partageant une entité forte (même
+    IP, même fichier, même compte) dans une fenêtre ±ENTITY_GAP autour de
+    celui-ci.
 
     La corrélation principale est cloisonnée par agent (correlate.py) — un pivot
     d'un hôte à l'autre est donc invisible par construction. Cette passe le
     rattrape a posteriori SANS fusionner : on signale le lien à l'analyste. Le
-    2026-07-29 le pivot bookstack -> jellyfin n'apparaissait dans aucun case."""
+    2026-07-29 le pivot bookstack -> jellyfin n'apparaissait dans aucun case.
+
+    Seuls les incidents ayant un case IRIS sont retournés : la section renvoie
+    l'analyste vers un dossier ouvrable, pas vers un identifiant interne de la
+    base soc-agent qu'il ne peut consulter nulle part. Le case du présent
+    incident est exclu — la fusion campagne (`_fondre_campagne`) met plusieurs
+    incidents, y compris d'autres hôtes, sur un même case."""
     marge = timedelta(minutes=config.ENTITY_GAP_MINUTES)
     traits = conn.execute(
         "SELECT DISTINCT srcip, entity, srcuser FROM alerts WHERE incident_id=%s",
@@ -1276,36 +1344,63 @@ def _incidents_lies(conn, incident: dict) -> list[dict]:
         return []
     liste = list(valeurs)
     rows = conn.execute(
-        """SELECT DISTINCT i.id, i.agent_name, a.srcip, a.entity, a.srcuser
+        """SELECT DISTINCT i.id, i.agent_name, i.iris_case_id,
+                  a.srcip, a.entity, a.srcuser
              FROM incidents i JOIN alerts a ON a.incident_id = i.id
             WHERE i.id <> %s AND i.agent_id <> %s
+              AND i.iris_case_id IS NOT NULL
+              AND i.iris_case_id IS DISTINCT FROM %s
               AND i.last_seen >= %s AND i.first_seen <= %s
               AND (a.srcip = ANY(%s) OR a.entity = ANY(%s) OR a.srcuser = ANY(%s))
             ORDER BY i.id""",
-        (incident["id"], incident["agent_id"],
+        (incident["id"], incident["agent_id"], incident.get("iris_case_id"),
          incident["first_seen"] - marge, incident["last_seen"] + marge,
          liste, liste, liste)).fetchall()
-    par_inc: dict[int, dict] = {}
+    # Regroupement par CASE : un case de campagne porte plusieurs incidents, il
+    # ne doit apparaître qu'une fois — avec tous les hôtes qu'il couvre.
+    par_case: dict[int, dict] = {}
     for r in rows:
         partage = next((v for v in (r["srcip"], r["entity"], r["srcuser"])
                         if v and v in valeurs), None)
-        if partage and r["id"] not in par_inc:
-            par_inc[r["id"]] = {"id": r["id"], "agent": r["agent_name"] or "?",
-                                "entite": partage}
-    return list(par_inc.values())
+        if not partage:
+            continue
+        e = par_case.setdefault(r["iris_case_id"],
+                                {"case_id": r["iris_case_id"],
+                                 "agents": set(), "entites": set()})
+        e["agents"].add(r["agent_name"] or "?")
+        e["entites"].add(partage)
+    return sorted(par_case.values(), key=lambda e: e["case_id"])
 
 
-def _section_incidents_lies(lies: list[dict]) -> str:
+def _lien_case(case_id: int) -> str:
+    """URL du case IRIS. Relative à dessein : la note est lue DANS IRIS, et
+    `config.IRIS_URL` vaut la loopback du serveur (127.0.0.1:8443) — un lien
+    absolu construit dessus serait mort pour l'analyste, qui accède à IRIS par
+    l'adresse du parc."""
+    return f"/case?cid={case_id}"
+
+
+def _section_cases_lies(lies: list[dict]) -> str:
     """Note locale (valeurs réelles). Construite en Python, JAMAIS envoyée au
     LLM : les hostnames des autres hôtes ne partent pas vers le cloud."""
     if not lies:
         return ""
-    lignes = ["## Incidents liés (autres hôtes)", "",
+    lignes = ["## Cases liés (autres hôtes)", "",
               "Rapprochement par entité partagée, hors du cloisonnement par "
-              "agent — possible mouvement latéral ou campagne à investiguer :", ""]
+              "agent — possible mouvement latéral ou campagne à investiguer :",
+              "",
+              "| Case | Hôte(s) | Entité commune |",
+              "|:---:|:---|:---|"]
     for l in lies:
-        lignes.append(f"- incident #{l['id']} sur **{l['agent']}** — entité "
-                      f"commune : `{l['entite']}`")
+        agents = ", ".join(f"**{a}**" for a in sorted(l["agents"]))
+        # Une campagne partage souvent une dizaine d'entités : au-delà de 3 la
+        # cellule devient illisible et n'ajoute rien — le case lié est ouvrable.
+        ents = sorted(l["entites"])
+        ent = ", ".join(f"`{e}`" for e in ents[:3])
+        if len(ents) > 3:
+            ent += f" (+{len(ents) - 3})"
+        lignes.append(f"| [#{l['case_id']}]({_lien_case(l['case_id'])}) "
+                      f"| {agents} | {ent} |")
     return "\n".join(lignes) + "\n"
 
 
@@ -1364,15 +1459,9 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
         f"**Verdict IA** : vrai positif (confiance {triage['confidence']})"
         + (f" — technique {triage['mitre']}" if triage.get("mitre") else ""),
     ]
-    # Le triage ne rend QU'UNE technique, celle qui a emporté sa décision. Le
-    # case 90 se résumait ainsi à « T1059.001 PowerShell » alors que les mêmes
-    # alertes portaient dcsync, golden ticket et pass-the-hash. On complète par
-    # ce que les règles Wazuh ont réellement mappé : c'est factuel, et c'est ce
-    # sur quoi une couverture ATT&CK se construit.
-    autres = _mitre_observes(alertes) - {(triage.get("mitre") or "").strip()}
-    if autres:
-        lignes.append("**Autres techniques observées** (mappées par les règles "
-                      "Wazuh) : " + ", ".join(sorted(autres)))
+    # Le triage ne rend QU'UNE technique, celle qui a emporté sa décision ; la
+    # couverture ATT&CK complète est dans la section « Techniques MITRE ATT&CK »
+    # plus bas, construite sur ce que les règles ont réellement mappé.
     # Attribution conteneur : l'agent est l'hôte Proxmox (pve) ; le vrai théâtre
     # est le conteneur LXC résolu par l'enrichisseur auditd.
     if cts:
@@ -1403,7 +1492,9 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
         lignes += ["## Couverture et limites", rapport["couverture"],
                    "", f"_{telemetrie}_", ""]
     lignes += [
-        _section_incidents_lies(_incidents_lies(conn, incident)),
+        _section_mitre(alertes),
+        "",
+        _section_cases_lies(_incidents_lies(conn, incident)),
         _section_commandes(alertes),
         "",
         _section_alertes(alertes, incident["agent_id"]),
@@ -1420,7 +1511,8 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
 def _alertes(conn, incident_id: int) -> list[dict]:
     return conn.execute(
         "SELECT id, ts, rule_id, rule_level, rule_desc, rule_groups, "
-        "srcip, srcuser, entity, raw FROM alerts WHERE incident_id = %s "
+        "mitre_ids, mitre_tactics, srcip, srcuser, entity, raw "
+        "FROM alerts WHERE incident_id = %s "
         "ORDER BY ts", (incident_id,)).fetchall()
 
 
