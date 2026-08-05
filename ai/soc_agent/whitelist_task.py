@@ -29,7 +29,7 @@ from . import config
 from .anonymize import Anonymiseur, anonymiser, rehydrater, verifier_fuite
 from .iris import PROMPTS, _alertes, _client
 from .llm import completion
-from .mitigate import _commenter_tache
+from .mitigate import _commenter_tache, _maj_statut_tache
 from .triage import charger_map, sauver_map
 from .whitelist import (_canonique, _signature, signatures_vues_tp,
                         valider_signature)
@@ -40,7 +40,10 @@ log = logging.getLogger("whitelist_task")
 # tâches du case (ex. remédiation) lors du parcours de `list_tasks`.
 _TITRE_PREFIXE = "WHITELIST"
 _STATUT_A_TRAITER = "To do"
-_STATUT_CLOS = "Closed"
+# « Done » et non « Closed » : IRIS n'a que cinq statuts de tâche (To do, In
+# progress, On hold, Done, Canceled). Le nom inexistant faisait échouer la
+# clôture même une fois le cid corrigé.
+_STATUT_CLOS = "Done"
 
 # Préfixe de TOUT commentaire posté par ce script : permet de reconnaître, au
 # passage suivant, que le dernier mot revient à l'IA (en attente d'une réponse
@@ -183,11 +186,9 @@ def _traiter_tache(conn, case, incident_id: int, case_id: int, task_id: int,
         _PREFIXE_IA + "✅ Exception whitelist en place :\n```json\n"
         f"{json.dumps(signature, ensure_ascii=False, indent=2)}\n```\n"
         f"Motif : {raison_llm or canon}")
-    try:
-        case.update_task(task_id, status=_STATUT_CLOS, cid=case_id)
-    except Exception as e:  # noqa: BLE001 — l'exception est créée, la
-        # fermeture de la tâche est secondaire
-        log.warning("clôture tâche %s échouée : %s", task_id, e)
+    # L'exception est créée : une clôture de tâche qui échoue est journalisée
+    # (par le helper) mais ne remet pas le résultat en cause.
+    _maj_statut_tache(case, case_id, task_id, _STATUT_CLOS)
     return {"task_id": task_id, "action": "créé", "signature": signature}
 
 

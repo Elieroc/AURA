@@ -1339,6 +1339,31 @@ def _commenter_tache(case, case_id: int, task_id: int, texte: str) -> None:
         log.debug("commentaire tâche %s : %s", task_id, e)
 
 
+def _maj_statut_tache(case, case_id: int, task_id: int, statut: str) -> bool:
+    """Change le statut d'une tâche IRIS. Retourne True si c'est passé.
+
+    `Case.update_task()` relit la tâche avant de la réécrire, et cette relecture
+    utilise le cid de l'INSTANCE, pas le `cid=` de l'appel : passer seulement
+    `cid=` lève « No case ID provided ». Le symptôme était muet — les deux
+    appelants enveloppaient l'échec dans un try/except best-effort, donc aucune
+    tâche de remédiation ni de whitelist n'a jamais changé de statut : elles
+    restaient en 'To do' quel que soit le sort réel de l'action.
+
+    `set_cid` mute l'instance ; on la repositionne donc à chaque appel plutôt que
+    de supposer un cid courant, les appelants bouclant sur plusieurs cases.
+    """
+    try:
+        case.set_cid(case_id)
+        r = case.update_task(task_id, status=statut, cid=case_id)
+        if r.is_success():
+            return True
+        log.warning("maj tâche %s (case %s) refusée : %s",
+                    task_id, case_id, r.get_msg())
+    except Exception as e:  # noqa: BLE001 — best-effort, jamais bloquant
+        log.warning("maj tâche %s (case %s) : %s", task_id, case_id, e)
+    return False
+
+
 # --- réconciliation : ce que l'agent a VRAIMENT fait ------------------------
 #
 # Script d'active response par action, Windows puis Linux. C'est la clé de
@@ -1446,12 +1471,8 @@ def reconcilier_resultats_ar() -> list[dict]:
                     (m["incident_id"],)).fetchone()["iris_case_id"]
                 if not cid:
                     continue
-                try:
-                    case.update_task(task_id=m["iris_task_id"],
-                                     status=_STATUT_TASK.get(statut, "To do"),
-                                     cid=cid)
-                except Exception as e:  # noqa: BLE001 — best-effort
-                    log.debug("maj tâche %s : %s", m["iris_task_id"], e)
+                _maj_statut_tache(case, cid, m["iris_task_id"],
+                                  _STATUT_TASK.get(statut, "To do"))
                 _commenter_tache(
                     case, cid, m["iris_task_id"],
                     f"Compte rendu de l'agent : **{r['ar_status']}**"
