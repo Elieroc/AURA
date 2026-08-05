@@ -1778,22 +1778,34 @@ def _lien_wazuh(agent_id: str, rule_id: str, debut, fin) -> str:
 
     On vise la règle + l'agent plutôt qu'un _id d'alerte précis : l'évènement de
     timeline regroupe plusieurs alertes de la même règle, et le lien retombe
-    exactement sur ce groupe. Rison laissé littéral (le fragment #... n'est pas
-    décodé par le navigateur avant lecture par l'appli) ; seuls les espaces sont
-    encodés, ce que OpenSearch Dashboards tolère.
+    exactement sur ce groupe.
+
+    Structure calquée sur ce que le Discover d'OSD 2.13 (data-explorer) génère
+    lui-même — vérifié en direct sur le dashboard prod. Trois pièges qui
+    cassaient le lien silencieusement (la page s'ouvrait, mais le filtre ne
+    s'appliquait pas) :
+      - `_q` DOIT porter `filters:!()` AVANT `query:` : sans ce champ le state de
+        recherche est rejeté par data-explorer et la requête est ignorée.
+      - `_g` porte `filters:!()` et `refreshInterval:(...)` en plus du `time:`.
+      - les guillemets de la KQL sont encodés `%22` (comme les espaces `%20`) :
+        c'est la forme qu'OSD sérialise, littéral non garanti côté parseur rison.
+    Le reste du fragment #... reste du rison littéral (non décodé par le
+    navigateur avant lecture par l'appli).
     """
     marge = timedelta(minutes=5)
     f0 = (debut - marge).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     f1 = (fin + marge).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     patt = config.WAZUH_DASHBOARD_INDEX_PATTERN
     requete = f'rule.id:"{rule_id}" and agent.id:"{agent_id}"'
-    g = f"(time:(from:'{f0}',to:'{f1}'))"
+    g = (f"(filters:!(),refreshInterval:(pause:!t,value:0),"
+         f"time:(from:'{f0}',to:'{f1}'))")
     a = (f"(discover:(columns:!(rule.level,rule.description,agent.name),"
-         f"sort:!(!('timestamp',desc))),"
+         f"isDirty:!f,sort:!(!('timestamp',desc))),"
          f"metadata:(indexPattern:'{patt}',view:discover))")
-    q = f"(query:(language:kuery,query:'{requete}'))"
+    q = f"(filters:!(),query:(language:kuery,query:'{requete}'))"
     base = config.WAZUH_DASHBOARD_URL.rstrip("/") + config.WAZUH_DASHBOARD_DISCOVER_PATH
-    return f"{base}#?_g={g}&_a={a}&_q={q}".replace(" ", "%20")
+    return (f"{base}#?_a={a}&_g={g}&_q={q}"
+            .replace(" ", "%20").replace('"', "%22"))
 
 
 def _timeline(case, case_id: int, alertes: list[dict], agent_id: str,
