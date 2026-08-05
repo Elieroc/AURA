@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS whitelist_rules (
     signature        text UNIQUE NOT NULL,   -- forme canonique de match_all, anti-doublon
     match_all        jsonb NOT NULL,
     reason           text NOT NULL,
-    source           text NOT NULL DEFAULT 'auto',   -- 'auto' | 'analyste' | 'humain'
+    source           text NOT NULL DEFAULT 'auto',   -- 'auto' | 'analyste' | 'humain' | 'training'
     active           boolean NOT NULL DEFAULT true,
     origin_incidents bigint[] NOT NULL DEFAULT '{}',
     fp_count         integer NOT NULL DEFAULT 0,
@@ -330,3 +330,36 @@ CREATE UNIQUE INDEX IF NOT EXISTS mitigations_uniq
 -- quand le canal répond ; ne restent 'émis' que les actions réellement sans
 -- retour, qu'on retente jusqu'au plafond.
 ALTER TABLE mitigations ADD COLUMN IF NOT EXISTS tentatives int NOT NULL DEFAULT 1;
+
+-- Fenêtre d'apprentissage du bruit ambiant (mode « training », cf.
+-- training.py). Ouverte au lancement du SOC par l'administrateur, elle dure
+-- TRAINING_DAYS jours pendant lesquels le pipeline d'analyse est SUSPENDU
+-- (cycle.py teste training.en_cours) et toute alerte HIGH/CRITICAL devient une
+-- exception de whitelist.
+--
+-- `status` seul gouverne la suspension du pipeline : entre l'expiration de
+-- `ends_at` et la clôture effective (réapplication du noise filter + case
+-- IRIS), la fenêtre reste 'running'. Sinon un cycle passant dans cet
+-- intervalle corrélerait le backlog avant que le bruit appris ne soit marqué.
+CREATE TABLE IF NOT EXISTS training_runs (
+    id            bigserial PRIMARY KEY,
+    started_at    timestamptz NOT NULL DEFAULT now(),
+    ends_at       timestamptz NOT NULL,
+    jours         integer NOT NULL,
+    status        text NOT NULL DEFAULT 'running',   -- 'running' | 'finished'
+    iris_case_id  bigint,
+    finished_at   timestamptz
+);
+
+-- Une seule fenêtre ouverte à la fois : deux fenêtres concurrentes rendraient
+-- la clôture de l'une insuffisante pour débloquer le pipeline.
+CREATE UNIQUE INDEX IF NOT EXISTS training_un_seul_run_actif
+    ON training_runs ((status)) WHERE status = 'running';
+
+-- Rattachement d'une exception à sa fenêtre de training et à la tâche IRIS qui
+-- la représente dans le case TRAINING. `iris_task_id` est la clé de révocation :
+-- la tâche passée en 'Canceled' par l'analyste désactive l'exception
+-- (training.reconcilier).
+ALTER TABLE whitelist_rules ADD COLUMN IF NOT EXISTS training_run_id bigint
+    REFERENCES training_runs(id) ON DELETE SET NULL;
+ALTER TABLE whitelist_rules ADD COLUMN IF NOT EXISTS iris_task_id bigint;

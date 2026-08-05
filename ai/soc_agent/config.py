@@ -544,3 +544,30 @@ RULE_TUNING_ATTENTE_ESSAIS = int(os.environ.get("RULE_TUNING_ATTENTE_ESSAIS", "2
 # à 14+ mérite un humain avant d'être neutralisée. Un attaquant qui provoque
 # des FP répétés pour se faire whitelister s'arrête à ce mur.
 WHITELIST_MAX_LEVEL = int(os.environ.get("WHITELIST_MAX_LEVEL", "14"))
+
+# --- Mode training (apprentissage du bruit ambiant, cf. training.py) --------
+#
+# Fenêtre de mise en service : le SOC branché sur un SI déjà en production
+# apprend d'abord son bruit, pipeline d'analyse suspendu, avant de juger et de
+# remédier quoi que ce soit. Piloté depuis config/soc-ai.conf par l'administrateur
+# (scripts/soc-start.sh exporte ces variables vers docker compose).
+#
+# TRAINING_ENABLED n'ouvre une fenêtre qu'au TOUT PREMIER lancement (aucune
+# fenêtre en base) : le training est une phase de mise en service, pas un mode
+# récurrent. En rouvrir une plus tard est une décision explicite
+# (`python -m soc_agent.training --demarrer`).
+TRAINING_ENABLED = os.environ.get("TRAINING_ENABLED", "false").lower() == "true"
+TRAINING_DAYS = int(os.environ.get("TRAINING_DAYS", "7"))
+
+# Niveau à partir duquel une alerte observée pendant la fenêtre est apprise
+# comme bruit. Aligné sur MIN_LEVEL (12 = HIGH) : en dessous, l'alerte n'ouvre
+# de toute façon pas d'incident, la whitelister n'apporterait rien.
+TRAINING_MIN_LEVEL = int(os.environ.get("TRAINING_MIN_LEVEL", "12"))
+
+# Plafond PROPRE au training, distinct de WHITELIST_MAX_LEVEL (14) qui borne la
+# whitelist automatique en exploitation. Défaut 15 : le training doit pouvoir
+# apprendre le bruit CRITICAL, sinon il ne calme pas ce qui fait le plus de
+# dégâts (remédiation autonome sur du trafic métier). C'est assumé — la fenêtre
+# est une confiance déclarée par l'administrateur, bornée dans le temps, et
+# chaque exception reste révocable depuis le case IRIS TRAINING.
+TRAINING_MAX_LEVEL = int(os.environ.get("TRAINING_MAX_LEVEL", "15"))

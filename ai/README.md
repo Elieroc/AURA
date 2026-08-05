@@ -306,6 +306,71 @@ règle VirusTotal.
 Seuil de récurrence : `WHITELIST_MIN_FP` (3 par défaut). Un seul FP peut être
 un accident ; la récurrence est le signal. `--min-fp 1` pour un POC agressif.
 
+### Mode training — apprendre le bruit ambiant avant d'agir
+
+Branché tel quel sur un SI déjà en production, l'XDR autonome tire sur tout ce
+qui bouge : sauvegardes, scripts d'admin, scanners de conformité produisent des
+alertes HIGH/CRITICAL parfaitement légitimes. Sans apprentissage préalable, le
+premier jour se solde par des dizaines de cases et des **serveurs sains
+isolés**.
+
+Le mode training est une fenêtre de confiance déclarée par l'administrateur au
+lancement du SOC (`scripts/soc-start.sh`, lisant `config/soc-ai.conf`) :
+
+```bash
+# config/soc-ai.conf
+TRAINING_ENABLED="true"
+TRAINING_DAYS="7"
+```
+
+```bash
+./scripts/soc-start.sh                                        # lance le SOC
+docker exec soc-training python -m soc_agent.training --etat
+docker exec soc-training python -m soc_agent.training --cloturer   # fin anticipée
+```
+
+Pendant la fenêtre (7 jours par défaut) :
+
+- **le pipeline d'analyse est suspendu** — `cycle.py` ingère, puis s'arrête
+  net : pas de corrélation, pas de triage LLM, pas de case, donc **pas de
+  remédiation** (elle part de `iris.creer_case`). Coût LLM nul ;
+- chaque alerte de niveau ≥ `TRAINING_MIN_LEVEL` (12) devient une exception de
+  whitelist, `source = 'training'`. **Déterministe, sans LLM** : groupement par
+  (règle, machine), un `whitelist_rules` par groupe.
+
+**Signature** — plus permissive que celle de la whitelist automatique, sur deux
+points assumés :
+
+- `agent_name` en fait **toujours** partie : le bruit ambiant appartient à une
+  machine. Une exception apprise sur le serveur de sauvegarde n'aveugle pas le
+  reste du parc ;
+- l'absence de discriminant (compte/commande/fichier) **n'est pas un refus** —
+  beaucoup de bruit d'infra n'en a aucun. `rule_id + agent_name` reste borné à
+  un hôte, là où `rule_id` seul (refusé en exploitation) neutraliserait la
+  règle partout.
+
+Le plafond de niveau est propre au training : `TRAINING_MAX_LEVEL` (15, contre
+14 pour `WHITELIST_MAX_LEVEL`). Le bruit CRITICAL est justement celui qui
+déclenche les remédiations les plus coûteuses ; l'exclure viderait le mode de
+son intérêt.
+
+**Clôture.** À l'échéance, dans cet ordre : dernier apprentissage → noise filter
+réappliqué à toutes les alertes déjà en base (`ingest.reappliquer_filtre`, le
+bruit appris passe `suppressed`) → case IRIS **« TRAINING »** → statut figé, ce
+qui débloque le pipeline. Le statut, pas la date, gouverne la suspension :
+sinon un cycle passant entre l'échéance et la clôture corrélerait le backlog
+brut.
+
+**Révocation.** Le case TRAINING porte **une tâche par exception**. Passer une
+tâche en `Canceled` désactive l'exception (`active = false`) et réapplique le
+filtre : les alertes qu'elle masquait redeviennent visibles. C'est le contrôle
+qui rattrape la limite du mode — *une intrusion déjà en cours au lancement du
+SOC serait apprise comme du bruit*. Le sens est unique : repasser la tâche en
+`Done` ne réactive rien, une exception retirée se recrée explicitement.
+
+Le conteneur `soc-training` reste en vie après la clôture : c'est lui qui écoute
+ces révocations (cadence 5 min).
+
 ### Cases DFIR-IRIS
 
 Un case IRIS par incident trié (`soc_agent.iris`, en fin de cycle). Écrit en

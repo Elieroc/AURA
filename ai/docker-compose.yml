@@ -74,6 +74,26 @@ services:
     container_name: soc-agent-whitelist-task
     command: sh -c "while true; do python -m soc_agent.whitelist_task; sleep 60; done"
 
+  # Mode training : apprend le bruit ambiant du SI avant de laisser le SOC
+  # juger et remédier (cf. training.py). Ouvre sa fenêtre au tout premier
+  # lancement si TRAINING_ENABLED, apprend pendant TRAINING_DAYS jours, clôture
+  # par un case IRIS « TRAINING », puis RESTE EN VIE : c'est lui qui écoute les
+  # tâches de ce case passées en 'Canceled' pour désactiver l'exception
+  # correspondante. Cadence 5 min, alignée sur le cycle.
+  #
+  # Les variables viennent de config/soc-ai.conf via scripts/soc-start.sh, qui
+  # les exporte avant le `docker compose up` — le fichier de l'administrateur
+  # reste la seule source de vérité pour la mise en service.
+  soc-training:
+    <<: *soc-agent
+    container_name: soc-training
+    environment:
+      - TRAINING_ENABLED=${TRAINING_ENABLED:-false}
+      - TRAINING_DAYS=${TRAINING_DAYS:-7}
+      - TRAINING_MIN_LEVEL=${TRAINING_MIN_LEVEL:-12}
+      - TRAINING_MAX_LEVEL=${TRAINING_MAX_LEVEL:-15}
+    command: sh -c "while true; do python -m soc_agent.training --tick; sleep 300; done"
+
   # Exporte les métriques d'utilisation du modèle vers l'index wazuh-ai-*
   # (cf. metrics.py). Cadence 5 min, alignée sur le cycle : chaque passage
   # réexporte une fenêtre glissante, l'export étant idempotent.

@@ -18,7 +18,7 @@ import sys
 
 import psycopg
 
-from . import (config, correlate, ingest, iris, triage, vt, watchdog,
+from . import (config, correlate, ingest, iris, training, triage, vt, watchdog,
                whitelist)
 
 # Journalisé sur stderr -> capté par `docker compose logs` du conteneur.
@@ -51,6 +51,18 @@ def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
         try:
             n = ingest.ingerer(depuis, taille_lot)
             log.info("ingest : %d alertes traitées", n)
+
+            # Fenêtre de training ouverte : on INGÈRE et rien de plus. Pas de
+            # corrélation, pas de triage, pas de case, donc pas de remédiation
+            # (elle part de iris.creer_case). Le SI n'a pas encore été appris ;
+            # juger et agir maintenant reviendrait à isoler des serveurs sains
+            # sur du bruit métier. Le conteneur soc-training apprend de ces
+            # alertes ; à la clôture il réapplique le noise filter à tout
+            # l'existant, et la corrélation reprend sur ce qui reste.
+            if training.en_cours(garde):
+                log.info("training en cours : corrélation, triage, cases et "
+                         "remédiation suspendus (cf. soc_agent.training --etat)")
+                return 0
 
             # Filtre VT AVANT corrélation : un exécutable jugé légitime est
             # suppressé, donc il ne graine ni ne rejoint un case (correlate lit

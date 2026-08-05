@@ -130,3 +130,19 @@ docker compose up -d db
 docker exec -i socagent-db psql -q -U socagent -d socagent < soc_agent/schema.sql
 docker compose up -d --build soc-agent-cycle soc-agent-reconcile soc-agent-whitelist-task
 ```
+
+### Mise en service sur un SI déjà en production : le mode training
+
+Sur un parc existant, activer le training AVANT le premier démarrage : le SOC
+apprend le bruit ambiant pendant `TRAINING_DAYS` jours (pipeline d'analyse
+suspendu, aucune remédiation) puis rend un case IRIS « TRAINING » listant
+chaque exception créée. Cf. [`ai/README.md`](ai/README.md#mode-training--apprendre-le-bruit-ambiant-avant-dagir).
+
+```bash
+$EDITOR config/soc-ai.conf     # TRAINING_ENABLED="true", TRAINING_DAYS="7"
+./scripts/soc-start.sh         # source la conf et démarre toute la stack soc-agent
+```
+
+La fenêtre ne s'ouvre qu'au tout premier démarrage. À la fin, relire le case
+TRAINING : une intrusion déjà en cours au lancement aurait été apprise comme du
+bruit ; passer la tâche en `Canceled` retire l'exception.

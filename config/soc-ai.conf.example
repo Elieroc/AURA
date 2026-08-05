@@ -79,3 +79,36 @@ EVIDENCE_USER="forensics"
 EVIDENCE_PATH="/var/lib/forensics"
 EVIDENCE_SSH_KEY="/etc/soc-ai/forensic_evidence_ed25519"
 EVIDENCE_KNOWN_HOSTS="/etc/soc-ai/known_hosts_evidence"
+
+# ===========================================================================
+# HÔTE MANAGER — mode training (lu par scripts/soc-start.sh)
+# ===========================================================================
+#
+# Fenêtre d'apprentissage du bruit ambiant, à la mise en service du SOC sur un
+# SI déjà en production. Pendant la fenêtre, le pipeline d'analyse est SUSPENDU
+# (pas de triage LLM, pas de case IRIS, pas de remédiation autonome) : seule
+# l'ingestion tourne, et chaque alerte HIGH/CRITICAL observée devient une
+# exception de whitelist propre à la machine qui l'a produite.
+#
+# À la clôture, un case IRIS « TRAINING » liste chaque exception en tâche.
+# Passer une tâche en 'Canceled' désactive l'exception correspondante.
+#
+# ATTENTION : une intrusion déjà en cours au lancement du SOC serait apprise
+# comme du bruit. N'activer le training que sur un SI qu'on croit sain, et
+# relire le case TRAINING à la fin.
+#
+# N'ouvre une fenêtre qu'au TOUT PREMIER démarrage (aucune fenêtre en base) :
+# relancer le SOC ne réapprend rien. Pour en rouvrir une :
+#   docker exec soc-training python -m soc_agent.training --demarrer --jours 7
+TRAINING_ENABLED="false"
+
+# Durée de la fenêtre, en jours.
+TRAINING_DAYS="7"
+
+# Niveau Wazuh minimum d'une alerte apprise (12 = HIGH, aligné sur MIN_LEVEL).
+TRAINING_MIN_LEVEL="12"
+
+# Plafond de niveau appris. 15 par défaut : le training doit couvrir le bruit
+# CRITICAL, c'est celui qui déclenche les remédiations les plus coûteuses.
+# Descendre à 14 pour laisser les alertes de niveau 15 hors apprentissage.
+TRAINING_MAX_LEVEL="15"
