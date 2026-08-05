@@ -17,6 +17,7 @@ serveur MCP IRIS, lui, sert l'investigation interactive.
 
 import argparse
 import base64
+import hashlib
 import html
 import ipaddress
 import json
@@ -1792,11 +1793,39 @@ def _lien_wazuh(agent_id: str, rule_id: str, debut, fin) -> str:
     Le reste du fragment #... reste du rison littéral (non décodé par le
     navigateur avant lecture par l'appli).
     """
+    requete = f'rule.id:"{rule_id}" and agent.id:"{agent_id}"'
+    return _discover_url(requete, debut, fin)
+
+
+def _lien_wazuh_alerte(alert_id: str, ts) -> str:
+    """Deep-link Discover vers UNE alerte précise, par son id Wazuh.
+
+    Utilisé par l'onglet Evidence (une pièce = une alerte brute). L'`id` d'une
+    alerte Wazuh (« <epoch>.<offset> », p. ex. 1785949203.70061993) est unique
+    et indexé : le lien retombe donc sur exactement cette alerte, pas sur son
+    groupe de règle comme `_lien_wazuh`. Fenêtre ±5 min autour de l'horodatage
+    pour que le filtre temps de Discover n'exclue pas le document.
+    """
+    return _discover_url(f'id:"{alert_id}"', ts, ts)
+
+
+def _discover_url(requete: str, debut, fin) -> str:
+    """Construit le deep-link Discover (OSD 2.13 data-explorer) pour une KQL.
+
+    Structure calquée sur ce que le Discover d'OSD 2.13 génère lui-même —
+    vérifié en direct sur le dashboard prod. Trois pièges qui cassaient le lien
+    silencieusement (la page s'ouvrait, mais le filtre ne s'appliquait pas) :
+      - `_q` DOIT porter `filters:!()` AVANT `query:` : sans ce champ le state de
+        recherche est rejeté par data-explorer et la requête est ignorée.
+      - `_g` porte `filters:!()` et `refreshInterval:(...)` en plus du `time:`.
+      - les guillemets de la KQL sont encodés `%22` (comme les espaces `%20`) :
+        c'est la forme qu'OSD sérialise, littéral non garanti côté parseur rison.
+    Le reste du fragment #... reste du rison littéral.
+    """
     marge = timedelta(minutes=5)
     f0 = (debut - marge).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     f1 = (fin + marge).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     patt = config.WAZUH_DASHBOARD_INDEX_PATTERN
-    requete = f'rule.id:"{rule_id}" and agent.id:"{agent_id}"'
     g = (f"(filters:!(),refreshInterval:(pause:!t,value:0),"
          f"time:(from:'{f0}',to:'{f1}'))")
     a = (f"(discover:(columns:!(rule.level,rule.description,agent.name),"
@@ -1874,6 +1903,78 @@ def _timeline(case, case_id: int, alertes: list[dict], agent_id: str,
             n += 1
         except Exception as exc:  # noqa: BLE001
             log.debug("évènement timeline ignoré (%s) : %s", rid, exc)
+    return n
+
+
+# Préfixe des noms de pièces Evidence posées par le soc-agent. Sert AUSSI de
+# repère d'idempotence : l'id d'alerte Wazuh est le 2e champ du nom.
+_EVIDENCE_PREFIXE = "wazuh"
+
+
+def _evidences(case, case_id: int, alertes: list[dict], agent_id: str) -> int:
+    """Une pièce Evidence par alerte Wazuh brute : le log réel conservé.
+
+    Contrairement à la timeline (regroupée par règle) et au lien Discover (qui
+    peut pourrir à la rotation des indices), chaque alerte est archivée
+    intégralement dans l'onglet Evidence : full_log + JEUX complet de l'alerte
+    (JSON), plus un deep-link vers cette alerte précise. Auto-suffisant — la
+    preuve survit à la purge de l'indexer.
+
+    Idempotent par **ajout seul** : une alerte n'est jamais mutée, seulement
+    rattachée à un incident. On relit donc les pièces déjà posées et on saute
+    les id d'alerte déjà présents. Le repère est l'id Wazuh, encodé comme 2e
+    champ du nom de fichier (`wazuh <id> ...`), jamais un tag (l'API evidence
+    n'en porte pas). Best-effort : une pièce en échec ne fait pas capoter le
+    case.
+    """
+    try:
+        existants = case.list_evidences(cid=case_id).get_data() or {}
+        existants = existants.get("evidences") or []
+    except Exception as e:  # noqa: BLE001
+        log.debug("liste evidence case #%s : %s", case_id, e)
+        existants = []
+    deja = set()
+    for ev in existants:
+        m = re.match(rf"{_EVIDENCE_PREFIXE} (\S+) ", ev.get("filename") or "")
+        if m:
+            deja.add(m.group(1))
+    n = 0
+    for a in alertes:
+        aid = str(a.get("id") or "").strip()
+        if not aid or aid in deja:
+            continue
+        deja.add(aid)  # garde-fou anti-doublon si l'alerte apparaît deux fois
+        raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
+        brut = json.dumps(raw, ensure_ascii=False, indent=2, sort_keys=True)
+        full_log = raw.get("full_log") or ""
+        rid, lvl = a["rule_id"], a["rule_level"]
+        desc = (a.get("rule_desc") or "").strip()
+        ts = a["ts"].astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        corps = [
+            f"Règle Wazuh **{rid}** — niveau {lvl}/15",
+            desc,
+            f"Agent {agent_id} — {ts} UTC",
+            f"Alert id Wazuh : `{aid}`",
+            "",
+            "Log Wazuh (Discover) : " + _lien_wazuh_alerte(aid, a["ts"]),
+        ]
+        if full_log:
+            corps += ["", "**full_log :**", "```", full_log, "```"]
+        corps += ["", "**Alerte brute (JSON) :**", "```json", brut, "```"]
+        # Nom lisible dans l'onglet, mais 2e champ = id (repère d'idempotence).
+        nom = f"{_EVIDENCE_PREFIXE} {aid} r{rid} L{lvl} {desc[:60]}".strip()
+        blob = brut.encode("utf-8")
+        try:
+            case.add_evidence(
+                filename=nom[:250] + ".json",
+                file_size=len(blob),
+                description="\n".join(corps),
+                file_hash=hashlib.sha256(blob).hexdigest(),
+                cid=case_id,
+            )
+            n += 1
+        except Exception as exc:  # noqa: BLE001
+            log.debug("evidence ignorée (alerte %s) : %s", aid, exc)
     return n
 
 
@@ -2041,6 +2142,8 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     if not fp:
         _timeline(case, case_id, alertes, incident["agent_id"],
                   asset_ids, ioc_ids, _assets_case(case, case_id))
+        # Onglet Evidence : chaque alerte brute archivée (log réel + deep-link).
+        _evidences(case, case_id, alertes, incident["agent_id"])
 
     conn.commit()
     return case_id
@@ -2135,6 +2238,8 @@ def rafraichir_case(conn, incident: dict, triage: dict) -> int:
     if not fp:
         _reconstruire_timeline(case, case_id, alertes, incident["agent_id"],
                                asset_ids, ioc_ids, _assets_case(case, case_id))
+        # Evidence : ajout seul des alertes nouvellement rattachées (idempotent).
+        _evidences(case, case_id, alertes, incident["agent_id"])
 
     conn.execute(
         "UPDATE incidents SET needs_refresh = false, status = %s WHERE id = %s",
