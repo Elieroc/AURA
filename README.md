@@ -70,6 +70,14 @@ docker compose up -d
 Dashboard : https://localhost — `admin` / `INDEXER_PASSWORD` du `.env`.
 Détail complet (setup, intégrations, tests manuels) : [`wazuh/README.md`](wazuh/README.md).
 
+## Documentation
+
+| Document | Contenu |
+|---|---|
+| [`docs/INSTALL.md`](docs/INSTALL.md) | mise en service complète du stack (Wazuh, Shuffle, IRIS, soc-agent) |
+| [`docs/TRAINING.md`](docs/TRAINING.md) | mode training : apprendre le bruit ambiant du SI avant de laisser le SOC agir |
+| [`docs/REMEDIATION.md`](docs/REMEDIATION.md) | remédiation autonome de bout en bout + catalogue de toutes les active responses |
+
 ## Principes de sécurité
 
 - **Ce qui sort de l'hôte** : le contexte des incidents part vers l'API DeepSeek, **pseudonymisé** (`anonymize.py` : jetons stables par incident, appel refusé si une valeur réelle a survécu, réhydratation à la réponse). Hash et IP partent aussi aux API VT/AbuseIPDB pour l'enrichissement. Le reste (logs bruts, base) ne quitte pas l'infra.
@@ -83,6 +91,10 @@ Détail complet (setup, intégrations, tests manuels) : [`wazuh/README.md`](wazu
 SOC-AI/
 ├── CLAUDE.md            # contexte projet pour Claude Code
 ├── README.md
+├── docs/                # documentation transverse
+│   ├── INSTALL.md       # mise en service du stack
+│   ├── TRAINING.md      # fenêtre d'apprentissage du bruit ambiant
+│   └── REMEDIATION.md   # remédiation autonome + catalogue des active responses
 ├── ai/                  # couche IA : soc_agent (ingest, corrélation, triage, remédiation)
 ├── iris/                # DFIR-IRIS (case management)
 ├── scripts/             # install-agent.sh (agent + user d'admin distante)

@@ -16,7 +16,7 @@ sed -i "s|<address>MANAGER_IP</address>|<address>$MANAGER_IP</address>|" /var/os
 /var/ossec/bin/agent-auth -m $MANAGER_IP -p 1515
 ```
 
-**`soc-ai.conf` avant tout test d'isolation** — cf. `INSTALL.md` §4 et
+**`soc-ai.conf` avant tout test d'isolation** — cf. `docs/INSTALL.md` §4 et
 `config/soc-ai.conf.example` (`WAZUH_MANAGER_IP` mal réglé = lockout réseau,
 vécu en prod sur un autre agent). Même si NPM n'est pas une cible de
 remédiation prévue, le fichier ne coûte rien à déployer par cohérence.

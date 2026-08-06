@@ -16,7 +16,7 @@ sed -i "s|<address>MANAGER_IP</address>|<address>$MANAGER_IP</address>|" /var/os
 /var/ossec/bin/agent-auth -m $MANAGER_IP -p 1515
 ```
 
-`soc-ai.conf` avant tout test d'isolation — cf. `INSTALL.md` §4.
+`soc-ai.conf` avant tout test d'isolation — cf. `docs/INSTALL.md` §4.
 
 ## 2. Permissions de lecture des logs
 

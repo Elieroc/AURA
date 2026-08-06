@@ -2,6 +2,11 @@
 
 Prérequis : Docker, Docker Compose, Python 3.12+, `vm.max_map_count=262144`.
 
+Toutes les commandes se lancent depuis la **racine du dépôt** (ce fichier vit
+dans `docs/`). Voir aussi [`TRAINING.md`](TRAINING.md) pour la mise en service
+sur un SI déjà en production et [`REMEDIATION.md`](REMEDIATION.md) pour le
+déploiement et le catalogue des active responses.
+
 ## 1. Wazuh
 
 ```bash
@@ -136,7 +141,7 @@ docker compose up -d --build soc-agent-cycle soc-agent-reconcile soc-agent-white
 Sur un parc existant, activer le training AVANT le premier démarrage : le SOC
 apprend le bruit ambiant pendant `TRAINING_DAYS` jours (pipeline d'analyse
 suspendu, aucune remédiation) puis rend un case IRIS « TRAINING » listant
-chaque exception créée. Cf. [`ai/README.md`](ai/README.md#mode-training--apprendre-le-bruit-ambiant-avant-dagir).
+chaque exception créée. Détail complet : [`TRAINING.md`](TRAINING.md).
 
 ```bash
 $EDITOR config/soc-ai.conf     # TRAINING_ENABLED="true", TRAINING_DAYS="7"
