@@ -1210,9 +1210,73 @@ def _section_alertes(alertes: list[dict], agent_id: str) -> str:
     return "\n".join(lignes)
 
 
-def _section_iocs(alertes: list[dict]) -> str:
-    """Tableau des IOC extraits (déterministe). Note locale : valeurs réelles."""
-    iocs = _iocs(alertes)
+def _type_ioc_valeur(valeur: str) -> str:
+    """Type d'IOC déduit de la seule valeur (pour un IOC déjà sur le case dont on
+    n'a pas le type sous la main). Best-effort, aligné sur les types produits par
+    `_iocs` : hash, ip, domain, sinon filename."""
+    v = valeur.strip()
+    if re.fullmatch(r"[0-9a-fA-F]{64}", v):
+        return "sha256"
+    if re.fullmatch(r"[0-9a-fA-F]{40}", v):
+        return "sha1"
+    if re.fullmatch(r"[0-9a-fA-F]{32}", v):
+        return "md5"
+    if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", v):
+        return "ip-src"
+    if "\\" not in v and "/" not in v and "." in v and " " not in v:
+        return "domain"
+    return "filename"
+
+
+def _iocs_du_case(case, case_id: int, alertes: list[dict]) -> list[tuple[str, str, str]]:
+    """IOC AUTORITAIRES du case = ceux réellement posés dans l'onglet IOC.
+
+    Le rapport doit montrer EXACTEMENT la même liste que la section IOC du case,
+    y compris les IOC hérités d'une salve précédente (un case de campagne est mis
+    à jour plusieurs fois : la timeline/onglet IOC accumule, alors que `_iocs`
+    recalculé sur les seules alertes du run courant en montrerait moins). On lit
+    donc l'onglet IOC comme source de vérité. Le type/desc de la salve courante
+    priment (frais) ; pour un IOC hérité sans type connu, on le déduit de la
+    valeur. Ordre : IOC de la salve courante d'abord (ordre de `_iocs`), puis le
+    reliquat hérité.
+
+    Repli sur `_iocs(alertes)` si l'onglet est illisible : jamais moins que ce
+    que le code sait extraire.
+    """
+    courant = _iocs(alertes)
+    type_par_valeur = {v: t for v, t, _ in courant}
+    desc_par_valeur = {v: d for v, _, d in courant}
+    try:
+        d = case.list_iocs(case_id).get_data() or {}
+        tab = [(i.get("ioc_value"), i.get("ioc_description") or "")
+               for i in (d.get("ioc") or []) if i.get("ioc_value")]
+    except Exception as e:  # noqa: BLE001
+        log.debug("lecture onglet IOC case #%s pour le rapport : %s", case_id, e)
+        return courant
+    if not tab:
+        return courant
+    ordre = [v for v, _, _ in courant]
+    rang = {v: n for n, v in enumerate(ordre)}
+    def cle(item):
+        return rang.get(item[0], len(ordre))
+    out: list[tuple[str, str, str]] = []
+    for valeur, desc_tab in sorted(tab, key=cle):
+        type_ioc = type_par_valeur.get(valeur) or _type_ioc_valeur(valeur)
+        # Desc de la salve courante si dispo (la plus à jour), sinon celle du case.
+        desc = desc_par_valeur.get(valeur) or desc_tab
+        out.append((valeur, type_ioc, desc))
+    return out
+
+
+def _section_iocs(alertes: list[dict],
+                  iocs: list[tuple[str, str, str]] | None = None) -> str:
+    """Tableau des IOC extraits (déterministe). Note locale : valeurs réelles.
+
+    `iocs` fourni = liste autoritaire de l'onglet IOC du case (cf. `_iocs_du_case`)
+    pour que le rapport montre EXACTEMENT la même chose. Absent = recalcul sur les
+    alertes (cas d'un rendu hors case)."""
+    if iocs is None:
+        iocs = _iocs(alertes)
     if not iocs:
         return "## Indicateurs de compromission (IOC)\n\nAucun IOC extractible " \
                "automatiquement des champs d'alerte."
@@ -1508,8 +1572,13 @@ def _section_cases_lies(lies: list[dict]) -> str:
     return "\n".join(lignes) + "\n"
 
 
-def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
-    """Rapport d'analyse d'un vrai positif. Appelle le LLM pour le récit."""
+def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict],
+             iocs: list[tuple[str, str, str]] | None = None) -> str:
+    """Rapport d'analyse d'un vrai positif. Appelle le LLM pour le récit.
+
+    `iocs` = liste autoritaire de l'onglet IOC du case (`_iocs_du_case`) : le
+    rapport affiche alors la MÊME liste que la section IOC du case. Absent =
+    recalcul sur les alertes."""
     systeme = (PROMPTS / "report.md").read_text()
 
     # Même pseudonymisation qu'au triage, jetons réutilisés (map persistée) :
@@ -1604,7 +1673,7 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
         "",
         _section_alertes(alertes, incident["agent_id"]),
         "",
-        _section_iocs(alertes),
+        _section_iocs(alertes, iocs),
         "",
         _section_remediations(conn, incident["id"], triage),
         "",
@@ -2131,7 +2200,8 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     # Note d'analyse, dans un répertoire dédié. Après la remédiation : le récap
     # des actions exécutées en dépend.
     contenu = (_note_fp(triage, _regle_whitelist(conn, alertes)) if fp
-               else _note_tp(conn, incident, triage, alertes))
+               else _note_tp(conn, incident, triage, alertes,
+                             _iocs_du_case(case, case_id, alertes)))
     titre = "Analyse — Faux positif" if fp else "Rapport d'analyse"
     _poser_note(case, case_id, titre, contenu)
 
@@ -2230,7 +2300,8 @@ def rafraichir_case(conn, incident: dict, triage: dict) -> int:
                     _note_fp(triage, _regle_whitelist(conn, alertes)))
     elif _verdict_a_change(conn, incident["id"]):
         _poser_note(case, case_id, "Rapport d'analyse",
-                    _note_tp(conn, incident, triage, alertes))
+                    _note_tp(conn, incident, triage, alertes,
+                             _iocs_du_case(case, case_id, alertes)))
     else:
         log.info("#%s rapport non régénéré : verdict inchangé depuis la note "
                  "en place (économie de l'appel LLM report)", incident["id"])
