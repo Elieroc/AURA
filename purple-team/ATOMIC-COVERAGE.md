@@ -612,6 +612,99 @@ supprimés (Atomic `-Cleanup`), tickets purgés, cycle soc-agent redémarré.
 
 ---
 
+### Campagne #6 (2026-08-06, 18:41 UTC) — 6 techniques hors-AD, 2 hôtes (winsrv + debian .15)
+
+Première campagne qui sort du bloc AD credential-access : 3 techniques Windows de
+**persistance / évasion** sur winsrv (DC, agent 014) + 3 techniques Linux sur
+**debian** (agent 011, `192.168.30.15`). Cible Linux initiale `debian2`
+(`192.168.30.46`) écartée en cours de route : **isolée du réseau par la
+remédiation** (règle iptables `-A INPUT -s 192.168.30.5/32 -j DROP` posée par
+`firewall-drop.sh` — bloquait le relais SSH), et Atomic non installé. Basculé sur
+`.15` (Atomic + pwsh déjà en place). Defender déjà désactivé sur le DC (RTP off).
+
+**Techniques (6/6 exécutées avec preuve) :**
+
+| # | Hôte | Technique | Atomic | Preuve d'exécution |
+|---|------|-----------|--------|--------------------|
+| 1 | winsrv 014 | T1053.005 Scheduled Task | tous sous-tests | tâches `atomic red team` / `CompMgmtBypass` / `EventViewerBypass` / `spawn` / `T1053_005_OnLogon` = Ready |
+| 2 | winsrv 014 | T1547.001 Registry Run Keys | tous sous-tests | clé Run HKLM `calc=calc.exe`, BootExecute, RunOnceEx, secedit |
+| 3 | winsrv 014 | T1070.001 Clear Windows Event Logs | **manuel** (`.yaml` absent des atomics locaux) | `wevtutil cl "Windows PowerShell"` → System EID104 @18:42 |
+| 4 | debian 011 | T1053.003 Cron | -1..-4 | `persistevil` dans cron.d + cron.hourly + spool, crontab root modifié |
+| 5 | debian 011 | T1136.001 Create Local Account | -1 | `evil_user` (uid999) créé |
+| 6 | debian 011 | T1003.008 /etc/passwd & /etc/shadow | -2/-3/-5 | passwd + shadow lus |
+
+**Notes réévaluées sur preuves : Détection 35/100 · Analyse IRIS 45/100 ·
+Remédiation 25/100.** Un seul incident (#2529 winsrv, 257 alertes, L15) → un seul
+case (**#188**). debian n'a produit **aucun incident**.
+
+| # | Technique | Exéc. | Détection #6 (règle, niveau) | Statut | Remédiation (état réel) |
+|---|-----------|:-----:|------------------------------|:------:|-------------------------|
+| 1 | T1053.005 Scheduled Task | ✅ | 92201 L9 (nouvelle tâche PS) + 92203 L6 — pas de règle HIGH, **T1053 même absent du mapping MITRE du rapport** | 🟡 | ❌ tâches toujours `Ready` — aucune action sur la persistance |
+| 2 | T1547.001 Run Keys | ✅ | **92041 L10** (base64 en valeur de registre) + 92302 L6 (run au prochain logon) — meilleure des trois, T1547.001 mappée | 🟡 | ❌ clé Run `calc` intacte ; seul le binaire `calc.exe` (copie Temp) quarantiné |
+| 3 | T1070.001 Clear Logs | ✅ | **63104 L5** (log effacé) — tiré mais bas | 🟡 | — |
+| 4 | T1053.003 Cron (Linux) | ✅ | **550 L7** (FIM sur un fichier cron) uniquement | ❌ | ❌ cron `persistevil` ×3 toujours en place, aucun case |
+| 5 | T1136.001 Create Account (Linux) | ✅ | **rien** — aucune règle ≥ L8, 0 alerte ingérée | ❌ | ❌ `evil_user` toujours actif |
+| 6 | T1003.008 passwd/shadow (Linux) | ✅ | **rien** | ❌ | — |
+
+**Détection (35).** winsrv est bien vu comme un **incident critique** (L15) et trié
+TP avec case — mais le niveau HIGH est porté par la règle **générique** 92213
+« exe déposé dans un dossier typique de malware » (les outils Atomic PsTools /
+GhostTask), pas par une règle nommant la technique. Les 3 techniques choisies ne
+déclenchent que du medium/bas (L10 / L9 / L5). **debian = aveugle total** :
+`ausearch -m execve` sur .15 rend **0** événement → création de compte et accès
+`/etc/shadow` invisibles, cron capté uniquement par FIM (550 L7, sous le seuil de
+corrélation L12) → **aucun incident, aucun case**. Cause côté endpoint (règles
+auditd non chargées / journald tient netlink, cf. `wazuh-auditd-sensor-traps`),
+**pas** un problème de pipeline : `INDEXER_ALERT_INDICES` couvre bien
+`wazuh-linux-*` et `wazuh-windows-*` (l'ancien blind-spot de routage d'indices est
+**résolu**).
+
+**Analyse IRIS (45).** Case #188 (winsrv) = **bon rapport** : résumé ≠ analyse,
+**17 techniques MITRE en union** (T1547.001, T1112, T1070, T1027, T1105, T1059…),
+**68 lignes de commande reconstituées** (les vraies `schtasks /create`, `reg add`,
+`wevtutil`…), **33 IOC honnêtes** (aucun faux IOC, aucun verdict VT bidon), tableau
+de remédiation franc (« 📤 émise, effet non confirmé »), section couverture/limites.
+Défauts : **titre inventé** « [EXECUTIVE MALICE] … C2 détecté » alors qu'aucun C2
+n'a eu lieu ; **T1053 (tâche planifiée) absent** du mapping bien que jouée ; IOC
+uniquement des noms de fichiers (ni tâche planifiée, ni clé Run, ni payload
+base64 promus en IOC). Surtout : **debian n'a aucun case** → la moitié de la
+campagne n'est pas investiguée.
+
+**Remédiation (25).** winsrv : la quarantaine **agit pour de vrai** — vérifié sur
+disque, `PsExec.exe`, `GhostTask.exe`, `batstartup.bat`/`vbsstartup.vbs` (dossier
+Démarrage) et la copie Temp `calc.exe` **supprimés** (30 tâches IRIS `Done`,
+`mitigations.statut=confirmé`). Kills tous `sans_effet` (process non résidents —
+no-op correct). Cibles justes, **aucun System32**, statut honnête. **Mais la
+persistance survit intégralement** : les 5 tâches planifiées sont toujours `Ready`
+et la clé Run `calc` toujours posée — on retire le binaire déposé, pas le mécanisme
+qui le relance. debian : **remédiation nulle** (pas de case) — `evil_user` et le
+cron `persistevil` toujours vivants.
+
+**Trouvaille terrain (hors campagne) :** compte `butter` (uid 1002, **gid 0**,
+home `/root`, shell bash) présent dans `/etc/passwd` de debian .15 — backdoor
+**préexistant**, sans rapport avec cette campagne. À investiguer/nettoyer à la main.
+
+**Axes de correction #6 (par valeur/effort) :**
+1. **[fort/moyen]** Capteur auditd sur debian .15 (et audit de la flotte Linux) :
+   0 execve = angle mort total sur exécution, création de compte, accès secrets.
+   Rejouer `deploy-auditd-sensor.sh` + **reboot** (journald tient le netlink).
+2. **[fort/moyen]** Remédiation Windows de la **persistance**, pas seulement du
+   payload : ajouter `delete_scheduled_task` (sur 92201/92226) et
+   `delete_run_key` / suppression de valeur de registre (sur 92041/92302). Aujourd'hui
+   on quarantine l'exe et on laisse l'autorun.
+3. **[moyen/faible]** Règles HIGH dédiées : T1053.005 (création de tâche planifiée
+   par processus anormal) et T1070.001 (log effacé, 63104 monté de L5 → L12) — les
+   deux ne sortent pas du bruit.
+4. **[moyen/faible]** IOC : promouvoir les noms de tâches planifiées, chemins de
+   clés Run et payloads base64 en IOC, pas seulement les binaires déposés.
+5. **[faible/faible]** Rapport : ne pas fabriquer « C2 détecté » dans le titre sans
+   alerte réseau ; inclure T1053 dans le mapping quand `schtasks` est vu.
+
+**Nettoyage : NON encore fait** (persistance laissée en place pour inspection) —
+voir la section proposée à l'utilisateur en fin de campagne.
+
+---
+
 ## TA0001 — Initial Access
 
 | ID | Technique | Hôte | Test | Détection | Règle | Case | Notes |
@@ -627,8 +720,8 @@ supprimés (Atomic `-Cleanup`), tickets purgés, cycle soc-agent redémarré.
 | T1059.001 | PowerShell | win10/winsrv | — | ⬜ | | | |
 | T1059.003 | Windows Command Shell | win10 | — | ⬜ | | | |
 | T1059.004 | Bash | debian | — | ⬜ | | | |
-| T1053.005 | Scheduled Task | win10 | — | ⬜ | | | |
-| T1053.003 | Cron | debian | — | ⬜ | | | |
+| T1053.005 | Scheduled Task | winsrv | #6 tous sous-tests | 🟡 | 92201 L9 / 92203 L6 | 188 | générique, pas de règle HIGH ; T1053 absent du mapping MITRE |
+| T1053.003 | Cron | debian .15 | #6 -1..-4 | ❌ | 550 L7 (FIM) | — | auditd sans execve → sous-seuil, aucun incident/case |
 | T1204.002 | Malicious File | win10 | — | ⬜ | | | |
 | T1047 | WMI | winsrv | — | ⬜ | | | |
 
@@ -636,10 +729,10 @@ supprimés (Atomic `-Cleanup`), tickets purgés, cycle soc-agent redémarré.
 
 | ID | Technique | Hôte | Test | Détection | Règle | Case | Notes |
 |----|-----------|------|------|-----------|-------|------|-------|
-| T1136.001 | Create Local Account | debian/win10 | — | ⬜ | | | |
+| T1136.001 | Create Local Account | debian .15 | #6 -1 | ❌ | — | — | `evil_user` créé, aucune alerte (auditd sans execve), non remédié |
 | T1136.002 | Create Domain Account | winsrv | — | ⬜ | | | |
 | T1098 | Account Manipulation | winsrv | — | ⬜ | | | |
-| T1547.001 | Registry Run Keys | win10 | — | ⬜ | | | |
+| T1547.001 | Registry Run Keys | winsrv | #6 tous sous-tests | 🟡 | 92041 L10 / 92302 L6 | 188 | meilleure des 3 (base64 en valeur registre) ; clé Run non remédiée |
 | T1543.003 | Windows Service | win10 | — | ⬜ | | | |
 | T1053.005 | Scheduled Task (persist) | win10 | — | ⬜ | | | |
 | T1505.003 | Web Shell | debian | — | ⬜ | | | |
@@ -662,7 +755,7 @@ supprimés (Atomic `-Cleanup`), tickets purgés, cycle soc-agent redémarré.
 |----|-----------|------|------|-----------|-------|------|-------|
 | T1070.004 | File Deletion | debian | — | ⬜ | | | |
 | T1070.002 | Clear Linux/Mac Logs | debian | — | ⬜ | | | |
-| T1070.001 | Clear Windows Event Logs | win10 | — | ⬜ | | | |
+| T1070.001 | Clear Windows Event Logs | winsrv | #6 manuel (yaml absent) | 🟡 | 63104 L5 | 188 | tiré mais trop bas (L5) pour sortir du bruit |
 | T1562.001 | Disable/Modify Tools | debian/win10 | — | ⬜ | | | |
 | T1562.004 | Disable/Modify Firewall | win10 | — | ⬜ | | | |
 | T1027 | Obfuscated Files | win10 | — | ⬜ | | | |
@@ -677,7 +770,7 @@ supprimés (Atomic `-Cleanup`), tickets purgés, cycle soc-agent redémarré.
 | T1003.001 | LSASS Memory | win10/winsrv | — | ⬜ | | | |
 | T1003.002 | Security Account Manager | win10 | — | ⬜ | | | |
 | T1003.003 | NTDS (ntds.dit) | winsrv | — | ⬜ | | | |
-| T1003.008 | /etc/passwd & /etc/shadow | debian | — | ⬜ | | | |
+| T1003.008 | /etc/passwd & /etc/shadow | debian .15 | #6 -2/-3/-5 | ❌ | — | — | aucune alerte (auditd sans execve) |
 | T1558.003 | Kerberoasting | winsrv | — | ⬜ | | | |
 | T1558.001 | Golden Ticket | winsrv | — | ⬜ | | | |
 | T1110 | Brute Force | winsrv/debian | — | ⬜ | | | |
