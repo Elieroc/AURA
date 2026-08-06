@@ -15,6 +15,11 @@ au niveau de la base d'alertes (donc côté indexer, PAS soumis au backlog du
 logcollector de l'agent) : un groupe de règles établi sur la fenêtre de
 référence, mais sans le moindre événement depuis SILENCE_MINUTES.
 
+Le seuil de silence est réglable PAR CAPTEUR (WATCHDOG_SILENCE_PAR_CAPTEUR) :
+tous n'émettent pas en continu. syscheck n'alerte que sur un changement et son
+scan planifié tourne toutes les 12 h — au seuil commun de 90 min, il était
+déclaré muet tous les jours sur tous les agents.
+
     python -m soc_agent.watchdog        # liste les capteurs muets
 
 Volontairement en LECTURE SEULE + log : escalader en case IRIS autonome est une
@@ -23,6 +28,7 @@ de ce module. `cycle.py` l'appelle et journalise ; le branchement IRIS viendra
 avec sa propre revue.
 """
 
+import json
 import logging
 
 import psycopg
@@ -46,7 +52,8 @@ SELECT agent_id, agent_name, g AS capteur,
  WHERE g = ANY(%(capteurs)s)
  GROUP BY agent_id, agent_name, g
 HAVING count(*) >= %(baseline)s
-   AND max(ts) < now() - (%(silence)s || ' minutes')::interval
+   AND max(ts) < now() - (COALESCE(%(par_capteur)s::jsonb ->> g,
+                                   %(silence)s::text) || ' minutes')::interval
  ORDER BY dernier
 """
 
@@ -59,6 +66,9 @@ def capteurs_muets(conn) -> list[dict]:
         "capteurs": list(config.WATCHDOG_CAPTEURS),
         "baseline": config.WATCHDOG_BASELINE_MIN,
         "silence": config.WATCHDOG_SILENCE_MINUTES,
+        # Seuil propre à certains capteurs (syscheck n'émet que sur changement,
+        # scan planifié toutes les 12 h) ; le défaut s'applique aux autres.
+        "par_capteur": json.dumps(config.WATCHDOG_SILENCE_PAR_CAPTEUR),
     }).fetchall()
 
 

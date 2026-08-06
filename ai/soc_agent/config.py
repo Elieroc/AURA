@@ -446,6 +446,23 @@ WATCHDOG_BASELINE_MIN = int(os.environ.get("WATCHDOG_BASELINE_MIN", "20"))
 # trafic normal (Suricata/sshd émettent en continu sur ces hôtes).
 WATCHDOG_SILENCE_MINUTES = int(os.environ.get("WATCHDOG_SILENCE_MINUTES", "90"))
 
+# Seuil PAR CAPTEUR, pour ceux qui n'émettent pas en continu.
+#
+# syscheck n'est pas un flux : le FIM n'alerte que sur un CHANGEMENT (règles
+# 550/553/554/594/750 — il n'existe aucun événement de fin de scan à quoi
+# s'accrocher), et le scan planifié tourne toutes les 12 h (défaut Wazuh,
+# aucun <frequency> dans l'agent.conf partagé). Un SI calme ne produit donc
+# rien pendant des heures, ce qui est le comportement voulu. Avec les 90 min
+# du défaut, le watchdog criait « capteur muet » sur tous les agents tous les
+# jours entre midi et 23 h : une alarme permanente qui apprend à ignorer le
+# watchdog, ce qui coûte plus cher que le trou qu'elle prétend couvrir.
+#
+# 840 min = 12 h de cycle + 2 h de marge : un syscheckd réellement figé (le cas
+# bookstack/journald) est encore vu, au scan planifié suivant.
+WATCHDOG_SILENCE_PAR_CAPTEUR = {
+    "syscheck": int(os.environ.get("WATCHDOG_SILENCE_SYSCHECK", "840")),
+}
+
 # Reconstruction des commandes (rapport IRIS) : le compte compromis est souvent
 # aussi une session légitime (le même uid génère du bruit de login — gpg-agent,
 # générateurs systemd). On ne montre que les commandes RATTACHÉES à l'attaque :
