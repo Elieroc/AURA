@@ -13,56 +13,30 @@ XDR autonome piloté par IA. Détection moderne avec Wazuh, enrichissement threa
 
 ## Architecture
 
-Le modèle tourne sur l'**API DeepSeek** et non en local : cet hôte n'a pas de GPU et pas les ressources pour un modèle en continu. Conséquence assumée : **le contexte d'alerte quitte l'hôte**, pseudonymisé au préalable (`src/ai/soc_agent/anonymize.py`, refus d'appel si une valeur réelle survit).
+Le modèle tourne sur l'**API DeepSeek**, pas en local (pas de GPU dédié). Conséquence assumée : **le contexte d'alerte quitte l'hôte**, pseudonymisé au préalable (`src/ai/soc_agent/anonymize.py`, refus d'appel si une valeur réelle survit).
 
 ```
-                          ┌─────────────────────────────┐
-   Agents Wazuh ────────► │        Wazuh Manager        │
-   (endpoints)    1514    │  analyse, règles, alertes   │
-                          │                             │
-                          │  Intégrations :             │
-                          │   • VirusTotal (FIM/hash)   │
-                          │   • AbuseIPDB (réput. IP)   │
-                          └──────────────┬──────────────┘
-                                         │ filebeat
-                          ┌──────────────▼──────────────┐
-                          │        Wazuh Indexer        │
-                          │   (OpenSearch, alertes)     │
-                          └──────┬───────────────┬──────┘
-                                 │               │
-                  ┌──────────────▼──────┐   ┌────▼─────────────────┐
-                  │   Wazuh Dashboard   │   │  soc-agent (IA)      │
-                  │   https://localhost │   │  API DeepSeek        │
-                  └─────────────────────┘   │  • Triage HIGH/CRIT  │
-                                            │  • Rules creator     │
-                                            │  • Whitelist         │
-                                            │  • Mitigation        │
-                                            └──────┬───────────────┘
-                                                   │
-                                    ┌──────────────▼──────────────┐
-                                    │         DFIR-IRIS           │
-                                    │  cases, timeline, IOC       │
-                                    │  https://localhost:8443     │
-                                    └─────────────────────────────┘
+Agents Wazuh ──1514──► Wazuh Manager ──filebeat──► Wazuh Indexer ──┬──► Wazuh Dashboard
+ (endpoints)         (règles, VT, AbuseIPDB)      (OpenSearch)     │    https://localhost
+                                                                    │
+                                                                    └──► soc-agent (IA, API DeepSeek)
+                                                                            triage · whitelist · mitigation
+                                                                                    │
+                                                                                    ▼
+                                                                          DFIR-IRIS (cases, IOC)
+                                                                          https://localhost:8443
 ```
 
 ## Composants
 
 | Composant | Rôle | État |
 |-----------|------|------|
-| [`src/wazuh/`](src/wazuh/) | Stack Wazuh 4.9.2 single-node (Docker Compose) | ✅ Fonctionnel |
-| VirusTotal | Hash des fichiers FIM vérifiés à l'API VT (règles 87103–87105) | ✅ Testé E2E |
-| AbuseIPDB | Réputation IP source des alertes SSH/auth/attaques (règles 100621–100624) | ✅ Testé E2E |
-| GeoIP | Géolocalisation des IP sources (pipeline ingest indexer, GeoLite2 embarquée) | ✅ Actif par défaut |
-| Agents | Déploiement d'agents Wazuh sur les endpoints ([`scripts/install-agent.sh`](scripts/install-agent.sh)) | ✅ Testé E2E |
-| [`src/shuffle/`](src/shuffle/) | SOAR Shuffle — orchestration des remédiations | ✅ Testé E2E |
-| Remédiation — isolation hôte | Active response nftables via workflow Shuffle ([`src/shuffle/README.md`](src/shuffle/README.md)) | ✅ Testé E2E |
-| [`src/iris/`](src/iris/) | DFIR-IRIS — case management, un case par incident trié (IOC + rapport IA) | ✅ Boucle fermée |
-| [`src/iris/mcp/`](src/iris/mcp/) | Serveur MCP IRIS (srozb/iris-mcp) — investigation interactive | ✅ Connecté |
-| [`src/ai/soc_agent/`](src/ai/soc_agent/) | Pipeline : ingest + corrélation (ph.1), triage LLM + remédiation (ph.2) | ✅ Sur données réelles |
-| IA — Rules creator | Génération de règles/decoders Wazuh à partir des alertes | 🔜 À venir |
-| IA — Whitelist | Exceptions auto sur FP récurrents jugés par l'IA | ✅ Boucle fermée |
-| IA — Mitigation | Isolation d'hôte, blocage IP, désactivation de compte — **exécutées automatiquement** sur verdict vrai positif | ✅ Testé E2E |
+| [`src/wazuh/`](src/wazuh/) | SIEM/XDR — détection, VirusTotal, AbuseIPDB, GeoIP | ✅ Testé E2E |
+| [`src/ai/soc_agent/`](src/ai/soc_agent/) | Pipeline IA — ingest, corrélation, triage LLM, whitelist auto, remédiation | ✅ Sur données réelles |
+| [`src/shuffle/`](src/shuffle/) | SOAR — orchestration des remédiations (isolation, kill) | ✅ Testé E2E |
+| [`src/iris/`](src/iris/) | DFIR-IRIS — case management, un case par incident trié | ✅ Boucle fermée |
+| [`src/iris/mcp/`](src/iris/mcp/) | Serveur MCP IRIS — investigation interactive | ✅ Connecté |
+| Rules creator | Génération de règles/decoders Wazuh à partir des alertes | 🔜 À venir |
 
 ## Démarrage rapide
 
@@ -93,10 +67,10 @@ schéma Postgres soc-agent, active response) : [`docs/INSTALL.md`](docs/INSTALL.
 
 ## Principes de sécurité
 
-- **Ce qui sort de l'hôte** : le contexte des incidents part vers l'API DeepSeek, **pseudonymisé** (`anonymize.py` : jetons stables par incident, appel refusé si une valeur réelle a survécu, réhydratation à la réponse). Hash et IP partent aussi aux API VT/AbuseIPDB pour l'enrichissement. Le reste (logs bruts, base) ne quitte pas l'infra.
-- **Pas d'humain dans la boucle, des garde-fous dans le code** : les actions à fort impact (isolation d'hôte, blocage IP, désactivation de compte) s'exécutent **seules** sur un verdict vrai positif — c'est le but du projet. Ce qui les borne est déterministe et vérifiable : comptes protégés, cibles internes exclues, clôture d'un incident grave impossible, suspension sur motif d'injection (`actions.appliquer_garde_fous`), plus des refus locaux dans les scripts d'active response. **Le LLM n'est pas une frontière de sécurité** : mesuré, 3 injections sur 4 dans les logs retournent son verdict.
-- **Seule exception encore sous revue humaine** : un changement de règle Wazuh en prod passe par PR git + merge (le rules creator ne pousse jamais en direct).
-- **Secrets hors dépôt** : clés API, mots de passe et certificats gitignorés ; seuls des `.example` avec placeholders sont versionnés.
+- **Ce qui sort de l'hôte** : le contexte des incidents part vers l'API DeepSeek **pseudonymisé** (`anonymize.py`, appel refusé si une valeur réelle survit, réhydraté à la réponse). Hash et IP partent aussi aux API VT/AbuseIPDB. Le reste ne quitte pas l'infra.
+- **Pas d'humain dans la boucle, des garde-fous dans le code** : les actions à fort impact (isolation, blocage IP, désactivation de compte) s'exécutent **seules** sur verdict vrai positif — c'est le but du projet. Bornées par des garde-fous déterministes (`actions.appliquer_garde_fous`), pas par un accord humain. **Le LLM n'est pas une frontière de sécurité** : mesuré, 3 injections sur 4 dans les logs retournent son verdict.
+- **Seule exception sous revue humaine** : un changement de règle Wazuh en prod passe par PR git + merge.
+- **Secrets hors dépôt** : clés API, mots de passe et certificats gitignorés ; seuls des `.example` sont versionnés.
 
 ## Structure du dépôt
 
@@ -104,29 +78,11 @@ schéma Postgres soc-agent, active response) : [`docs/INSTALL.md`](docs/INSTALL.
 AURA/
 ├── docker-compose.yml   # compose racine unique — les 4 stacks
 ├── .env.example         # config racine unique (copier en .env)
-├── CLAUDE.md            # contexte projet pour Claude Code
-├── README.md
 ├── soc-ai.conf.example  # topologie déployée hors dépôt (agents + forensique manager)
-├── assets/              # identité visuelle (logotype, pictogramme SVG)
-├── docs/                # documentation transverse
-│   ├── INSTALL.md       # mise en service du stack
-│   ├── TRAINING.md      # fenêtre d'apprentissage du bruit ambiant
-│   └── REMEDIATION.md   # remédiation autonome + catalogue des active responses
+├── docs/                # INSTALL, TRAINING, REMEDIATION
 ├── scripts/             # install-agent.sh, déploiement AR...
 ├── db/                  # bases de données (Postgres/OpenSearch), gitignoré
-│   ├── socagent-postgres/
-│   ├── iris-postgres/
-│   ├── shuffle-opensearch/
-│   └── wazuh-indexer/
-└── src/                 # les 4 stacks buildables
-    ├── ai/               # couche IA : soc_agent (ingest, corrélation, triage, remédiation)
-    ├── iris/             # DFIR-IRIS (case management)
-    ├── shuffle/          # SOAR Shuffle (remédiation, workflow isolation d'hôte)
-    └── wazuh/            # stack Wazuh
-        ├── generate-indexer-certs.yml   # bootstrap ponctuel des certs
-        ├── active-response/ # scripts AR custom (isolation nftables, comptes, firewall)
-        ├── config/          # configs bind-mountées (manager, indexer, dashboard)
-        └── integrations/    # scripts d'intégration custom (AbuseIPDB)
+└── src/                 # les 4 stacks buildables : ai/ · iris/ · shuffle/ · wazuh/
 ```
 
 `mcp/` (serveur MCP Wazuh) reste hors dépôt et hors de ce compose — déploiement
