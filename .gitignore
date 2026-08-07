@@ -6,14 +6,20 @@
 *.pem
 *.srl
 secrets/
-wazuh/config/wazuh_cluster/wazuh_manager.conf
+src/wazuh/config/wazuh_cluster/wazuh_manager.conf
 
 # Conf Aura-SOC (topologie reseau : IP manager, serveur de preuves)
 config/soc-ai.conf
 !config/soc-ai.conf.example
-wazuh/config/wazuh_dashboard/wazuh.yml
-wazuh/config/wazuh_indexer_ssl_certs/*
-!wazuh/config/wazuh_indexer_ssl_certs/.gitkeep
+src/wazuh/config/wazuh_dashboard/wazuh.yml
+src/wazuh/config/wazuh_indexer_ssl_certs/*
+!src/wazuh/config/wazuh_indexer_ssl_certs/.gitkeep
+
+# Bases de données du projet (Postgres soc-agent/IRIS, OpenSearch Shuffle/Wazuh) :
+# bind mounts hôte, jamais versionnées.
+/db/*
+!/db/*/.gitkeep
+
 __pycache__/
 *.pyc
 .venv/
@@ -30,15 +36,15 @@ graphify-out/
 # Modèles GGUF et build llama.cpp : hors dépôt (~/.local/share/soc-ai/),
 # le dépôt est synchronisé Nextcloud.
 *.gguf
-ai/bench/.server.log
-ai/bench/.quality-server.log
-ai/bench/.bench-stderr.log
+src/ai/bench/.server.log
+src/ai/bench/.quality-server.log
+src/ai/bench/.bench-stderr.log
 
 # Environnement Python du soc-agent : hors dépôt (~/.local/share/soc-ai/venv)
 .pytest_cache/
 
-# Clone upstream du serveur MCP DFIR-IRIS (voir iris/mcp/README.md)
-iris/mcp/iris-mcp/
+# Clone upstream du serveur MCP DFIR-IRIS (voir src/iris/mcp/README.md)
+src/iris/mcp/iris-mcp/
 
 # Overrides locaux à un hôte (ex: LXC Proxmox, limites memlock/nofile) —
 # jamais versionnés, docker compose les merge automatiquement s'ils existent.

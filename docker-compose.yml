@@ -1,0 +1,490 @@
+# AURA — compose racine unique. `cp .env.example .env`, éditer, puis
+# `docker compose up -d` : les 4 stacks (Wazuh, soc-agent, DFIR-IRIS, Shuffle)
+# démarrent ensemble. Le serveur MCP Wazuh (mcp/) reste hors dépôt et hors de
+# ce fichier — déploiement séparé, voir mcp/README.md.
+#
+# Bases de données (Postgres soc-agent/IRIS, OpenSearch Shuffle/Wazuh) en bind
+# mount vers ./db/ (gitignored) : `mkdir -p db/{socagent-postgres,iris-postgres,shuffle-opensearch,wazuh-indexer}`
+# avant le premier `up`. Tout le reste (wazuh_etc, wazuh_logs, iris_downloads,
+# shuffle-apps, certs...) reste en named volumes docker ou bind mounts de
+# config, inchangé par rapport aux 4 anciens stacks séparés.
+
+x-soc-agent: &soc-agent
+  build:
+    context: ./src/ai
+    dockerfile: Dockerfile
+  image: soc-agent:latest
+  env_file: .env
+  network_mode: host
+  restart: unless-stopped
+  depends_on:
+    soc-agent-db:
+      condition: service_healthy
+
+services:
+  # ===================== WAZUH =====================
+  # Wazuh App Copyright (C) 2017, Wazuh Inc. (License GPLv2)
+  wazuh.manager:
+    image: wazuh/wazuh-manager:4.9.2
+    hostname: wazuh.manager
+    restart: always
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 655360
+        hard: 655360
+    ports:
+      - "1514:1514"
+      - "1515:1515"
+      - "514:514/udp"
+      - "55000:55000"
+    environment:
+      - INDEXER_URL=https://wazuh.indexer:9200
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=${INDEXER_PASSWORD}
+      - FILEBEAT_SSL_VERIFICATION_MODE=full
+      - SSL_CERTIFICATE_AUTHORITIES=/etc/ssl/root-ca.pem
+      - SSL_CERTIFICATE=/etc/ssl/filebeat.pem
+      - SSL_KEY=/etc/ssl/filebeat.key
+      - API_USERNAME=wazuh-wui
+      - API_PASSWORD=${WAZUH_API_PASSWORD}
+    volumes:
+      - wazuh_api_configuration:/var/ossec/api/configuration
+      - wazuh_etc:/var/ossec/etc
+      - wazuh_logs:/var/ossec/logs
+      - wazuh_queue:/var/ossec/queue
+      - wazuh_var_multigroups:/var/ossec/var/multigroups
+      - wazuh_integrations:/var/ossec/integrations
+      - wazuh_active_response:/var/ossec/active-response/bin
+      - wazuh_agentless:/var/ossec/agentless
+      - wazuh_wodles:/var/ossec/wodles
+      - filebeat_etc:/etc/filebeat
+      - filebeat_var:/var/lib/filebeat
+      - ./src/wazuh/config/wazuh_indexer_ssl_certs/root-ca-manager.pem:/etc/ssl/root-ca.pem
+      - ./src/wazuh/config/wazuh_indexer_ssl_certs/wazuh.manager.pem:/etc/ssl/filebeat.pem
+      - ./src/wazuh/config/wazuh_indexer_ssl_certs/wazuh.manager-key.pem:/etc/ssl/filebeat.key
+      - ./src/wazuh/config/wazuh_cluster/wazuh_manager.conf:/wazuh-config-mount/etc/ossec.conf
+      # Un fichier par règle (cf. src/wazuh/config/wazuh_cluster/rules/README.md).
+      # `<rule_dir>etc/rules</rule_dir>` de wazuh_manager.conf charge tous les
+      # *.xml du répertoire, par ordre alphabétique — donc par ordre
+      # d'identifiant, les noms étant `<id>-…`.
+      #
+      # Monté DIRECTEMENT sur /var/ossec/etc/rules, et non via
+      # /wazuh-config-mount : le mécanisme config-mount COPIE les fichiers et
+      # n'en supprime jamais. Une règle renommée ou supprimée dans le dépôt
+      # survivait donc dans le volume, et le manager chargeait l'ancienne ET la
+      # nouvelle — 82 règles définies deux fois, sans la moindre erreur au
+      # démarrage. Le montage direct fait du dépôt la seule source de vérité.
+      # Ce répertoire ne contient QUE nos règles locales ; le ruleset natif vit
+      # dans /var/ossec/ruleset/rules et n'est pas concerné.
+      - ./src/wazuh/config/wazuh_cluster/rules:/var/ossec/etc/rules
+      - ./src/wazuh/config/wazuh_cluster/decoders:/var/ossec/etc/decoders
+      - ./src/wazuh/config/wazuh_cluster/agent.conf:/wazuh-config-mount/etc/shared/default/agent.conf
+      - ./src/wazuh/config/wazuh_cluster/alerts-pipeline.json:/usr/share/filebeat/module/wazuh/alerts/ingest/pipeline.json
+      - ./src/wazuh/integrations/custom-abuseipdb:/var/ossec/integrations/custom-abuseipdb
+      - ./src/wazuh/integrations/custom-abuseipdb.py:/var/ossec/integrations/custom-abuseipdb.py
+
+  wazuh.indexer:
+    image: wazuh/wazuh-indexer:4.9.2
+    hostname: wazuh.indexer
+    restart: always
+    ports:
+      - "9200:9200"
+    environment:
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - ./db/wazuh-indexer:/var/lib/wazuh-indexer
+      - ./src/wazuh/config/wazuh_indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-indexer/certs/root-ca.pem
+      - ./src/wazuh/config/wazuh_indexer_ssl_certs/wazuh.indexer-key.pem:/usr/share/wazuh-indexer/certs/wazuh.indexer.key
+      - ./src/wazuh/config/wazuh_indexer_ssl_certs/wazuh.indexer.pem:/usr/share/wazuh-indexer/certs/wazuh.indexer.pem
+      - ./src/wazuh/config/wazuh_indexer_ssl_certs/admin.pem:/usr/share/wazuh-indexer/certs/admin.pem
+      - ./src/wazuh/config/wazuh_indexer_ssl_certs/admin-key.pem:/usr/share/wazuh-indexer/certs/admin-key.pem
+      - ./src/wazuh/config/wazuh_indexer/wazuh.indexer.yml:/usr/share/wazuh-indexer/opensearch.yml
+      - ./src/wazuh/config/wazuh_indexer/internal_users.yml:/usr/share/wazuh-indexer/opensearch-security/internal_users.yml
+
+  wazuh.dashboard:
+    image: wazuh/wazuh-dashboard:4.9.2
+    hostname: wazuh.dashboard
+    restart: always
+    ports:
+      - 443:5601
+    environment:
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=${INDEXER_PASSWORD}
+      - WAZUH_API_URL=https://wazuh.manager
+      - DASHBOARD_USERNAME=kibanaserver
+      - DASHBOARD_PASSWORD=kibanaserver
+      - API_USERNAME=wazuh-wui
+      - API_PASSWORD=${WAZUH_API_PASSWORD}
+    volumes:
+      - ./src/wazuh/config/wazuh_indexer_ssl_certs/wazuh.dashboard.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard.pem
+      - ./src/wazuh/config/wazuh_indexer_ssl_certs/wazuh.dashboard-key.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard-key.pem
+      - ./src/wazuh/config/wazuh_indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-dashboard/certs/root-ca.pem
+      - ./src/wazuh/config/wazuh_dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml
+      - ./src/wazuh/config/wazuh_dashboard/wazuh.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml
+      - wazuh-dashboard-config:/usr/share/wazuh-dashboard/data/wazuh/config
+      - wazuh-dashboard-custom:/usr/share/wazuh-dashboard/plugins/wazuh/public/assets/custom
+    depends_on:
+      - wazuh.indexer
+    links:
+      - wazuh.indexer:wazuh.indexer
+      - wazuh.manager:wazuh.manager
+
+  # ===================== SOC-AGENT (ai/) =====================
+  # Base séparée de celle d'IRIS volontairement : IRIS applique ses propres
+  # migrations de schéma au démarrage et monte de version à son rythme.
+  # Partager l'instance reviendrait à lier nos migrations aux siennes.
+  #
+  # Pas de Redis à ce stade. La file avait du sens avec un ingest poussé par
+  # Wazuh ; on tire depuis l'indexer, donc le curseur en base joue déjà le rôle
+  # de tampon et rien ne se perd si le soc-agent est arrêté. Redis reviendra
+  # quand il y aura plusieurs workers à alimenter.
+  #
+  # Jobs périodiques (cycle/reconcile/whitelist-task) : un conteneur par job,
+  # boucle shell (`while true; do ...; sleep N; done`) — remplace les anciens
+  # timers systemd utilisateur, même cadence, même verrou consultatif Postgres
+  # anti-chevauchement (déjà dans chaque module). network_mode: host car
+  # Postgres/indexer Wazuh/API Wazuh/IRIS/Shuffle sont tous publiés sur la
+  # loopback de l'hôte — évite de rejoindre les réseaux docker des autres
+  # services et de réécrire .env.
+  soc-agent-db:
+    image: postgres:16-alpine
+    container_name: socagent-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${PGUSER:-socagent}
+      - POSTGRES_PASSWORD=${PGPASSWORD:?PGPASSWORD requis, cf. .env.example}
+      - POSTGRES_DB=${PGDATABASE:-socagent}
+    # 5433 : 5432 reste libre pour un usage local, et on évite toute confusion
+    # avec la base d'IRIS.
+    ports:
+      - "127.0.0.1:${PGPORT:-5433}:5432"
+    mem_limit: 512m
+    volumes:
+      - ./db/socagent-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-socagent}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ingest -> correlate -> triage -> whitelist auto -> cases IRIS, en une
+  # exécution. Cadence identique à l'ancien soc-agent-cycle.timer (5 min).
+  soc-agent-cycle:
+    <<: *soc-agent
+    container_name: soc-agent-cycle
+    command: sh -c "while true; do python -m soc_agent.cycle; sleep 300; done"
+
+  # Défait les remédiations dont la tâche IRIS est passée en 'Canceled'.
+  # Cadence courte (1 min, comme l'ancien soc-agent-reconcile.timer) : une
+  # désisolation/déblocage demandée par l'analyste doit être réactive.
+  soc-agent-reconcile:
+    <<: *soc-agent
+    container_name: soc-agent-reconcile
+    command: >
+      sh -c "while true; do python -m soc_agent.mitigate --reconcilier; sleep 60; done"
+
+  # Traite les tâches IRIS WHITELIST passées en 'To do'. Même cadence courte
+  # que reconcile (ancien soc-agent-whitelist-task.timer).
+  soc-agent-whitelist-task:
+    <<: *soc-agent
+    container_name: soc-agent-whitelist-task
+    command: sh -c "while true; do python -m soc_agent.whitelist_task; sleep 60; done"
+
+  # Mode training : apprend le bruit ambiant du SI avant de laisser le SOC
+  # juger et remédier (cf. training.py). Ouvre sa fenêtre au tout premier
+  # lancement si TRAINING_ENABLED, apprend pendant TRAINING_DAYS jours, clôture
+  # par un case IRIS « TRAINING », puis RESTE EN VIE : c'est lui qui écoute les
+  # tâches de ce case passées en 'Canceled' pour désactiver l'exception
+  # correspondante. Cadence 5 min, alignée sur le cycle.
+  #
+  # Les variables viennent de config/soc-ai.conf via scripts/soc-start.sh, qui
+  # les exporte avant le `docker compose up` — le fichier de l'administrateur
+  # reste la seule source de vérité pour la mise en service.
+  soc-training:
+    <<: *soc-agent
+    container_name: soc-training
+    environment:
+      - TRAINING_ENABLED=${TRAINING_ENABLED:-false}
+      - TRAINING_DAYS=${TRAINING_DAYS:-7}
+      - TRAINING_MIN_LEVEL=${TRAINING_MIN_LEVEL:-12}
+      - TRAINING_MAX_LEVEL=${TRAINING_MAX_LEVEL:-15}
+    command: sh -c "while true; do python -m soc_agent.training --tick; sleep 300; done"
+
+  # Exporte les métriques d'utilisation du modèle vers l'index wazuh-ai-*
+  # (cf. metrics.py). Cadence 5 min, alignée sur le cycle : chaque passage
+  # réexporte une fenêtre glissante, l'export étant idempotent.
+  soc-agent-metrics:
+    <<: *soc-agent
+    container_name: soc-agent-metrics
+    command: sh -c "while true; do python -m soc_agent.metrics; sleep 300; done"
+
+  # Génère des règles Wazuh d'exception à partir des FP récurrents, pour que le
+  # bruit soit écarté DANS le moteur de règles et non après coup par le
+  # soc-agent (cf. rule_tuning.py). Seul job à écrire dans le répertoire de
+  # règles du manager, d'où le montage — le même chemin hôte que celui monté
+  # sur /var/ossec/etc/rules par wazuh.manager.
+  #
+  # Cadence HORAIRE et non à la minute : charger un changement de règle exige
+  # un redémarrage du manager. Il n'y a rien d'urgent à calmer une règle.
+  soc-agent-rule-tuning:
+    <<: *soc-agent
+    container_name: soc-agent-rule-tuning
+    volumes:
+      - ${WAZUH_RULES_DIR:-./src/wazuh/config/wazuh_cluster/rules}:/wazuh-rules
+    command: sh -c "while true; do python -m soc_agent.rule_tuning; sleep 3600; done"
+
+  # ===================== DFIR-IRIS (iris/) =====================
+  # UI : https://localhost:8443 (443 est déjà pris par le dashboard Wazuh).
+  #
+  # Images épinglées sur une release précise : IRIS applique des migrations de
+  # schéma au démarrage, un `latest` qui bouge peut migrer la base sans qu'on
+  # l'ait décidé. Montée de version = changement de IRIS_VERSION + relecture du
+  # CHANGELOG upstream.
+  iris-rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: iris-rabbitmq
+    restart: unless-stopped
+    # Aucun port publié : broker Celery interne app <-> worker uniquement.
+    mem_limit: 384m
+    networks:
+      - iris_backend
+
+  iris-db:
+    image: ghcr.io/dfir-iris/iriswebapp_db:${IRIS_VERSION:-v2.4.27}
+    container_name: iris-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - POSTGRES_ADMIN_USER
+      - POSTGRES_ADMIN_PASSWORD
+      - POSTGRES_DB
+    mem_limit: 512m
+    volumes:
+      - ./db/iris-postgres:/var/lib/postgresql/data
+    networks:
+      - iris_backend
+
+  iris-app:
+    image: ghcr.io/dfir-iris/iriswebapp_app:${IRIS_VERSION:-v2.4.27}
+    container_name: iris-app
+    restart: unless-stopped
+    command: ["nohup", "./iris-entrypoint.sh", "iriswebapp"]
+    depends_on:
+      - iris-rabbitmq
+      - iris-db
+    env_file:
+      - .env
+    environment:
+      # IRIS_ADM_API_KEY : nom attendu en interne par IRIS, valeur portée par
+      # notre var canonique IRIS_API_KEY (fusionnée avec l'ancien IRIS_ADM_API_KEY).
+      - IRIS_ADM_API_KEY=${IRIS_API_KEY:-}
+    mem_limit: 1g
+    volumes:
+      - ./src/iris/certificates/rootCA/irisRootCACert.pem:/etc/irisRootCACert.pem:ro
+      - ./src/iris/certificates/:/home/iris/certificates/:ro
+      - ./src/iris/certificates/ldap/:/iriswebapp/certificates/ldap/:ro
+      - iris_downloads:/home/iris/downloads
+      - user_templates:/home/iris/user_templates
+      - server_data:/home/iris/server_data
+    networks:
+      - iris_backend
+      - iris_frontend
+
+  iris-worker:
+    image: ghcr.io/dfir-iris/iriswebapp_app:${IRIS_VERSION:-v2.4.27}
+    container_name: iris-worker
+    restart: unless-stopped
+    # On court-circuite ./iris-entrypoint.sh iris-worker pour appeler celery
+    # nous-mêmes, uniquement afin de passer -c : sinon Celery lance un process
+    # par cœur (16 ici), réclame ~780 Mo au repos et se fait OOM-kill, pour une
+    # charge de quelques tâches par heure. Le CPU est la ressource rare, il ira
+    # au LLM. L'entrypoint acceptait NUMBER_OF_CHILD jusqu'en v2.4.20 ; depuis,
+    # celery y est câblé en dur.
+    # À revérifier à chaque montée de version :
+    #   docker run --rm --entrypoint cat <image> /iriswebapp/iris-entrypoint.sh
+    command:
+      ["./wait-for-iriswebapp.sh", "iris-app:8000",
+       "celery", "-A", "app.celery", "worker",
+       "-c", "${IRIS_WORKER_CONCURRENCY:-2}", "-E", "-B", "-l", "INFO"]
+    depends_on:
+      - iris-rabbitmq
+      - iris-db
+      - iris-app
+    env_file:
+      - .env
+    environment:
+      - IRIS_ADM_API_KEY=${IRIS_API_KEY:-}
+    mem_limit: 512m
+    volumes:
+      - ./src/iris/certificates/rootCA/irisRootCACert.pem:/etc/irisRootCACert.pem:ro
+      - ./src/iris/certificates/:/home/iris/certificates/:ro
+      - ./src/iris/certificates/ldap/:/iriswebapp/certificates/ldap/:ro
+      - iris_downloads:/home/iris/downloads
+      - user_templates:/home/iris/user_templates
+      - server_data:/home/iris/server_data
+    networks:
+      - iris_backend
+
+  iris-nginx:
+    image: ghcr.io/dfir-iris/iriswebapp_nginx:${IRIS_VERSION:-v2.4.27}
+    container_name: iris-nginx
+    restart: unless-stopped
+    depends_on:
+      - iris-app
+    environment:
+      - IRIS_UPSTREAM_SERVER
+      - IRIS_UPSTREAM_PORT
+      - IRIS_FRONTEND_SERVER
+      - IRIS_FRONTEND_PORT
+      - INTERFACE_HTTPS_PORT
+      - SERVER_NAME
+      - CERT_FILENAME
+      - KEY_FILENAME
+      - IRIS_AUTHENTICATION_TYPE
+    mem_limit: 128m
+    # Bind loopback par défaut : IRIS contient les cases, les IOC et les
+    # notes d'investigation — c'est-à-dire la cartographie de nos incidents.
+    # Pour y accéder depuis le LAN, changer IRIS_BIND_ADDR dans .env et
+    # remplacer le certificat auto-signé.
+    ports:
+      - "${IRIS_BIND_ADDR:-127.0.0.1}:${INTERFACE_HTTPS_PORT:-8443}:${INTERFACE_HTTPS_PORT:-8443}"
+    volumes:
+      - ./src/iris/certificates/web_certificates/:/www/certs/:ro
+    networks:
+      - iris_frontend
+
+  # ===================== SHUFFLE (shuffle/) =====================
+  # UI : http://localhost:3001 — API : http://localhost:5001
+  # Bootstrap admin via SHUFFLE_DEFAULT_* (voir .env.example).
+  shuffle-frontend:
+    image: ghcr.io/shuffle/shuffle-frontend:latest
+    container_name: shuffle-frontend
+    hostname: shuffle-frontend
+    restart: unless-stopped
+    ports:
+      - "3001:80"
+    environment:
+      - BACKEND_HOSTNAME=shuffle-backend
+    depends_on:
+      - shuffle-backend
+    networks:
+      - shuffle
+
+  shuffle-backend:
+    image: ghcr.io/shuffle/shuffle-backend:latest
+    container_name: shuffle-backend
+    hostname: shuffle-backend
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    volumes:
+      # Requis : le backend/orborus pilote Docker pour exécuter les apps
+      - /var/run/docker.sock:/var/run/docker.sock
+      - shuffle-apps:/shuffle-apps
+      - shuffle-files:/shuffle-files
+    environment:
+      - SHUFFLE_APP_HOTLOAD_FOLDER=/shuffle-apps
+      - SHUFFLE_FILE_LOCATION=/shuffle-files
+      - SHUFFLE_OPENSEARCH_URL=http://shuffle-opensearch:9200
+      - SHUFFLE_ELASTIC=true
+      - ORG_ID=Shuffle
+      - ENVIRONMENT_NAME=Shuffle
+      - SHUFFLE_DEFAULT_USERNAME=${SHUFFLE_DEFAULT_USERNAME}
+      - SHUFFLE_DEFAULT_PASSWORD=${SHUFFLE_DEFAULT_PASSWORD}
+      - SHUFFLE_DEFAULT_APIKEY=${SHUFFLE_DEFAULT_APIKEY}
+    depends_on:
+      - shuffle-opensearch
+    networks:
+      - shuffle
+
+  shuffle-orborus:
+    image: ghcr.io/shuffle/shuffle-orborus:latest
+    container_name: shuffle-orborus
+    hostname: shuffle-orborus
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - ENVIRONMENT_NAME=Shuffle
+      - BASE_URL=http://shuffle-backend:5001
+      - DOCKER_API_VERSION=1.40
+      - SHUFFLE_ORBORUS_EXECUTION_CONCURRENCY=5
+      - SHUFFLE_LOGS_DISABLED=true
+      - SHUFFLE_WORKER_IMAGE=ghcr.io/shuffle/shuffle-worker:latest
+      - SHUFFLE_BASE_IMAGE_REGISTRY=ghcr.io
+      - CLEANUP=true
+    depends_on:
+      - shuffle-backend
+    networks:
+      - shuffle
+
+  shuffle-opensearch:
+    image: opensearchproject/opensearch:2.14.0
+    container_name: shuffle-opensearch
+    hostname: shuffle-opensearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - cluster.name=shuffle-cluster
+      - node.name=shuffle-opensearch
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - DISABLE_SECURITY_PLUGIN=true
+      - cluster.routing.allocation.disk.threshold_enabled=false
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - ./db/shuffle-opensearch:/usr/share/opensearch/data
+    networks:
+      - shuffle
+
+volumes:
+  # --- Wazuh (hors bases de données, cf. ./db/) ---
+  wazuh_api_configuration:
+  wazuh_etc:
+  wazuh_logs:
+  wazuh_queue:
+  wazuh_var_multigroups:
+  wazuh_integrations:
+  wazuh_active_response:
+  wazuh_agentless:
+  wazuh_wodles:
+  filebeat_etc:
+  filebeat_var:
+  wazuh-dashboard-config:
+  wazuh-dashboard-custom:
+  # --- IRIS (hors base de données) ---
+  iris_downloads:
+  user_templates:
+  server_data:
+  # --- Shuffle (hors OpenSearch) ---
+  shuffle-apps:
+  shuffle-files:
+
+networks:
+  # iris_frontend accueillera aussi le soc-agent : il parle à iris-app:8000
+  # directement, sans repasser par nginx.
+  iris_backend:
+    name: iris_backend
+  iris_frontend:
+    name: iris_frontend
+  shuffle:
+    name: shuffle
+    driver: bridge

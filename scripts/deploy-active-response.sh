@@ -33,7 +33,7 @@
 
 set -euo pipefail
 
-AR_SRC="$(cd "$(dirname "$0")/../wazuh/active-response" && pwd)"
+AR_SRC="$(cd "$(dirname "$0")/../src/wazuh/active-response" && pwd)"
 AR_DST="/var/ossec/active-response/bin"
 
 [ $# -ge 1 ] || { grep '^#' "$0" | sed 's/^# \?//'; exit 1; }

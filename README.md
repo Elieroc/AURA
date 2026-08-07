@@ -13,7 +13,7 @@ XDR autonome piloté par IA. Détection moderne avec Wazuh, enrichissement threa
 
 ## Architecture
 
-Le modèle tourne sur l'**API DeepSeek** et non en local : cet hôte n'a pas de GPU et pas les ressources pour un modèle en continu. Conséquence assumée : **le contexte d'alerte quitte l'hôte**, pseudonymisé au préalable (`ai/soc_agent/anonymize.py`, refus d'appel si une valeur réelle survit).
+Le modèle tourne sur l'**API DeepSeek** et non en local : cet hôte n'a pas de GPU et pas les ressources pour un modèle en continu. Conséquence assumée : **le contexte d'alerte quitte l'hôte**, pseudonymisé au préalable (`src/ai/soc_agent/anonymize.py`, refus d'appel si une valeur réelle survit).
 
 ```
                           ┌─────────────────────────────┐
@@ -50,34 +50,38 @@ Le modèle tourne sur l'**API DeepSeek** et non en local : cet hôte n'a pas de 
 
 | Composant | Rôle | État |
 |-----------|------|------|
-| [`wazuh/`](wazuh/) | Stack Wazuh 4.9.2 single-node (Docker Compose) | ✅ Fonctionnel |
+| [`src/wazuh/`](src/wazuh/) | Stack Wazuh 4.9.2 single-node (Docker Compose) | ✅ Fonctionnel |
 | VirusTotal | Hash des fichiers FIM vérifiés à l'API VT (règles 87103–87105) | ✅ Testé E2E |
 | AbuseIPDB | Réputation IP source des alertes SSH/auth/attaques (règles 100621–100624) | ✅ Testé E2E |
 | GeoIP | Géolocalisation des IP sources (pipeline ingest indexer, GeoLite2 embarquée) | ✅ Actif par défaut |
 | Agents | Déploiement d'agents Wazuh sur les endpoints ([`scripts/install-agent.sh`](scripts/install-agent.sh)) | ✅ debian-vm actif |
-| [`shuffle/`](shuffle/) | SOAR Shuffle — orchestration des remédiations | ✅ Testé E2E |
-| Remédiation — isolation hôte | Active response nftables via workflow Shuffle ([`shuffle/README.md`](shuffle/README.md)) | ✅ Testé E2E |
-| [`iris/`](iris/) | DFIR-IRIS — case management, un case par incident trié (IOC + rapport IA) | ✅ Boucle fermée |
-| [`iris/mcp/`](iris/mcp/) | Serveur MCP IRIS (srozb/iris-mcp) — investigation interactive | ✅ Connecté |
-| [`ai/soc_agent/`](ai/soc_agent/) | Pipeline : ingest + corrélation (ph.1), triage LLM + remédiation (ph.2) | ✅ Sur données réelles |
+| [`src/shuffle/`](src/shuffle/) | SOAR Shuffle — orchestration des remédiations | ✅ Testé E2E |
+| Remédiation — isolation hôte | Active response nftables via workflow Shuffle ([`src/shuffle/README.md`](src/shuffle/README.md)) | ✅ Testé E2E |
+| [`src/iris/`](src/iris/) | DFIR-IRIS — case management, un case par incident trié (IOC + rapport IA) | ✅ Boucle fermée |
+| [`src/iris/mcp/`](src/iris/mcp/) | Serveur MCP IRIS (srozb/iris-mcp) — investigation interactive | ✅ Connecté |
+| [`src/ai/soc_agent/`](src/ai/soc_agent/) | Pipeline : ingest + corrélation (ph.1), triage LLM + remédiation (ph.2) | ✅ Sur données réelles |
 | IA — Rules creator | Génération de règles/decoders Wazuh à partir des alertes | 🔜 À venir |
 | IA — Whitelist | Exceptions auto sur FP récurrents jugés par l'IA | ✅ Boucle fermée |
 | IA — Mitigation | Isolation d'hôte, blocage IP, désactivation de compte — **exécutées automatiquement** sur verdict vrai positif | ✅ Testé E2E |
 
 ## Démarrage rapide
 
-Prérequis : Docker + Docker Compose, `vm.max_map_count=262144`.
+Prérequis : Docker + Docker Compose, `vm.max_map_count=262144`. Un seul
+`.env` et un seul `docker-compose.yml` à la racine pilotent toute la stack.
 
 ```bash
-cd wazuh
+git clone <dépôt> AURA && cd AURA
+sysctl -w vm.max_map_count=262144
 cp .env.example .env    # remplir mots de passe + clés API
-# puis suivre wazuh/README.md (configs à copier depuis les .example, génération des certs)
-docker compose -f generate-indexer-certs.yml run --rm generator
+mkdir -p db/{socagent-postgres,iris-postgres,shuffle-opensearch,wazuh-indexer}
+docker compose -f src/wazuh/generate-indexer-certs.yml run --rm generator
+./src/iris/scripts/generate-certs.sh
 docker compose up -d
 ```
 
-Dashboard : https://localhost — `admin` / `INDEXER_PASSWORD` du `.env`.
-Détail complet (setup, intégrations, tests manuels) : [`wazuh/README.md`](wazuh/README.md).
+Dashboard Wazuh : https://localhost — `admin` / `INDEXER_PASSWORD` du `.env`.
+Détail complet (configs à copier depuis les `.example`, étapes par stack,
+schéma Postgres soc-agent, active response) : [`docs/INSTALL.md`](docs/INSTALL.md).
 
 ## Documentation
 
@@ -98,21 +102,32 @@ Détail complet (setup, intégrations, tests manuels) : [`wazuh/README.md`](wazu
 
 ```
 AURA/
+├── docker-compose.yml   # compose racine unique — les 4 stacks
+├── .env.example         # config racine unique (copier en .env)
 ├── CLAUDE.md            # contexte projet pour Claude Code
 ├── README.md
 ├── assets/              # identité visuelle (logotype, pictogramme SVG)
+├── config/              # config transverse (soc-ai.conf : topologie, training)
 ├── docs/                # documentation transverse
 │   ├── INSTALL.md       # mise en service du stack
 │   ├── TRAINING.md      # fenêtre d'apprentissage du bruit ambiant
 │   └── REMEDIATION.md   # remédiation autonome + catalogue des active responses
-├── ai/                  # couche IA : soc_agent (ingest, corrélation, triage, remédiation)
-├── iris/                # DFIR-IRIS (case management)
-├── scripts/             # install-agent.sh (agent + user d'admin distante)
-├── shuffle/             # SOAR Shuffle (remédiation, workflow isolation d'hôte)
-└── wazuh/               # stack Wazuh dockerisée
-    ├── docker-compose.yml
-    ├── generate-indexer-certs.yml
-    ├── active-response/ # scripts AR custom (isolation nftables, comptes, firewall)
-    ├── config/          # configs bind-mountées (manager, indexer, dashboard)
-    └── integrations/    # scripts d'intégration custom (AbuseIPDB)
+├── scripts/             # install-agent.sh, déploiement AR, soc-start.sh...
+├── db/                  # bases de données (Postgres/OpenSearch), gitignoré
+│   ├── socagent-postgres/
+│   ├── iris-postgres/
+│   ├── shuffle-opensearch/
+│   └── wazuh-indexer/
+└── src/                 # les 4 stacks buildables
+    ├── ai/               # couche IA : soc_agent (ingest, corrélation, triage, remédiation)
+    ├── iris/             # DFIR-IRIS (case management)
+    ├── shuffle/          # SOAR Shuffle (remédiation, workflow isolation d'hôte)
+    └── wazuh/            # stack Wazuh
+        ├── generate-indexer-certs.yml   # bootstrap ponctuel des certs
+        ├── active-response/ # scripts AR custom (isolation nftables, comptes, firewall)
+        ├── config/          # configs bind-mountées (manager, indexer, dashboard)
+        └── integrations/    # scripts d'intégration custom (AbuseIPDB)
 ```
+
+`mcp/` (serveur MCP Wazuh) reste hors dépôt et hors de ce compose — déploiement
+séparé, voir `mcp/README.md`.

@@ -3,9 +3,9 @@
 Comment une alerte devient une action réelle sur un endpoint, et catalogue
 complet des active responses du projet.
 
-Code : [`ai/soc_agent/mitigate.py`](../ai/soc_agent/mitigate.py) (exécution),
-[`ai/soc_agent/actions.py`](../ai/soc_agent/actions.py) (garde-fous),
-[`wazuh/active-response/`](../wazuh/active-response/) (scripts sur les agents).
+Code : [`src/ai/soc_agent/mitigate.py`](../src/ai/soc_agent/mitigate.py) (exécution),
+[`src/ai/soc_agent/actions.py`](../src/ai/soc_agent/actions.py) (garde-fous),
+[`src/wazuh/active-response/`](../src/wazuh/active-response/) (scripts sur les agents).
 
 ## Le principe
 
@@ -169,7 +169,7 @@ casserait l'hôte ou la supervision, et **écrit son refus** dans
 
 ## Catalogue des active responses
 
-### Linux — [`wazuh/active-response/`](../wazuh/active-response/)
+### Linux — [`src/wazuh/active-response/`](../src/wazuh/active-response/)
 
 | Script | Action | Reverse | Garde-fou local |
 |---|---|---|---|
@@ -188,7 +188,7 @@ La table nftables `soc_ai_block` est **distincte** de `wazuh_isolation` : une
 dé-isolation supprime sa table entière et ne doit pas emporter au passage les
 blocages d'IP posés séparément.
 
-### Windows / AD — [`wazuh/active-response/windows/`](../wazuh/active-response/windows/)
+### Windows / AD — [`src/wazuh/active-response/windows/`](../src/wazuh/active-response/windows/)
 
 Groupe A — sur l'hôte compromis :
 
@@ -397,8 +397,8 @@ point de retour.
 
 - [`TRAINING.md`](TRAINING.md) — la fenêtre qui empêche tout ceci de partir sur
   du bruit ambiant au premier jour
-- [`../wazuh/active-response/README.md`](../wazuh/active-response/README.md) —
+- [`../src/wazuh/active-response/README.md`](../src/wazuh/active-response/README.md) —
   contrat AR détaillé, pare-feu iptables/nftables
-- [`../wazuh/active-response/windows/README.md`](../wazuh/active-response/windows/README.md) —
+- [`../src/wazuh/active-response/windows/README.md`](../src/wazuh/active-response/windows/README.md) —
   modèle d'exécution Windows, wrapper `.exe`
-- [`../shuffle/README.md`](../shuffle/README.md) — workflow d'isolation
+- [`../src/shuffle/README.md`](../src/shuffle/README.md) — workflow d'isolation

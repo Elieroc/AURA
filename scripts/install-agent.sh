@@ -66,12 +66,12 @@ systemctl enable --now wazuh-agent >/dev/null 2>&1
 
 echo "[3/6] auditd (socle de détection des règles Wazuh 1006xx/1007xx)"
 apt-get install -y -qq auditd audispd-plugins >/dev/null
-# Le jeu de règles est versionné dans wazuh/config/agent/zz-audit-wazuh.rules.
+# Le jeu de règles est versionné dans src/wazuh/config/agent/zz-audit-wazuh.rules.
 # Le préfixe `zz-` est OBLIGATOIRE : augenrules concatène rules.d/*.rules en
 # collation C, et le audit.rules de Debian commence par `-D` (purge). Un fichier
 # nommé `audit-wazuh.rules` est chargé AVANT ce `-D` et se fait effacer
 # silencieusement — c'est ce qui a laissé l'agent sans audit execve.
-AUDIT_RULES_SRC="$(dirname "$0")/../wazuh/config/agent/zz-audit-wazuh.rules"
+AUDIT_RULES_SRC="$(dirname "$0")/../src/wazuh/config/agent/zz-audit-wazuh.rules"
 if [ -f "$AUDIT_RULES_SRC" ]; then
   install -m 640 -o root -g root "$AUDIT_RULES_SRC" /etc/audit/rules.d/zz-audit-wazuh.rules
 else
@@ -124,8 +124,8 @@ echo "[4/6] Scripts active-response (remédiation)"
 # le seul indice est l'absence de ligne dans son active-responses.log.
 # Les binaires natifs livrés par le paquet ne remplacent pas ces scripts : ils
 # lisent la cible dans l'alerte (alert.data.srcip / dstuser) et échouent sur
-# tout appel piloté par extra_args (cf. wazuh/active-response/README).
-AR_SRC="$(dirname "$0")/../wazuh/active-response"
+# tout appel piloté par extra_args (cf. src/wazuh/active-response/README).
+AR_SRC="$(dirname "$0")/../src/wazuh/active-response"
 if [ -d "$AR_SRC" ]; then
   for f in "$AR_SRC"/*.sh; do
     install -m 750 -o root -g wazuh "$f" "/var/ossec/active-response/bin/$(basename "$f")"

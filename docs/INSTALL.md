@@ -7,20 +7,51 @@ dans `docs/`). Voir aussi [`TRAINING.md`](TRAINING.md) pour la mise en service
 sur un SI déjà en production et [`REMEDIATION.md`](REMEDIATION.md) pour le
 déploiement et le catalogue des active responses.
 
-## 1. Wazuh
+## 0. Un seul `.env`, un seul compose
+
+Un unique `docker-compose.yml` et un unique `.env` à la racine du dépôt pilotent
+les 4 stacks (Wazuh, soc-agent, DFIR-IRIS, Shuffle). Le serveur MCP Wazuh
+(`mcp/`) reste hors dépôt et se déploie à part (voir `mcp/README.md`).
 
 ```bash
-cd wazuh
-sysctl -w vm.max_map_count=262144
+git clone <dépôt> AURA && cd AURA
+sysctl -w vm.max_map_count=262144         # root, requis par l'indexer
 cp .env.example .env
-cp config/wazuh_cluster/wazuh_manager.conf.example config/wazuh_cluster/wazuh_manager.conf
-cp config/wazuh_dashboard/wazuh.yml.example config/wazuh_dashboard/wazuh.yml
-$EDITOR .env
-$EDITOR config/wazuh_cluster/wazuh_manager.conf
-$EDITOR config/wazuh_dashboard/wazuh.yml
-docker compose -f generate-indexer-certs.yml run --rm generator
+$EDITOR .env                              # creds/secrets/topologie — voir table plus bas
+```
+
+Variables à éditer au minimum (les autres ont des défauts raisonnables pour un
+lab) : `INDEXER_PASSWORD`, `WAZUH_API_PASSWORD`, `WAZUH_VT_API_KEY`,
+`WAZUH_ABUSEIPDB_API_KEY`, `PGPASSWORD`, `DEEPSEEK_API_KEY`,
+`WAZUH_DASHBOARD_URL`, `RESEAUX_INTERNES`, `POSTGRES_PASSWORD`,
+`POSTGRES_ADMIN_PASSWORD`, `IRIS_SECRET_KEY`, `IRIS_SECURITY_PASSWORD_SALT`,
+`IRIS_API_KEY`, `SHUFFLE_DEFAULT_PASSWORD`, `SHUFFLE_DEFAULT_APIKEY`.
+
+Configs annexes à copier depuis leur `.example` et éditer (secrets, gitignorées) :
+
+```bash
+cp src/wazuh/config/wazuh_cluster/wazuh_manager.conf.example src/wazuh/config/wazuh_cluster/wazuh_manager.conf
+cp src/wazuh/config/wazuh_dashboard/wazuh.yml.example src/wazuh/config/wazuh_dashboard/wazuh.yml
+$EDITOR src/wazuh/config/wazuh_cluster/wazuh_manager.conf   # CHANGEME_VT_API_KEY / CHANGEME_ABUSEIPDB_API_KEY
+$EDITOR src/wazuh/config/wazuh_dashboard/wazuh.yml           # CHANGEME_API_PASSWORD = WAZUH_API_PASSWORD
+```
+
+Bases de données (bind mounts vers `db/`, gitignoré) et certificats à générer
+une fois :
+
+```bash
+mkdir -p db/{socagent-postgres,iris-postgres,shuffle-opensearch,wazuh-indexer}
+docker compose -f src/wazuh/generate-indexer-certs.yml run --rm generator
+./src/iris/scripts/generate-certs.sh
+```
+
+Puis tout démarrer :
+
+```bash
 docker compose up -d
 ```
+
+## 1. Wazuh
 
 **Vérifier que la configuration partagée (agent.conf : FIM ransomware/webshell/SSH
 keys, cron/sudoers/pam) part bien vers les agents** — piège vécu en prod : le
@@ -34,11 +65,11 @@ applique juste le strict minimum par défaut de l'image). Fix (une fois par
 volume `wazuh_etc`, persiste ensuite) :
 
 ```bash
-docker exec wazuh-wazuh.manager-1 chown -R wazuh:wazuh /var/ossec/etc/shared
-docker restart wazuh-wazuh.manager-1
+docker exec wazuh.manager chown -R wazuh:wazuh /var/ossec/etc/shared
+docker restart wazuh.manager
 # vérifier :
-docker exec wazuh-wazuh.manager-1 ls -la /var/ossec/etc/shared/default/   # merged.mg doit exister
-docker exec wazuh-wazuh.manager-1 grep merged.mg /var/ossec/logs/ossec.log  # plus d'erreur après le restart
+docker exec wazuh.manager ls -la /var/ossec/etc/shared/default/   # merged.mg doit exister
+docker exec wazuh.manager grep merged.mg /var/ossec/logs/ossec.log  # plus d'erreur après le restart
 ```
 
 Dashboard : https://localhost — `admin` / `INDEXER_PASSWORD`.
@@ -47,56 +78,46 @@ Dashboards/visualisations custom (index patterns d'abord, sinon l'import
 échoue silencieusement sur les références manquantes) :
 
 ```bash
-INDEXER_PASSWORD=... python3 dashboards/create_index_patterns.py
+INDEXER_PASSWORD=... python3 src/wazuh/dashboards/create_index_patterns.py
 curl -sk -u admin:$INDEXER_PASSWORD -X POST \
   "https://localhost/api/saved_objects/_import?overwrite=true" \
-  -H 'osd-xsrf: true' --form file=@dashboards/soc-ai-dashboards.ndjson
+  -H 'osd-xsrf: true' --form file=@src/wazuh/dashboards/soc-ai-dashboards.ndjson
 ```
 
 ## 2. DFIR-IRIS
 
+Certificats déjà générés à l'étape 0 (`./src/iris/scripts/generate-certs.sh`).
+
 ```bash
-cd iris
-cp .env.example .env
-$EDITOR .env
-./scripts/generate-certs.sh
-docker compose up -d
-docker compose logs app | grep "IRIS IS READY"
+docker compose logs iris-app | grep "IRIS IS READY"
 ```
 
 UI : https://localhost:8443
 
 ## 3. Shuffle (SOAR)
 
-```bash
-cd shuffle
-cp .env.example .env
-$EDITOR .env
-docker compose up -d
-```
-
 UI : http://localhost:3001 — API : http://localhost:5001
 
 Workflows Host Isolation / Kill Process — pas d'export upstream à importer,
-recréés par l'API (webhook ids fixés sur ceux attendus par `ai/.env`) :
+recréés par l'API (webhook ids fixés sur ceux attendus par le `.env` racine) :
 
 ```bash
 SHUFFLE_DEFAULT_APIKEY=$(grep SHUFFLE_DEFAULT_APIKEY .env | cut -d= -f2) \
 WAZUH_API_USER=wazuh-wui \
-WAZUH_API_PASSWORD=$(grep API_PASSWORD ../wazuh/.env | cut -d= -f2) \
+WAZUH_API_PASSWORD=$(grep WAZUH_API_PASSWORD .env | cut -d= -f2) \
 WAZUH_HOST=<IP LAN de l'hôte, pas 127.0.0.1> \
 SHUFFLE_WEBHOOK_ISOLATE=webhook_00000000-0000-0000-0000-00000000a001 \
 SHUFFLE_WEBHOOK_KILL=webhook_00000000-0000-0000-0000-00000000a002 \
-python3 workflows/build_workflows.py
+python3 src/shuffle/workflows/build_workflows.py
 ```
 
 Forensic Collection reste manuel (infra SSH K1/K2/K3 lourde à provisionner) —
-cf. `shuffle/README.md`.
+cf. `src/shuffle/README.md`.
 
 ## 4. Active response Wazuh (agents)
 
 ```bash
-scp wazuh/active-response/*.sh <agent>:/tmp/
+scp src/wazuh/active-response/*.sh <agent>:/tmp/
 ssh <agent> 'sudo install -o root -g wazuh -m 750 /tmp/*-*.sh /var/ossec/active-response/bin/'
 ```
 
@@ -127,14 +148,17 @@ reprise.
 
 ## 5. soc-agent (pipeline IA)
 
+Schéma Postgres à charger une fois, après le premier `docker compose up -d` :
+
 ```bash
-cd ai
-cp .env.example .env
-$EDITOR .env
-docker compose up -d db
-docker exec -i socagent-db psql -q -U socagent -d socagent < soc_agent/schema.sql
-docker compose up -d --build soc-agent-cycle soc-agent-reconcile soc-agent-whitelist-task
+docker exec -i socagent-db psql -q -U socagent -d socagent < src/ai/soc_agent/schema.sql
 ```
+
+Les jobs périodiques (`soc-agent-cycle`, `soc-agent-reconcile`,
+`soc-agent-whitelist-task`, `soc-agent-metrics`, `soc-agent-rule-tuning`)
+démarrent avec le reste de la stack (`docker compose up -d`). `soc-training`
+démarre aussi, mais reste inactif tant que `TRAINING_ENABLED` n'est pas à
+`true` (voir plus bas).
 
 ### Mise en service sur un SI déjà en production : le mode training
 
@@ -145,7 +169,7 @@ chaque exception créée. Détail complet : [`TRAINING.md`](TRAINING.md).
 
 ```bash
 $EDITOR config/soc-ai.conf     # TRAINING_ENABLED="true", TRAINING_DAYS="7"
-./scripts/soc-start.sh         # source la conf et démarre toute la stack soc-agent
+./scripts/soc-start.sh         # source la conf et (re)démarre les services soc-agent
 ```
 
 La fenêtre ne s'ouvre qu'au tout premier démarrage. À la fin, relire le case

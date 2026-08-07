@@ -1,6 +1,6 @@
 # Mode training — apprendre le bruit ambiant avant de laisser le SOC agir
 
-Code : [`ai/soc_agent/training.py`](../ai/soc_agent/training.py) · conteneur `soc-training` ·
+Code : [`src/ai/soc_agent/training.py`](../src/ai/soc_agent/training.py) · conteneur `soc-training` ·
 réglages dans `config/soc-ai.conf` (gitignoré, cf.
 [`config/soc-ai.conf.example`](../config/soc-ai.conf.example)), exportés vers
 docker compose par [`scripts/soc-start.sh`](../scripts/soc-start.sh).
@@ -194,4 +194,4 @@ docker exec socagent-db psql -U socagent -d socagent -c \
 
 - [`REMEDIATION.md`](REMEDIATION.md) — ce que le training empêche de partir trop tôt
 - [`INSTALL.md`](INSTALL.md) — mise en service du stack
-- [`../ai/README.md`](../ai/README.md) — pipeline complet
+- [`../src/ai/README.md`](../src/ai/README.md) — pipeline complet

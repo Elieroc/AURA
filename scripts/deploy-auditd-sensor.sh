@@ -14,7 +14,7 @@
 # l'enrôlement / le user d'admin / les scripts AR (déjà en place sur un agent vivant).
 #
 # Usage (en root sur la machine cible, avec zz-audit-wazuh.rules dans le même dossier
-# OU dans ../wazuh/config/agent/) :
+# OU dans ../src/wazuh/config/agent/) :
 #   ./deploy-auditd-sensor.sh
 #
 # REBOOT : `-e 2` (dernière ligne des règles) rend la config d'audit immuable. Au
@@ -29,7 +29,7 @@ log() { printf '%s\n' "$*"; }
 
 # Localise le jeu de règles (à côté du script, ou dans l'arbo repo)
 HERE="$(cd "$(dirname "$0")" && pwd)"
-for c in "$HERE/zz-audit-wazuh.rules" "$HERE/../wazuh/config/agent/zz-audit-wazuh.rules"; do
+for c in "$HERE/zz-audit-wazuh.rules" "$HERE/../src/wazuh/config/agent/zz-audit-wazuh.rules"; do
   [ -f "$c" ] && { RULES_SRC="$c"; break; }
 done
 [ -n "${RULES_SRC:-}" ] || { echo "ERREUR: zz-audit-wazuh.rules introuvable" >&2; exit 1; }

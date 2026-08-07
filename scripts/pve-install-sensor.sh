@@ -2,7 +2,7 @@
 # Capteur Wazuh + auditd sur l'HÔTE Proxmox (bare-metal). DÉTECTION SEULE.
 #
 # Pourquoi sur l'hôte et pas dans les conteneurs : toute la flotte est en LXC, où
-# auditd est impossible (CAP_AUDIT_CONTROL refusé — cf. wazuh/AUDITD-ROLLOUT.md).
+# auditd est impossible (CAP_AUDIT_CONTROL refusé — cf. src/wazuh/AUDITD-ROLLOUT.md).
 # Le noyau étant partagé, l'auditd de l'hôte capture l'execve de TOUS les
 # conteneurs : un seul agent couvre la flotte pour les règles 1006xx/1007xx.
 #
@@ -25,7 +25,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 for c in "/tmp/zz-audit-wazuh.rules" "$HERE/zz-audit-wazuh.rules" \
-         "$HERE/../wazuh/config/agent/zz-audit-wazuh.rules"; do
+         "$HERE/../src/wazuh/config/agent/zz-audit-wazuh.rules"; do
   [ -f "$c" ] && { RULES="$c"; break; }
 done
 [ -n "${RULES:-}" ] || { echo "ERREUR: zz-audit-wazuh.rules introuvable" >&2; exit 1; }

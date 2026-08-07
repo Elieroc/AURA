@@ -13,7 +13,7 @@ import sys
 import time
 
 CHEMIN = sys.argv[1] if len(sys.argv) > 1 else \
-    "/opt/AURA/wazuh/config/wazuh_cluster/wazuh_manager.conf"
+    "/opt/AURA/src/wazuh/config/wazuh_cluster/wazuh_manager.conf"
 
 ACTIONS = [
     "win-host-isolate", "win-host-unisolate", "win-kill-process",
@@ -41,7 +41,7 @@ ENTETE = """
     de nos scripts. Le diagnostic initial (« refusees par la safelist du
     script ») etait faux : elles n'ont jamais atteint le script.
 
-    Les blocs vivaient dans wazuh/active-response/windows/register-commands.xml,
+    Les blocs vivaient dans src/wazuh/active-response/windows/register-commands.xml,
     qui documentait deja ce piege, mais n'avaient jamais ete reportes ici. Ce
     fichier etant gitignore (cles d'API), ils y sont poses par
     scripts/patch-manager-ar-windows.py.
