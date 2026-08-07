@@ -16,15 +16,34 @@ XDR autonome piloté par IA. Détection moderne avec Wazuh, enrichissement threa
 Le modèle tourne sur l'**API DeepSeek**, pas en local (pas de GPU dédié). Conséquence assumée : **le contexte d'alerte quitte l'hôte**, pseudonymisé au préalable (`src/ai/soc_agent/anonymize.py`, refus d'appel si une valeur réelle survit).
 
 ```
-Agents Wazuh ──1514──► Wazuh Manager ──filebeat──► Wazuh Indexer ──┬──► Wazuh Dashboard
- (endpoints)         (règles, VT, AbuseIPDB)      (OpenSearch)     │    https://localhost
-                                                                    │
-                                                                    └──► soc-agent (IA, API DeepSeek)
-                                                                            triage · whitelist · mitigation
-                                                                                    │
-                                                                                    ▼
-                                                                          DFIR-IRIS (cases, IOC)
-                                                                          https://localhost:8443
+                          ┌─────────────────────────────┐
+   Agents Wazuh ────────► │        Wazuh Manager        │
+   (endpoints)    1514    │  analyse, règles, alertes   │
+                          │                             │
+                          │  Intégrations :             │
+                          │   • VirusTotal (FIM/hash)   │
+                          │   • AbuseIPDB (réput. IP)   │
+                          └──────────────┬──────────────┘
+                                         │ filebeat
+                          ┌──────────────▼──────────────┐
+                          │        Wazuh Indexer        │
+                          │   (OpenSearch, alertes)     │
+                          └──────┬───────────────┬──────┘
+                                 │               │
+                  ┌──────────────▼──────┐   ┌────▼─────────────────┐
+                  │   Wazuh Dashboard   │   │  soc-agent (IA)      │
+                  │   https://localhost │   │  API DeepSeek        │
+                  └─────────────────────┘   │  • Triage HIGH/CRIT  │
+                                            │  • Rules creator     │
+                                            │  • Whitelist         │
+                                            │  • Mitigation        │
+                                            └──────┬───────────────┘
+                                                   │
+                                    ┌──────────────▼──────────────┐
+                                    │         DFIR-IRIS           │
+                                    │  cases, timeline, IOC       │
+                                    │  https://localhost:8443     │
+                                    └─────────────────────────────┘
 ```
 
 ## Composants
