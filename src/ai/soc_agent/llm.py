@@ -15,6 +15,7 @@ template change le verdict (mesuré).
 
 import json
 import logging
+import re
 import time
 
 import requests
@@ -52,6 +53,36 @@ def _enregistrer(usage: str, modele: str, max_tokens: int, duree_ms: int,
             conn.commit()
     except Exception as e:                                   # noqa: BLE001
         log.debug("métrique LLM non enregistrée : %s", e)
+
+
+# Antislash qui n'ouvre PAS une séquence d'échappement JSON valide. C'est
+# exactement ce que produit un modèle qui recopie un chemin Windows dans sa
+# justification : `C:\Windows\System32` sort tel quel, et `\W` n'est pas un
+# échappement légal.
+_ANTISLASH_NU = re.compile(r'\\(?!["\\/bfnrtu])')
+
+
+def _charger_json(contenu: str) -> dict:
+    """Parse la réponse du modèle, en réparant les antislashs non échappés.
+
+    `response_format=json_object` était réputé garantir un JSON valide. C'est
+    faux, et mesuré : sur un incident Windows (chemins `C:\\...` partout dans le
+    contexte), DeepSeek a rendu « Invalid \\escape: line 2 column 68 ». Sans
+    réparation, l'incident échoue à CHAQUE cycle — le lot étant trié de façon
+    déterministe, il repasse en tête indéfiniment.
+
+    La réparation est délibérément étroite : on ne double que les antislashs qui
+    n'ouvrent aucune séquence d'échappement légale. Un JSON déjà correct est
+    inchangé (il passe au premier `loads` et n'atteint jamais la regex), et une
+    vraie panne d'API remonte toujours.
+    """
+    try:
+        return json.loads(contenu)
+    except json.JSONDecodeError:
+        repare = _ANTISLASH_NU.sub(r"\\\\", contenu)
+        obj = json.loads(repare)   # échoue encore -> vraie sortie inexploitable
+        log.warning("JSON du modèle réparé (antislashs non échappés)")
+        return obj
 
 
 def completion(systeme: str, utilisateur: str, usage: str,
@@ -120,9 +151,7 @@ def _completion(systeme: str, utilisateur: str, max_tokens: int,
             f"réponse sans content (finish_reason={choix.get('finish_reason')}, "
             f"reasoning épuisant max_tokens={max_tokens} ?) — augmenter le budget")
 
-    # json_object garantit un JSON valide : un JSONDecodeError ici signalerait
-    # une panne côté API, pas une sortie mal formée du modèle. On laisse remonter.
-    obj = json.loads(contenu)
+    obj = _charger_json(contenu)
     conso = corps.get("usage", {})
     # DeepSeek ventile l'entrée entre cache hit et cache miss, et le hit est
     # facturé 50x moins cher. Sans cette ventilation, le coût est surestimé :
