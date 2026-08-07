@@ -25,7 +25,8 @@ lab) : `INDEXER_PASSWORD`, `WAZUH_API_PASSWORD`, `WAZUH_VT_API_KEY`,
 `WAZUH_ABUSEIPDB_API_KEY`, `PGPASSWORD`, `DEEPSEEK_API_KEY`,
 `WAZUH_DASHBOARD_URL`, `RESEAUX_INTERNES`, `POSTGRES_PASSWORD`,
 `POSTGRES_ADMIN_PASSWORD`, `IRIS_SECRET_KEY`, `IRIS_SECURITY_PASSWORD_SALT`,
-`IRIS_API_KEY`, `SHUFFLE_DEFAULT_PASSWORD`, `SHUFFLE_DEFAULT_APIKEY`.
+`IRIS_API_KEY`, `SHUFFLE_DEFAULT_PASSWORD`, `SHUFFLE_DEFAULT_APIKEY`. Avant
+tout test d'isolation d'agent, `WAZUH_MANAGER_IP` aussi — voir section 4.
 
 Configs annexes à copier depuis leur `.example` et éditer (secrets, gitignorées) :
 
@@ -127,18 +128,23 @@ ne le signale côté manager (l'API répond 200, elle ne fait que transmettre). 
 comptes en particulier — `disable-account.sh` / `enable-account.sh` — vont par
 paire : sans le second, une désactivation n'est pas défaisable.
 
-**`soc-ai.conf` AVANT tout test d'isolation — sinon lockout.** `host-isolate.sh`
-a une IP manager par défaut codée en dur (`192.168.60.1`, la passerelle NAT
-par défaut de libvirt — n'a aucune chance d'être la bonne hors d'un lab KVM) :
-c'est la seule sortie laissée ouverte pendant l'isolation. Sans override,
-isoler un agent le coupe de son vrai manager, sans retour possible par l'AR de
-dé-isolation (le canal est mort) — récupérable seulement via une console
-hors-bande (hyperviseur).
+**`WAZUH_MANAGER_IP` déployé AVANT tout test d'isolation — sinon lockout.**
+`host-isolate.sh` a une IP manager par défaut codée en dur (`192.168.60.1`,
+la passerelle NAT par défaut de libvirt — n'a aucune chance d'être la bonne
+hors d'un lab KVM) : c'est la seule sortie laissée ouverte pendant
+l'isolation. Sans override, isoler un agent le coupe de son vrai manager,
+sans retour possible par l'AR de dé-isolation (le canal est mort) —
+récupérable seulement via une console hors-bande (hyperviseur).
+
+`WAZUH_MANAGER_IP` (et le reste de la topologie hors dépôt : forensique
+manager) vit dans le `.env` racine, comme tout le reste — mais un `.env`
+complet ne doit jamais partir sur un agent (il contient DEEPSEEK_API_KEY,
+mots de passe DB, clé IRIS). `generate-soc-ai-conf.sh` en extrait le seul
+sous-ensemble à déployer :
 
 ```bash
-cp soc-ai.conf.example soc-ai.conf
-$EDITOR soc-ai.conf   # WAZUH_MANAGER_IP = IP du manager telle que l'agent la joint
-scp soc-ai.conf <agent>:/tmp/soc-ai.conf
+./src/wazuh/generate-soc-ai-conf.sh          # génère src/wazuh/soc-ai.conf depuis .env
+scp src/wazuh/soc-ai.conf <agent>:/tmp/soc-ai.conf
 ssh <agent> 'sudo install -o root -g wazuh -m 640 /tmp/soc-ai.conf /var/ossec/etc/soc-ai.conf'
 ```
 

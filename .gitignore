@@ -10,8 +10,9 @@ src/wazuh/config/wazuh_cluster/wazuh_manager.conf
 
 # Conf Aura-SOC déployée hors dépôt sur agents/manager (topologie réseau : IP
 # manager, serveur de preuves) — distincte du .env du manager docker compose.
-/soc-ai.conf
-!/soc-ai.conf.example
+# Générée depuis .env par src/wazuh/generate-soc-ai-conf.sh, jamais éditée
+# à la main ni versionnée : voir .env.example pour les valeurs.
+src/wazuh/soc-ai.conf
 src/wazuh/config/wazuh_dashboard/wazuh.yml
 src/wazuh/config/wazuh_indexer_ssl_certs/*
 !src/wazuh/config/wazuh_indexer_ssl_certs/.gitkeep
