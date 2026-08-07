@@ -70,6 +70,26 @@ Points de jugement :
   signe d'exécution ni d'accès abouti, est un `true_positive` de faible
   gravité : la source est bien hostile, elle n'a simplement pas abouti.
 
+Incidents d'origine **UEBA** (le bloc porte alors la ligne `origine : moteur
+comportemental UEBA` et une liste d'écarts mesurés) :
+- Aucune règle grave n'a tiré, et c'est normal : ces incidents sont ouverts sur
+  un écart au comportement habituel de la machine ou du compte, pas sur une
+  signature. **Ne conclus pas au faux positif au seul motif que le niveau des
+  règles est bas** — le niveau ne porte aucune information ici.
+- Ce qui porte le signal, ce sont les écarts mesurés : un binaire, un couple
+  parent/enfant, un pays ou un compte jamais observés sur cet hôte alors que le
+  profil est établi depuis des semaines. Juge-les comme un analyste jugerait une
+  anomalie : cherche l'explication légitime (déploiement, maintenance, nouvel
+  utilisateur, tâche planifiée), et si tu la trouves c'est un `false_positive`.
+- Un écart isolé et explicable est un `false_positive` — c'est le cas attendu le
+  plus fréquent, et le dire clairement a de la valeur : cela nourrit la baseline.
+- Un écart qui compose une histoire cohérente (exécution inédite **puis**
+  persistance **puis** contact réseau sortant inédit) est un `true_positive`,
+  même si chaque élément pris seul serait anodin. C'est exactement ce que le
+  moteur cherche à faire remonter.
+- Dans le doute sur un incident UEBA, `needs_investigation` est un bon verdict :
+  il n'y a pas d'urgence à trancher sur du signal faible.
+
 Format de sortie — réponds par un UNIQUE objet JSON, sans texte autour, avec
 exactement ces clés dans cet ordre :
 

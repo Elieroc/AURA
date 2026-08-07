@@ -81,7 +81,8 @@ def _valider(brut: dict) -> dict:
 
 SELECT_INCIDENTS = """
 SELECT i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
-       i.alert_count, i.max_level, i.rule_ids, i.mitre_tactics, i.entities
+       i.alert_count, i.max_level, i.rule_ids, i.mitre_tactics, i.entities,
+       i.ueba, i.ueba_score, i.ueba_motifs
   FROM incidents i
  WHERE (%(tous)s
         OR NOT EXISTS (SELECT 1 FROM triages t WHERE t.incident_id = i.id)
@@ -93,8 +94,12 @@ SELECT i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
             AND (%(refresh_ttl)s <= 0
                  OR i.first_seen > now() - make_interval(hours => %(refresh_ttl)s))))
    AND (%(un_seul)s::bigint IS NULL OR i.id = %(un_seul)s)
-   AND i.max_level >= %(min_level)s
- ORDER BY i.max_level DESC, i.first_seen DESC
+   -- Deux populations : les incidents graine-Wazuh (max_level >= MIN_LEVEL) et
+   -- les incidents UEBA, dont le niveau max est BAS par construction (ils
+   -- viennent d'alertes 3-11). Sans la seconde clause, tout ce que le moteur
+   -- comportemental remonte serait silencieusement écarté du triage.
+   AND (i.max_level >= %(min_level)s OR i.ueba)
+ ORDER BY i.ueba, i.max_level DESC, i.first_seen DESC
  LIMIT %(limite)s
 """
 

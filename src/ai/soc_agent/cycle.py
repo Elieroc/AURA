@@ -18,8 +18,8 @@ import sys
 
 import psycopg
 
-from . import (config, correlate, ingest, iris, training, triage, vt, watchdog,
-               whitelist)
+from . import (config, correlate, ingest, iris, training, triage, ueba, vt,
+               watchdog, whitelist)
 
 # Journalisé sur stderr -> capté par `docker compose logs` du conteneur.
 logging.basicConfig(
@@ -73,6 +73,28 @@ def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
                     log.info("vt : %d alerte(s) écartée(s) (exe légitime)", n_vt)
             except Exception as e:  # noqa: BLE001
                 log.warning("filtre VT sauté : %s", e)
+
+            # UEBA entre le filtre VT et la corrélation : il observe les alertes
+            # fraîches, met à jour la baseline comportementale, et PROMEUT en
+            # graine les concentrations LOW/MEDIUM les mieux notées — dans la
+            # limite d'un budget quotidien. Zéro token : le moteur ne juge pas,
+            # il classe. Ce qu'il promeut suit ensuite le chemin de tout le
+            # monde (corrélation -> triage LLM -> case IRIS).
+            #
+            # Best-effort, comme VT : un moteur comportemental en panne ne doit
+            # pas empêcher le pipeline de niveau >= 12 de tourner.
+            try:
+                vues, scorees, promus = ueba.tourner()
+                if vues:
+                    log.info("ueba : %d alertes observées, %d scorées, "
+                             "%d signal/signaux promus", vues, scorees,
+                             len(promus))
+                for s in promus:
+                    log.info("ueba : signal #%s %s score %.1f -> %d alertes "
+                             "graine", s["id"], s["agent_name"], s["score"],
+                             len(s["alert_ids"]))
+            except Exception as e:  # noqa: BLE001
+                log.warning("ueba sauté : %s", e)
 
             n_inc, n_alertes = correlate.correler(config.MIN_LEVEL)
             log.info("correlate : %d alertes -> %d incidents", n_alertes, n_inc)

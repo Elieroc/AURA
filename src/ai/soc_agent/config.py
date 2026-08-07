@@ -588,3 +588,100 @@ TRAINING_MIN_LEVEL = int(os.environ.get("TRAINING_MIN_LEVEL", "12"))
 # est une confiance déclarée par l'administrateur, bornée dans le temps, et
 # chaque exception reste révocable depuis le case IRIS TRAINING.
 TRAINING_MAX_LEVEL = int(os.environ.get("TRAINING_MAX_LEVEL", "15"))
+
+# --- UEBA (analyse comportementale des alertes LOW/MEDIUM) ------------------
+#
+# Troisième étage de réduction, entre le filtre VT et le LLM (cf. ueba.py). Il
+# construit une baseline du comportement normal par machine et par compte, score
+# la RARETÉ de ce qui arrive en bits d'information, et promeut en graine
+# d'incident les concentrations les mieux notées. Objectif : voir l'intrusion
+# discrète qui n'émet que du niveau 3-11, sans envoyer le bruit au LLM.
+UEBA_ENABLED = os.environ.get("UEBA_ENABLED", "true").lower() == "true"
+
+# Maturité d'un profil. Un scope trop jeune n'est PAS scoré : le premier jour,
+# tout y est inédit — scorer enverrait l'intégralité du parc au LLM. On observe
+# d'abord, on juge ensuite. Même philosophie que le mode training, et les deux
+# se cumulent bien : la fenêtre de training amorce gratuitement la baseline.
+UEBA_MATURITE_JOURS = int(os.environ.get("UEBA_MATURITE_JOURS", "7"))
+UEBA_MATURITE_MIN_OBS = int(os.environ.get("UEBA_MATURITE_MIN_OBS", "200"))
+
+# Bits attribués à une valeur JAMAIS vue dans un profil mûr. 12 bits = « une
+# chance sur 4096 », l'ordre de grandeur d'un événement réellement inédit.
+UEBA_FIRSTSEEN_BITS = float(os.environ.get("UEBA_FIRSTSEEN_BITS", "12"))
+
+# Nombre d'hôtes à partir duquel une valeur inédite ICI est jugée banale
+# AILLEURS (déploiement d'admin, mise à jour, outil métier) : son score est
+# alors écrasé. Principal anti-faux-positif du module — sans lui, chaque
+# nouveau binaire poussé sur le parc ouvrirait un incident par machine.
+UEBA_FLOTTE_BANAL = int(os.environ.get("UEBA_FLOTTE_BANAL", "3"))
+
+# Nombre de jours DISTINCTS au-delà duquel une valeur est une habitude et cesse
+# d'être scorée. En jours et non en occurrences : 500 exécutions en un seul jour
+# est un incident, 5 exécutions sur 5 jours est une routine.
+UEBA_JOURS_HABITUEL = int(os.environ.get("UEBA_JOURS_HABITUEL", "5"))
+
+# Plancher de rareté : en dessous, le trait n'est pas retenu comme motif. Évite
+# d'empiler des dixièmes de bit qui finiraient par franchir le seuil sans qu'un
+# seul élément soit anormal.
+UEBA_BITS_MIN_RARETE = float(os.environ.get("UEBA_BITS_MIN_RARETE", "4"))
+
+# Plafonds de saturation. Sans eux, une seule valeur répétée mille fois écrase
+# tout le reste et le score cesse de décrire l'incident.
+UEBA_CAP_TRAIT = float(os.environ.get("UEBA_CAP_TRAIT", "14"))
+UEBA_CAP_ALERTE = float(os.environ.get("UEBA_CAP_ALERTE", "20"))
+
+# Fenêtre de regroupement des alertes basses d'un même agent en un « signal ».
+# Plus large que CORRELATION_GAP_MINUTES : une intrusion discrète est lente, et
+# ici on ne cherche pas un point commun nommable mais une CONCENTRATION.
+UEBA_FENETRE_MINUTES = int(os.environ.get("UEBA_FENETRE_MINUTES", "60"))
+
+# Durée totale maximale d'un signal. Le chaînage est de proche en proche : sans
+# ce plafond, un hôte qui émet une alerte toutes les 50 minutes agglomère sa
+# journée entière en un seul signal — le score enfle par accumulation et non par
+# anomalie. Équivalent de MAX_INCIDENT_HOURS pour la corrélation.
+UEBA_SIGNAL_MAX_HEURES = int(os.environ.get("UEBA_SIGNAL_MAX_HEURES", "6"))
+
+# Chaîne MITRE. Le simple « 3 tactiques distinctes » remonte surtout Discovery
+# x3 (un admin qui inventorie sa machine) : les tactiques sont donc PONDÉRÉES
+# (credential-access = 5, discovery = 1) et un bonus s'ajoute quand elles
+# PROGRESSENT dans l'ordre de la kill chain.
+UEBA_MIN_TACTIQUES = int(os.environ.get("UEBA_MIN_TACTIQUES", "3"))
+UEBA_BONUS_ORDRE = float(os.environ.get("UEBA_BONUS_ORDRE", "3"))
+
+# Score minimal pour qu'un signal puisse être promu. Se calibre sur des données
+# réelles SANS consommer de token : `python -m soc_agent.ueba --simulation`
+# enregistre les signaux et leurs scores sans rien promouvoir.
+UEBA_SCORE_PLANCHER = float(os.environ.get("UEBA_SCORE_PLANCHER", "35"))
+
+# LE garde-fou de coût. Un seuil de score seul ne borne rien : le volume varie
+# d'un facteur dix entre une journée calme et une campagne. Le budget, lui, est
+# un nombre qu'on décide. Un signal non promu n'est pas perdu — il est réévalué
+# au cycle suivant, et son score aura grossi s'il continue.
+# 20 promotions/jour ~ 20 triages LLM/jour ajoutés au coût existant.
+UEBA_BUDGET_JOUR = int(os.environ.get("UEBA_BUDGET_JOUR", "20"))
+UEBA_BUDGET_PAR_CYCLE = int(os.environ.get("UEBA_BUDGET_PAR_CYCLE", "2"))
+
+# Âge au-delà duquel une alerte basse n'est plus candidate à un signal : elle a
+# eu ses chances, la reprendre indéfiniment ferait grossir le lot sans fin.
+UEBA_RETENTION_HOURS = int(os.environ.get("UEBA_RETENTION_HOURS", "24"))
+
+# Taille du lot d'observation par passage. Le tout premier passage doit avaler
+# l'historique déjà en base ; les suivants ne voient que le delta du cycle.
+UEBA_LOT = int(os.environ.get("UEBA_LOT", "20000"))
+
+# Mémoire de la baseline. Un profil qui ne vieillit jamais fige le comportement
+# d'il y a six mois : un serveur réinstallé resterait « normal » sur ses anciens
+# binaires. Les observations plus vieilles sont supprimées et les profils
+# recalculés sur ce qui reste.
+UEBA_MEMOIRE_JOURS = int(os.environ.get("UEBA_MEMOIRE_JOURS", "90"))
+
+# Remédiation autonome sur un incident issu d'un signal UEBA.
+#
+# FALSE par défaut, et c'est délibéré. Le reste du pipeline agit sans validation
+# humaine parce qu'il part d'une graine de niveau >= 12 — une règle Wazuh qui a
+# déjà exigé plusieurs corrélations. Un incident UEBA part, lui, d'un score
+# statistique dont la justesse n'est PAS encore mesurée : le laisser isoler un
+# hôte reviendrait à confier la production à un seuil non calibré. Le LLM rend
+# donc son verdict VP/FP, le case IRIS est créé avec toutes les actions
+# proposées, mais rien n'est exécuté tant que ce drapeau est à false.
+UEBA_MITIGATE = os.environ.get("UEBA_MITIGATE", "false").lower() == "true"

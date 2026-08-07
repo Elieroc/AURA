@@ -127,6 +127,30 @@ def rendre(incident: dict, alertes: list[dict], max_regles: int = MAX_REGLES) ->
     if tactiques:
         lignes.append(f"tactiques MITRE  : {', '.join(tactiques)}")
 
+    # Origine UEBA : sans cette explication, le modèle voit une poignée
+    # d'alertes de niveau 5 et conclut mécaniquement au faux positif — c'est
+    # d'ailleurs le bon réflexe SUR LE NIVEAU SEUL. Ce qui rend l'incident
+    # jugeable, c'est la rareté mesurée : « ce binaire n'a jamais été vu sur cet
+    # hôte ni sur aucun autre ». Quelques dizaines de tokens qui remplacent
+    # avantageusement les alertes brutes.
+    if incident.get("ueba"):
+        lignes.append("")
+        lignes.append(
+            "origine          : moteur comportemental UEBA (aucune règle de "
+            "niveau >= 12 n'a tiré ; l'incident est ouvert sur un écart "
+            f"statistique au comportement habituel, score {incident.get('ueba_score')})")
+        motifs = incident.get("ueba_motifs") or []
+        if motifs:
+            lignes.append("écarts mesurés (le niveau des règles est BAS, "
+                          "c'est la rareté qui porte le signal) :")
+            for m in motifs[:6]:
+                valeur = m.get("valeur") or ""
+                portee = ("sur cet hôte" if m.get("scope") == "host"
+                          else "pour ce compte sur cet hôte")
+                lignes.append(
+                    f"  {m.get('trait')} {neutraliser(str(valeur), 80)} "
+                    f"{portee} — {m.get('note')} (+{m.get('bits')} bits)")
+
     ips = sorted({a["srcip"] for a in alertes if a["srcip"]})
     if ips:
         lignes.append(f"IP sources       : {_tronquer(ips, MAX_IPS)}")

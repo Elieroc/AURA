@@ -225,8 +225,45 @@ def anonymiser(anon: Anonymiseur, incident: dict,
 
         alertes2.append(b)
 
+    # Motifs UEBA : ils portent des VALEURS BRUTES tirées des logs (chemin de
+    # binaire, compte, IP), donc de la PII et des actifs client. Sans cette
+    # passe, `verifier_fuite` refuserait l'incident — fail-closed — et TOUT ce
+    # que le moteur comportemental remonte serait silencieusement écarté du
+    # triage. On pseudonymise par TYPE, avec la même méthode que le champ
+    # correspondant : un chemin garde sa catégorie et son extension, une IP
+    # publique reste en clair (IOC), un compte générique aussi.
+    motifs = inc.get("ueba_motifs")
+    if isinstance(motifs, list):
+        propres = []
+        for m in motifs:
+            m = dict(m)
+            v = m.get("valeur")
+            if v:
+                v = str(v)
+                trait = m.get("trait")
+                if trait in ("exe", "parent_child"):
+                    m["valeur"] = anon.objet(v)
+                elif trait == "compte":
+                    if v.strip().lower() not in COMPTES_GENERIQUES:
+                        interdits.add(v)
+                    m["valeur"] = anon.compte(v)
+                elif trait == "srcip":
+                    if _est_interne(v):
+                        interdits.add(v)
+                    m["valeur"] = anon.ip(v)
+                # pays / heure / dst_port / rule_id : des ATTRIBUTS, pas des
+                # identifiants. Ils portent le signal et sortent verbatim.
+            propres.append(m)
+        inc["ueba_motifs"] = propres
+
     # Passe texte libre sur rule_desc, avec les identifiants collectés.
     liste_interdits = sorted(interdits)
+    # Les notes ("inédit ici, vu sur 2 autres hôtes") sont générées par nous,
+    # mais rien n'y interdit un identifiant repris d'un log : on les passe au
+    # même filtre que les descriptions de règle.
+    for m in (inc.get("ueba_motifs") or []):
+        if m.get("note"):
+            m["note"] = anon.texte_libre(str(m["note"]), liste_interdits)
     for b in alertes2:
         if b.get("rule_desc"):
             b["rule_desc"] = anon.texte_libre(str(b["rule_desc"]),

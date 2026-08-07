@@ -13,6 +13,7 @@ un analyste et qu'il peut contester.
 """
 
 import argparse
+import json
 import re
 from datetime import timedelta
 
@@ -136,9 +137,11 @@ def point_commun(a: dict, b: dict) -> tuple[str, bool] | None:
 
 SELECT_NON_RATTACHEES = """
 SELECT id, ts, agent_id, agent_name, rule_id, rule_level, rule_desc,
-       rule_groups, mitre_tactics, srcip, srcuser, entity, audit_uid
+       rule_groups, mitre_tactics, srcip, srcuser, entity, audit_uid,
+       ueba_seed, ueba_score, ueba_traits
   FROM alerts
- WHERE incident_id IS NULL AND rule_level >= %s AND NOT suppressed
+ WHERE incident_id IS NULL AND NOT suppressed
+   AND (rule_level >= %s OR ueba_seed)
  ORDER BY agent_id, ts, id
 """
 
@@ -161,8 +164,9 @@ SELECT id, ts, agent_id, rule_id, rule_level, rule_groups, mitre_tactics,
 
 INSERT_INCIDENT = """
 INSERT INTO incidents (agent_id, agent_name, first_seen, last_seen,
-                       alert_count, max_level, rule_ids, mitre_tactics, entities)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       alert_count, max_level, rule_ids, mitre_tactics, entities,
+                       ueba, ueba_score, ueba_motifs)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 RETURNING id
 """
 
@@ -448,8 +452,14 @@ def correler(min_level: int, attach_min_level: int | None = None) -> tuple[int, 
         # 2) Nouveaux incidents à partir du reste. Le bruit structurel
         # (SCA/rootcheck/statut d'agent/login réussi) ne peut PAS être une
         # graine, même remonté au-dessus du seuil : il n'ouvre pas de case.
+        # Deux titres pour être graine : le niveau Wazuh (>= min_level), ou la
+        # promotion par le moteur UEBA (`ueba_seed`, posé par ueba.evaluer sur
+        # une concentration comportementale anormale). Le filtre structurel
+        # `_graine_valide` s'applique aux DEUX : un SCA ou un statut d'agent ne
+        # fonde pas un case, même statistiquement rare.
         graines_ids = {a["id"] for a in alertes
-                       if a["rule_level"] >= min_level and _graine_valide(a)}
+                       if (a["rule_level"] >= min_level or a.get("ueba_seed"))
+                       and _graine_valide(a)}
         graines = [a for a in alertes if a["id"] in graines_ids]
         candidats = [a for a in alertes if a["id"] not in graines_ids]
 
@@ -464,6 +474,24 @@ def correler(min_level: int, attach_min_level: int | None = None) -> tuple[int, 
             entites = sorted({a["entity"] for a in groupe if a["entity"]})
             # min/max explicites : l'enrichissement ajoute des membres en fin
             # de liste sans garantie d'ordre chronologique.
+            # Origine UEBA : l'incident n'a pas été ouvert par une règle de
+            # niveau >= 12 mais par un score comportemental. Le triage doit le
+            # savoir (son max_level est bas, il serait autrement hors du lot),
+            # le prompt doit l'expliquer, et la remédiation autonome est bornée
+            # dessus (UEBA_MITIGATE).
+            # Le score et les motifs sont recalculés par la MÊME fonction que
+            # celle du moteur (`ueba.scorer_groupe`) et non ré-agrégés ici : le
+            # découpage de correlate n'est pas celui du signal, et deux formules
+            # pour la même grandeur finiraient par diverger — l'incident
+            # afficherait un score que rien ne permettrait de relier à celui du
+            # signal d'origine. Import différé : ueba n'a pas besoin de
+            # correlate, mais on garde le module chargeable sans lui.
+            ueba_alertes = [a for a in groupe if a.get("ueba_seed")]
+            score_ueba, motifs = (0.0, [])
+            if ueba_alertes:
+                from . import ueba as _ueba
+                score_ueba, motifs = _ueba.scorer_groupe(ueba_alertes)
+
             inc_id = conn.execute(INSERT_INCIDENT, (
                 groupe[0]["agent_id"],
                 groupe[0]["agent_name"],
@@ -474,6 +502,9 @@ def correler(min_level: int, attach_min_level: int | None = None) -> tuple[int, 
                 sorted({a["rule_id"] for a in groupe}),
                 tactiques,
                 entites[:50],   # bornage : un ransomware touche des milliers de fichiers
+                bool(ueba_alertes),
+                round(score_ueba, 2) or None,
+                json.dumps(motifs, ensure_ascii=False) if motifs else None,
             )).fetchone()["id"]
 
             conn.execute(

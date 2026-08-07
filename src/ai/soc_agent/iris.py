@@ -2112,6 +2112,31 @@ def _poser_tache_whitelist(case, case_id: int) -> None:
         log.warning("tâche whitelist non créée (case #%s) : %s", case_id, e)
 
 
+def _remediation_autorisee(incident: dict) -> bool:
+    """La remédiation autonome peut-elle partir sur cet incident ?
+
+    Barrière déterministe, décidée hors du modèle. Le pipeline agit sans
+    validation humaine parce qu'il part d'une graine de niveau >= 12 : une règle
+    Wazuh qui a déjà exigé plusieurs corrélations. Un incident UEBA part, lui,
+    d'un score STATISTIQUE dont la justesse n'est pas encore mesurée — le
+    laisser isoler un hôte reviendrait à confier la production à un seuil non
+    calibré. Le verdict LLM est rendu, le case est créé, les actions proposées
+    sont écrites dans le rapport ; rien n'est exécuté tant que UEBA_MITIGATE
+    est à false.
+
+    Ce n'est PAS un gate humain déguisé : c'est le même raisonnement que
+    `evaluate.py` (« on n'agit pas sur ce qu'on n'a pas mesuré »), appliqué à un
+    moteur neuf. Le drapeau se lève quand les verdicts UEBA auront été labellisés.
+    """
+    if incident.get("ueba") and not config.UEBA_MITIGATE:
+        log.info("#%s : remédiation autonome NON exécutée — incident d'origine "
+                 "UEBA (score %s) et UEBA_MITIGATE=false. Le case porte les "
+                 "actions proposées, l'analyste tranche.",
+                 incident.get("id"), incident.get("ueba_score"))
+        return False
+    return True
+
+
 def creer_case(conn, incident: dict, triage: dict) -> int:
     # Garde-fou d'idempotence : si cet incident double un frère déjà versé dans
     # IRIS (raté de _rattacher_existants), on réutilise son case au lieu d'en
@@ -2190,13 +2215,26 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     # ensuite le récapitulatif. Barrières conservées dans mitigate.executer
     # (dry-run si MITIGATE_EXECUTE=false, suspension si motifs d'injection).
     # Import différé : mitigate importe iris, on casse le cycle à l'appel.
-    if not fp:
+    if not fp and _remediation_autorisee(incident):
         try:
             from . import mitigate
             mitigate.executer(incident["id"])
         except Exception as e:  # noqa: BLE001 — une remédiation KO ne bloque
             # pas la création du case ; elle est tracée en 'échec'.
             log.warning("remédiation auto #%s : %s", incident["id"], e)
+
+    # Vrai positif : les traits UEBA impliqués ne doivent plus jamais devenir
+    # une habitude. Sans ça, un attaquant patient normalise son propre outillage
+    # en le lançant tous les jours jusqu'à ce qu'il cesse d'être scoré.
+    if not fp:
+        try:
+            from . import ueba
+            n = ueba.marquer_tp(incident["id"])
+            if n:
+                log.info("#%s : %d trait(s) UEBA figés (vus en vrai positif)",
+                         incident["id"], n)
+        except Exception as e:  # noqa: BLE001
+            log.warning("marquage UEBA TP #%s : %s", incident["id"], e)
 
     # Note d'analyse, dans un répertoire dédié. Après la remédiation : le récap
     # des actions exécutées en dépend.
@@ -2286,7 +2324,7 @@ def rafraichir_case(conn, incident: dict, triage: dict) -> int:
 
     # Remédiation rejouée : idempotente (clé unique incident/action/cible), elle
     # ne couvre que d'éventuelles nouvelles cibles apparues avec la salve.
-    if not fp:
+    if not fp and _remediation_autorisee(incident):
         try:
             from . import mitigate
             mitigate.executer(incident["id"])
@@ -2327,6 +2365,7 @@ _SELECT_BASE = """
 SELECT DISTINCT ON (i.id)
        i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
        i.alert_count, i.max_level, i.mitre_tactics, i.entities, i.iris_case_id,
+       i.ueba, i.ueba_score, i.ueba_motifs,
        t.verdict, t.confidence, t.mitre, t.actions, t.reason
   FROM incidents i
   JOIN triages t ON t.incident_id = i.id

@@ -363,3 +363,122 @@ CREATE UNIQUE INDEX IF NOT EXISTS training_un_seul_run_actif
 ALTER TABLE whitelist_rules ADD COLUMN IF NOT EXISTS training_run_id bigint
     REFERENCES training_runs(id) ON DELETE SET NULL;
 ALTER TABLE whitelist_rules ADD COLUMN IF NOT EXISTS iris_task_id bigint;
+
+-- ---------------------------------------------------------------------------
+-- UEBA — analyse comportementale des alertes LOW/MEDIUM (cf. ueba.py)
+-- ---------------------------------------------------------------------------
+--
+-- Le pipeline n'ouvre un incident qu'à partir du niveau 12. En dessous tout est
+-- ingéré mais rien ne graine : une intrusion discrète (énumération, binaire
+-- déposé, login depuis un pays jamais vu) est invisible. UEBA construit une
+-- baseline du comportement normal, score la RARETÉ de ce qui arrive, et promeut
+-- en graine les concentrations les mieux notées — dans la limite d'un budget.
+--
+-- Aucune ingestion nouvelle : tout se calcule sur `alerts` et `alerts.raw`.
+
+-- Fait brut agrégé par jour. Une ligne = (qui, quel trait, quelle valeur, quel
+-- jour, combien de fois). C'est la SEULE source de vérité : `ueba_profiles` en
+-- est un résumé recalculable, ce qui permet de faire vieillir la baseline en
+-- supprimant des jours plutôt qu'en décrémentant des compteurs à l'aveugle.
+CREATE TABLE IF NOT EXISTS ueba_observations (
+    scope     text NOT NULL,   -- 'host' | 'user@host'
+    scope_key text NOT NULL,   -- '002' | 'wazuh-admin@002'
+    trait     text NOT NULL,   -- 'exe' | 'parent_child' | 'srcip' | 'pays'…
+    valeur    text NOT NULL,
+    jour      date NOT NULL,
+    nb        integer NOT NULL DEFAULT 0,
+    PRIMARY KEY (scope, scope_key, trait, valeur, jour)
+);
+CREATE INDEX IF NOT EXISTS ueba_obs_jour ON ueba_observations (jour);
+
+-- Résumé roulant par valeur observée.
+--
+-- `days_seen` (nombre de jours DISTINCTS) porte plus d'information que `total` :
+-- 500 exécutions en un seul jour est un incident, 5 exécutions sur 5 jours est
+-- une habitude. C'est ce qui décide qu'une valeur cesse d'être scorée.
+--
+-- `seen_in_tp` : le trait a été impliqué dans un vrai positif. Il ne peut plus
+-- JAMAIS devenir une habitude — sans quoi un attaquant patient normalise son
+-- propre outillage en le lançant tous les jours. Même garde-fou que la
+-- whitelist automatique, qui refuse toute signature déjà vue en TP.
+CREATE TABLE IF NOT EXISTS ueba_profiles (
+    scope      text NOT NULL,
+    scope_key  text NOT NULL,
+    trait      text NOT NULL,
+    valeur     text NOT NULL,
+    total      bigint NOT NULL DEFAULT 0,
+    days_seen  integer NOT NULL DEFAULT 0,
+    first_seen timestamptz,
+    last_seen  timestamptz,
+    seen_in_tp boolean NOT NULL DEFAULT false,
+    PRIMARY KEY (scope, scope_key, trait, valeur)
+);
+-- Rareté sur la FLOTTE : sur combien d'hôtes distincts cette valeur est-elle
+-- connue ? C'est le principal anti-faux-positif — un binaire inédit sur cet
+-- hôte mais présent sur dix autres est un déploiement, pas une intrusion.
+CREATE INDEX IF NOT EXISTS ueba_profiles_flotte
+    ON ueba_profiles (trait, valeur) WHERE scope = 'host';
+
+-- Totaux par scope, dénominateur du calcul de rareté, et MATURITÉ du profil.
+-- Un scope trop jeune n'est pas scoré du tout : le premier jour, tout y est
+-- inédit, et scorer enverrait l'intégralité du parc au LLM.
+CREATE TABLE IF NOT EXISTS ueba_scopes (
+    scope        text NOT NULL,
+    scope_key    text NOT NULL,
+    trait        text NOT NULL,
+    total        bigint NOT NULL DEFAULT 0,
+    distincts    integer NOT NULL DEFAULT 0,
+    premiere_obs timestamptz,
+    derniere_obs timestamptz,
+    PRIMARY KEY (scope, scope_key, trait)
+);
+
+-- Concentration d'alertes basses jugée anormale sur une machine, dans une
+-- fenêtre. Table d'AUDIT autant que de travail : elle garde le score et ses
+-- motifs même quand le signal n'est PAS promu, ce qui permet de calibrer le
+-- plancher sur des données réelles sans consommer un seul token
+-- (`python -m soc_agent.ueba --simulation`).
+CREATE TABLE IF NOT EXISTS ueba_signals (
+    id          bigserial PRIMARY KEY,
+    agent_id    text NOT NULL,
+    agent_name  text,
+    debut       timestamptz NOT NULL,
+    fin         timestamptz NOT NULL,
+    score       double precision NOT NULL,
+    motifs      jsonb NOT NULL DEFAULT '[]',
+    alert_ids   text[] NOT NULL DEFAULT '{}',
+    -- 'promu' : les alertes sont devenues grainables (correlate les traite
+    -- comme une graine malgré leur niveau). 'en_attente' : sous le plancher ou
+    -- budget épuisé — recalculé au cycle suivant, rien n'est perdu.
+    statut      text NOT NULL DEFAULT 'en_attente',
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ueba_signals_statut
+    ON ueba_signals (statut, created_at DESC);
+
+-- Marquage des alertes par le moteur.
+--   ueba_vu     : déjà passée par l'observation (et donc absorbée dans la
+--                 baseline). Le curseur du moteur — on score AVANT d'absorber.
+--   ueba_score  : bits d'information portés par l'alerte.
+--   ueba_traits : le détail qui explique le score. Sert au prompt LLM ET à
+--                 l'analyste : un score sans explication est incontestable,
+--                 donc inutilisable.
+--   ueba_seed   : promue en graine. C'est le seul drapeau que lit correlate.
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS ueba_vu boolean NOT NULL DEFAULT false;
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS ueba_score double precision;
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS ueba_traits jsonb;
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS ueba_seed boolean NOT NULL DEFAULT false;
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS ueba_signal_id bigint;
+CREATE INDEX IF NOT EXISTS alerts_ueba_a_voir
+    ON alerts (ts) WHERE NOT ueba_vu;
+CREATE INDEX IF NOT EXISTS alerts_ueba_seed
+    ON alerts (agent_id, ts) WHERE ueba_seed AND incident_id IS NULL;
+
+-- L'incident vient-il d'un signal UEBA plutôt que d'une graine de niveau >= 12 ?
+-- Le triage doit le savoir (son `max_level` est bas, il serait autrement écarté
+-- du lot), le prompt doit l'expliquer, et la remédiation autonome est bornée
+-- dessus tant que la justesse du moteur n'est pas mesurée (UEBA_MITIGATE).
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS ueba boolean NOT NULL DEFAULT false;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS ueba_score double precision;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS ueba_motifs jsonb;
+CREATE INDEX IF NOT EXISTS incidents_ueba ON incidents (ueba) WHERE ueba;
