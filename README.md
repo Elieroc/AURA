@@ -55,7 +55,7 @@ Le modèle tourne sur l'**API DeepSeek**, pas en local (pas de GPU dédié). Con
 | [`src/shuffle/`](src/shuffle/) | SOAR — orchestration des remédiations (isolation, kill) | ✅ Testé E2E |
 | [`src/iris/`](src/iris/) | DFIR-IRIS — case management, un case par incident trié | ✅ Boucle fermée |
 | [`src/iris/mcp/`](src/iris/mcp/) | Serveur MCP IRIS — investigation interactive | ✅ Connecté |
-| Rules creator | Génération de règles/decoders Wazuh à partir des alertes | 🔜 À venir |
+| UEBA | Traitement des alertes Wazuh LOW/MEDIUM (hors périmètre HIGH/CRITICAL actuel) | 🔜 À venir |
 
 ## Quick start
 
