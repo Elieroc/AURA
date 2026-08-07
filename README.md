@@ -97,7 +97,7 @@ Détail complet (setup, intégrations, tests manuels) : [`wazuh/README.md`](wazu
 ## Structure du dépôt
 
 ```
-Aura-SOC/
+AURA/
 ├── CLAUDE.md            # contexte projet pour Claude Code
 ├── README.md
 ├── assets/              # identité visuelle (logotype, pictogramme SVG)
