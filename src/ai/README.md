@@ -246,7 +246,7 @@ n'écrase pas — c'est ce qui permet de comparer.
 Le pipeline n'attend pas qu'on le lance. `soc_agent.cycle` enchaîne
 ingest → correlate → triage en une exécution ; un conteneur dédié la
 redéclenche en boucle toutes les 5 minutes (`soc-agent-cycle` dans
-[`docker-compose.yml`](docker-compose.yml)). Même schéma pour
+[`docker-compose.yml`](../../docker-compose.yml)). Même schéma pour
 `soc-agent-reconcile` et `soc-agent-whitelist-task` (1 minute chacun).
 
 ```bash
@@ -417,97 +417,37 @@ pas une validation humaine par action.
 ## UEBA — les alertes LOW/MEDIUM (`ueba.py`)
 
 `MIN_LEVEL=12` laisse un angle mort : une intrusion qui n'émet que du niveau
-3-11 (énumération, exécution d'un binaire déposé, connexion depuis un pays
-jamais vu, persistance discrète) n'ouvre jamais d'incident. Baisser le seuil
-noierait le SOC et la facture. UEBA est le troisième étage de réduction :
+3-11 (énumération, exécution d'un binaire déposé, connexion depuis un pays jamais
+vu, persistance discrète) n'ouvre jamais d'incident. Baisser le seuil noierait le
+SOC et la facture — le parc produit ~32 000 alertes de niveau 0-11 pour 110 de
+niveau >= 12.
+
+UEBA est un troisième étage de réduction, **à zéro token** :
 
 ```
-noise filter -> filtre VT -> UEBA (0 token) -> corrélation -> triage LLM -> IRIS
+noise filter -> filtre VT -> UEBA -> corrélation -> triage LLM -> IRIS
 ```
 
-Il ne juge pas, il **classe**. Le verdict VP/FP reste au LLM, en bout de chaîne,
-sur un incident déjà constitué et déjà scoré — jamais sur une alerte isolée.
+Il ne juge pas, il **classe** : baseline du comportement normal par machine et
+par compte, score de rareté **en bits**, regroupement en « signal », promotion des
+mieux notés en graine d'incident. Le verdict VP/FP reste au LLM, en bout de
+chaîne, sur un incident déjà constitué et déjà scoré — jamais sur une alerte
+isolée. Aucune ingestion nouvelle : tout se calcule sur `alerts`/`alerts.raw`.
 
-**Aucune ingestion nouvelle** : tout se calcule sur `alerts` et `alerts.raw`,
-déjà en base (`INGEST_MIN_LEVEL=0` stocke déjà tout).
+Trois points à retenir ici :
 
-### Comment le score est fait
+- **Ce qui borne le coût n'est pas le seuil de score mais `UEBA_BUDGET_JOUR`.**
+  Le volume varie d'un facteur dix entre une journée calme et une campagne ; un
+  signal non promu est réévalué au cycle suivant, rien n'est perdu.
+- **`--simulation` calibre le plancher sans dépenser un token** : `ueba_signals`
+  garde score et motifs de tous les signaux, promus ou non.
+- **`UEBA_MITIGATE=false`** — la remédiation autonome ne part pas sur un incident
+  UEBA. Pas un gate humain : le raisonnement d'`evaluate.py` (on n'agit pas sur
+  ce qu'on n'a pas mesuré) appliqué à un moteur non encore labellisé.
 
-Trois primitives déterministes, toutes explicables à un analyste — même
-exigence que `correlate.py`, et pour la même raison : un score qu'on ne peut pas
-contester ne peut pas justifier une action.
+**Doc complète — conception, traits, garde-fous, réglages, mise en service :
+[`docs/UEBA.md`](../../docs/UEBA.md).**
 
-1. **Rareté (surprisal)** — `-log2(p)` de la valeur dans son scope, en bits.
-   L'unité compte : sommer des bits d'information a un sens, sommer des
-   « points » n'en a pas. Lissage de Laplace, donc jamais de score infini sur un
-   profil maigre.
-2. **Première vue** — la valeur n'existe pas dans un profil **mûr**. Score
-   plafond (`UEBA_FIRSTSEEN_BITS`), **modulé par la rareté sur la flotte** : un
-   binaire inédit ici mais présent sur dix autres hôtes est un déploiement
-   d'admin, pas une intrusion. C'est le principal anti-faux-positif du module.
-3. **Chaîne MITRE** — le brut « 3 tactiques distinctes » remonte surtout
-   `Discovery` x3, soit un admin qui inventorie sa machine. Les tactiques sont
-   donc **pondérées** (credential-access 5, discovery 1) et un bonus s'ajoute
-   quand elles **progressent** dans l'ordre de la kill chain.
-
-Deux scopes : `host` (la machine) et `user@host` (la personne sur cette
-machine — c'est là que se voit la latéralisation). Traits observés : `exe`,
-`parent_child`, `srcip`, `pays`, `dst_port`, `compte`, `rule_id`, `heure`.
-
-`days_seen` (jours **distincts**) décide qu'une valeur est une habitude, pas le
-nombre d'occurrences : 500 exécutions en un seul jour est un incident, 5 sur 5
-jours est une routine.
-
-### Ce qui borne le coût
-
-Le seuil de score ne borne rien — le volume varie d'un facteur dix entre une
-journée calme et une campagne. Ce qui borne, c'est **`UEBA_BUDGET_JOUR`** : un
-nombre de promotions qu'on décide. Un signal non promu n'est pas perdu, il est
-réévalué au cycle suivant et son score aura grossi s'il continue.
-
-Calibrer le plancher **sans consommer un token** :
-
-```bash
-docker exec soc-agent-cycle python -m soc_agent.ueba --simulation
-docker exec soc-agent-cycle python -m soc_agent.ueba --etat
-```
-
-Les signaux sont enregistrés dans `ueba_signals` **avec leur score et leurs
-motifs, promus ou non** : l'histogramme se relit après coup.
-
-### Démarrage à froid
-
-Le tout premier passage ne score **rien** : aucun profil n'est mûr, tout y
-serait inédit. Il avale l'historique et le prend pour baseline. Le scoring
-démarre quand un scope atteint `UEBA_MATURITE_JOURS` jours **et**
-`UEBA_MATURITE_MIN_OBS` observations. La fenêtre de training amorce la baseline
-gratuitement si elle est utilisée.
-
-### Garde-fous
-
-- **`UEBA_MITIGATE=false`** par défaut, et c'est délibéré. Le reste du pipeline
-  agit sans validation humaine parce qu'il part d'une règle Wazuh de niveau
-  >= 12, qui a déjà exigé plusieurs corrélations. Un incident UEBA part d'un
-  score **statistique dont la justesse n'est pas mesurée** : le laisser isoler
-  un hôte reviendrait à confier la production à un seuil non calibré. Le verdict
-  est rendu, le case IRIS créé avec les actions proposées, rien n'est exécuté.
-  Même raisonnement que `evaluate.py` — on n'agit pas sur ce qu'on n'a pas
-  mesuré — appliqué à un moteur neuf.
-- **`seen_in_tp`** : un trait impliqué dans un vrai positif ne peut plus jamais
-  devenir une habitude. Sans ça, un attaquant patient normalise son propre
-  outillage en le lançant tous les jours jusqu'à ce qu'il cesse d'être scoré.
-- Les **motifs partent pseudonymisés** au LLM (`anonymize.anonymiser` les traite
-  par type). Sans cette passe, `verifier_fuite` refuserait l'incident — et tout
-  ce que le moteur remonte serait silencieusement écarté du triage.
-- `_graine_valide` s'applique aussi aux graines UEBA : un SCA ou un statut
-  d'agent ne fonde pas de case, même statistiquement rare.
-
-### Ce qui n'a pas été fait, et pourquoi
-
-Pas de ML non supervisé (isolation forest, autoencodeur). Sans jeu labellisé, sa
-dérive serait indétectable ; un score inexplicable ne peut ni être contesté par
-un analyste ni justifier une remédiation. La surprisal donne le même résultat et
-se lit en une phrase. À reconsidérer **après** le golden set, pas avant.
 
 ## Attention
 
