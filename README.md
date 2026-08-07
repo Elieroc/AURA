@@ -5,11 +5,11 @@
   </picture>
 </p>
 
-<p align="center"><strong>A</strong>utonomous <strong>U</strong>eba <strong>R</strong>esponse <strong>A</strong>nalysis - <strong>SOC</p>
+<p align="center"><strong>A</strong>utonomous <strong>U</strong>eba <strong>R</strong>esponse <strong>A</strong>nalysis - <strong>SOC</strong></p>
 
 ---
 
-XDR autonome pilolé par IA. Détection avec Wazuh, enrichissement threat intel (VirusTotal, AbuseIPDB, GeoIP), triage, whitelisting et remédiation pilotés par un LLM - pas de validation humaine requise. Parce que votre SOC mérite d'être à la hauteur de l'ère de l'intelligence artificielle. 
+XDR autonome piloté par IA. Détection avec Wazuh, enrichissement threat intel (VirusTotal, AbuseIPDB, GeoIP), triage, whitelisting et remédiation pilotés par un LLM - pas de validation humaine requise. Parce que votre SOC mérite d'être à la hauteur de l'ère de l'intelligence artificielle. 
 
 ## Architecture
 
