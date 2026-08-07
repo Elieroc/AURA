@@ -5,15 +5,15 @@
   </picture>
 </p>
 
-<p align="center"><strong>A</strong>utonomous <strong>U</strong>EBA <strong>R</strong>esponse <strong>A</strong>nalysis — <strong>S</strong>ecurity <strong>O</strong>peration <strong>C</strong>enter</p>
+<p align="center"><strong>A</strong>utonomous <strong>U</strong>eba <strong>R</strong>esponse <strong>A</strong>nalysis - <strong>SOC</p>
 
 ---
 
-XDR autonome. Détection avec Wazuh, enrichissement threat intel (VirusTotal, AbuseIPDB, GeoIP), puis triage, whitelist et remédiation pilotés par un LLM — l'action part sur le verdict, sans validation humaine par action.
-
-Le modèle tourne sur l'**API DeepSeek** et non en local : cet hôte n'a pas de GPU et pas les ressources pour un modèle en continu. Conséquence assumée : **le contexte d'alerte quitte l'hôte**, pseudonymisé au préalable (`ai/soc_agent/anonymize.py`, refus d'appel si une valeur réelle survit).
+XDR autonome pilolé par IA. Détection avec Wazuh, enrichissement threat intel (VirusTotal, AbuseIPDB, GeoIP), triage, whitelisting et remédiation pilotés par un LLM - pas de validation humaine requise. Parce que votre SOC mérite d'être à la hauteur de l'ère de l'intelligence artificielle. 
 
 ## Architecture
+
+Le modèle tourne sur l'**API DeepSeek** et non en local : cet hôte n'a pas de GPU et pas les ressources pour un modèle en continu. Conséquence assumée : **le contexte d'alerte quitte l'hôte**, pseudonymisé au préalable (`ai/soc_agent/anonymize.py`, refus d'appel si une valeur réelle survit).
 
 ```
                           ┌─────────────────────────────┐
