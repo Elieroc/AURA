@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/aura-soc-logotype-dark.svg">
-    <img src="assets/aura-soc-logotype.svg" alt="Aura-SOC" width="380">
+    <img src="assets/aura-soc-logotype.svg" alt="Aura-SOC" width="100%">
   </picture>
 </p>
 
