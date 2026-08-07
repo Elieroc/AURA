@@ -456,27 +456,56 @@ services:
       - shuffle
 
 volumes:
+  # Noms épinglés (`name:`) plutôt que laissés au préfixe de projet Compose
+  # implicite : avant la fusion, chaque stack tournait dans son propre projet
+  # (dossier ai/, iris/, shuffle/, wazuh/), donc ses volumes portaient déjà un
+  # préfixe (wazuh_wazuh_etc, iris_iris_downloads...). Fusionner les 4 stacks
+  # dans UN SEUL projet compose change le nom de projet et, sans ce `name:`
+  # explicite, Docker recrée des volumes VIDES sous le nouveau préfixe —
+  # perte silencieuse de toute donnée existante (config agents partagée,
+  # téléchargements/templates IRIS, apps/fichiers Shuffle...). Les noms
+  # ci-dessous sont ceux déjà utilisés en prod : aucune migration de données
+  # requise pour ces volumes-là (contrairement aux 4 bases de données,
+  # converties en bind mount vers ./db/).
   # --- Wazuh (hors bases de données, cf. ./db/) ---
   wazuh_api_configuration:
+    name: wazuh_wazuh_api_configuration
   wazuh_etc:
+    name: wazuh_wazuh_etc
   wazuh_logs:
+    name: wazuh_wazuh_logs
   wazuh_queue:
+    name: wazuh_wazuh_queue
   wazuh_var_multigroups:
+    name: wazuh_wazuh_var_multigroups
   wazuh_integrations:
+    name: wazuh_wazuh_integrations
   wazuh_active_response:
+    name: wazuh_wazuh_active_response
   wazuh_agentless:
+    name: wazuh_wazuh_agentless
   wazuh_wodles:
+    name: wazuh_wazuh_wodles
   filebeat_etc:
+    name: wazuh_filebeat_etc
   filebeat_var:
+    name: wazuh_filebeat_var
   wazuh-dashboard-config:
+    name: wazuh_wazuh-dashboard-config
   wazuh-dashboard-custom:
+    name: wazuh_wazuh-dashboard-custom
   # --- IRIS (hors base de données) ---
   iris_downloads:
+    name: iris_iris_downloads
   user_templates:
+    name: iris_user_templates
   server_data:
+    name: iris_server_data
   # --- Shuffle (hors OpenSearch) ---
   shuffle-apps:
+    name: shuffle_shuffle-apps
   shuffle-files:
+    name: shuffle_shuffle-files
 
 networks:
   # iris_frontend accueillera aussi le soc-agent : il parle à iris-app:8000
