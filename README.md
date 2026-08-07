@@ -46,7 +46,7 @@ Le modèle tourne sur l'**API DeepSeek**, pas en local (pas de GPU dédié). Con
                                     └─────────────────────────────┘
 ```
 
-## Composants
+## Components
 
 | Composant | Rôle | État |
 |-----------|------|------|
@@ -57,7 +57,7 @@ Le modèle tourne sur l'**API DeepSeek**, pas en local (pas de GPU dédié). Con
 | [`src/iris/mcp/`](src/iris/mcp/) | Serveur MCP IRIS — investigation interactive | ✅ Connecté |
 | Rules creator | Génération de règles/decoders Wazuh à partir des alertes | 🔜 À venir |
 
-## Démarrage rapide
+## Quick start
 
 Prérequis : Docker + Docker Compose, `vm.max_map_count=262144`. Un seul
 `.env` et un seul `docker-compose.yml` à la racine pilotent toute la stack.
@@ -84,14 +84,14 @@ schéma Postgres soc-agent, active response) : [`docs/INSTALL.md`](docs/INSTALL.
 | [`docs/TRAINING.md`](docs/TRAINING.md) | mode training : apprendre le bruit ambiant du SI avant de laisser le SOC agir |
 | [`docs/REMEDIATION.md`](docs/REMEDIATION.md) | remédiation autonome de bout en bout + catalogue de toutes les active responses |
 
-## Principes de sécurité
+## Security principles
 
 - **Ce qui sort de l'hôte** : le contexte des incidents part vers l'API DeepSeek **pseudonymisé** (`anonymize.py`, appel refusé si une valeur réelle survit, réhydraté à la réponse). Hash et IP partent aussi aux API VT/AbuseIPDB. Le reste ne quitte pas l'infra.
 - **Pas d'humain dans la boucle, des garde-fous dans le code** : les actions à fort impact (isolation, blocage IP, désactivation de compte) s'exécutent **seules** sur verdict vrai positif — c'est le but du projet. Bornées par des garde-fous déterministes (`actions.appliquer_garde_fous`), pas par un accord humain. **Le LLM n'est pas une frontière de sécurité** : mesuré, 3 injections sur 4 dans les logs retournent son verdict.
 - **Seule exception sous revue humaine** : un changement de règle Wazuh en prod passe par PR git + merge.
 - **Secrets hors dépôt** : clés API, mots de passe et certificats gitignorés ; seuls des `.example` sont versionnés.
 
-## Structure du dépôt
+## Repository structure
 
 ```
 AURA/
