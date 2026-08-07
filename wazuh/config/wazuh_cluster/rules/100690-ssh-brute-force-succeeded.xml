@@ -1,4 +1,4 @@
-<!-- SOC-AI - rule 100690 (level 14). Domain: authentication,ssh,threat_hunting,
+<!-- Aura-SOC - rule 100690 (level 14). Domain: authentication,ssh,threat_hunting,
      Naming convention and load-order trap: see rules/README.md -->
 <group name="authentication,ssh,threat_hunting,">
 

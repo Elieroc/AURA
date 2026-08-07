@@ -7,7 +7,7 @@ $in = Read-ARInput
 $ip = ($in.Args | Select-Object -First 1)
 $S = 'win-allow-ip'
 if (-not $ip) { Write-ARLog $S 'ERROR: no IP (extra_args empty)'; Write-ARResult $S 'error' '' 'no target'; exit 1 }
-$rule = "SOC-AI-block-$ip"
+$rule = "Aura-SOC-block-$ip"
 Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue |
     Remove-NetFirewallRule -ErrorAction SilentlyContinue
 Write-ARLog $S "block rules for '$ip' removed"

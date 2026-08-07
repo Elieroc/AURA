@@ -1,4 +1,13 @@
-# SOC-AI
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/aura-soc-logotype-dark.svg">
+    <img src="assets/aura-soc-logotype.svg" alt="Aura-SOC" width="380">
+  </picture>
+</p>
+
+<p align="center"><strong>A</strong>utonomous <strong>U</strong>EBA <strong>R</strong>esponse <strong>A</strong>nalysis — <strong>S</strong>ecurity <strong>O</strong>peration <strong>C</strong>enter</p>
+
+---
 
 XDR autonome. Détection avec Wazuh, enrichissement threat intel (VirusTotal, AbuseIPDB, GeoIP), puis triage, whitelist et remédiation pilotés par un LLM — l'action part sur le verdict, sans validation humaine par action.
 
@@ -88,9 +97,10 @@ Détail complet (setup, intégrations, tests manuels) : [`wazuh/README.md`](wazu
 ## Structure du dépôt
 
 ```
-SOC-AI/
+Aura-SOC/
 ├── CLAUDE.md            # contexte projet pour Claude Code
 ├── README.md
+├── assets/              # identité visuelle (logotype, pictogramme SVG)
 ├── docs/                # documentation transverse
 │   ├── INSTALL.md       # mise en service du stack
 │   ├── TRAINING.md      # fenêtre d'apprentissage du bruit ambiant

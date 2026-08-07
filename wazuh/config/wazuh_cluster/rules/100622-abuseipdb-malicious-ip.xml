@@ -1,4 +1,4 @@
-<!-- SOC-AI - rule 100622 (level 12). Domain: abuseipdb,threat_intel,
+<!-- Aura-SOC - rule 100622 (level 12). Domain: abuseipdb,threat_intel,
      Naming convention and load-order trap: see rules/README.md -->
 <group name="abuseipdb,threat_intel,">
 

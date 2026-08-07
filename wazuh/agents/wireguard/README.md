@@ -4,7 +4,7 @@ WireGuard (module noyau) n'a **aucun audit natif** : pas de log par pair, pas
 d'événement connect/disconnect — seul `wg show` donne un état instantané.
 `dynamic_debug` noyau (qui journaliserait chaque handshake) n'est pas non
 plus une option ici : `/sys/kernel/debug` inaccessible même en root sur
-wireguard.lab (LXC Proxmox — même contrainte que le manager SOC-AI et sa
+wireguard.lab (LXC Proxmox — même contrainte que le manager Aura-SOC et sa
 capture réseau, cf. `wazuh/README.md`).
 
 **wireguard.lab tourne avec [WGDashboard](https://github.com/donaldzou/WGDashboard)**,

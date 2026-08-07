@@ -12,7 +12,7 @@
      data.yara.scanned_host / data.yara.scanned_ip and routes to the wazuh-yara-* index.
 
      Severity mirrors loki's own tiering (level field): ALERT (score >= alert
-     level, default 80) is treated as HIGH so the SOC-AI triage pipeline
+     level, default 80) is treated as HIGH so the Aura-SOC triage pipeline
      (>= level 12) picks it up; WARNING / NOTICE stay informational. -->
 <group name="local,yara,yaritrust,">
 

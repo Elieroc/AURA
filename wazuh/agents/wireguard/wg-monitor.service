@@ -1,5 +1,5 @@
 [Unit]
-Description=SOC-AI: WireGuard peer connect/disconnect events
+Description=Aura-SOC: WireGuard peer connect/disconnect events
 After=wg-quick@wg0.service
 
 [Service]

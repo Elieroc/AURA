@@ -2149,7 +2149,7 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
         case_description=desc,
         case_customer=config.IRIS_CUSTOMER,
         case_classification=_classification(incident, alertes),
-        soc_id=f"SOC-AI-{incident['id']}",
+        soc_id=f"Aura-SOC-{incident['id']}",
     )
     log.debug("  réponse add_case: success=%s", r.is_success())
     if not r.is_success():

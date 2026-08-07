@@ -1,6 +1,6 @@
 <#
     Reverse of win-host-isolate.ps1: lift the network isolation.
-    Removes the SOC-AI isolation rules and restores the firewall default policy
+    Removes the Aura-SOC isolation rules and restores the firewall default policy
     saved at isolation time (falls back to the Windows default: inbound Block,
     outbound Allow).
 #>
@@ -8,7 +8,7 @@
 $null      = Read-ARInput   # drain stdin; command is always treated as apply
 $stateFile = Join-Path (Split-Path $PSScriptRoot -Parent) 'soc-ai-isolation.state'
 
-Get-NetFirewallRule -DisplayName 'SOC-AI-isolate-*' -ErrorAction SilentlyContinue |
+Get-NetFirewallRule -DisplayName 'Aura-SOC-isolate-*' -ErrorAction SilentlyContinue |
     Remove-NetFirewallRule -ErrorAction SilentlyContinue
 
 $restored = $false

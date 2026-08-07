@@ -2,7 +2,7 @@
   WireGuard (module noyau) n'a pas d'audit natif — pas de log par pair, `wg
   show` donne seulement un état instantané. `dynamic_debug` noyau
   indisponible sur wireguard.lab (LXC Proxmox, /sys/kernel/debug inaccessible
-  même root — même contrainte que le manager SOC-AI).
+  même root — même contrainte que le manager Aura-SOC).
 
   wg-monitor.py (wazuh/agents/wireguard/) lit la base SQLite de WGDashboard —
   déjà installé sur cet hôte, déjà en train de suivre l'état des pairs

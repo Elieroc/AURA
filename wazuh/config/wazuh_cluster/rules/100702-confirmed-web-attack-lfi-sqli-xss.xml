@@ -1,4 +1,4 @@
-<!-- SOC-AI - rule 100702 (level 10). Domain: web,attack,web_attack_soc,
+<!-- Aura-SOC - rule 100702 (level 10). Domain: web,attack,web_attack_soc,
      Naming convention and load-order trap: see rules/README.md -->
 <group name="web,attack,web_attack_soc,">
 

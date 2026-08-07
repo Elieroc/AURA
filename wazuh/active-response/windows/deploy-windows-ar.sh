@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy the SOC-AI Windows/AD active-response scripts to Wazuh agents over WinRM.
+# Deploy the Aura-SOC Windows/AD active-response scripts to Wazuh agents over WinRM.
 #
 #   export WINRM_USER='Administrateur' WINRM_PASS='...'
 #   AGENTS='192.168.30.100 192.168.30.49' MANAGER=192.168.10.5 ./deploy-windows-ar.sh

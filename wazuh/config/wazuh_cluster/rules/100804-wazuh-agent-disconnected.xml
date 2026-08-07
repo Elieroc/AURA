@@ -1,4 +1,4 @@
-<!-- SOC-AI - rule 100804 (level 10). Domain: soc_selfcheck,wazuh,
+<!-- Aura-SOC - rule 100804 (level 10). Domain: soc_selfcheck,wazuh,
      Naming convention and load-order trap: see rules/README.md -->
 <group name="soc_selfcheck,wazuh,">
 

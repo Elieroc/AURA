@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Deploys a Wazuh agent on a Windows host (DC or member) with the full SOC-AI
+    Deploys a Wazuh agent on a Windows host (DC or member) with the full Aura-SOC
     telemetry stack: process-creation auditing with command line, AD-relevant audit
     subcategories, PowerShell ScriptBlock logging, and Sysmon — all shipped to the
     Wazuh manager. Run once on any new host and it emits every event the detection
@@ -379,7 +379,7 @@ Start-Sleep 3
 $report['wazuh_service'] = (Get-Service WazuhSvc).Status
 
 Write-Host ''
-Write-Host '================ SOC-AI telemetry install summary ================' -ForegroundColor Magenta
+Write-Host '================ Aura-SOC telemetry install summary ================' -ForegroundColor Magenta
 $report.GetEnumerator() | ForEach-Object { '{0,-18}: {1}' -f $_.Key, $_.Value } | Write-Host
 Write-Host '=================================================================' -ForegroundColor Magenta
 Write-Host "Verify on the manager: /var/ossec/bin/agent_control -l  (expect '$AgentName' Active)"

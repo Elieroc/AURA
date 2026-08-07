@@ -1,5 +1,5 @@
 [Unit]
-Description=SOC-AI : enrichit audit.log avec le conteneur LXC d'origine
+Description=Aura-SOC : enrichit audit.log avec le conteneur LXC d'origine
 After=auditd.service
 Requires=auditd.service
 

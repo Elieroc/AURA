@@ -1,4 +1,4 @@
-  <!-- SOC-AI : requêtes DNS AdGuard Home -> index wazuh-dns-* (JSON déjà
+  <!-- Aura-SOC : requêtes DNS AdGuard Home -> index wazuh-dns-* (JSON déjà
        structuré, log_format=json = pas de decoder custom). -->
   <localfile>
     <log_format>json</log_format>

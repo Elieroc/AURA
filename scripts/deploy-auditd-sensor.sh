@@ -53,7 +53,7 @@ rm -f /etc/audit/rules.d/audit-wazuh.rules   # ancien nom chargé trop tôt, si 
 log "[3/5] local_internal_options : autorise les <localfile><command> de agent.conf"
 LIO="/var/ossec/etc/local_internal_options.conf"
 grep -q "^logcollector.remote_commands=1" "$LIO" 2>/dev/null || \
-  printf '# SOC-AI : autorise les <localfile><command> poussés par agent.conf\nlogcollector.remote_commands=1\n' >> "$LIO"
+  printf '# Aura-SOC : autorise les <localfile><command> poussés par agent.conf\nlogcollector.remote_commands=1\n' >> "$LIO"
 
 log "[4/5] ossec.conf : localfile audit.log"
 OSSEC_CONF="/var/ossec/etc/ossec.conf"

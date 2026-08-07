@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="Aura-SOC">
+  <style>
+    .ring { stroke: #8b96a5; }
+    .dot  { fill: #ff2d3d; }
+    @media (prefers-color-scheme: dark)  { .ring { stroke: #e6ebf2; } }
+    @media (prefers-color-scheme: light) { .ring { stroke: #4a5567; } }
+  </style>
+  <circle class="ring" cx="100" cy="100" r="70" fill="none" stroke-width="10"
+          stroke-dasharray="196 24" stroke-dashoffset="-12" stroke-linecap="round"/>
+  <circle class="dot" cx="100" cy="100" r="22"/>
+</svg>

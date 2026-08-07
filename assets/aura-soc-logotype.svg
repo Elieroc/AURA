@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 470 140" width="470" height="140" role="img" aria-label="Aura-SOC — Autonomous UEBA Response Analysis">
+  <g transform="translate(8,10) scale(0.6)">
+    <circle cx="100" cy="100" r="70" fill="none" stroke="#4a5567" stroke-width="10"
+            stroke-dasharray="196 24" stroke-dashoffset="-12" stroke-linecap="round"/>
+    <circle cx="100" cy="100" r="22" fill="#ff2d3d"/>
+  </g>
+  <text x="146" y="80" font-family="'Segoe UI', system-ui, -apple-system, Helvetica, Arial, sans-serif"
+        font-size="52" font-weight="700" letter-spacing="2" fill="#10151f">AURA<tspan fill="#ff2d3d">·</tspan>SOC</text>
+  <text x="149" y="106" font-family="'Segoe UI', system-ui, -apple-system, Helvetica, Arial, sans-serif"
+        font-size="14" font-weight="400" letter-spacing="5.5" fill="#6b7688">DETECT · RESPOND</text>
+</svg>

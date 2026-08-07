@@ -1,4 +1,4 @@
-<!-- SOC-AI - rule 100681 (level 12). Domain: ransomware,threat_hunting,linux,
+<!-- Aura-SOC - rule 100681 (level 12). Domain: ransomware,threat_hunting,linux,
      Naming convention and load-order trap: see rules/README.md -->
 <group name="ransomware,threat_hunting,linux,">
 

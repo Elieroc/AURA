@@ -1,4 +1,4 @@
-<!-- SOC-AI - rule 100763 (level 12). Domain: threat_hunting,linux,post_exploitation,
+<!-- Aura-SOC - rule 100763 (level 12). Domain: threat_hunting,linux,post_exploitation,
      Naming convention and load-order trap: see rules/README.md -->
 <group name="threat_hunting,linux,post_exploitation,">
 

@@ -283,7 +283,7 @@ def _creer_case_iris(conn, run: dict, regles: list[dict]) -> int:
         case_description=_description_case(run, regles),
         case_customer=config.IRIS_CUSTOMER,
         case_classification=CLASSIF_TRAINING,
-        soc_id=f"SOC-AI-TRAINING-{run['id']}",
+        soc_id=f"Aura-SOC-TRAINING-{run['id']}",
     )
     if not r.is_success():
         raise RuntimeError(f"création case TRAINING échouée : {r.get_msg()}")

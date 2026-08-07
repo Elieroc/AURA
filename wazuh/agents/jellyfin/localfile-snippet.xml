@@ -1,4 +1,4 @@
-  <!-- SOC-AI : log applicatif Jellyfin -> index wazuh-jellyfin-* (pas de
+  <!-- Aura-SOC : log applicatif Jellyfin -> index wazuh-jellyfin-* (pas de
        nginx, pas de format web ; decoders/jellyfin.xml extrait level/classe).
        Wildcard : un fichier par jour (log_YYYYMMDD.log). -->
   <localfile>

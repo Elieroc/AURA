@@ -1,4 +1,4 @@
-<!-- SOC-AI - rule 100904 (level 0). Domain: local,yara,yaritrust,
+<!-- Aura-SOC - rule 100904 (level 0). Domain: local,yara,yaritrust,
      Naming convention and load-order trap: see rules/README.md -->
 <group name="local,yara,yaritrust,">
 

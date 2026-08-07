@@ -1,5 +1,5 @@
 {#-
-  Rapport d'incident technique — SOC-AI / DFIR-IRIS (type Investigation, Markdown).
+  Rapport d'incident technique — Aura-SOC / DFIR-IRIS (type Investigation, Markdown).
 
   Contexte Jinja fourni par IRIS (app/datamgmt/reporter/report_db.py,
   export_case_json_for_report) : case, iocs, assets, timeline, tasks, notes,
@@ -161,4 +161,4 @@ _Aucune pièce de preuve attachée._
 ---
 
 Rapport généré depuis DFIR-IRIS le {{ dt(export_date) }} UTC — case #{{ case.case_id }} — document `{{ doc_id }}`.
-Chaîne SOC-AI : détection Wazuh → corrélation soc-agent → triage LLM → remédiation autonome. Les verdicts d'analyse sont produits par un modèle de langage et ne constituent pas une frontière de sécurité : les garde-fous sont déterministes (code + scripts d'active response).
+Chaîne Aura-SOC : détection Wazuh → corrélation soc-agent → triage LLM → remédiation autonome. Les verdicts d'analyse sont produits par un modèle de langage et ne constituent pas une frontière de sécurité : les garde-fous sont déterministes (code + scripts d'active response).

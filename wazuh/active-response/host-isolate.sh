@@ -29,7 +29,7 @@ SCRIPT_NAME="host-isolate"
 # Marqueur d'état robuste. Deux formes, complémentaires :
 #  - MARKER : fichier local, vérité terrain inspectable même hors réseau (le
 #    manager garde SSH). Contient un JSON état + horodatage.
-#  - le token SOC-AI-ISOLATION-STATE=<état> écrit dans active-responses.log,
+#  - le token Aura-SOC-ISOLATION-STATE=<état> écrit dans active-responses.log,
 #    ingéré par Wazuh -> interrogeable à distance sans toucher l'agent.
 # La présence de la table nftables reste l'autorité ; le marqueur la reflète.
 MARKER="/var/ossec/isolated"
@@ -57,7 +57,7 @@ poser_marqueur() {
     printf '{"isolated":true,"since":"%s","manager":"%s","table":"%s"}\n' \
         "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$MANAGER_IP" "$TABLE" > "$_tmp" \
         && mv "$_tmp" "$MARKER"
-    log "SOC-AI-ISOLATION-STATE=isolated (marqueur $MARKER)"
+    log "Aura-SOC-ISOLATION-STATE=isolated (marqueur $MARKER)"
 }
 
 # Message AR v2 sur stdin

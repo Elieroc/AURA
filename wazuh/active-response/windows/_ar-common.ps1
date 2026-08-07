@@ -1,5 +1,5 @@
 <#
-    Shared helpers for the SOC-AI Windows / AD active-response scripts.
+    Shared helpers for the Aura-SOC Windows / AD active-response scripts.
     Dot-sourced by every win-*.ps1 and ad-*.ps1 from the same bin directory:
         . "$PSScriptRoot\_ar-common.ps1"
 

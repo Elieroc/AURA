@@ -446,7 +446,7 @@ WireGuard (module noyau) n'a **aucun audit natif** : pas de log par pair,
 seul `wg show` donne un état instantané. `dynamic_debug` noyau (journalise
 chaque handshake) indisponible sur wireguard.lab — `/sys/kernel/debug`
 inaccessible même en root (LXC Proxmox, même contrainte que le manager
-SOC-AI). wireguard.lab tourne avec **WGDashboard**, qui suit déjà l'état des
+Aura-SOC). wireguard.lab tourne avec **WGDashboard**, qui suit déjà l'état des
 pairs dans une base SQLite (status running/stopped calculé par WGDashboard,
 historique des IP source par pair, noms de pairs) — `wg-monitor.py` lit
 cette base en lecture seule plutôt que de réinterroger `wg show` en

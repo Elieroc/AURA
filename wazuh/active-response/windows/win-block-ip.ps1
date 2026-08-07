@@ -9,7 +9,7 @@
 . "$PSScriptRoot\_ar-common.ps1"
 $in  = Read-ARInput
 $ip  = ($in.Args | Select-Object -First 1)
-$rule = "SOC-AI-block-$ip"
+$rule = "Aura-SOC-block-$ip"
 
 function Test-IpBlockable([string]$x) {
     if (-not ($x -as [ipaddress])) { return $false }

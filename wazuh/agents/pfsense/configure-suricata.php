@@ -1,6 +1,6 @@
 <?php
 /*
- * SOC-AI — configure Suricata on pfSense for Wazuh ingestion.
+ * Aura-SOC — configure Suricata on pfSense for Wazuh ingestion.
  *
  * Run as root ON the pfSense box (root shell, not the restricted pfSsh.php menu):
  *
@@ -139,7 +139,7 @@ if (file_exists($stream_rules)) {
 	$sids = array_values(array_unique($sids));
 	sort($sids, SORT_NUMERIC);
 
-	$body = "# SOC-AI: suppress the stream-events category (gen_id 1).\n" .
+	$body = "# Aura-SOC: suppress the stream-events category (gen_id 1).\n" .
 		"# virtio NICs with TCP offload hand Suricata packets it never saw on the\n" .
 		"# wire in one piece, so 'invalid ack' / 'out of window' are artefacts, not\n" .
 		"# evasion. Measured ~200 alerts/s, 98% of all Suricata volume.\n";
@@ -150,7 +150,7 @@ if (file_exists($stream_rules)) {
 	$list = array(
 		'name'             => 'stream-noise',
 		'uuid'             => suricata_generate_id(),
-		'detail'           => 'SOC-AI: stream-events suppressed (virtio offload artefacts)',
+		'detail'           => 'Aura-SOC: stream-events suppressed (virtio offload artefacts)',
 		'suppresspassthru' => base64_encode($body),
 	);
 
@@ -177,7 +177,7 @@ if (file_exists($stream_rules)) {
 }
 
 config_set_path('installedpackages/suricata/rule', $a_rule);
-write_config("Suricata pkg: SOC-AI configuration for {$label} ({$target})");
+write_config("Suricata pkg: Aura-SOC configuration for {$label} ({$target})");
 
 /* Recreates the per-instance directories, rebuilds the rule files when
  * $rebuild_rules is set, and regenerates every suricata.yaml. */

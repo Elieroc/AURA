@@ -1,4 +1,4 @@
-  <!-- SOC-AI : logs Nginx Proxy Manager -> index wazuh-proxy-* (routage dans
+  <!-- Aura-SOC : logs Nginx Proxy Manager -> index wazuh-proxy-* (routage dans
        alerts-pipeline.json sur rule.groups contient "npm-proxy").
        Wildcard : NPM nomme ses logs par host proxy (proxy-host-<id>_*.log),
        la liste change à chaque host ajouté/supprimé dans NPM.

@@ -29,7 +29,7 @@ ar_result() {   # $1 statut  $2 cible  $3 motif
 
 lever_marqueur() {
     rm -f "$MARKER"
-    log "SOC-AI-ISOLATION-STATE=cleared (marqueur $MARKER retiré)"
+    log "Aura-SOC-ISOLATION-STATE=cleared (marqueur $MARKER retiré)"
 }
 
 read -r INPUT_JSON

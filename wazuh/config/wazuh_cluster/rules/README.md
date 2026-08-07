@@ -1,4 +1,4 @@
-# Règles locales SOC-AI — un fichier par règle
+# Règles locales Aura-SOC — un fichier par règle
 
 `wazuh_manager.conf` charge `<rule_dir>etc/rules</rule_dir>`, donc **tous** les
 `*.xml` de ce répertoire, dans l'ordre **alphabétique**. Les fichiers étant
@@ -59,7 +59,7 @@ n'avait pas de sens dupliqué dans chaque fichier. Il est repris ci-dessous.
 Règles : 100800, 100801, 100802, 100805, 100806, 100803, 100804
 
 ```
-Règles locales SOC-AI -->
+Règles locales Aura-SOC -->
 
 <!-- ==========================================================================
      Auto-surveillance du SOC (T1562.001 / T1562.006)

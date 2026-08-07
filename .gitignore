@@ -8,7 +8,7 @@
 secrets/
 wazuh/config/wazuh_cluster/wazuh_manager.conf
 
-# Conf SOC-AI (topologie reseau : IP manager, serveur de preuves)
+# Conf Aura-SOC (topologie reseau : IP manager, serveur de preuves)
 config/soc-ai.conf
 !config/soc-ai.conf.example
 wazuh/config/wazuh_dashboard/wazuh.yml

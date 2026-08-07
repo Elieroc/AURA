@@ -38,9 +38,9 @@ try {
 
 # Allow the manager channel + investigation BEFORE flipping the default to block.
 foreach ($ip in ($allow | Select-Object -Unique)) {
-    New-NetFirewallRule -DisplayName "SOC-AI-isolate-allow-out-$ip" -Direction Outbound `
+    New-NetFirewallRule -DisplayName "Aura-SOC-isolate-allow-out-$ip" -Direction Outbound `
         -RemoteAddress $ip -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
-    New-NetFirewallRule -DisplayName "SOC-AI-isolate-allow-in-$ip"  -Direction Inbound `
+    New-NetFirewallRule -DisplayName "Aura-SOC-isolate-allow-in-$ip"  -Direction Inbound `
         -RemoteAddress $ip -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
 }
 Set-NetFirewallProfile -All -DefaultInboundAction Block -DefaultOutboundAction Block

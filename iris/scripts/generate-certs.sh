@@ -43,13 +43,13 @@ echo "==> CA racine (10 ans)"
 openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
     -keyout "${CA_DIR}/irisRootCAKey.pem" \
     -out "${CA_DIR}/irisRootCACert.pem" \
-    -subj "/C=FR/O=SOC-AI/CN=SOC-AI IRIS Root CA"
+    -subj "/C=FR/O=Aura-SOC/CN=Aura-SOC IRIS Root CA"
 
 echo "==> Certificat serveur pour ${SERVER_NAME} (2 ans)"
 openssl req -newkey rsa:2048 -sha256 -nodes \
     -keyout "${WEB_DIR}/iris_key.pem" \
     -out "${WEB_DIR}/iris.csr" \
-    -subj "/C=FR/O=SOC-AI/CN=${SERVER_NAME}"
+    -subj "/C=FR/O=Aura-SOC/CN=${SERVER_NAME}"
 
 # SAN large : on accède à l'UI aussi bien par localhost que par le nom logique.
 openssl x509 -req -in "${WEB_DIR}/iris.csr" -sha256 -days 730 \

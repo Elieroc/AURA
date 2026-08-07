@@ -1,4 +1,4 @@
-  <!-- SOC-AI : logs Nginx Nextcloud -> index wazuh-web-* (format combined log
+  <!-- Aura-SOC : logs Nginx Nextcloud -> index wazuh-web-* (format combined log
        standard, decodeur natif Wazuh web-accesslog — pas de decoder custom). -->
   <localfile>
     <log_format>syslog</log_format>

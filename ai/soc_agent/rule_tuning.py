@@ -184,7 +184,7 @@ def construire_xml(rule_id: int, parent: str, niveau: int, signature: dict,
         f"       - {c} = {signature[c]}"
         for c in CHAMPS_DISCRIMINANTS_REGLE if c in signature)
 
-    return f"""<!-- SOC-AI - rule {rule_id} (level {niveau}). GÉNÉRÉ AUTOMATIQUEMENT.
+    return f"""<!-- Aura-SOC - rule {rule_id} (level {niveau}). GÉNÉRÉ AUTOMATIQUEMENT.
      Ne pas éditer à la main : régénéré par `python -m soc_agent.rule_tuning`.
      Convention de nommage et piège d'ordre de chargement : voir rules/README.md
      signature-canonique: {_canonique(signature)} -->
@@ -210,7 +210,7 @@ def construire_xml(rule_id: int, parent: str, niveau: int, signature: dict,
   <rule id="{rule_id}" level="{niveau}">
     <if_sid>{escape(parent)}</if_sid>
 {chr(10).join(conditions)}
-    <description>Auto-tuning SOC-AI: known false positive of rule {escape(parent)}</description>
+    <description>Auto-tuning Aura-SOC: known false positive of rule {escape(parent)}</description>
   </rule>
 
 </group>

@@ -67,7 +67,7 @@ $syslog['enable'] = 'enabled';
 $syslog['filter'] = 'enabled'; // catégorie "Firewall Events" : sans ça, filterlog part seulement en local
 $syslog[$slot] = $manager;
 
-write_config("SOC-AI: syslog remote vers Wazuh ($manager) sur $slot, sans toucher aux cibles existantes");
+write_config("Aura-SOC: syslog remote vers Wazuh ($manager) sur $slot, sans toucher aux cibles existantes");
 system_syslogd_start();
 
 echo "OK — $slot = $manager\n";

@@ -1,4 +1,4 @@
-## SOC-AI — règles auditd de l'agent Wazuh
+## Aura-SOC — règles auditd de l'agent Wazuh
 ##
 ## NOM DU FICHIER : IMPORTANT, ne pas renommer sans comprendre.
 ## `augenrules` concatène /etc/audit/rules.d/*.rules dans l'ordre de collation C

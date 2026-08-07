@@ -15,21 +15,21 @@
 # Usage :
 #   IRIS_URL=https://127.0.0.1:8443 IRIS_API_KEY=… \
 #     ./deploy-report-template.sh ../report-templates/incident-technique-fr.md \
-#       "SOC-AI — Rapport d'incident technique (FR)"
+#       "Aura-SOC — Rapport d'incident technique (FR)"
 
 set -euo pipefail
 
 FICHIER="${1:?usage: $0 <template.md> [nom]}"
 # Valeurs par défaut posées à part : une apostrophe dans un ${VAR:-défaut}
 # ouvre une citation pour bash et casse la substitution.
-NOM_DEFAUT="SOC-AI — Rapport d'incident technique (FR)"
+NOM_DEFAUT="Aura-SOC — Rapport d'incident technique (FR)"
 DESCRIPTION_DEFAUT="Rapport d'investigation complet : synthèse, analyse IA, machines, IOC, chronologie, remédiations, preuves."
 NOM="${2:-$NOM_DEFAUT}"
 DESCRIPTION="${DESCRIPTION:-$DESCRIPTION_DEFAUT}"
 # %code_name% = doc_id (AAMMJJ_HHMM). On n'injecte PAS %case_name% : les titres
 # de case du soc-agent contiennent des crochets et pourraient contenir un « / »,
 # qui casserait le chemin d'écriture du fichier généré.
-FORMAT_NOM="${FORMAT_NOM:-SOC-AI_rapport-incident_%code_name%}"
+FORMAT_NOM="${FORMAT_NOM:-Aura-SOC_rapport-incident_%code_name%}"
 LANGUE="${LANGUE:-1}"   # 1 = french (table languages)
 TYPE="${TYPE:-1}"       # 1 = Investigation, 2 = Activities (table report_type)
 

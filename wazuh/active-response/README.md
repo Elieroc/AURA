@@ -1,4 +1,4 @@
-# Active response SOC-AI
+# Active response Aura-SOC
 
 Scripts de remédiation exécutés **sur l'agent**, appelés par l'API Wazuh, le
 serveur MCP ou `ai/soc_agent/mitigate.py`.

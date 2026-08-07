@@ -1,4 +1,4 @@
-<!-- SOC-AI - rule 100746 (level 13). Domain: persistence,threat_hunting,linux,syscheck,
+<!-- Aura-SOC - rule 100746 (level 13). Domain: persistence,threat_hunting,linux,syscheck,
      Naming convention and load-order trap: see rules/README.md -->
 <group name="persistence,threat_hunting,linux,syscheck,">
 

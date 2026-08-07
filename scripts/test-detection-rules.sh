@@ -1,5 +1,5 @@
 #!/bin/sh
-# Rejeu de regression des regles de detection SOC-AI (wazuh-logtest).
+# Rejeu de regression des regles de detection Aura-SOC (wazuh-logtest).
 #
 # Pourquoi ce script : la moitie des regles de niveau >= 12 decrit une action
 # destructive (wipe de disque, rm -rf /home, destruction de snapshots, arret de

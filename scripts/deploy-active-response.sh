@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Déploie les scripts active-response SOC-AI sur des agents Wazuh déjà installés.
+# Déploie les scripts active-response Aura-SOC sur des agents Wazuh déjà installés.
 #
 # Pourquoi ce script existe : `install-agent.sh` ne les posait pas, et un agent
 # sans ces fichiers fait échouer TOUTE remédiation en SILENCE — l'ar.conf poussé

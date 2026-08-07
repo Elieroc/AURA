@@ -1,6 +1,6 @@
 # Purple Team — Couverture MITRE ATT&CK / Atomic Red Team
 
-Suivi de la couverture de détection SOC-AI (Wazuh + soc-agent) contre les tests
+Suivi de la couverture de détection Aura-SOC (Wazuh + soc-agent) contre les tests
 [Atomic Red Team](https://github.com/redcanaryco/atomic-red-team).
 
 ## Lab

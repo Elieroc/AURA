@@ -1,4 +1,4 @@
-<!-- SOC-AI - rule 100647 (level 13). Domain: threat_hunting,linux,mitre_gaps,
+<!-- Aura-SOC - rule 100647 (level 13). Domain: threat_hunting,linux,mitre_gaps,
      Naming convention and load-order trap: see rules/README.md -->
 <group name="threat_hunting,linux,mitre_gaps,">
 

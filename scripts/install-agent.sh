@@ -101,7 +101,7 @@ systemctl enable --now auditd >/dev/null 2>&1
 # canal active-response donne déjà au manager l'exécution root sur l'agent.
 LIO="/var/ossec/etc/local_internal_options.conf"
 grep -q "^logcollector.remote_commands=1" "$LIO" 2>/dev/null || \
-  printf '# SOC-AI : autorise les <localfile><command> poussés par agent.conf\nlogcollector.remote_commands=1\n' >> "$LIO"
+  printf '# Aura-SOC : autorise les <localfile><command> poussés par agent.conf\nlogcollector.remote_commands=1\n' >> "$LIO"
 
 OSSEC_CONF="/var/ossec/etc/ossec.conf"
 if ! grep -q "log_format>audit<" "$OSSEC_CONF" 2>/dev/null; then
@@ -161,7 +161,7 @@ auditctl -l 2>/dev/null | grep -q "execveat" && echo "  règles audit: chargées
   || echo "  audit noyau: DÉSACTIVÉ (enabled != 1) — aucune règle 1006xx ne peut se déclencher"
 sudo -u "$ADMIN_USER" sudo -n true 2>/dev/null && echo "  sudo ${ADMIN_USER}: OK" || echo "  sudo ${ADMIN_USER}: ECHEC"
 [ -x /var/ossec/active-response/bin/firewall-drop.sh ] \
-  && echo "  active-response: scripts SOC-AI présents" \
+  && echo "  active-response: scripts Aura-SOC présents" \
   || echo "  active-response: SCRIPTS ABSENTS — toute remédiation échouera en silence"
 echo
 echo "Terminé. Test depuis le serveur Wazuh :"

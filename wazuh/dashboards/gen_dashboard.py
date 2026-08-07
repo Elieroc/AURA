@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Génère le ndjson des dashboards SOC-AI pour Wazuh dashboard (OSD 2.x).
+"""Génère le ndjson des dashboards Aura-SOC pour Wazuh dashboard (OSD 2.x).
 
 Dashboards :
 - Threat Intel : carte GeoIP, réputation AbuseIPDB, détections VirusTotal

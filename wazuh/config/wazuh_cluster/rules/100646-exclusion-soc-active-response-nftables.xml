@@ -1,4 +1,4 @@
-<!-- SOC-AI - rule 100646 (level 0). Domain: threat_hunting,linux,mitre_gaps,
+<!-- Aura-SOC - rule 100646 (level 0). Domain: threat_hunting,linux,mitre_gaps,
      Naming convention and load-order trap: see rules/README.md -->
 <group name="threat_hunting,linux,mitre_gaps,">
 
@@ -9,7 +9,7 @@
   <rule id="100646" level="0">
     <if_sid>100645</if_sid>
     <regex type="pcre2">host-(?:un)?isolate|66697265776</regex>
-    <description>Exclusion 100645: nftables driven by a SOC-AI active response</description>
+    <description>Exclusion 100645: nftables driven by a Aura-SOC active response</description>
   </rule>
 
 </group>
