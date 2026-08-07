@@ -325,3 +325,30 @@ def test_exe_ne_prend_pas_les_chemins_fim():
     # Conservé, mais comme trait `fichier`, moins pesant et soumis au garde-fou
     # de cardinalité.
     assert [t for t in traits_ if t[2] == "fichier"]
+
+
+def test_tout_trait_non_attribut_est_pseudonymise():
+    """Verrou de non-régression sur l'ajout d'un trait.
+
+    Le trait `fichier` a été ajouté à ueba.py sans être déclaré ici : les
+    chemins sont partis en clair, `verifier_fuite` a refusé l'incident
+    (fail-closed) et le triage UEBA s'est tu. La pseudonymisation fonctionne
+    donc par liste d'EXCLUSION — un trait inconnu est masqué, pas laissé passer.
+    """
+    from soc_agent.anonymize import TRAITS_UEBA_ATTRIBUTS
+
+    inconnus = [t for t in ueba.POIDS if t not in TRAITS_UEBA_ATTRIBUTS]
+    motifs = [{"trait": t, "valeur": r"C:\Users\jdupont\secret.exe",
+               "scope": "host", "bits": 9.0, "note": ""} for t in inconnus]
+    motifs.append({"trait": "trait_invente_demain",
+                   "valeur": "/home/jdupont/x.sh", "scope": "host",
+                   "bits": 9.0, "note": ""})
+
+    inc = dict(_incident_ueba(), ueba_motifs=motifs)
+    anon = Anonymiseur()
+    inc_a, _, interdits = anonymiser(anon, inc, [])
+
+    texte = rendre(inc_a, [])
+    verifier_fuite(texte, interdits)      # ne doit pas lever
+    assert "jdupont" not in texte
+    assert "secret" not in texte

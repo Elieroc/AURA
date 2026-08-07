@@ -37,6 +37,13 @@ import re
 COMPTES_GENERIQUES = {"root", "administrator", "admin", "system", "guest",
                       "-", "n/a", "none", "localsystem", "networkservice"}
 
+# Traits UEBA dont la valeur est un ATTRIBUT et non un identifiant : elle porte
+# le signal analytique (« pays inhabituel », « port inhabituel ») sans désigner
+# un actif client, et sort donc verbatim. Tout trait absent de cette liste est
+# pseudonymisé — y compris un trait ajouté plus tard dans ueba.py (cf. la
+# branche par défaut dans `anonymiser`).
+TRAITS_UEBA_ATTRIBUTS = {"pays", "heure", "dst_port", "rule_id", "chaine_mitre"}
+
 _HASH = re.compile(r"^[A-Fa-f0-9]{32,64}$")
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
@@ -95,8 +102,20 @@ class Anonymiseur:
     # --- transformations par type ------------------------------------------
 
     def ip(self, valeur: str) -> str:
-        """IP interne → jeton ; IP publique (IOC attaquant) → clair."""
-        return self.jeton(valeur, "IP") if _est_interne(valeur) else valeur
+        """IP interne → jeton ; IP publique (IOC attaquant) → clair.
+
+        Une valeur qui n'est PAS une IP est masquée, pas laissée passer :
+        `_est_interne` rend False sur une chaîne non parsable, ce qui la faisait
+        sortir en clair. Un champ d'IP qui contient autre chose est une donnée
+        inattendue — on ne sait pas ce qu'elle porte, donc on la traite comme
+        sensible. Fail-closed, comme le reste du module.
+        """
+        v = str(valeur)
+        try:
+            publique = ipaddress.ip_address(v).is_global
+        except ValueError:
+            return self.jeton(v, "DIVERS")
+        return v if publique else self.jeton(v, "IP")
 
     def compte(self, valeur: str) -> str:
         if str(valeur).strip().lower() in COMPTES_GENERIQUES:
@@ -241,9 +260,7 @@ def anonymiser(anon: Anonymiseur, incident: dict,
             if v:
                 v = str(v)
                 trait = m.get("trait")
-                if trait in ("exe", "parent_child"):
-                    m["valeur"] = anon.objet(v)
-                elif trait == "compte":
+                if trait == "compte":
                     if v.strip().lower() not in COMPTES_GENERIQUES:
                         interdits.add(v)
                     m["valeur"] = anon.compte(v)
@@ -251,8 +268,16 @@ def anonymiser(anon: Anonymiseur, incident: dict,
                     if _est_interne(v):
                         interdits.add(v)
                     m["valeur"] = anon.ip(v)
-                # pays / heure / dst_port / rule_id : des ATTRIBUTS, pas des
-                # identifiants. Ils portent le signal et sortent verbatim.
+                elif trait not in TRAITS_UEBA_ATTRIBUTS:
+                    # Tout le reste passe par `objet` — y compris un trait que
+                    # ce module ne connaît pas encore. Liste d'EXCLUSION et non
+                    # d'inclusion, délibérément : avec une liste d'inclusion,
+                    # ajouter un trait dans ueba.py sans y penser ici le laisse
+                    # fuiter en clair. Ce n'est pas théorique — le trait
+                    # `fichier` a été ajouté après, et `verifier_fuite` a refusé
+                    # l'incident (fail-closed), ce qui aurait silencieusement
+                    # privé de triage tout ce que le moteur remonte.
+                    m["valeur"] = anon.objet(v)
             propres.append(m)
         inc["ueba_motifs"] = propres
 
