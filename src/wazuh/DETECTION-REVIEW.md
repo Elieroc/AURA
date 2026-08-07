@@ -1,13 +1,13 @@
-# Révision des règles High/Critical — 2026-07-27
+# Révision des règles High/Critical
 
 Revue déclenchée par un constat de purple teaming : beaucoup de techniques
-rejouées sur `debian-vm` ne déclenchaient rien. Périmètre : les règles locales de
-niveau ≥ 12, plus les trous que la revue a mis au jour.
+rejouées sur un agent Linux de test ne déclenchaient rien. Périmètre : les
+règles locales de niveau ≥ 12, plus les trous que la revue a mis au jour.
 
 Le ruleset **natif** est hors périmètre après vérification : 376 règles natives
 de niveau ≥ 12 existent, mais la part Linux se limite à `rpc.statd`, `WU-FTPD
 2.6` et `Solaris cachefsd`. Toute la détection utile de cette infra est portée
-par les règles locales (`config/wazuh_cluster/rules/`, un fichier par règle).
+par les règles locales (`src/wazuh/config/wazuh_cluster/rules/`, un fichier par règle).
 
 ---
 
@@ -95,11 +95,10 @@ sur des événements présents. D'où deux mécanismes complémentaires.
   remédiation autonome).
 
 Validé en conditions réelles : audit coupé (`audit_enabled=0`) → **100807 niveau
-13 en ~5 min**. Depuis le 2026-07-31, 100801 ne porte plus que le cas *auditd
-absent/injoignable* (valeur vide) en **niveau 7 (MEDIUM)** : il inondait (982
-alertes/j) sur les hôtes sans auditd et avait déclenché une isolation à tort ;
-sous MIN_LEVEL, il n'ouvre plus d'incident. Le cas « coupé » (hostile) est passé
-à 100807, HIGH.
+13 en ~5 min**. 100801 ne porte que le cas *auditd absent/injoignable* (valeur
+vide) en **niveau 7 (MEDIUM)** : en niveau plus haut, il inondait sur les hôtes
+sans auditd et avait déclenché une isolation à tort ; sous MIN_LEVEL, il
+n'ouvre plus d'incident. Le cas « coupé » (hostile) est passé à 100807, HIGH.
 
 ---
 
@@ -216,7 +215,7 @@ une fenêtre au repos, et l'écriture réelle reste détectée par les deux cana
 
 Deux niveaux, parce qu'aucun des deux ne suffit seul.
 
-**Bout-en-bout sur `debian-vm`** — attaque réellement exécutée, alerte vérifiée
+**Bout-en-bout sur un agent Linux de test** — attaque réellement exécutée, alerte vérifiée
 dans `alerts.json` : contournement `sh -c` de 100653, watch shadow, `service X
 stop`, `auditctl -e0`, `iptables -F`, shell par compte de service, script depuis
 `/run/user`, altération de `/etc/audit`, dépôt de cron / clé SSH / unit systemd /
@@ -227,7 +226,7 @@ GTFOBins, coupure d'audit, et la batterie web (injection de commande, Log4Shell,
 
 **Rejeu logtest** (`scripts/test-detection-rules.sh`, **43 cas, 43 OK**) — pour
 ce que le test bout-en-bout ne peut pas faire : les actions destructives (wipe de
-disque, `rm -rf /home`, destruction de snapshots) et les outils absents de la VM
+disque, `rm -rf /home`, destruction de snapshots) et les outils absents de la VM de test
 (nmap, Docker). Sert aussi de non-régression quand on édite une regex.
 
 Deux pièges de ce harnais, chacun payé en heures :
@@ -261,13 +260,13 @@ Deux pièges de ce harnais, chacun payé en heures :
   (`useradd -o -u 0`) et `100770` (écriture sur `/etc/passwd`).
 - **`-e 2`** : toute évolution des règles auditd impose désormais un redémarrage
   de la machine.
-- **`debian-vm` est isolée** (table nftables `wazuh_isolation`, policy drop),
+- **L'agent de test est isolé** (table nftables `wazuh_isolation`, policy drop),
   reliquat d'une remédiation autonome antérieure. Les tests web ont donc été
   lancés depuis la loopback de la VM. L'isolation n'a pas été levée.
 
 ---
 
-## Addendum 2026-07-27 — règles passées en anglais
+## Addendum — règles passées en anglais
 
 Les 82 fichiers de règles sont désormais intégralement en anglais, descriptions
 comme commentaires. Ce n'est pas cosmétique pour les descriptions : elles
@@ -297,16 +296,16 @@ supprime toute la classe de bug (renommage comme suppression).
 
 Vérifié après bascule : 82 fichiers chargés, 0 identifiant en double,
 `scripts/test-detection-rules.sh` à 43 OK / 0 FAIL, et la batterie d'attaques
-rejouée sur debian-vm redéclenche 100643, 100653, 100654, 100656, 100700,
+rejouée sur l'agent de test redéclenche 100643, 100653, 100654, 100656, 100700,
 100701, 100711, 100748, 100767, 100770 et 100772 avec les libellés anglais.
 
 ---
 
-## Addendum 2026-08-01 — exclusions des FP observés, et un `if_sid` mort
+## Addendum — exclusions des FP observés, et un `if_sid` mort
 
 Les FP « attendus non encore observés » de la section *Limites connues* se sont
-produits, mesurés sur 3 jours de prod : `100711` = 958 alertes, `100645` = 410,
-`100653` = 155. Traités par exclusions figées et non par la whitelist
+produits, mesurés sur plusieurs jours de prod, en volume significatif sur
+`100711`, `100645` et `100653`. Traités par exclusions figées et non par la whitelist
 automatique, contrairement à ce que cette revue prévoyait — pour une raison
 structurelle : les alertes auditd ne portent **ni `data.srcuser` ni
 `data.command`** (tout est sous `data.audit.*`), or `whitelist._signature` ne
@@ -319,9 +318,9 @@ Deux causes racines, toutes deux dans les règles et non dans un manque
 d'exception :
 
 - **`100645`** : le groupe `(?i:...)` englobait la liste d'options, donc `-f`
-  (charger un ruleset) matchait `-F` (flush). Chaque `nft -j -f -` de
-  `pve-firewall` et chaque `nft -f -` de nos propres active responses passait
-  pour un « filtrage réseau vidé » niveau 12.
+  (charger un ruleset) matchait `-F` (flush). Chaque `nft -j -f -` d'un
+  service de pare-feu et chaque `nft -f -` de nos propres active responses
+  passait pour un « filtrage réseau vidé » niveau 12.
 - **`100642`** (exclusion de `100653`) était **morte depuis sa création** : un
   enfant `if_sid` n'est rattaché que si sa parente est déjà chargée, et les
   fichiers sont lus dans l'ordre des identifiants. Renumérotée `100665`. Aucune
@@ -341,9 +340,8 @@ alertes par `scripts/build-exception-cases.py`, parce que les logs de synthèse 
 ces exclusions intestables. Chaque FP tu est apparié au même événement muté en
 attaquant, qui doit toujours tirer.
 
-**`100744` est confirmée muette en prod, pas seulement non validée.** Entre le
-2026-07-29 et le 2026-08-01, cinq comptes UID 0 ont été créés sur cinq hôtes
-(`svc-vpn`, `svc-dns`, `svc-proxy`, `svc-wiki`, `svc-backup`) et vus par le FIM :
-`100744` a produit **0 alerte**. Seule `100762` (`useradd` en execve) a tiré, et
+**`100744` est confirmée muette en prod, pas seulement non validée.** Sur une
+fenêtre de plusieurs jours, cinq comptes UID 0 ont été créés sur cinq hôtes
+distincts et vus par le FIM : `100744` a produit **0 alerte**. Seule `100762` (`useradd` en execve) a tiré, et
 uniquement sur les capteurs Proxmox. Sur un hôte sans auditd, la création d'un
 compte root sort donc en niveau 12 (`100743`) au lieu de 14. À reprendre.

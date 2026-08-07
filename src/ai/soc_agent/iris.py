@@ -395,8 +395,9 @@ def _ip_ioc_valide(ip: str) -> bool:
 def _ip_interne(ip: str) -> bool:
     """Vrai si l'IP appartient à un subnet du parc (cf. config.RESEAUX_INTERNES).
 
-    Volontairement PAS `is_private` : le C2 du lab est en RFC1918 — seule
-    l'appartenance aux subnets déclarés du parc vaut « interne »."""
+    Volontairement PAS `is_private` : un C2 peut être en RFC1918 (VPN, cloud
+    privé...) — seule l'appartenance aux subnets déclarés du parc vaut
+    « interne »."""
     try:
         o = ipaddress.ip_address(str(ip).strip())
     except ValueError:
@@ -444,7 +445,7 @@ def _ips_revshell(alerte: dict) -> set[str]:
     Ne filtre PAS interne/externe : l'appelant tranche (IOC de contexte vs cible
     de blocage). C'est la seule source de l'IP du C2 pour un reverse shell
     auditd — l'événement execve ne porte pas de `srcip`, donc sans ça le C2
-    détecté (rule 100650) n'était jamais bloqué (cf. case 72, 2026-07-31)."""
+    détecté (rule 100650) n'était jamais bloqué (régression mesurée)."""
     raw = alerte["raw"] if isinstance(alerte.get("raw"), dict) else json.loads(
         alerte.get("raw") or "{}")
     full_log = raw.get("full_log") or ""
@@ -541,7 +542,7 @@ def _mitre_observes(alertes: list[dict]) -> set[str]:
 
 # Techniques dont la remédiation ne se déduit d'AUCUNE action d'active
 # response : elles laissent l'attaquant capable de revenir même une fois l'hôte
-# nettoyé. Le case 90 du purple-team a détecté `kerberos::golden` sans que rien
+# nettoyé. Un exercice purple-team a détecté `kerberos::golden` sans que rien
 # nulle part ne dise que le secret krbtgt était à changer — l'incident était
 # clos avec un ticket forgé valable dix ans.
 _REMEDIATIONS_HORS_PORTEE = {
@@ -749,12 +750,12 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
             ajouter(fichier, "filename", "Fichier déposé (emplacement suspect)")
 
         # Outil offensif Windows, exécuté ou déposé hors des répertoires
-        # système. Sans ce bloc, le case 90 du purple-team n'avait qu'UN seul
-        # IOC (le compte créé) : `mimikatz.exe`, lancé sur le contrôleur de
-        # domaine et cité dans une dizaine d'alertes, n'y figurait pas — alors
-        # que c'est l'artefact qu'un analyste cherche en premier et le seul
-        # qu'il puisse chasser sur le reste du parc. Le case 91 n'avait, lui,
-        # aucun IOC du tout.
+        # système. Sans ce bloc, un exercice purple-team a produit un case avec
+        # UN seul IOC (le compte créé) : `mimikatz.exe`, lancé sur le
+        # contrôleur de domaine et cité dans une dizaine d'alertes, n'y
+        # figurait pas — alors que c'est l'artefact qu'un analyste cherche en
+        # premier et le seul qu'il puisse chasser sur le reste du parc. Un
+        # autre case du même exercice n'avait, lui, aucun IOC du tout.
         for champ in ("image", "targetFilename", "sourceImage"):
             chemin = _norm_chemin_win(wev.get(champ))
             if _exe_windows_suspect(chemin):
@@ -799,8 +800,8 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
         # Fichier jugé malveillant par VirusTotal. Même raison que pour YARA de
         # ne pas filtrer sur le répertoire : la qualification vient du moteur.
         #
-        # DEUX conditions, apprises du case 90 (purple-team 2026-08-02), où deux
-        # des trois IOC étaient du bruit pur :
+        # DEUX conditions, apprises d'un exercice purple-team où deux des
+        # trois IOC produits étaient du bruit pur :
         #
         #  1. VirusTotal doit avoir RENDU un verdict de malveillance. Le bloc
         #     ne testait que la présence d'un hash, si bien qu'une réponse
@@ -1130,9 +1131,9 @@ def _section_mitre(alertes: list[dict]) -> str:
     """Tableau ATT&CK des techniques du case (déterministe, pas le LLM).
 
     Ce que les RÈGLES ont mappé, pas la seule technique retenue au triage : le
-    triage n'en rend qu'une (celle qui a emporté sa décision), et le case 90 se
-    résumait ainsi à « T1059.001 PowerShell » alors que les mêmes alertes
-    portaient dcsync, golden ticket et pass-the-hash.
+    triage n'en rend qu'une (celle qui a emporté sa décision), et un case
+    d'exercice s'est ainsi résumé à « T1059.001 PowerShell » alors que les
+    mêmes alertes portaient dcsync, golden ticket et pass-the-hash.
 
     Le nom et la tactique sortent de `rule.mitre` du log brut (les colonnes
     n'en gardent que les identifiants et les tactiques) ; ordre = première
@@ -1297,10 +1298,10 @@ def _section_iocs(alertes: list[dict],
 # Ne JAMAIS afficher « ✅ » sur autre chose qu'un compte rendu de l'agent. Le
 # canal d'active response est fire-and-forget : au moment de l'appel, tout ce
 # qu'on sait est que l'API a pris la commande. L'ancien libellé « ✅ exécuté »
-# était accolé à ce simple accusé de réception, et le rapport du case 90
-# (purple-team 2026-08-02) affirmait à l'analyste que 26 binaires System32 d'un
-# contrôleur de domaine avaient été mis en quarantaine — le script les avait
-# tous refusés. Un rapport qui ment est pire qu'un rapport incomplet.
+# était accolé à ce simple accusé de réception, et un rapport d'exercice
+# purple-team a affirmé à l'analyste que des dizaines de binaires System32
+# d'un contrôleur de domaine avaient été mis en quarantaine — le script les
+# avait tous refusés. Un rapport qui ment est pire qu'un rapport incomplet.
 _STATUT_REMED = {
     "émis": "📤 commande émise (effet non encore confirmé)",
     "confirmé": "✅ confirmé par l'agent",
@@ -1612,9 +1613,9 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict],
     #
     # Le repli met la MÊME phrase dans `resume` et dans `analyse` — c'est
     # inévitable, on n'a que `triage.reason`. Mais il ne doit pas se faire
-    # passer pour un rapport : le case 90 du purple-team affichait deux sections
-    # identiques sans rien signaler, et l'analyste ne pouvait pas savoir qu'il
-    # lisait un repli plutôt qu'une analyse. `_degrade` déclenche plus bas le
+    # passer pour un rapport : un case d'exercice purple-team a affiché deux
+    # sections identiques sans rien signaler, et l'analyste ne pouvait pas
+    # savoir qu'il lisait un repli plutôt qu'une analyse. `_degrade` déclenche plus bas le
     # bandeau d'avertissement, ET empêche d'écraser un rapport déjà écrit.
     degrade = "analyse" not in rapport
     rapport.setdefault("resume", triage["reason"])
@@ -1793,13 +1794,13 @@ def _signature_campagne(alertes: list[dict]) -> set[str]:
     """Marqueurs APPARTENANT à l'attaquant qui relient les hôtes d'une même
     campagne : comptes créés, IP C2 externes, fichiers/hash malveillants.
 
-    Volontairement PAS les IP internes (le rebond admin 192.168.10.1 relierait
-    tout le parc) ni les entités génériques — la sur-fusion se contient en
-    n'admettant qu'un marqueur clairement attaquant. Réutilise `_iocs`.
+    Volontairement PAS les IP internes (un rebond admin relierait tout le
+    parc) ni les entités génériques — la sur-fusion se contient en n'admettant
+    qu'un marqueur clairement attaquant. Réutilise `_iocs`.
 
     Cette fonction ne vaut donc que ce que vaut `_iocs`, et c'est ce qui a
-    manqué au purple-team du 2026-08-02 : les incidents #1993 (winsrv) et #1995
-    (win10) exécutaient le MÊME `mimikatz.exe`, au même chemin, à la même
+    manqué à un exercice purple-team : deux incidents sur deux hôtes Windows
+    distincts exécutaient le MÊME `mimikatz.exe`, au même chemin, à la même
     minute, et sont restés deux cases séparés — parce que `_iocs` n'extrayait
     aucun exécutable Windows, l'un n'avait qu'un marqueur (le compte créé) et
     l'autre aucun. Ajouter les binaires déposés hors système aux IOC répare les

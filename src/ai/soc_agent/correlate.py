@@ -181,8 +181,8 @@ def _grouper(alertes: list[dict]) -> list[list[dict]]:
     # étranger repartaient dans deux incidents distincts. Sur un hôte actif,
     # l'entrelacement est le cas normal, pas l'exception.
     #
-    # Les agents restent cloisonnés : une alerte sur debian-vm n'a pas à
-    # rejoindre un incident du manager.
+    # Les agents restent cloisonnés : une alerte sur un endpoint n'a pas à
+    # rejoindre un incident d'un autre agent.
     ouverts: dict[str, list[list[dict]]] = {}
     fenetre_max = max(ecart_fort, ecart_faible)
 

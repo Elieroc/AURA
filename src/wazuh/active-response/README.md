@@ -28,8 +28,8 @@ Sans ces fichiers, **toute remédiation échoue sans rien remonter** : l'`ar.con
 poussé par le manager déclare bien `firewall-drop.sh`, l'API Wazuh répond `200`
 (elle ne fait que transmettre la commande à l'agent), et rien ne s'exécute. Le
 seul indice est l'absence de ligne dans le `/var/ossec/logs/active-responses.log`
-de l'agent. C'est ce qui a rendu le blocage d'IP inopérant sur le lab jusqu'au
-2026-07-29.
+de l'agent. C'est ce qui peut rendre le blocage d'IP inopérant en silence si le
+déploiement des scripts est oublié.
 
 ## Appel
 
@@ -49,8 +49,8 @@ Sans le `!`, l'API cherche un `<command>` d'`ossec.conf` et peut répondre
 
 `firewall-drop.sh` / `firewall-allow.sh` utilisent `iptables` quand il est
 présent, sinon **nftables** (table dédiée `inet soc_ai_block`, chaîne `input`
-priority -10). Le repli est nécessaire : certains hôtes Debian 12 du lab
-(ex. `adguard-home`) n'embarquent que `nft`, sans le shim iptables.
+priority -10). Le repli est nécessaire : certains hôtes Debian 12 récents
+n'embarquent que `nft`, sans le shim iptables.
 
 La table est **distincte** de `wazuh_isolation` (`host-isolate.sh`) : une
 dé-isolation supprime sa table entière et ne doit pas emporter au passage les

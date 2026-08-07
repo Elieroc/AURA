@@ -54,7 +54,7 @@ Le modèle tourne sur l'**API DeepSeek** et non en local : cet hôte n'a pas de 
 | VirusTotal | Hash des fichiers FIM vérifiés à l'API VT (règles 87103–87105) | ✅ Testé E2E |
 | AbuseIPDB | Réputation IP source des alertes SSH/auth/attaques (règles 100621–100624) | ✅ Testé E2E |
 | GeoIP | Géolocalisation des IP sources (pipeline ingest indexer, GeoLite2 embarquée) | ✅ Actif par défaut |
-| Agents | Déploiement d'agents Wazuh sur les endpoints ([`scripts/install-agent.sh`](scripts/install-agent.sh)) | ✅ debian-vm actif |
+| Agents | Déploiement d'agents Wazuh sur les endpoints ([`scripts/install-agent.sh`](scripts/install-agent.sh)) | ✅ Testé E2E |
 | [`src/shuffle/`](src/shuffle/) | SOAR Shuffle — orchestration des remédiations | ✅ Testé E2E |
 | Remédiation — isolation hôte | Active response nftables via workflow Shuffle ([`src/shuffle/README.md`](src/shuffle/README.md)) | ✅ Testé E2E |
 | [`src/iris/`](src/iris/) | DFIR-IRIS — case management, un case par incident trié (IOC + rapport IA) | ✅ Boucle fermée |

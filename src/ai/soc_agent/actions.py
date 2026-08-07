@@ -144,10 +144,10 @@ def appliquer_garde_fous(verdict: str, actions: list[str], max_level: int,
     # --- Isolation en dernier recours ---------------------------------------
     #
     # Couper un hôte du réseau est l'action la plus chère du catalogue : elle
-    # arrête l'attaque, mais aussi le service. Vécu le 2026-07-29 : un scanner
-    # internet cherchant //adminer.php (404, rien servi) a fait isoler le
-    # reverse proxy de tout le lab. Le blocage de l'IP suffisait, et il était
-    # proposé dans le même verdict.
+    # arrête l'attaque, mais aussi le service. Mesuré : un scanner internet
+    # cherchant //adminer.php (404, rien servi) a fait isoler un reverse proxy
+    # exposant tout un parc. Le blocage de l'IP suffisait, et il était proposé
+    # dans le même verdict.
     #
     # Donc : tant qu'un confinement moins invasif s'applique — bloquer l'IP,
     # tuer le process, désactiver le compte — c'est lui qui part, et

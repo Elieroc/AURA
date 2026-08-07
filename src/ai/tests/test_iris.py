@@ -255,8 +255,8 @@ def test_iocs_dedupliques_et_types():
 
 def test_iocs_ignore_verdict_vt_non_malveillant():
     """Un hash que VirusTotal ne connaît même pas n'est pas un indicateur de
-    compromission. Deux des trois IOC du case 90 (purple-team 2026-08-02)
-    étaient des `found=0, malicious=0` étiquetés « signalé par VirusTotal »."""
+    compromission. Observé à un exercice purple-team : deux des trois IOC d'un
+    case étaient des `found=0, malicious=0` étiquetés « signalé par VirusTotal »."""
     import json
     raw = json.dumps({"data": {"virustotal": {
         "found": "0", "malicious": "0",
@@ -278,7 +278,7 @@ def test_iocs_ignore_les_cles_de_registre():
 
 
 def test_iocs_capte_lexecutable_windows_depose():
-    """mimikatz.exe manquait aux IOC du case 90 alors qu'il était cité par une
+    """mimikatz.exe manquait aux IOC d'un case alors qu'il était cité par une
     dizaine d'alertes — et son absence empêchait aussi la fusion de campagne
     entre les deux hôtes qui l'exécutaient."""
     import json
@@ -307,18 +307,18 @@ def test_iocs_epargne_les_binaires_systeme_et_sondes():
 def test_taguer_ajoute_hostname():
     """Le hostname de la machine touchée devient un tag du case."""
     c = FakeCase(tags="")
-    _taguer(c, 5, "debian-vm")
-    assert c.updates == [{"case_tags": ["debian-vm"]}]
+    _taguer(c, 5, "endpoint-01")
+    assert c.updates == [{"case_tags": ["endpoint-01"]}]
 
 
 def test_taguer_union_sans_ecraser_ni_dupliquer():
     """On complète les tags existants ; un hostname déjà présent ne rejoue rien."""
-    c = FakeCase(tags="prod, debian-vm")
-    _taguer(c, 5, "debian-vm")            # déjà présent
+    c = FakeCase(tags="prod, endpoint-01")
+    _taguer(c, 5, "endpoint-01")            # déjà présent
     assert c.updates == []
     c2 = FakeCase(tags="prod")
-    _taguer(c2, 5, "debian-vm")
-    assert c2.updates == [{"case_tags": ["debian-vm", "prod"]}]
+    _taguer(c2, 5, "endpoint-01")
+    assert c2.updates == [{"case_tags": ["endpoint-01", "prod"]}]
 
 
 def test_poser_note_met_a_jour_l_existante():
@@ -363,7 +363,7 @@ def test_note_tp_fallback_sans_llm(monkeypatch):
     triage = {"verdict": "true_positive", "confidence": "high", "mitre": "T1486",
               "reason": "Ransomware confirmé.",
               "actions": ["propose_isolate_host", "open_case"]}
-    inc = {"id": 1, "agent_name": "debian-vm", "agent_id": "001",
+    inc = {"id": 1, "agent_name": "endpoint-01", "agent_id": "001",
            "first_seen": __import__("datetime").datetime(2026, 7, 22),
            "last_seen": __import__("datetime").datetime(2026, 7, 22),
            "alert_count": 3, "max_level": 15, "mitre_tactics": ["Impact"]}

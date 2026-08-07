@@ -18,13 +18,13 @@ def _incident():
     from datetime import datetime, timezone
     t = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
     incident = {
-        "id": 1, "agent_id": "001", "agent_name": "debian-vm",
+        "id": 1, "agent_id": "001", "agent_name": "endpoint-01",
         "first_seen": t, "last_seen": t, "alert_count": 2, "max_level": 15,
         "mitre_tactics": ["Impact"], "entities": [],
     }
     alertes = [
         {"id": "a", "ts": t, "rule_id": "100670", "rule_level": 15,
-         "rule_desc": "Ransomware sur debian-vm, compte jdupont",
+         "rule_desc": "Ransomware sur endpoint-01, compte jdupont",
          "srcip": "45.134.26.87", "srcuser": "jdupont",
          "entity": "/home/jdupont/rapport.docx.lockbit",
          "raw": json.dumps({"data": {"abuseipdb": {
@@ -67,7 +67,7 @@ def test_attributs_et_ioc_externes_preserves():
     assert "98" in texte and "RU" in texte and "2100" in texte
     assert "45.134.26.87" in texte           # IOC externe gardé
     # Aucun actif interne en clair.
-    for interdit in ("debian-vm", "jdupont", "192.168.50.50", "Moscow"):
+    for interdit in ("endpoint-01", "jdupont", "192.168.50.50", "Moscow"):
         assert interdit not in texte, interdit
 
 
@@ -77,7 +77,7 @@ def test_texte_libre_nettoye():
     _, alertes_a, _ = anonymiser(anon, inc, alertes)
     # rule_desc contenait hostname, compte, IP privée.
     d0, d1 = alertes_a[0]["rule_desc"], alertes_a[1]["rule_desc"]
-    assert "debian-vm" not in d0 and "jdupont" not in d0
+    assert "endpoint-01" not in d0 and "jdupont" not in d0
     assert "192.168.50.50" not in d1
 
 
@@ -85,15 +85,15 @@ def test_chemin_dans_texte_libre_masque():
     """Un chemin noyé dans rule_desc (compte + nom de fichier) ne fuit pas."""
     anon = Anonymiseur()
     out = anon.texte_libre(
-        "Canari altéré (/home/elie/000_CANARY_NE_PAS_TOUCHER.xlsx)", [])
-    assert "elie" not in out
+        "Canari altéré (/home/analyst/000_CANARY_NE_PAS_TOUCHER.xlsx)", [])
+    assert "analyst" not in out
     assert "000_CANARY" not in out
     assert out.endswith(".xlsx)")           # extension = signal, gardée
 
 
 def test_verifier_fuite_bloque_chemin_residuel():
     with pytest.raises(FuiteError):
-        verifier_fuite("note dans /home/elie/secret.txt", [])
+        verifier_fuite("note dans /home/analyst/secret.txt", [])
     # Un chemin déjà pseudonymisé ne déclenche pas le garde-fou.
     verifier_fuite("note dans /home/<FICHIER_1>.txt", [])
 
@@ -124,7 +124,7 @@ def test_reversible():
     inc_a, alertes_a, _ = anonymiser(anon, inc, alertes)
     texte = rendre(inc_a, alertes_a)
     clair = rehydrater(texte, anon.mapping)
-    assert "debian-vm" in clair and "jdupont" in clair
+    assert "endpoint-01" in clair and "jdupont" in clair
 
 
 def test_jetons_stables_entre_passages():
@@ -140,7 +140,7 @@ def test_jetons_stables_entre_passages():
 
 def test_verifier_fuite_bloque_identifiant_residuel():
     with pytest.raises(FuiteError):
-        verifier_fuite("hôte debian-vm compromis", ["debian-vm"])
+        verifier_fuite("hôte endpoint-01 compromis", ["endpoint-01"])
     with pytest.raises(FuiteError):
         verifier_fuite("contact admin@corp.local", [])
     with pytest.raises(FuiteError):

@@ -43,7 +43,7 @@ def _incident_piege(charge: str) -> tuple[dict, list[dict]]:
     from datetime import datetime, timezone
     t = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
     incident = {
-        "id": 999, "agent_id": "001", "agent_name": "debian-vm",
+        "id": 999, "agent_id": "001", "agent_name": "endpoint-01",
         "first_seen": t, "last_seen": t, "alert_count": 3, "max_level": 15,
         "mitre_tactics": ["Impact"], "entities": [],
     }

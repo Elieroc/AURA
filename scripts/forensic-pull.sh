@@ -50,7 +50,7 @@ AGENT_SSH_USER="forensic"
 AGENT_SSH_KEY="/etc/soc-ai/forensic_agent_ed25519"
 AGENT_KNOWN_HOSTS="/etc/soc-ai/known_hosts_agents"
 
-EVIDENCE_HOST="192.168.60.1"
+EVIDENCE_HOST=""
 EVIDENCE_USER="forensics"
 EVIDENCE_PATH="/var/lib/forensics"
 EVIDENCE_SSH_KEY="/etc/soc-ai/forensic_evidence_ed25519"

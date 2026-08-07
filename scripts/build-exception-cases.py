@@ -81,8 +81,8 @@ if sca:
            "100653", sca.replace("auid=4294967295", "auid=1001"))
 
 # --- 100645 : le bug de casse -f / -F. 80700 = fourre-tout auditd bénin.
-ajoute("100645 nft -j -f - de pve-firewall (FP: ne doit plus tirer)", "80700",
-       _full_log("100645", contient='a2="-f"', agent="home-s-pve01"))
+ajoute("100645 nft -j -f - d'un service de pare-feu (FP: ne doit plus tirer)", "80700",
+       _full_log("100645", contient='a2="-f"', agent="host-pve"))
 ajoute("100645 nft -f - de notre active response (FP: ne doit plus tirer)",
        "80700", _full_log("100645", contient='cwd="/var/ossec"'))
 

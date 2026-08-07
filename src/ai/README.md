@@ -17,7 +17,7 @@ Indexer Wazuh ──► ingest ──► alerts ──► correlate ──► in
                             niveau >= 12   par proximité
 ```
 
-Mesuré sur les données réelles du lab :
+Mesuré sur un déploiement réel :
 
 | | |
 |---|---|
@@ -27,10 +27,11 @@ Mesuré sur les données réelles du lab :
 | Charge LLM résultante | 0,4 min de CPU par jour |
 
 Le cas typique : 31 alertes réparties sur 4 règles (`100670`, `100671`,
-`100672`, `100682`) sur `debian-vm` deviennent **un** incident ransomware.
+`100672`, `100682`) sur un même agent deviennent **un** incident ransomware.
 
-Sur ce lab, la marge est confortable. Le rapport reste utile en production, où
-le rapport 5,3 % / facteur 9 dira si l'architecture tient.
+Sur ce déploiement, la marge est confortable. Le rapport reste utile en
+production à plus grande échelle, où le rapport 5,3 % / facteur 9 dira si
+l'architecture tient.
 
 ## Installation
 

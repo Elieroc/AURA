@@ -33,11 +33,11 @@ ENTETE = """
     journaliser. L'API repond pourtant 200 (elle se contente de transmettre) et
     le soc-agent enregistrait donc la remediation comme partie.
 
-    Consequence mesuree sur la campagne purple-team du 2026-08-02 : les 58
-    actions Windows du jour - dont la desactivation du compte `art-backdoor`
-    cree par l'attaquant et la mise en quarantaine de mimikatz - n'ont
-    strictement rien execute. Verifie ensuite sur le controleur de domaine :
-    `art-backdoor` toujours actif, `active-responses.log` sans une seule ligne
+    Consequence mesuree sur un exercice purple-team : des dizaines d'actions
+    Windows dans la meme journee - dont la desactivation d'un compte cree par
+    l'attaquant et la mise en quarantaine de mimikatz - n'ont strictement rien
+    execute. Verifie ensuite sur le controleur de domaine :
+    le compte toujours actif, `active-responses.log` sans une seule ligne
     de nos scripts. Le diagnostic initial (« refusees par la safelist du
     script ») etait faux : elles n'ont jamais atteint le script.
 

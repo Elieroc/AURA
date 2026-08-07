@@ -2,13 +2,12 @@
 #
 # Déploie le CAPTEUR auditd sur un agent Wazuh DÉJÀ ENRÔLÉ.
 #
-# Pourquoi ce script existe séparément de install-agent.sh : les agents du lab ont
-# été enrôlés SANS auditd. Résultat mesuré le 2026-07-29 : auditd absent sur toute
-# la flotte (0 event execve/auditd, cf. `alerts`), donc les ~15 règles
+# Pourquoi ce script existe séparément de install-agent.sh : des agents peuvent
+# avoir été enrôlés SANS auditd. Un déploiement l'a vécu : auditd absent sur
+# toute la flotte (0 event execve/auditd, cf. `alerts`), donc les ~15 règles
 # comportementales 1006xx/1007xx (reverse shell, fileless, énumération privesc,
-# credential access, suid, cve, exploit) n'ont JAMAIS eu de télémétrie — elles sont
-# validées au logtest mais mortes en prod. C'est la moitié de l'explication du
-# case IRIS 13 incomplet (l'autre moitié : Suricata étouffé par un flood).
+# credential access, suid, cve, exploit) n'avaient JAMAIS de télémétrie — elles
+# étaient validées au logtest mais mortes en prod.
 #
 # Ce script est l'extrait auditd de install-agent.sh, rendu idempotent et sans
 # l'enrôlement / le user d'admin / les scripts AR (déjà en place sur un agent vivant).

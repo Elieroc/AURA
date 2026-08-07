@@ -193,7 +193,7 @@ def _throttle_ar() -> None:
 
     `wazuh-execd` traite les active-responses en file ; une rafale de commandes
     rapprochées vers le même agent en fait droper une partie avant même le
-    script (purple-team #3). On tient un intervalle minimal entre deux envois.
+    script (mesuré à l'exercice). On tient un intervalle minimal entre deux envois.
     """
     global _dernier_ar_ts
     gap = config.MITIGATE_AR_GAP_SECONDS
@@ -262,8 +262,8 @@ def _ips_agents() -> set[str]:
     Un hôte du parc qui apparaît en srcip est une victime ou un pivot (l'attaque
     a rebondi PAR lui), pas l'attaquant — on le contient sur SA machine
     (isolation, désactivation de compte), on ne blackhole pas son IP chez un
-    voisin. Mesuré au purple-team du 2026-07-31 : block_ip a visé 192.168.30.46,
-    l'hôte pivot .46 (agent 013, une victime), parce que son subnet n'était pas
+    voisin. Mesuré à un exercice purple-team : block_ip a visé l'IP d'un hôte pivot
+    (une victime, pas l'attaquant), parce que son subnet n'était pas
     dans RESEAUX_INTERNES — l'exclusion par appartenance au parc est robuste
     quel que soit le plan d'adressage, et laisse bloquable un attaquant qui
     partagerait le même subnet sans être un agent.
@@ -297,9 +297,10 @@ def _ip_privee(ip: str) -> bool:
     """IP en plage privée RFC1918/loopback/link-local (pour l'ORDRE de blocage).
 
     Sert uniquement à trier : les IP publiques d'abord. Ce n'est PAS un critère
-    d'exclusion — le C2 du lab est en RFC1918 et doit rester bloquable — juste
-    une priorité : un attaquant réel est le plus souvent hors RFC1918, une IP
-    privée résiduelle est plus probablement un rebond interne mal classé."""
+    d'exclusion — un C2 peut être en RFC1918 (VPN, cloud privé...) et doit
+    rester bloquable — juste une priorité : un attaquant réel est le plus
+    souvent hors RFC1918, une IP privée résiduelle est plus probablement un
+    rebond interne mal classé."""
     try:
         return ipaddress.ip_address(ip).is_private
     except ValueError:
@@ -654,9 +655,9 @@ def _nom_compte(brut: str) -> str:
 # Les libellés de « compte » qui apparaissent dans les events de logon Windows
 # ne sont pas tous des comptes : `Système`, `ANONYMOUS LOGON`, `SERVICE LOCAL`,
 # `UMFD-0` sont des identités bien connues (well-known SID) ou des sessions de
-# service. Le purple-team du 2026-08-02 a envoyé `ad-disable-account` sur trois
+# service. Un exercice purple-team a envoyé `ad-disable-account` sur trois
 # d'entre elles (seul le script AR a refusé). Les deux graphies sont listées :
-# le DC du lab est en français, un DC anglais renvoie l'autre.
+# un DC en français renvoie l'une, un DC anglais renvoie l'autre.
 _COMPTES_WINDOWS_PROTEGES = {
     "administrateur", "krbtgt", "defaultaccount", "wdagutilityaccount",
     "localservice",
@@ -714,11 +715,11 @@ _WIN_EXE_EXT = (".exe", ".dll", ".ps1", ".bat", ".scr", ".com", ".vbs")
 
 # Sondes AppLocker créées par PowerShell lui-même à chaque lancement dans
 # %TEMP% : ce ne sont ni un implant, ni un process de l'attaquant. Le
-# purple-team du 2026-08-02 en a tué et mis en quarantaine dix.
+# exercice purple-team en a tué et mis en quarantaine dix.
 _RE_SONDE_PS = re.compile(r"__PSScriptPolicyTest_", re.IGNORECASE)
 
 # Noms de process trop génériques pour être tués « par nom » : Stop-Process
-# -Name tue TOUTES les instances de la machine. Sur le DC du purple-team, le
+# -Name tue TOUTES les instances de la machine. Sur le DC d'un exercice purple-team, le
 # kill de `powershell` et `wsmprovhost` a coupé les sessions d'administration
 # et toutes les sessions WinRM légitimes. Ces process ne sont tuables que par
 # PID, avec vérification de l'image côté script AR.
@@ -738,7 +739,7 @@ def _norm_chemin_win(brut: str) -> str:
     Wazuh les conserve tels quels — `C:\\\\Windows\\\\System32\\\\cmd.exe` est
     stocké avec deux caractères backslash entre chaque segment. Le test
     d'exclusion des répertoires système comparait donc `c:\\\\windows...` à
-    `c:\\windows` : jamais vrai. Résultat mesuré au purple-team du 2026-08-02 :
+    `c:\\windows` : jamais vrai. Résultat mesuré à un exercice purple-team :
     26 ordres de quarantaine sur des binaires signés de System32 d'un
     contrôleur de domaine (cmd.exe, net.exe, powershell.exe, dsquery.exe…),
     rattrapés uniquement par la safelist du script AR. Normaliser ici est la
@@ -926,10 +927,10 @@ def _cibles_par_machine(action: str, incident: dict,
         #  1. IP invalide (none, loopback, broadcast) écartée ;
         #  2. IP d'un subnet du parc (_ip_interne) écartée — mouvement latéral
         #     interne, pas un C2. « Interne » = subnets listés, PAS tout RFC1918
-        #     (le C2 du lab est privé et doit rester bloquable) ;
+        #     (un C2 peut être privé et doit rester bloquable) ;
         #  3. IP d'un AGENT surveillé écartée — une victime/un pivot n'est pas
-        #     l'attaquant (garde-fou ajouté après le purple-team du 2026-07-31,
-        #     où .46 — l'hôte pivot, agent 013 — a été bloqué à tort).
+        #     l'attaquant (garde-fou ajouté après un exercice purple-team, où
+        #     l'hôte pivot d'une attaque a été bloqué à tort).
         # Puis on ORDONNE (IP publiques d'abord) sans réduire : un bruteforce
         # vient de N IP, toutes à bloquer.
         assets = _ips_agents()
@@ -955,7 +956,7 @@ def _cibles_par_machine(action: str, incident: dict,
                 # 2) IP C2 cible d'un reverse shell /dev/tcp|/dev/udp, extraite
                 #    de la commande : l'execve auditd n'a pas de srcip, donc sans
                 #    ça un reverse shell détecté (100650) restait détecté mais
-                #    jamais bloqué (case 72 : 2667× vers 10.0.0.6, 0 blocage).
+                #    jamais bloqué (régression mesurée : des milliers de hits, 0 blocage).
                 for c2 in _ips_revshell(a):
                     if _bloquable(c2):
                         out.add((ag, c2))
@@ -976,7 +977,7 @@ def _cibles_par_machine(action: str, incident: dict,
                 # Windows : SEULS les comptes CRÉÉS par l'attaquant sont des
                 # cibles. Le `srcuser` d'un 4624/4634 est l'identité qui s'est
                 # connectée — donc la victime, ou une identité système. Le
-                # purple-team du 2026-08-02 en a tiré `Système`, `SERVICE LOCAL`
+                # un exercice purple-team en a tiré `Système`, `SERVICE LOCAL`
                 # et `ANONYMOUS LOGON` : trois ordres de désactivation dans AD,
                 # refusés seulement par le script. Sur Linux, le srcuser reste
                 # exploitable (il provient de l'audit de commande, pas d'un
@@ -1045,7 +1046,7 @@ def _cibles_par_machine(action: str, incident: dict,
 # dès que la commande est mise en file, et le code de retour du script ne
 # revient jamais. Il n'y a donc PAS un statut « exécuté » mais deux moments
 # distincts, et les confondre est ce qui a produit le pire défaut du
-# purple-team du 2026-08-02 — un rapport IRIS annonçant 26 quarantaines
+# exercice purple-team — un rapport IRIS annonçant des dizaines de quarantaines
 # réussies de binaires System32 sur un contrôleur de domaine, quand le script
 # les avait toutes refusées :
 #
@@ -1185,7 +1186,7 @@ RETURNING id
 # PAS partie — c'est « la commande est partie », pas « elle a eu l'effet voulu ».
 # Une action restée 'émis' (aucun `ar-result` de confirmation) est retentée
 # jusqu'à MITIGATE_MAX_TENTATIVES : sans quoi un compte attaquant recréé sous un
-# incident déjà ouvert n'est jamais désactivé (purple-team #2/#3 : `art-backdoor`
+# incident déjà ouvert n'est jamais désactivé (mesuré à l'exercice : `art-backdoor`
 # figé sur un 'émis' hérité, disable_user jamais rejoué). 'confirmé'/'sans_effet'
 # sont, eux, des réponses de l'agent : terminaux.
 _STATUTS_FIGES = ("confirmé", "sans_effet", "refusé_agent",
@@ -1405,9 +1406,10 @@ def reconcilier_resultats_ar() -> list[dict]:
     100931-100934 en font des alertes ; ici on les rapproche de la table
     `mitigations` sur (agent, script, cible) et on fige le vrai statut.
 
-    Sans cette boucle, un refus du script était invisible : le rapport IRIS du
-    2026-08-02 annonçait 26 quarantaines réussies de binaires System32 sur un
-    contrôleur de domaine, quand le script les avait toutes déclinées.
+    Sans cette boucle, un refus du script était invisible : un rapport IRIS
+    d'exercice a annoncé des dizaines de quarantaines réussies de binaires
+    System32 sur un contrôleur de domaine, quand le script les avait toutes
+    déclinées.
 
     Une remédiation qui ne reçoit AUCUN compte rendu reste 'émis' — jamais
     promue en succès. C'est le bon défaut : un script qui meurt avant d'écrire

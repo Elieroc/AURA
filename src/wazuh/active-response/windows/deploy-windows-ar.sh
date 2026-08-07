@@ -2,7 +2,7 @@
 # Deploy the Aura-SOC Windows/AD active-response scripts to Wazuh agents over WinRM.
 #
 #   export WINRM_USER='Administrateur' WINRM_PASS='...'
-#   AGENTS='192.168.30.100 192.168.30.49' MANAGER=192.168.10.5 ./deploy-windows-ar.sh
+#   AGENTS='10.0.1.100 10.0.1.49' MANAGER=10.0.1.5 ./deploy-windows-ar.sh
 #
 # For each action it pushes <action>.ps1 (the logic) plus <action>.exe — a copy of
 # a tiny compiled wrapper (ar-wrapper.cs). wazuh-execd on Windows launches the

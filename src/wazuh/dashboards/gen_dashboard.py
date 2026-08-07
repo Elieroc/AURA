@@ -1116,7 +1116,7 @@ objs.append(dashboard("soc-ai-web", "Web",
     ]))
 
 objs.append(dashboard("soc-ai-yara", "YARA",
-    "Scans YARA/IOC Loki (YARITRUST, index wazuh-yara-*) : fichiers malveillants detectes par machine du lab.",
+    "Scans YARA/IOC Loki (YARITRUST, index wazuh-yara-*) : fichiers malveillants detectes par machine.",
     [
         ("soc-ai-yara-total",     0,  0, 12, 12),
         ("soc-ai-yara-timeline", 12,  0, 36, 12),

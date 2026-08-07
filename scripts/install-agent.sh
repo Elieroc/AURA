@@ -16,7 +16,7 @@
 #   ./install-agent.sh -m <MANAGER_IP> -k "<CLE_PUBLIQUE_SSH>" [-n <AGENT_NAME>] [-v <VERSION>]
 #
 # Exemple :
-#   ./install-agent.sh -m 192.168.60.1 -k "ssh-ed25519 AAAA... soc" -n debian-vm
+#   ./install-agent.sh -m 10.0.1.5 -k "ssh-ed25519 AAAA... soc" -n endpoint-01
 
 set -euo pipefail
 

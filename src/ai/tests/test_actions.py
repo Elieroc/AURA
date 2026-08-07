@@ -71,7 +71,7 @@ def test_isolation_retiree_si_confinement_moins_invasif_suffit():
 def test_isolation_maintenue_si_compromission_active():
     """Compromission active de l'hôte (webshell/reverse shell/rootkit) :
     l'isolation est MAINTENUE malgré le block_ip — couper l'IP ne déloge pas un
-    attaquant déjà installé. Régression du purple-team du 2026-07-31 (.15)."""
+    attaquant déjà installé. Régression mesurée à un exercice purple-team."""
     actions, motifs = appliquer_garde_fous(
         "true_positive", ["propose_isolate_host", "propose_block_ip"],
         max_level=13, injection_suspectee=False, compromission_active=True)

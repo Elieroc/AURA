@@ -114,9 +114,9 @@ SSH depuis le manager (`scripts/forensic-*.sh`), hors du périmètre du triage.
   s'applique (bloquer l'IP, tuer le process, désactiver le compte, quarantaine),
   c'est lui qui part et l'isolation est retirée — avec `escalate_human` en
   remplacement, pour que l'analyste voie qu'elle a été jugée pertinente.
-  Vécu le 2026-07-29 : un scanner internet cherchant `//adminer.php` (404, rien
-  servi) a fait isoler le reverse proxy de tout le lab, alors que le blocage
-  d'IP était proposé dans le même verdict.
+  Mesuré : un scanner internet cherchant `//adminer.php` (404, rien
+  servi) a fait isoler un reverse proxy exposant tout un parc, alors que le
+  blocage d'IP était proposé dans le même verdict.
   **Exception** : en compromission active de l'hôte (post-exploitation avérée —
   webshell, reverse shell, rootkit, persistance root, cf.
   `config.RULES_COMPROMISSION_HOTE`), l'isolation est **maintenue** en plus du
@@ -143,7 +143,7 @@ plusieurs machines. Chaque remédiation part donc sur **la machine où sa preuve
   défaut (`ISOLATION_REFUS_SI_ROLE_INCONNU`).
 - **`block_ip`** écarte : IP invalide/loopback, IP d'un subnet du parc
   (mouvement latéral ≠ C2), et **IP d'un agent surveillé** (une victime ou un
-  pivot n'est pas l'attaquant — ajouté après le purple-team du 2026-07-31 où
+  pivot n'est pas l'attaquant — ajouté après un exercice purple-team où
   l'hôte pivot a été bloqué à tort). Les IP restantes sont toutes bloquées,
   publiques d'abord : un bruteforce vient de N sources.
   Les IP C2 sont aussi extraites des redirections `/dev/tcp|udp` du proctitle —
@@ -152,7 +152,7 @@ plusieurs machines. Chaque remédiation part donc sur **la machine où sa preuve
 - **`disable_user`** : sur Windows, **seuls les comptes créés par l'attaquant**
   sont des cibles, et l'exécution est routée vers un **DC** (`AGENTS_DC`) — le
   `srcuser` d'un 4624 est l'identité qui s'est connectée, donc la victime ou un
-  compte système (le purple-team du 2026-08-02 en a tiré `Système`,
+  compte système (un exercice purple-team en a tiré `Système`,
   `SERVICE LOCAL` et `ANONYMOUS LOGON`). Sur Linux le `srcuser` provient de
   l'audit de commande, il reste exploitable.
 - **`kill_process`** : Linux, uniquement les exécutables lancés depuis
@@ -264,8 +264,8 @@ architecturale, pas un gate humain.
 
 L'API Wazuh est **fire-and-forget** : un `200` signifie seulement que la commande
 est partie. Sans compte rendu, `mitigations.statut` ne voulait rien dire — le
-rapport IRIS du 2026-08-02 annonçait 26 quarantaines réussies de binaires
-System32 sur un contrôleur de domaine, que le script avait toutes déclinées.
+rapport IRIS d'exercice a annoncé des dizaines de quarantaines réussies de
+binaires System32 sur un contrôleur de domaine, que le script avait toutes déclinées.
 
 Chaque script écrit donc une ligne `ar-result` (`status`, `target`, `reason`),
 décodée par la règle **100930** :
@@ -331,11 +331,11 @@ docker exec soc-agent-cycle python -m soc_agent.mitigate --desisoler 003
 | `MITIGATE_EXECUTE` | `false` | `true` = les remédiations partent réellement. `false` = dry-run global (bac à sable), **pas** une demande de validation humaine |
 | `MITIGATE_MAX_TENTATIVES` | `3` | rejeux d'une action restée `émis` |
 | `MITIGATE_AR_GAP_SECONDS` | `1.5` | espacement des appels AR (une rafale se perd) |
-| `MITIGATE_ISOLATE_ALLOW` | `192.168.10.5` | IP restant joignables depuis un hôte isolé |
+| `MITIGATE_ISOLATE_ALLOW` | *(vide)* | IP(s) restant joignables depuis un hôte isolé — à définir par déploiement |
 | `AGENTS_PROTEGES` | `000` | jamais une cible |
-| `AGENTS_CAPTEURS` | `010` | capteurs d'hôte : jamais une cible (théâtre réel = machine surveillée) |
-| `AGENTS_WINDOWS` | `014,015` | route vers les AR Windows |
-| `AGENTS_DC` | `014` | contrôleurs de domaine : exécutent les actions AD |
+| `AGENTS_CAPTEURS` | *(vide)* | capteurs d'hôte : jamais une cible (théâtre réel = machine surveillée) — id d'agents à lister par déploiement |
+| `AGENTS_WINDOWS` | *(vide)* | route vers les AR Windows — id d'agents à lister par déploiement |
+| `AGENTS_DC` | *(vide)* | contrôleurs de domaine : exécutent les actions AD — id d'agents à lister par déploiement |
 | `SHUFFLE_WEBHOOK_ISOLATE` / `_KILL` | — | webhooks des workflows Shuffle |
 
 ## Déploiement des scripts — obligatoire, à échec silencieux
@@ -344,8 +344,8 @@ Les scripts doivent être dans `/var/ossec/active-response/bin/` de **chaque
 agent** (`root:wazuh`, 750). Sans eux, **toute remédiation échoue sans rien
 remonter** : l'`ar.conf` déclare bien la commande, l'API répond `200`, et rien
 ne s'exécute. Le seul indice est l'absence de ligne dans
-`/var/ossec/logs/active-responses.log` de l'agent. C'est ce qui a rendu le
-blocage d'IP inopérant sur le lab jusqu'au 2026-07-29.
+`/var/ossec/logs/active-responses.log` de l'agent. C'est ce qui peut rendre le
+blocage d'IP inopérant en silence si le déploiement des scripts est oublié.
 
 ```sh
 # Linux — depuis le dépôt
@@ -353,11 +353,11 @@ blocage d'IP inopérant sur le lab jusqu'au 2026-07-29.
 
 # Windows / AD — via WinRM, + enregistrement des <command> sur le manager
 export WINRM_USER='Administrateur' WINRM_PASS='...'
-AGENTS='192.168.30.100 192.168.30.49' MANAGER=192.168.10.5 \
-  ./wazuh/active-response/windows/deploy-windows-ar.sh
+AGENTS='10.0.1.100 10.0.1.49' MANAGER=10.0.1.5 \
+  ./src/wazuh/active-response/windows/deploy-windows-ar.sh
 
 # manager de prod dont wazuh_manager.conf est gitignoré : insertion aux ancres
-python3 scripts/patch-manager-ar-windows.py /opt/AURA/wazuh/config/wazuh_cluster/wazuh_manager.conf
+python3 scripts/patch-manager-ar-windows.py /opt/AURA/src/wazuh/config/wazuh_cluster/wazuh_manager.conf
 ```
 
 **L'enregistrement n'est pas optionnel** : execd n'exécute qu'une commande

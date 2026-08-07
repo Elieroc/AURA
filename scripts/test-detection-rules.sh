@@ -3,11 +3,11 @@
 #
 # Pourquoi ce script : la moitie des regles de niveau >= 12 decrit une action
 # destructive (wipe de disque, rm -rf /home, destruction de snapshots, arret de
-# l'audit). On ne peut pas les valider en les executant sur debian-vm. On rejoue
+# l'audit). On ne peut pas les valider en les executant sur un agent de test. On rejoue
 # donc des evenements auditd de synthese contre le moteur de regles du manager.
 #
 # Les cas NON destructifs sont valides EN PLUS sur l'agent reel (cf.
-# wazuh/DETECTION-REVIEW.md) : ce script ne remplace pas le test bout-en-bout,
+# src/wazuh/DETECTION-REVIEW.md) : ce script ne remplace pas le test bout-en-bout,
 # il couvre ce que le test bout-en-bout ne peut pas faire et sert de filet de
 # non-regression quand on edite une regex.
 #
@@ -95,7 +95,7 @@ audit_case "100653 sh -c cat /etc/shadow"   100653 /usr/bin/dash   'argc=3 a0="s
 audit_case "100660 CVE dans le binaire"     100660 /usr/bin/python3 'argc=2 a0="python3" a1="CVE-2021-4034.py"'
 
 echo "== Post-exploitation (pack 100760+) =="
-# Cas non rejouables sur debian-vm : nmap/masscan et Docker n'y sont pas
+# Cas non rejouables sur un agent de test : nmap/masscan et Docker n'y sont pas
 # installes. Le reste du pack est valide en direct sur l'agent.
 audit_case "100769 nmap"                    100769 /usr/bin/nmap   'argc=4 a0="nmap" a1="-sS" a2="-p-" a3="10.0.0.0/24"'
 audit_case "100769 masscan"                 100769 /usr/bin/masscan 'argc=3 a0="masscan" a1="-p80" a2="0.0.0.0/0"'

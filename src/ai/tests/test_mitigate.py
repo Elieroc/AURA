@@ -1,11 +1,17 @@
 """Logique pure de la remédiation (sans Shuffle, Wazuh ni IRIS)."""
 
+import ipaddress
 import json
 
+from soc_agent import iris as _iris_mod
 from soc_agent import mitigate
 from soc_agent.mitigate import (REMEDIATIONS, REVERSEURS, _cibles_par_machine,
                                 _comptes_crees, _desc_tache, _interpreter,
                                 _ip_privee, _taches_annulees)
+
+# RESEAUX_INTERNES est vide par défaut (aucun parc de test) : les cas qui
+# testent l'exclusion « IP du parc » doivent déclarer un subnet explicitement.
+_RESEAU_TEST = [ipaddress.ip_network("192.168.10.0/24")]
 
 
 def _alerte_proctitle(cmd: str, agent_id: str = "001") -> dict:
@@ -66,9 +72,10 @@ def test_cibles_isolation_disable_kill(monkeypatch):
 
 def test_block_ip_exclut_parc_et_assets_et_ordonne_public_first(monkeypatch):
     """Blocage : on écarte les subnets du parc ET les IP des agents surveillés
-    (victime/pivot, jamais l'attaquant — bug purple-team du 2026-07-31 sur .46),
+    (victime/pivot, jamais l'attaquant — bug mesuré à un exercice purple-team),
     et on ordonne les IP publiques d'abord. On ne réduit pas : un bruteforce
     vient de N IP, toutes bloquées."""
+    monkeypatch.setattr(_iris_mod, "_NETS_INTERNES", _RESEAU_TEST)
     monkeypatch.setattr(mitigate, "_ips_agents", lambda: {"192.168.30.46"})
     inc = {"id": 1, "agent_id": "011"}
     alertes = [
@@ -92,7 +99,8 @@ def test_block_ip_exclut_parc_et_assets_et_ordonne_public_first(monkeypatch):
 def test_block_ip_extrait_c2_du_reverse_shell(monkeypatch):
     """Le C2 d'un reverse shell /dev/tcp (execve auditd, sans srcip) devient une
     cible de blocage ; une cible /dev/tcp INTERNE (latéral) reste écartée.
-    Régression case 72 (2026-07-31) : 2667 détections, 0 blocage."""
+    Régression mesurée : des milliers de détections, zéro blocage avant fix."""
+    monkeypatch.setattr(_iris_mod, "_NETS_INTERNES", _RESEAU_TEST)
     monkeypatch.setattr(mitigate, "_ips_agents", lambda: set())
     inc = {"id": 1, "agent_id": "011"}
     alertes = [
@@ -109,7 +117,7 @@ def test_block_ip_extrait_c2_du_reverse_shell(monkeypatch):
 
 
 def test_ip_privee_ordonne_sans_exclure():
-    # _ip_privee sert au tri, pas à l'exclusion : le C2 privé du lab reste bloquable.
+    # _ip_privee sert au tri, pas à l'exclusion : un C2 privé reste bloquable.
     assert _ip_privee("10.8.0.9") is True
     assert _ip_privee("192.168.30.46") is True
     assert _ip_privee("45.134.26.87") is False

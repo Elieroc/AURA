@@ -169,11 +169,11 @@ PLAFOND_PROMPT_TOKENS = int(os.environ.get("TRIAGE_PROMPT_MAX_TOKENS", "5000"))
 # Le rapport TP est un récit markdown multi-sections, plus long que le verdict ;
 # avec le raisonnement en plus, il lui faut davantage de marge encore.
 #
-# 6000 ne suffisait pas. Mesuré sur le purple-team du 2026-08-02 : les deux
-# rapports des incidents AD (2411 et 46 alertes, 20 règles montrées au modèle)
+# 6000 ne suffisait pas. Mesuré à un exercice purple-team : deux rapports
+# d'incidents AD (plusieurs milliers d'alertes, 20 règles montrées au modèle)
 # ont rendu `finish_reason=length` avec un content VIDE — le raisonnement avait
 # mangé tout le budget. Le repli écrivait alors `triage.reason` À LA FOIS dans
-# `resume` et dans `analyse`, d'où les deux sections identiques du case 90.
+# `resume` et dans `analyse`, d'où deux sections identiques dans le rapport.
 # Les rapports qui ont abouti consommaient déjà 4000-5700 tokens de content :
 # 6000 ne laissait aucune place au raisonnement. 14000 donne la marge.
 REPORT_MAX_TOKENS = int(os.environ.get("REPORT_MAX_TOKENS", "14000"))
@@ -209,11 +209,11 @@ IRIS_CUSTOMER = int(os.environ.get("IRIS_CUSTOMER", "1"))
 # défaut sur le nom d'hôte public plutôt que la loopback ; à ajuster.
 # Le chemin Discover dépend de la version du dashboard (OpenSearch Dashboards
 # 2.x sur Wazuh 4.9 = /app/data-explorer/discover) : surchargeable au besoin.
-# Défaut volontairement NON-loopback : les liens sont ouverts depuis le
-# navigateur de l'analyste, jamais depuis cet hôte — « localhost » y pointait
-# sur la machine de l'analyste et cassait le lien. Surcharger par l'env avec
-# l'URL réellement joignable du dashboard (ex. https://192.168.10.5).
-WAZUH_DASHBOARD_URL = os.environ.get("WAZUH_DASHBOARD_URL", "https://192.168.10.5")
+# Pas de défaut utilisable : « localhost » pointerait sur la machine de
+# l'analyste (le lien est ouvert depuis SON navigateur, pas depuis cet hôte)
+# et casserait le lien. À définir dans .env avec l'URL réellement joignable
+# du dashboard (ex. https://soc.exemple.local).
+WAZUH_DASHBOARD_URL = os.environ.get("WAZUH_DASHBOARD_URL", "")
 WAZUH_DASHBOARD_DISCOVER_PATH = os.environ.get(
     "WAZUH_DASHBOARD_DISCOVER_PATH", "/app/data-explorer/discover")
 # Index-pattern couvrant les indices réellement alimentés (cf. le routage
@@ -225,13 +225,11 @@ WAZUH_DASHBOARD_INDEX_PATTERN = os.environ.get(
 #
 # Sert à qualifier les IOC IP : une cible /dev/tcp ou une IP source DANS ces
 # plages = mouvement latéral interne, PAS un C2. Ne PAS assimiler « privé
-# RFC1918 » à « interne » : le C2 du lab est lui-même en RFC1918 (10.0.0.6,
-# 192.168.60.1) — le classer « interne » l'aurait blanchi. On liste donc
-# explicitement les subnets du parc, tout le reste (dont ces C2) est externe.
+# RFC1918 » à « interne » : un C2 peut lui-même être en RFC1918 (VPN, cloud
+# privé...) — le classer « interne » le blanchirait. Lister explicitement les
+# subnets du parc surveillé ; tout le reste (dont un C2 en RFC1918) est externe.
 RESEAUX_INTERNES = [
-    r.strip() for r in os.environ.get(
-        "RESEAUX_INTERNES",
-        "192.168.20.0/24,192.168.10.0/24,192.168.40.0/24").split(",")
+    r.strip() for r in os.environ.get("RESEAUX_INTERNES", "").split(",")
     if r.strip()]
 
 # --- Remédiation (exécution des actions) ------------------------------------
@@ -302,37 +300,39 @@ AGENTS_PROTEGES = {
 # large (isoler tout l'hôte pour un seul conteneur). Dans le doute sur la vraie
 # machine, on n'agit pas.
 #
-# Défaut = 010, l'agent hôte Proxmox (home-s-pve01) : son auditd voit les execve
-# de tous les conteneurs LXC et se les attribue. Sans cette exclusion, le case 72
-# (2026-07-31) a sorti `propose_isolate_host 010` sur un vrai reverse shell vu
-# dans un conteneur — isoler l'hôte Proxmox aurait coupé TOUT le parc de VM.
-# (C'était 009 avant, renuméroté 010 à la ré-inscription du 30/07 ; l'id peut
-# rebouger — surchargeable par l'env AGENTS_CAPTEURS.)
+# Un agent « capteur d'hôte » typique : l'hôte Proxmox d'une flotte de LXC, dont
+# l'auditd voit les execve de tous les conteneurs et se les attribue. Sans
+# cette exclusion, une remédiation peut cibler le capteur pour un incident dont
+# le vrai théâtre est un conteneur qu'il héberge — isoler l'hôte couperait alors
+# tout ce qu'il héberge. Aucun défaut : à lister explicitement par déploiement
+# (id d'agent Wazuh) via AGENTS_CAPTEURS.
 AGENTS_CAPTEURS = {
-    a.strip() for a in os.environ.get("AGENTS_CAPTEURS", "010").split(",")
+    a.strip() for a in os.environ.get("AGENTS_CAPTEURS", "").split(",")
     if a.strip()}
 
 # Agents tournant sous Windows : la même action logique (isoler, bloquer, tuer,
 # désactiver un compte) part sur une active-response différente selon l'OS —
 # les scripts Windows/AD (wazuh/active-response/windows/) au lieu des .sh Linux.
-# Surchargeable ; défaut = le DC (014) et le poste (015) du lab.
+# Aucun défaut : à lister explicitement par déploiement (id d'agent Wazuh).
 AGENTS_WINDOWS = {
-    a.strip() for a in os.environ.get("AGENTS_WINDOWS", "014,015").split(",")
+    a.strip() for a in os.environ.get("AGENTS_WINDOWS", "").split(",")
     if a.strip()}
 
 # Contrôleurs de domaine : EXÉCUTEURS des actions de domaine (désactiver un
 # compte AD, retirer d'un groupe privilégié). Une action de domaine ne part PAS
 # sur l'hôte membre compromis — le compte n'y est pas local — mais sur un DC,
 # quel que soit l'hôte où la preuve est apparue (analogue inverse d'AGENTS_CAPTEURS).
+# Aucun défaut : à lister explicitement par déploiement (id d'agent Wazuh).
 AGENTS_DC = {
-    a.strip() for a in os.environ.get("AGENTS_DC", "014").split(",")
+    a.strip() for a in os.environ.get("AGENTS_DC", "").split(",")
     if a.strip()}
 
 # IP(s) que l'isolation d'un hôte Windows laisse joignables (le manager Wazuh,
 # pour que l'agent continue de reporter et que le SOC puisse investiguer en
-# WinRM). Passées en extra_args à win-host-isolate.exe.
+# WinRM). Passées en extra_args à win-host-isolate.exe. Aucun défaut : à
+# définir par déploiement (IP du manager telle que l'agent la joint).
 MITIGATE_ISOLATE_ALLOW = [
-    ip.strip() for ip in os.environ.get("MITIGATE_ISOLATE_ALLOW", "192.168.10.5").split(",")
+    ip.strip() for ip in os.environ.get("MITIGATE_ISOLATE_ALLOW", "").split(",")
     if ip.strip()]
 
 # Règles Wazuh qui signent une COMPROMISSION ACTIVE de l'hôte lui-même :

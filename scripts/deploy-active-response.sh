@@ -7,7 +7,7 @@
 # par le manager déclare bien `firewall-drop.sh`, l'API Wazuh répond 200 (elle ne
 # fait que transmettre la commande), et l'agent ne trouve pas l'exécutable. Le
 # seul indice est l'absence de ligne dans son /var/ossec/logs/active-responses.log.
-# C'est exactement ce qui rendait le blocage d'IP inopérant sur le lab.
+# C'est exactement ce qui peut rendre le blocage d'IP inopérant en silence.
 #
 # Les binaires natifs livrés par le paquet ne suffisent pas : ils lisent la cible
 # dans l'alerte (alert.data.srcip / dstuser) et échouent sur tout appel piloté par
@@ -17,8 +17,8 @@
 #   ./deploy-active-response.sh <hôte> [<hôte> ...]
 #   ./deploy-active-response.sh --local            # pose les scripts sur CETTE machine
 #
-# Exemple lab (à lancer depuis admin.lab, seul hôte qui joint tous les agents) :
-#   ./deploy-active-response.sh 192.168.20.11 192.168.20.18 192.168.40.4
+# Exemple (à lancer depuis un hôte qui joint tous les agents) :
+#   ./deploy-active-response.sh 10.0.1.11 10.0.1.18 10.0.6.4
 #
 # Vérification de bout en bout après coup (depuis le manager) :
 #   TOK=$(curl -sk -u "$API_USER:$API_PASS" -X POST \

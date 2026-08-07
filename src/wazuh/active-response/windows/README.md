@@ -71,7 +71,7 @@ the manager. Without them the API call is accepted but the script never runs.
 
 ```sh
 export WINRM_USER='Administrateur' WINRM_PASS='...'      # domain admin
-AGENTS='192.168.30.100 192.168.30.49' MANAGER=192.168.10.5 \
+AGENTS='10.0.1.100 10.0.1.49' MANAGER=10.0.1.5 \
     ./deploy-windows-ar.sh
 ```
 

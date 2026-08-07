@@ -50,3 +50,7 @@ src/iris/mcp/iris-mcp/
 # Overrides locaux à un hôte (ex: LXC Proxmox, limites memlock/nofile) —
 # jamais versionnés, docker compose les merge automatiquement s'ils existent.
 docker-compose.override.yml
+
+# Contexte projet Claude Code : contient des détails propres au lab de l'auteur
+# (topologie, hôtes, historique d'incidents). Reste en local, jamais publié.
+CLAUDE.md

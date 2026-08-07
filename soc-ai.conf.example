@@ -32,7 +32,7 @@
 # lui-même, ni 127.0.0.1). Utilisée par host-isolate.sh : c'est la seule sortie
 # laissée ouverte pendant l'isolation, donc la seule façon de garder l'agent
 # pilotable. Une valeur fausse ici coupe l'agent définitivement.
-WAZUH_MANAGER_IP="192.168.60.1"
+WAZUH_MANAGER_IP="__IP_MANAGER_VUE_DE_L_AGENT__"
 
 # Marque un hôte d'INFRASTRUCTURE : pare-feu, reverse proxy, résolveur DNS,
 # passerelle VPN, hyperviseur. À 1, host-isolate.sh REFUSE de l'isoler.
@@ -74,7 +74,7 @@ AGENT_KNOWN_HOSTS="/etc/soc-ai/known_hosts_agents"
 # --- Accès manager -> serveur de dépôt (écriture des preuves) ---------------
 # Hôte SÉPARÉ de la machine analysée et du manager : des preuves stockées sur
 # le système compromis sont modifiables par l'attaquant.
-EVIDENCE_HOST="192.168.60.1"
+EVIDENCE_HOST="__IP_SERVEUR_DE_PREUVES__"
 EVIDENCE_USER="forensics"
 EVIDENCE_PATH="/var/lib/forensics"
 EVIDENCE_SSH_KEY="/etc/soc-ai/forensic_evidence_ed25519"

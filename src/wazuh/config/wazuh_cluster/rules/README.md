@@ -162,7 +162,7 @@ Règles : 100700, 100701, 100702
 
 ```
 Détection attaques web : web shells, injections/RCE HTTP, reverse shells.
-     Sources de données mesurées sur cet hôte (debian-vm, Apache + auditd) :
+     Sources de données mesurées sur un hôte Linux type (Apache + auditd) :
        - access.log décodé par Wazuh (base rule 31100, champ `url`). Les
          injections classiques (LFI/SQLi/XSS) remontent en 31103-31106 (niveau 6)
          mais l'injection de commande (?cmd=id) et l'accès web shell restent en

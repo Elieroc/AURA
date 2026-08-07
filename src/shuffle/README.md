@@ -103,12 +103,12 @@ Webhook ──► run_ssh_command (Shuffle Tools)
 Workflow id `9660788f-f4e4-496e-ac24-52d754236a6a`, webhook `webhook_00000000-0000-0000-0000-00000000a003`.
 
 ```bash
-# Collecte complète (RAM + disque) sur l'agent 192.168.60.155
+# Collecte complète (RAM + disque) sur l'agent 10.0.1.155
 curl -X POST http://localhost:5001/api/v1/hooks/webhook_00000000-0000-0000-0000-00000000a003 \
   -H "Content-Type: application/json" \
-  -d '{"manager_host": "192.168.60.1", "manager_user": "soc-forensic",
+  -d '{"manager_host": "10.0.1.1", "manager_user": "soc-forensic",
        "manager_key_file_id": "<file id Shuffle de K1>",
-       "agent_host": "192.168.60.155", "scope": "full",
+       "agent_host": "10.0.1.155", "scope": "full",
        "reason": "brute force SSH réussi (règle 100690)"}'
 ```
 
@@ -235,6 +235,6 @@ Les commandes `host-isolate` / `host-unisolate` sont déclarées dans `wazuh_man
 
 ## Testé
 
-**2026-07-19** — Bout-en-bout sur agent `001 debian-vm` (Debian 12, libvirt) : webhook → Shuffle → API Wazuh → AR → isolation effective (ping et sortie internet bloqués, agent toujours Active, SSH admin conservé) → dé-isolation → réseau rétabli.
+**Isolation** — Bout-en-bout sur un agent Linux de test (libvirt) : webhook → Shuffle → API Wazuh → AR → isolation effective (ping et sortie internet bloqués, agent toujours Active, SSH admin conservé) → dé-isolation → réseau rétabli.
 
-**2026-07-20** — Bout-en-bout kill-process sur agent `001 debian-vm` : webhook → Shuffle → API Wazuh → AR → `kill-process.sh` exécuté sur l'agent (log `active-responses.log` confirmé). Safelist validée (`sshd` refusé), `pkill -x` validé exact-match (process `testproc` tué, `testproc-decoy` au nom proche épargné).
+**Kill process** — Bout-en-bout sur le même agent : webhook → Shuffle → API Wazuh → AR → `kill-process.sh` exécuté sur l'agent (log `active-responses.log` confirmé). Safelist validée (`sshd` refusé), `pkill -x` validé exact-match (process `testproc` tué, `testproc-decoy` au nom proche épargné).

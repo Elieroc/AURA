@@ -128,11 +128,12 @@ comptes en particulier — `disable-account.sh` / `enable-account.sh` — vont p
 paire : sans le second, une désactivation n'est pas défaisable.
 
 **`soc-ai.conf` AVANT tout test d'isolation — sinon lockout.** `host-isolate.sh`
-a une IP manager par défaut codée en dur (`192.168.60.1`, ancien lab) : c'est
-la seule sortie laissée ouverte pendant l'isolation. Sans override, isoler un
-agent le coupe de son vrai manager, sans retour possible par l'AR de
-dé-isolation (le canal est mort) — vécu en prod, récupéré seulement via une
-console hors-bande (hyperviseur).
+a une IP manager par défaut codée en dur (`192.168.60.1`, la passerelle NAT
+par défaut de libvirt — n'a aucune chance d'être la bonne hors d'un lab KVM) :
+c'est la seule sortie laissée ouverte pendant l'isolation. Sans override,
+isoler un agent le coupe de son vrai manager, sans retour possible par l'AR de
+dé-isolation (le canal est mort) — récupérable seulement via une console
+hors-bande (hyperviseur).
 
 ```bash
 cp soc-ai.conf.example soc-ai.conf

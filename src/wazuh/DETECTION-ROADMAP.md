@@ -1,8 +1,8 @@
 # Plan d'action — détections manquantes
 
-> **ÉTAT AU 2026-07-27 — P1, P2 et P3 sont FAITS**, dans le cadre de la révision
-> complète des règles High/Critical. Voir `DETECTION-REVIEW.md` pour le détail
-> des règles, des pièges rencontrés et des tests.
+> **P1, P2 et P3 sont FAITS**, dans le cadre de la révision complète des règles
+> High/Critical. Voir `DETECTION-REVIEW.md` pour le détail des règles, des
+> pièges rencontrés et des tests.
 >
 > Ce que la révision a changé par rapport au plan ci-dessous :
 > - **Plage d'identifiants** : 100700-100730 était réservée ici, mais les règles
@@ -17,7 +17,7 @@
 > - **P4 (méta-corrélation « host owned ») reste À FAIRE** — seul point non
 >   traité de cette liste.
 
-Établi après le scénario d'attaque web→root rejoué sur `debian-vm` (2026-07-24).
+Établi après un scénario d'attaque web→root rejoué sur un agent Linux de test.
 Le rapport d'analyse IA ne couvrait qu'une partie de la kill chain. Deux causes,
 deux réponses.
 
@@ -37,12 +37,11 @@ rattachées, et le rapport reconstitue les commandes depuis le proctitle auditd
 Ces comportements n'ont déclenché **aucune** règle. Aucune baisse de seuil ne
 les fera apparaître : il faut créer la détection. Priorisé par valeur/effort.
 
-Convention repo (cf. `CLAUDE.md`) : règles dans
-`wazuh/config/wazuh_cluster/rules/<id>-<slug>.xml` (un fichier par règle),
-validation `wazuh-logtest` + rejeu de régression → PR git → merge humain. Jamais
-d'écriture directe en prod. Pièges auditd connus (cf. mémoire) : `audit.exe`
-tronqué à la première ponctuation, argv hex-encodé — matcher le `full_log` via
-`<regex>` quand un chemin contient `.`/`-`.
+Convention repo : règles dans `src/wazuh/config/wazuh_cluster/rules/<id>-<slug>.xml`
+(un fichier par règle), validation `wazuh-logtest` + rejeu de régression → PR
+git → merge humain. Jamais d'écriture directe en prod. Pièges auditd connus :
+`audit.exe` tronqué à la première ponctuation, argv hex-encodé — matcher le
+`full_log` via `<regex>` quand un chemin contient `.`/`-`.
 
 ### P1 — Persistance par fichier (FIM temps réel + règle)
 
@@ -132,7 +131,7 @@ le filet redondant côté SIEM (utile si le pipeline IA est arrêté).
 
 ## Process de mise en œuvre
 
-1. Écrire la règle dans `wazuh/config/wazuh_cluster/rules/<id>-<slug>.xml`.
+1. Écrire la règle dans `src/wazuh/config/wazuh_cluster/rules/<id>-<slug>.xml`.
 2. `wazuh-logtest` sur un échantillon réel de chaque log (proctitle, FIM,
    access.log) — vérifier le niveau et le champ matché.
 3. Rejeu de régression : s'assurer qu'aucune règle existante ne casse.

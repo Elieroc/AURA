@@ -7,7 +7,7 @@
 # conteneurs : un seul agent couvre la flotte pour les règles 1006xx/1007xx.
 #
 # PAS de user wazuh-admin/sudo ni de scripts active-response : jamais de
-# remédiation autonome sur l'hyperviseur (isoler pve couperait tout le lab).
+# remédiation autonome sur l'hyperviseur (isoler l'hôte couperait tout le parc).
 #
 # Enrôlement MANUEL par clé (authd/1515 fermé sur le manager) : pré-enregistrer
 # l'agent sur le manager puis extraire la clé :
@@ -15,10 +15,10 @@
 #   docker exec <manager> /var/ossec/bin/manage_agents -e <id>   # extrait la clé
 #
 # Usage (root sur l'hôte, avec zz-audit-wazuh.rules dans /tmp ou à côté) :
-#   MGR=192.168.10.5 ./pve-install-sensor.sh '<CLE_AGENT_BASE64>'
+#   MGR=<IP_DU_MANAGER> ./pve-install-sensor.sh '<CLE_AGENT_BASE64>'
 set -e
 KEY="$1"
-MGR="${MGR:-192.168.10.5}"
+MGR="${MGR:?MGR requis (IP du manager)}"
 VER="${WAZUH_VERSION:-4.9.2-1}"
 export DEBIAN_FRONTEND=noninteractive
 [ -n "$KEY" ] || { echo "ERREUR: clé d'agent manquante (arg 1)" >&2; exit 1; }

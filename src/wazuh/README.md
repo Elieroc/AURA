@@ -87,8 +87,8 @@ depuis `/tmp`, `/var/tmp` ou `/dev/shm` (technique classique de drop-and-execute
 - **Nécessite auditd configuré sur l'agent** pour surveiller `execve` — sans ça, aucun événement
   `audit.exe` n'est généré et la règle ne se déclenche jamais.
 - Testé via `wazuh-logtest` : `exe="/tmp/malware"` → alerte 100625 ; `exe="/bin/bash"` → pas de
-  faux positif (tombe sur la règle par défaut 80792, niv. 3). Testé bout-en-bout sur agent
-  `001 debian-vm` : binaire déposé + exécuté depuis `/tmp` → alerte 100625 remontée dans l'indexer.
+  faux positif (tombe sur la règle par défaut 80792, niv. 3). Testé bout-en-bout sur un
+  agent de test : binaire déposé + exécuté depuis `/tmp` → alerte 100625 remontée dans l'indexer.
 - Côté Windows, couverture équivalente déjà présente dans le ruleset par défaut (Sysmon event 1/7,
   `0800-sysmon_id_1.xml` / `0820-sysmon_id_7.xml`) pour l'exécution depuis `Users\...\AppData\Local\Temp`
   et `Windows\Temp` — nécessite Sysmon installé sur l'agent.
@@ -238,7 +238,7 @@ temporaire supprimé génère un événement — volume ingérable, même raison
 Testé : matrice `wazuh-logtest` 11 cas sur 100680/100681 (les 4 primitives de wipe et les 3 formes
 de `rm -rf` sur racine matchent ; `dd of=/tmp/img.bin`, `rm -rf node_modules`,
 `rm -rf /var/cache/apt/x` et `rm -f` non récursif restent en 80792 niveau 3). `100682` testée
-bout-en-bout sur `debian-vm` : suppression de 4 canaris → 4 alertes 100670 puis 1 alerte 100682.
+bout-en-bout sur un agent de test : suppression de 4 canaris → 4 alertes 100670 puis 1 alerte 100682.
 
 ### Ordre de déploiement (sinon alertes parasites)
 
@@ -270,7 +270,7 @@ la même raison (scripts de ménage). FP résiduel possible : purge de snapshots
 - `100673` / `100674` via `wazuh-logtest`, matrice 6 cas : `zfs destroy` et
   `btrfs subvolume delete` matchent ; `restic forget`, `zfs list` et `systemctl restart nginx` ne
   matchent pas (restent en 80792 niveau 3).
-- `100670` / `100671` / `100672` sur l'agent `debian-vm` : écriture sur un canari, dépôt d'un
+- `100670` / `100671` / `100672` sur un agent de test : écriture sur un canari, dépôt d'un
   `HOW_TO_DECRYPT_FILES.txt` et création d'un `.lockbit` remontent bien en niveaux 15/14/14.
 
 Réserve connue : le canari de `/var/www/html` est téléchargeable si le vhost sert le répertoire.
@@ -440,9 +440,9 @@ access log). Décodeur `decoders/jellyfin.xml` extrait `level`
 
 WireGuard (module noyau) n'a **aucun audit natif** : pas de log par pair,
 seul `wg show` donne un état instantané. `dynamic_debug` noyau (journalise
-chaque handshake) indisponible sur wireguard.lab — `/sys/kernel/debug`
+chaque handshake) indisponible dans ce déploiement — `/sys/kernel/debug`
 inaccessible même en root (LXC Proxmox, même contrainte que le manager
-Aura-SOC). wireguard.lab tourne avec **WGDashboard**, qui suit déjà l'état des
+Aura-SOC). L'hôte WireGuard tourne avec **WGDashboard**, qui suit déjà l'état des
 pairs dans une base SQLite (status running/stopped calculé par WGDashboard,
 historique des IP source par pair, noms de pairs) — `wg-monitor.py` lit
 cette base en lecture seule plutôt que de réinterroger `wg show` en
@@ -466,7 +466,7 @@ potentiellement compromise). Index `wazuh-dns-*`.
 **Piège rencontré** : AdGuard Home bufferise le query log en mémoire avant
 d'écrire sur disque (`querylog.size_memory`, défaut 1000 requêtes) — sur un
 homelab, une résolution bloquée peut mettre des dizaines de minutes à
-apparaître dans Wazuh. Abaissé à 20 sur adguard-home.lab pour une visibilité
+apparaître dans Wazuh. Abaissé à 20 sur l'hôte AdGuard Home pour une visibilité
 quasi temps réel..
 
 - Modif du routage : éditer le script dans `alerts-pipeline.json` puis recréer le manager
