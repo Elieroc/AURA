@@ -631,7 +631,11 @@ UEBA_JOURS_HABITUEL = int(os.environ.get("UEBA_JOURS_HABITUEL", "5"))
 # motifs : aucune liste noire n'anticipe ce qu'un parc produit, la statistique
 # se corrige seule. En dessous de MIN_OBS on ne conclut pas (on n'exclut pas un
 # trait faute de recul).
-UEBA_CARDINALITE_MAX = float(os.environ.get("UEBA_CARDINALITE_MAX", "0.5"))
+#
+# Le seuil de 0,25 n'est pas choisi au jugé : mesuré sur le parc réel, le trait
+# pathologique (archives LVM) est à 0,481 et le suivant à 0,056 — un ordre de
+# grandeur d'écart. 0,25 tombe au milieu du fossé, donc loin des deux.
+UEBA_CARDINALITE_MAX = float(os.environ.get("UEBA_CARDINALITE_MAX", "0.25"))
 UEBA_CARDINALITE_MIN_OBS = int(os.environ.get("UEBA_CARDINALITE_MIN_OBS", "200"))
 
 # Plancher de rareté : en dessous, le trait n'est pas retenu comme motif. Évite
