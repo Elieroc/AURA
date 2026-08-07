@@ -157,12 +157,12 @@ Les octets transitent par la mémoire du manager, **jamais par son disque** : le
 
 ### Prérequis d'installation
 
-**1. Fichier de conf** (cf. `config/soc-ai.conf.example`) :
+**1. Fichier de conf** (cf. `soc-ai.conf.example`) :
 
 ```bash
-cp config/soc-ai.conf.example config/soc-ai.conf   # gitignored, remplir
+cp soc-ai.conf.example soc-ai.conf   # gitignored, remplir
 sudo install -d -m 750 /etc/soc-ai
-sudo install -o root -g root -m 640 config/soc-ai.conf /etc/soc-ai/soc-ai.conf   # manager
+sudo install -o root -g root -m 640 soc-ai.conf /etc/soc-ai/soc-ai.conf   # manager
 ssh <agent> 'sudo install -o root -g wazuh -m 640 /tmp/soc-ai.conf /var/ossec/etc/soc-ai.conf'
 ```
 

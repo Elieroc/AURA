@@ -135,9 +135,9 @@ dé-isolation (le canal est mort) — vécu en prod, récupéré seulement via u
 console hors-bande (hyperviseur).
 
 ```bash
-cp config/soc-ai.conf.example config/soc-ai.conf
-$EDITOR config/soc-ai.conf   # WAZUH_MANAGER_IP = IP du manager telle que l'agent la joint
-scp config/soc-ai.conf <agent>:/tmp/soc-ai.conf
+cp soc-ai.conf.example soc-ai.conf
+$EDITOR soc-ai.conf   # WAZUH_MANAGER_IP = IP du manager telle que l'agent la joint
+scp soc-ai.conf <agent>:/tmp/soc-ai.conf
 ssh <agent> 'sudo install -o root -g wazuh -m 640 /tmp/soc-ai.conf /var/ossec/etc/soc-ai.conf'
 ```
 
@@ -168,8 +168,8 @@ suspendu, aucune remédiation) puis rend un case IRIS « TRAINING » listant
 chaque exception créée. Détail complet : [`TRAINING.md`](TRAINING.md).
 
 ```bash
-$EDITOR config/soc-ai.conf     # TRAINING_ENABLED="true", TRAINING_DAYS="7"
-./scripts/soc-start.sh         # source la conf et (re)démarre les services soc-agent
+$EDITOR .env     # TRAINING_ENABLED=true, TRAINING_DAYS=7
+docker compose up -d --build soc-training   # ou `docker compose up -d` pour toute la stack
 ```
 
 La fenêtre ne s'ouvre qu'au tout premier démarrage. À la fin, relire le case

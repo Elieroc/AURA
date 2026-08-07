@@ -12,7 +12,7 @@
 
 set -u
 
-# Défaut surchargé par /var/ossec/etc/soc-ai.conf (cf. config/soc-ai.conf.example) :
+# Défaut surchargé par /var/ossec/etc/soc-ai.conf (cf. soc-ai.conf.example) :
 # WAZUH_MANAGER_IP = IP du manager telle que les agents la joignent. C'est la
 # seule sortie laissée ouverte par l'isolation, donc la seule façon de garder
 # l'agent pilotable — une valeur fausse ici coupe l'agent définitivement.

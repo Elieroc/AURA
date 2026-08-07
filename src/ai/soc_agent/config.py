@@ -566,8 +566,8 @@ WHITELIST_MAX_LEVEL = int(os.environ.get("WHITELIST_MAX_LEVEL", "14"))
 #
 # Fenêtre de mise en service : le SOC branché sur un SI déjà en production
 # apprend d'abord son bruit, pipeline d'analyse suspendu, avant de juger et de
-# remédier quoi que ce soit. Piloté depuis config/soc-ai.conf par l'administrateur
-# (scripts/soc-start.sh exporte ces variables vers docker compose).
+# remédier quoi que ce soit. Piloté depuis le .env racine par l'administrateur
+# (lu directement par docker compose up -d).
 #
 # TRAINING_ENABLED n'ouvre une fenêtre qu'au TOUT PREMIER lancement (aucune
 # fenêtre en base) : le training est une phase de mise en service, pas un mode

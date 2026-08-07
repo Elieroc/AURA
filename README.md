@@ -106,13 +106,13 @@ AURA/
 ├── .env.example         # config racine unique (copier en .env)
 ├── CLAUDE.md            # contexte projet pour Claude Code
 ├── README.md
+├── soc-ai.conf.example  # topologie déployée hors dépôt (agents + forensique manager)
 ├── assets/              # identité visuelle (logotype, pictogramme SVG)
-├── config/              # config transverse (soc-ai.conf : topologie, training)
 ├── docs/                # documentation transverse
 │   ├── INSTALL.md       # mise en service du stack
 │   ├── TRAINING.md      # fenêtre d'apprentissage du bruit ambiant
 │   └── REMEDIATION.md   # remédiation autonome + catalogue des active responses
-├── scripts/             # install-agent.sh, déploiement AR, soc-start.sh...
+├── scripts/             # install-agent.sh, déploiement AR...
 ├── db/                  # bases de données (Postgres/OpenSearch), gitignoré
 │   ├── socagent-postgres/
 │   ├── iris-postgres/

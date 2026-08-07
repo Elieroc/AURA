@@ -1,9 +1,8 @@
 # Mode training — apprendre le bruit ambiant avant de laisser le SOC agir
 
 Code : [`src/ai/soc_agent/training.py`](../src/ai/soc_agent/training.py) · conteneur `soc-training` ·
-réglages dans `config/soc-ai.conf` (gitignoré, cf.
-[`config/soc-ai.conf.example`](../config/soc-ai.conf.example)), exportés vers
-docker compose par [`scripts/soc-start.sh`](../scripts/soc-start.sh).
+réglages `TRAINING_*` dans le `.env` racine (gitignoré, cf.
+[`.env.example`](../.env.example)), lus directement par `docker compose up -d`.
 
 ## Le problème
 
@@ -131,7 +130,7 @@ fausserait toute statistique tirée des classifications.
 
 ## Réglages
 
-`config/soc-ai.conf` (gitignoré ; modèle dans `config/soc-ai.conf.example`) :
+`.env` racine (gitignoré ; modèle dans `.env.example`) :
 
 | Variable | Défaut | Rôle |
 |---|---|---|
@@ -139,7 +138,7 @@ fausserait toute statistique tirée des classifications.
 | `TRAINING_DAYS` | `7` | durée de la fenêtre |
 | `TRAINING_MIN_LEVEL` | `12` | niveau à partir duquel une alerte est apprise (aligné sur `MIN_LEVEL`, HIGH) |
 | `TRAINING_MAX_LEVEL` | `15` | plafond : au-dessus, la règle n'est pas whitelistée |
-| `TRAINING_IRIS_CLASSIFICATION` | `36` | classification du case de clôture |
+| `TRAINING_IRIS_CLASSIFICATION` | `36` | classification du case de clôture (pas dans `.env.example`, override avancé — non nécessaire en usage normal) |
 
 `TRAINING_ENABLED=true` ne rouvre **jamais** une fenêtre plus tard : le training
 est une phase de mise en service, pas un mode récurrent. En rouvrir une est une

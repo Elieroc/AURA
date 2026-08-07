@@ -1,6 +1,0 @@
-  <!-- Aura-SOC : événements connect/disconnect WireGuard (wg-monitor.py, pas de
-       log natif WireGuard) -> index wazuh-vpn-*. -->
-  <localfile>
-    <log_format>syslog</log_format>
-    <location>/var/log/wireguard-events.log</location>
-  </localfile>

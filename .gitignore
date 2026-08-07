@@ -8,9 +8,10 @@
 secrets/
 src/wazuh/config/wazuh_cluster/wazuh_manager.conf
 
-# Conf Aura-SOC (topologie reseau : IP manager, serveur de preuves)
-config/soc-ai.conf
-!config/soc-ai.conf.example
+# Conf Aura-SOC déployée hors dépôt sur agents/manager (topologie réseau : IP
+# manager, serveur de preuves) — distincte du .env du manager docker compose.
+/soc-ai.conf
+!/soc-ai.conf.example
 src/wazuh/config/wazuh_dashboard/wazuh.yml
 src/wazuh/config/wazuh_indexer_ssl_certs/*
 !src/wazuh/config/wazuh_indexer_ssl_certs/.gitkeep

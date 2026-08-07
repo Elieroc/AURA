@@ -1,6 +1,5 @@
-# Configuration Aura-SOC
-#
-# Deux fichiers distincts, deux machines, deux jeux de clés :
+# Configuration Aura-SOC déployée HORS de ce dépôt, sur des machines qui n'ont
+# pas accès au .env du manager (secrets DeepSeek, DB, IRIS...) :
 #
 #   - sur les AGENTS      -> /var/ossec/etc/soc-ai.conf   (WAZUH_MANAGER_IP)
 #   - sur l'HÔTE MANAGER  -> /etc/soc-ai/soc-ai.conf      (bloc forensique)
@@ -9,14 +8,15 @@
 # les clés qui le concernent. Mais les CLÉS SSH, elles, ne vont QUE sur le
 # manager (cf. plus bas).
 #
-#   cp config/soc-ai.conf.example config/soc-ai.conf
+#   cp soc-ai.conf.example soc-ai.conf
 #   # agents :
 #   ssh <agent> 'sudo install -o root -g wazuh -m 640 /tmp/soc-ai.conf /var/ossec/etc/soc-ai.conf'
 #   # manager :
-#   sudo install -o root -g root -m 640 config/soc-ai.conf /etc/soc-ai/soc-ai.conf
+#   sudo install -o root -g root -m 640 soc-ai.conf /etc/soc-ai/soc-ai.conf
 #
-# Le vrai fichier (config/soc-ai.conf) est gitignored : il décrit la topologie
-# du SOC, qui n'a pas à être publique.
+# Le vrai fichier (soc-ai.conf) est gitignored : il décrit la topologie du
+# SOC, qui n'a pas à être publique. Le mode training et tout ce qui tourne sur
+# l'hôte du manager via docker compose vit dans .env.example, pas ici.
 #
 # Format : shell POSIX, sourcé par des scripts tournant EN ROOT. Donc
 # uniquement des affectations KEY="valeur" littérales — pas de $(...), pas de
@@ -79,36 +79,3 @@ EVIDENCE_USER="forensics"
 EVIDENCE_PATH="/var/lib/forensics"
 EVIDENCE_SSH_KEY="/etc/soc-ai/forensic_evidence_ed25519"
 EVIDENCE_KNOWN_HOSTS="/etc/soc-ai/known_hosts_evidence"
-
-# ===========================================================================
-# HÔTE MANAGER — mode training (lu par scripts/soc-start.sh)
-# ===========================================================================
-#
-# Fenêtre d'apprentissage du bruit ambiant, à la mise en service du SOC sur un
-# SI déjà en production. Pendant la fenêtre, le pipeline d'analyse est SUSPENDU
-# (pas de triage LLM, pas de case IRIS, pas de remédiation autonome) : seule
-# l'ingestion tourne, et chaque alerte HIGH/CRITICAL observée devient une
-# exception de whitelist propre à la machine qui l'a produite.
-#
-# À la clôture, un case IRIS « TRAINING » liste chaque exception en tâche.
-# Passer une tâche en 'Canceled' désactive l'exception correspondante.
-#
-# ATTENTION : une intrusion déjà en cours au lancement du SOC serait apprise
-# comme du bruit. N'activer le training que sur un SI qu'on croit sain, et
-# relire le case TRAINING à la fin.
-#
-# N'ouvre une fenêtre qu'au TOUT PREMIER démarrage (aucune fenêtre en base) :
-# relancer le SOC ne réapprend rien. Pour en rouvrir une :
-#   docker exec soc-training python -m soc_agent.training --demarrer --jours 7
-TRAINING_ENABLED="false"
-
-# Durée de la fenêtre, en jours.
-TRAINING_DAYS="7"
-
-# Niveau Wazuh minimum d'une alerte apprise (12 = HIGH, aligné sur MIN_LEVEL).
-TRAINING_MIN_LEVEL="12"
-
-# Plafond de niveau appris. 15 par défaut : le training doit couvrir le bruit
-# CRITICAL, c'est celui qui déclenche les remédiations les plus coûteuses.
-# Descendre à 14 pour laisser les alertes de niveau 15 hors apprentissage.
-TRAINING_MAX_LEVEL="15"

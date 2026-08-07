@@ -314,16 +314,16 @@ premier jour se solde par des dizaines de cases et des **serveurs sains
 isolés**.
 
 Le mode training est une fenêtre de confiance déclarée par l'administrateur au
-lancement du SOC (`scripts/soc-start.sh`, lisant `config/soc-ai.conf`) :
+lancement du SOC, réglages dans le `.env` racine :
 
 ```bash
-# config/soc-ai.conf
-TRAINING_ENABLED="true"
-TRAINING_DAYS="7"
+# .env
+TRAINING_ENABLED=true
+TRAINING_DAYS=7
 ```
 
 ```bash
-./scripts/soc-start.sh                                        # lance le SOC
+docker compose up -d                                          # lance toute la stack
 docker exec soc-training python -m soc_agent.training --etat
 docker exec soc-training python -m soc_agent.training --cloturer   # fin anticipée
 ```

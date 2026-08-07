@@ -384,9 +384,8 @@ Décodeur de secours basé sur `<prematch>` : `decoders/pfsense-nohostname.xml`
 rencontrés en le construisant). Règles miroir de la native `0540-pfsense_rules.xml`
 dans `rules/100810-100812-*.xml`.
 
-Config pfSense (activation remote syslog + catégorie "Firewall Events", sans
-toucher aux autres cibles syslog déjà configurées) : `src/wazuh/agents/pfsense/`
-(script + README détaillé).
+Config pfSense : activation remote syslog + catégorie "Firewall Events", sans
+toucher aux autres cibles syslog déjà configurées.
 
 **Pas d'active response sur pfSense** : c'est un flux read-only (visibilité),
 pas une cible de remédiation automatisée pour l'instant.
@@ -396,8 +395,7 @@ pas une cible de remédiation automatisée pour l'instant.
 Contrairement à pfSense, l'hôte NPM est un Linux classique (Debian 12 testé) :
 agent Wazuh normal, `<localfile>` wildcard sur `data/logs/*_access.log` /
 `*_error.log` (NPM nomme ses logs par host proxy, liste qui change à chaque
-host ajouté). Détail (ACL sur `/root`, install, permissions) :
-`src/wazuh/agents/npm/`.
+host ajouté).
 
 Décodeur `decoders/npm-proxy.xml` : format d'access log custom (pas le
 combined log nginx standard), porte volontairement `<type>web-log</type>` et
@@ -426,8 +424,7 @@ Règles : `rules/100820-npm-proxy-rules.xml`.
 
 Deux images linuxserver.io (nginx interne, format combined log standard) :
 décodeur natif Wazuh `web-accesslog` matche directement, aucun décodeur/règle
-custom. Détail (ACL, install) : `src/wazuh/agents/bookstack/`,
-`src/wazuh/agents/nextcloud/`.
+custom.
 
 ### Jellyfin — agent Wazuh, log applicatif (pas de format web)
 
@@ -437,8 +434,7 @@ Log applicatif Serilog ingéré tel quel dans son propre index
 `wazuh-jellyfin-*` (pas `wazuh-web-*`, le contenu n'est pas comparable à un
 access log). Décodeur `decoders/jellyfin.xml` extrait `level`
 (VRB/DBG/INF/WRN/ERR/FTL) et la classe émettrice ; règles
-`rules/100830-jellyfin-rules.xml` (WRN=5, ERR=7, FTL=12). Détail :
-`src/wazuh/agents/jellyfin/`.
+`rules/100830-jellyfin-rules.xml` (WRN=5, ERR=7, FTL=12).
 
 ### WireGuard — agent Wazuh + wg-monitor (via la base WGDashboard)
 
@@ -455,8 +451,7 @@ parallèle. Systemd timer (30s), compare à l'état précédent, loggue les
 `/var/log/wireguard-events.log`. Décodeur `decoders/wireguard.xml` ; règles
 `rules/100840-wireguard-rules.xml` (connect/disconnect/endpoint changé level
 3, reconnexions ou changements d'IP répétés en level 7). Index
-`wazuh-vpn-*`. Détail (script, unités systemd, piège du test en direct sans
-passer par systemd) : `src/wazuh/agents/wireguard/`.
+`wazuh-vpn-*`.
 
 ### AdGuard Home — agent Wazuh, JSON natif (aucun décodeur custom)
 
@@ -472,7 +467,7 @@ potentiellement compromise). Index `wazuh-dns-*`.
 d'écrire sur disque (`querylog.size_memory`, défaut 1000 requêtes) — sur un
 homelab, une résolution bloquée peut mettre des dizaines de minutes à
 apparaître dans Wazuh. Abaissé à 20 sur adguard-home.lab pour une visibilité
-quasi temps réel. Détail : `src/wazuh/agents/adguard-home/`.
+quasi temps réel..
 
 - Modif du routage : éditer le script dans `alerts-pipeline.json` puis recréer le manager
   (`docker compose up -d --force-recreate wazuh.manager`).

@@ -1462,7 +1462,7 @@ _COMPTES_GENERIQUES = {"root", "admin", "administrator", "www-data", "nobody",
 # La flotte est en conteneurs LXC ; l'auditd tourne sur l'hôte Proxmox (agent
 # pve) et voit l'execve de TOUS les conteneurs. L'enrichisseur `soc-audit-enrich`
 # tague chaque record du conteneur d'origine (`lxc_ct=<nom>`, cf.
-# wazuh/agents/pve/). On l'extrait ici pour que le case dise « jellyfin » et pas
+# src/wazuh/agents/pve/). On l'extrait ici pour que le case dise « jellyfin » et pas
 # « pve ». Valeurs réelles, note locale — jamais envoyé au LLM (nom d'hôte).
 _LXC_CT = re.compile(r"lxc_ct=([A-Za-z0-9_.-]+)")
 
