@@ -314,7 +314,7 @@ Correctif proposé dans `noise.py` :
 | Clés `svc_pivot` dans `/home/devops/.ssh` | — | à arbitrer |
 
 Le dépôt de prod est sur l'hôte `soc-ai` (192.168.10.5), dans
-`/opt/soc-ai/wazuh/config/wazuh_cluster/rules`, monté **directement** sur
+`/opt/AURA/wazuh/config/wazuh_cluster/rules`, monté **directement** sur
 `/var/ossec/etc/rules`. Deux conséquences :
 
 - l'API Wazuh **ne peut pas** déployer ces fichiers (`PUT /rules/files/...`

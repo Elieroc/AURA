@@ -64,7 +64,7 @@ done
 
 echo
 echo "Now declare the <command>/<active-response> blocks on the manager ($MANAGER):"
-echo "  ssh root@$MANAGER 'cd /opt/soc-ai && python3 scripts/patch-manager-ar-windows.py'"
+echo "  ssh root@$MANAGER 'cd /opt/AURA && python3 scripts/patch-manager-ar-windows.py'"
 echo "then copy the config into the container and restart it. Without those"
 echo "blocks the agent's execd silently ignores every Windows AR: the API still"
 echo "answers 200, and nothing whatsoever runs on the host."

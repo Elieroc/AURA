@@ -357,7 +357,7 @@ AGENTS='192.168.30.100 192.168.30.49' MANAGER=192.168.10.5 \
   ./wazuh/active-response/windows/deploy-windows-ar.sh
 
 # manager de prod dont wazuh_manager.conf est gitignoré : insertion aux ancres
-python3 scripts/patch-manager-ar-windows.py /opt/soc-ai/wazuh/config/wazuh_cluster/wazuh_manager.conf
+python3 scripts/patch-manager-ar-windows.py /opt/AURA/wazuh/config/wazuh_cluster/wazuh_manager.conf
 ```
 
 **L'enregistrement n'est pas optionnel** : execd n'exécute qu'une commande

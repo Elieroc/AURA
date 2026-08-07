@@ -2,10 +2,16 @@
 
 *Autonomous UEBA Response Analysis — Security Operation Center.* Le dépôt s'appelait
 SOC-AI : le renommage est **du branding uniquement** (docs, titres, logos dans `assets/`).
-Les identifiants techniques restent en `soc-ai`/`soc_ai` — `/opt/soc-ai` sur la prod,
-package Python `soc_agent`, conteneurs `soc-agent-*`, réseau docker, variables `SOC_AI_*`,
-templates d'index `soc-ai-routing`/`soc-ai-all-alerts`. Ne pas les renommer sans un plan
-de redéploiement de la flotte.
+Les identifiants techniques restent en `soc-ai`/`soc_ai` : package Python `soc_agent`,
+conteneurs `soc-agent-*`, réseau docker, variables `SOC_AI_*`, templates d'index
+`soc-ai-routing`/`soc-ai-all-alerts`. Ne pas les renommer sans un plan de redéploiement
+de la flotte.
+
+Le dépôt de prod, lui, a bien été renommé en **`/opt/AURA`**. Un lien `/opt/soc-ai →
+/opt/AURA` subsiste et **ne doit pas être supprimé** : Docker a figé `/opt/soc-ai` comme
+source de bind mount dans la config des conteneurs déjà créés, donc sans lui un
+`docker restart` ou un reboot remonterait des dossiers vides (manager Wazuh sans règles).
+Il devient inutile après un `docker compose up -d --force-recreate` depuis `/opt/AURA`.
 
 XDR autonome. Détection Wazuh + enrichissement threat intel + triage/whitelist/remédiation pilotés par LLM, exécutés sans validation humaine par action.
 

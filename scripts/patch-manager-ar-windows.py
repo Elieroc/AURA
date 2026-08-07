@@ -13,7 +13,7 @@ import sys
 import time
 
 CHEMIN = sys.argv[1] if len(sys.argv) > 1 else \
-    "/opt/soc-ai/wazuh/config/wazuh_cluster/wazuh_manager.conf"
+    "/opt/AURA/wazuh/config/wazuh_cluster/wazuh_manager.conf"
 
 ACTIONS = [
     "win-host-isolate", "win-host-unisolate", "win-kill-process",
