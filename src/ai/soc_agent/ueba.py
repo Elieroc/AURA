@@ -64,6 +64,7 @@ from . import config
 # horaire inhabituel est un indice, jamais une preuve.
 POIDS = {
     "exe":          1.0,   # binaire exécuté
+    "fichier":      0.8,   # objet d'une alerte d'intégrité (FIM)
     "parent_child": 1.3,   # couple parent -> enfant (Windows/Sysmon)
     "srcip":        0.9,   # IP source de l'événement
     "pays":         1.0,   # pays GeoIP de l'IP source
@@ -162,9 +163,20 @@ def traits(a: dict) -> list[tuple[str, str, str, str]]:
         if perso and sur_perso:
             out.append((perso[0], perso[1], trait, v))
 
-    # Binaire exécuté. Trois emplacements selon le décodeur (auditd, Sysmon,
-    # syscheck) ; `entity` est déjà le repli calculé à l'ingestion.
-    ajouter("exe", audit.get("exe") or win.get("image") or a.get("entity"))
+    # Binaire exécuté. UNIQUEMENT auditd et Sysmon — surtout pas le repli
+    # `entity`, qui vaut `syscheck.path` pour les alertes FIM : sur Windows
+    # c'est une clé de registre `HKEY_...`, sur Proxmox une archive LVM
+    # `pve_19796-1149630808.vg`. Ni l'un ni l'autre n'est un exécutable, et le
+    # second est unique par construction — donc « jamais vu » à chaque
+    # occurrence. Mesuré en recette : score 1434 sur l'hôte Proxmox, uniquement
+    # composé d'archives LVM.
+    ajouter("exe", audit.get("exe") or win.get("image"))
+
+    # Objet touché par une alerte d'intégrité (fichier déposé, clé modifiée).
+    # Trait séparé et moins pesant que `exe` : un fichier qui apparaît est un
+    # indice, un binaire qui s'exécute est un fait. Le garde-fou de cardinalité
+    # ci-dessous neutralise les chemins horodatés/rotatifs.
+    ajouter("fichier", a.get("entity"))
 
     # Couple parent -> enfant. Uniquement Windows/Sysmon : auditd ne donne pas
     # le nom du parent, seulement son pid, qu'on ne peut pas résoudre après coup.
@@ -210,6 +222,23 @@ def surprisal(compte: int, total: int, distincts: int) -> float:
     return max(0.0, -math.log2(min(p, 1.0)))
 
 
+def cardinalite_exploitable(stats: dict | None) -> bool:
+    """Le trait porte-t-il une information, ou change-t-il de valeur à chaque fois ?
+
+    Un trait dont presque chaque observation est une valeur neuve (chemins
+    horodatés, archives rotatives, GUID, identifiants de session) est inédit par
+    construction : « jamais vu » n'y signifie rien. Sans ce garde-fou, ces
+    traits saturent le score en permanence et écrasent tout le reste.
+
+    On juge sur le RATIO valeurs distinctes / observations, pas sur une liste de
+    motifs : aucune liste noire ne peut anticiper ce qu'un parc produit, alors
+    que la statistique se corrige seule quand le comportement change.
+    """
+    if not stats or stats.get("total", 0) < config.UEBA_CARDINALITE_MIN_OBS:
+        return True   # trop peu d'observations pour conclure : on n'exclut pas
+    return (stats["distincts"] / stats["total"]) <= config.UEBA_CARDINALITE_MAX
+
+
 def _bits_trait(profil: dict | None, stats: dict | None, flotte: int,
                 mature: bool) -> tuple[float, str]:
     """Bits d'un trait + la phrase qui l'explique. (0.0, "") si non scorable."""
@@ -218,6 +247,19 @@ def _bits_trait(profil: dict | None, stats: dict | None, flotte: int,
         # habitude, quelle que soit sa fréquence. Sinon un attaquant patient
         # normalise son propre outillage en le lançant tous les jours.
         return config.UEBA_FIRSTSEEN_BITS, "déjà vu dans un vrai positif"
+
+    if not cardinalite_exploitable(stats):
+        # Le trait est unique PAR CONSTRUCTION sur ce scope : presque chaque
+        # observation apporte une valeur neuve (chemins horodatés, archives
+        # rotatives, identifiants de session, GUID). « Jamais vu » n'y veut donc
+        # rien dire, et la surprisal y est maximale en permanence. Mesuré en
+        # recette : les archives LVM de l'hôte Proxmox donnaient à elles seules
+        # un score de 1434, quarante fois le plancher.
+        #
+        # Garde-fou GÉNÉRAL et non liste noire : on ne peut pas énumérer à
+        # l'avance tout ce qu'un parc produit de haute cardinalité, et une liste
+        # noire vieillit mal. La statistique, elle, se corrige seule.
+        return 0.0, ""
 
     if not mature:
         # Profil trop jeune : TOUT y est inédit. Scorer maintenant enverrait

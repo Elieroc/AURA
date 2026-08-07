@@ -620,6 +620,20 @@ UEBA_FLOTTE_BANAL = int(os.environ.get("UEBA_FLOTTE_BANAL", "3"))
 # est un incident, 5 exécutions sur 5 jours est une routine.
 UEBA_JOURS_HABITUEL = int(os.environ.get("UEBA_JOURS_HABITUEL", "5"))
 
+# Garde-fou de CARDINALITÉ. Un trait dont presque chaque observation apporte une
+# valeur neuve (chemins horodatés, archives LVM rotatives, GUID, identifiants de
+# session) est inédit par construction : « jamais vu » n'y signifie rien, et il
+# sature le score en permanence. Mesuré à la mise en service : les archives LVM
+# de l'hôte Proxmox donnaient à elles seules un signal à 1434 points, quarante
+# fois le plancher.
+#
+# On juge sur le RATIO distincts/observations plutôt que sur une liste de
+# motifs : aucune liste noire n'anticipe ce qu'un parc produit, la statistique
+# se corrige seule. En dessous de MIN_OBS on ne conclut pas (on n'exclut pas un
+# trait faute de recul).
+UEBA_CARDINALITE_MAX = float(os.environ.get("UEBA_CARDINALITE_MAX", "0.5"))
+UEBA_CARDINALITE_MIN_OBS = int(os.environ.get("UEBA_CARDINALITE_MIN_OBS", "200"))
+
 # Plancher de rareté : en dessous, le trait n'est pas retenu comme motif. Évite
 # d'empiler des dixièmes de bit qui finiraient par franchir le seuil sans qu'un
 # seul élément soit anormal.

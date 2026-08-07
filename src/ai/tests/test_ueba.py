@@ -287,3 +287,41 @@ def test_remediation_ueba_reactivable_par_configuration(monkeypatch):
 
     monkeypatch.setattr(config, "UEBA_MITIGATE", True)
     assert iris._remediation_autorisee({"id": 1, "ueba": True}) is True
+
+
+# --- Garde-fou de cardinalité ------------------------------------------------
+
+def test_trait_a_cardinalite_explosive_est_mute():
+    """Archives LVM, chemins horodatés, GUID : inédits PAR CONSTRUCTION.
+
+    Mesuré à la mise en service : les archives LVM de l'hôte Proxmox donnaient à
+    elles seules un signal à 1434 points, quarante fois le plancher.
+    """
+    explosif = {"total": 5_000, "distincts": 4_900}
+    assert ueba.cardinalite_exploitable(explosif) is False
+    bits, _ = ueba._bits_trait(None, explosif, 0, mature=True)
+    assert bits == 0.0
+
+
+def test_trait_normal_reste_scorable():
+    normal = {"total": 5_000, "distincts": 60}
+    assert ueba.cardinalite_exploitable(normal) is True
+    bits, _ = ueba._bits_trait(None, normal, 0, mature=True)
+    assert bits == config.UEBA_FIRSTSEEN_BITS
+
+
+def test_cardinalite_ne_conclut_pas_sans_recul():
+    """Peu d'observations : on n'exclut pas un trait faute de données."""
+    assert ueba.cardinalite_exploitable({"total": 10, "distincts": 10}) is True
+    assert ueba.cardinalite_exploitable(None) is True
+
+
+def test_exe_ne_prend_pas_les_chemins_fim():
+    """`entity` vaut syscheck.path : clé de registre sur Windows, archive LVM
+    sur Proxmox. Ni l'un ni l'autre n'est un exécutable."""
+    a = alerte(entity=r"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\Run")
+    traits_ = ueba.traits(a)
+    assert not [t for t in traits_ if t[2] == "exe"]
+    # Conservé, mais comme trait `fichier`, moins pesant et soumis au garde-fou
+    # de cardinalité.
+    assert [t for t in traits_ if t[2] == "fichier"]
