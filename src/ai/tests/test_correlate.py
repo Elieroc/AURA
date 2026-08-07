@@ -178,3 +178,33 @@ def test_signal_hausse_de_niveau_declenche():
     """Une escalade de sévérité rouvre toujours un refresh, même règle connue."""
     nouvelles = [alerte(rule="100670", level=14, groups=("attack",))]
     assert _signal_decisif({"100670"}, nouvelles, ancien_max=12) is True
+
+
+def test_signal_ueba_reste_un_seul_incident():
+    """Un signal promu ne doit pas se faire réémietter par la corrélation.
+
+    Mesuré à la mise en service : un signal de 239 alertes ressortait en 8
+    incidents — 8 triages LLM au lieu d'un, chacun amputé du contexte des autres
+    et portant un score sans rapport avec celui du signal.
+    """
+    from datetime import datetime, timedelta, timezone
+    from soc_agent import correlate
+
+    t0 = datetime(2026, 8, 7, 6, 0, tzinfo=timezone.utc)
+    # Rien de commun entre elles hors le signal : règles, objets et comptes
+    # tous différents, et un écart supérieur à la fenêtre faible (30 min).
+    alertes = [{
+        "id": str(i), "ts": t0 + timedelta(minutes=45 * i), "agent_id": "014",
+        "agent_name": "winsrv", "rule_id": f"9{i}000", "rule_level": 3,
+        "rule_desc": "x", "rule_groups": [f"g{i}"], "mitre_tactics": [],
+        "srcip": None, "srcuser": None, "entity": f"/tmp/f{i}",
+        "audit_uid": None, "ueba_seed": True, "ueba_signal_id": 42,
+    } for i in range(6)]
+
+    assert len(correlate._grouper(alertes)) == 1
+
+    # Sans le lien de signal, les mêmes alertes se seraient bien émiettées :
+    # c'est ce lien qui les tient, pas une coïncidence de la fixture.
+    for a in alertes:
+        a["ueba_signal_id"] = None
+    assert len(correlate._grouper(alertes)) > 1

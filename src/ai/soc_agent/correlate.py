@@ -120,6 +120,16 @@ def point_commun(a: dict, b: dict) -> tuple[str, bool] | None:
     identités : leur accorder la même largeur fusionnerait tout et n'importe
     quoi.
     """
+    # Même signal UEBA : le lien le plus fort du lot, et le premier examiné. Le
+    # moteur comportemental a DÉJÀ tranché que ces alertes forment un tout ; les
+    # laisser se redécouper ici sur les critères génériques les émiette. Mesuré
+    # à la mise en service : un signal de 239 alertes ressortait en 8 incidents,
+    # donc 8 triages LLM au lieu d'un, chacun amputé du contexte des autres et
+    # portant un score sans rapport avec celui du signal (115, puis 2,5 et 3,3).
+    # Les fenêtres se correspondent déjà : UEBA_SIGNAL_MAX_HEURES = 6 =
+    # MAX_INCIDENT_HOURS, et le lien fort porte jusqu'à ENTITY_GAP_MINUTES.
+    if a.get("ueba_signal_id") and a["ueba_signal_id"] == b.get("ueba_signal_id"):
+        return "même signal UEBA", True
     if a["srcip"] and a["srcip"] == b["srcip"]:
         return "même IP source", True
     if (a["entity"] and a["entity"] == b["entity"]
@@ -138,7 +148,7 @@ def point_commun(a: dict, b: dict) -> tuple[str, bool] | None:
 SELECT_NON_RATTACHEES = """
 SELECT id, ts, agent_id, agent_name, rule_id, rule_level, rule_desc,
        rule_groups, mitre_tactics, srcip, srcuser, entity, audit_uid,
-       ueba_seed, ueba_score, ueba_traits
+       ueba_seed, ueba_score, ueba_traits, ueba_signal_id
   FROM alerts
  WHERE incident_id IS NULL AND NOT suppressed
    AND (rule_level >= %s OR ueba_seed)
@@ -158,7 +168,7 @@ SELECT id, agent_id, first_seen, last_seen, alert_count, max_level,
 
 SELECT_MEMBRES = """
 SELECT id, ts, agent_id, rule_id, rule_level, rule_groups, mitre_tactics,
-       srcip, srcuser, entity, audit_uid, incident_id
+       srcip, srcuser, entity, audit_uid, incident_id, ueba_signal_id
   FROM alerts WHERE incident_id = ANY(%s) ORDER BY ts
 """
 
