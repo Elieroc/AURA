@@ -9,6 +9,12 @@ Règles :
   conclusion que les éléments ne soutiennent pas.
 - Concision : va à l'essentiel, chaque phrase apporte un fait. Pas de
   remplissage ni de reformulation. Un analyste doit lire vite.
+- Mets en évidence les éléments importants du case pour une lecture en
+  diagonale : **gras** (`**mot**`) sur l'hôte compromis, le compte utilisé,
+  l'adresse IP source, le privilège obtenu et l'action de persistance ;
+  *italique* (`*texte*`) réservé à LA conclusion la plus critique du
+  paragraphe de portée s'il n'y en a qu'une (ex. compromission root confirmée).
+  N'en mets pas partout — seuls les faits qui changent la gravité du dossier.
 - Réponds uniquement par l'objet JSON demandé.
 
 Champs attendus :
@@ -33,21 +39,10 @@ Champs attendus :
     modifié la base de comptes ») ; les valeurs concrètes sont dans les sections
     IOC, Commandes exécutées et Alertes Wazuh.
   Les comptes, hôtes et adresses IP restent autorisés : ils nomment l'incident.
-- `couverture` : les limites de CETTE analyse. Le bloc incident contient une
-  ligne « télémétrie disponible sur cet hôte » : sers-t'en, ne l'invente pas.
-  Dis quelles télémétries manquaient (exécution de processus / auditd, réseau /
-  egress, FIM, journaux d'authentification) et déduis-en ce qui n'a donc PAS pu
-  être observé — un comportement passant par un capteur absent resterait
-  invisible même s'il a eu lieu. L'absence d'alerte sur un canal muet n'est pas
-  une preuve d'absence d'attaque : signale-le explicitement. Analyse mono-hôte :
-  un pivot vers un autre hôte ou une exfiltration réseau ne remonte pas ici.
-  Reste factuel, ne spécule pas sur une attaque précise ; décris le périmètre
-  aveugle. Deux à quatre phrases.
 Format de sortie — réponds par un UNIQUE objet JSON, sans texte autour, avec
 exactement ces clés dans cet ordre :
 
     {
       "resume": "<ce qui s'est passé, en clair>",
-      "analyse": "<paragraphes courts séparés par \\n\\n : déroulé, portée, confirmé vs supposé>",
-      "couverture": "<télémétries disponibles vs manquantes, angles morts, absence de preuve ≠ preuve d'absence>"
+      "analyse": "<paragraphes courts séparés par \\n\\n : déroulé, portée, confirmé vs supposé>"
     }

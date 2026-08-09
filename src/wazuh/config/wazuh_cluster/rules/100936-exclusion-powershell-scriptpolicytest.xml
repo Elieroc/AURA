@@ -1,0 +1,27 @@
+<!-- Aura-SOC - rule 100936 (level 0). Domain: soc_selfcheck,wazuh,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="soc_selfcheck,wazuh,">
+
+  <!-- Exclusion for native rule 92213 (level 15, T1105 - "Executable file
+       dropped in folder commonly used by malware"). PowerShell creates
+       `__PSScriptPolicyTest_*.ps1` in the caller's AppData\Local\Temp on
+       EVERY remote PowerShell session (WinRM, Ansible, RSAT, etc.) as an
+       internal script-execution-policy self-check - not a payload, not
+       attacker-controlled content, and not something any admin action can
+       avoid. Confirmed 2026-08-09: a benign purple-team WinRM session against
+       winsrv (agent 014) tripped 92213 to CRITICAL purely from this file, with
+       zero attacker-controlled binary involved.
+
+       Matched by filename only, not by parent process: the point of this
+       artifact is that it appears on ANY remote PowerShell invocation,
+       legitimate or not, so restricting by image would just move the false
+       positive rather than remove it. A real dropped executable still
+       matches 92213 under any other filename in Temp. -->
+
+  <rule id="100936" level="0">
+    <if_sid>92213</if_sid>
+    <field name="win.eventdata.targetFilename" type="pcre2">(?i)__PSScriptPolicyTest_[^\\]+\.ps1$</field>
+    <description>Excluded: PowerShell script-policy self-check artifact, not a dropped payload</description>
+  </rule>
+
+</group>

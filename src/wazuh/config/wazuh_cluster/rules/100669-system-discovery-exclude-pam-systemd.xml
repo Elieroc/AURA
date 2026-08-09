@@ -1,0 +1,37 @@
+<!-- Aura-SOC - rule 100669 (level 0). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- Fix 2 correction (2026-08-09): 100667's earlier live-fire test on
+       debian2 (agent 013) showed a "systemctl" 100667 hit on every plain SSH
+       login, with 100668's frequency threshold raised from 5/600s to 8/300s
+       to compensate. Root cause traced properly this time, in raw
+       /var/log/audit/audit.log on the agent: pam_systemd runs
+       systemctl user-session env setup (DBUS_SESSION_BUS_ADDRESS) on
+       every session open (twice per login, matching the double "PAM: Login
+       session opened" also seen) - session plumbing, not discovery, and it
+       fires on EVERY systemd host in the fleet, every login, forever.
+
+       None of a0/a1/a2/a3 individually contain a space here (unlike
+       `bash -c "uname -a"`, hex-encoded because the whole string has a space -
+       see 100653's comment), so plain-text matching on the EXECVE argv is
+       reliable, no hex form needed.
+
+       Standard Wazuh suppression pattern: a child rule with a higher ID,
+       chained via if_sid (ordering matters here, unlike if_matched_group/
+       if_matched_sid - see README), matching a more specific condition at
+       level 0. analysisd resolves the event to this rule instead of its
+       parent, so the alert - and its contribution to 100668's frequency
+       count - disappears at the source instead of being tolerated by raising
+       thresholds. 100668 should be reverted to its original frequency=5
+       timeframe=600 now that the actual noise source is suppressed here,
+       rather than left permanently desensitized. -->
+
+  <rule id="100669" level="0">
+    <if_sid>100667</if_sid>
+    <field name="audit.execve.a1">--user</field>
+    <field name="audit.execve.a2">set-environment</field>
+    <description>Excluded: pam_systemd user-session environment setup (systemctl --user set-environment) - not discovery</description>
+  </rule>
+
+</group>

@@ -1381,8 +1381,6 @@ def _note_fp(triage: dict, regle: dict | None) -> str:
     lignes = [
         "# Analyse — Faux positif",
         "",
-        f"**Verdict IA** : faux positif (confiance {triage['confidence']})",
-        "",
         "## Justification",
         triage["reason"],
         "",
@@ -1620,18 +1618,13 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict],
     degrade = "analyse" not in rapport
     rapport.setdefault("resume", triage["reason"])
     rapport.setdefault("analyse", triage["reason"])
-    rapport.setdefault("couverture", "")
     # Réhydratation : les jetons redeviennent les vraies valeurs pour l'analyste.
     # Puis correction des coquilles d'accent récurrentes du modèle.
-    for cle in ("resume", "analyse", "couverture"):
+    for cle in ("resume", "analyse"):
         rapport[cle] = _corriger_accents(rehydrater(rapport[cle], anon.mapping))
 
     cts = _conteneurs(alertes)
-    lignes = [
-        "# Rapport d'analyse — Vrai positif",
-        "",
-        f"**Verdict IA** : vrai positif (confiance {triage['confidence']})",
-    ]
+    lignes = ["# Rapport d'analyse — Vrai positif", ""]
     # Plus de technique en en-tête : le triage n'en rend QU'UNE, celle qui a
     # emporté sa décision, et elle n'est même pas toujours dans le mapping des
     # règles (case 129 : en-tête T1098, table ATT&CK sans T1098). La couverture
@@ -1661,20 +1654,15 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict],
         rapport["analyse"],
         "",
     ]
-    # Couverture / angles morts : n'ajouter la section que si le modèle l'a
-    # remplie. Toujours faire figurer la télémétrie factuelle qui l'a fondée.
-    if rapport["couverture"].strip():
-        lignes += ["## Couverture et limites", rapport["couverture"],
-                   "", f"_{telemetrie}_", ""]
     lignes += [
-        _section_mitre(alertes),
-        "",
         _section_cases_lies(_incidents_lies(conn, incident)),
         _section_commandes(alertes),
         "",
         _section_alertes(alertes, incident["agent_id"]),
         "",
         _section_iocs(alertes, iocs),
+        "",
+        _section_mitre(alertes),
         "",
         _section_remediations(conn, incident["id"], triage),
         "",

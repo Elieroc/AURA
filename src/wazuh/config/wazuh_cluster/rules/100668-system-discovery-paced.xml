@@ -1,0 +1,47 @@
+<!-- Aura-SOC - rule 100668 (level 7). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- Fix 3 (2026-08-09), purple-team finding: 100658 (burst, 12 cmd/30s) is
+       the ONLY correlation guarding discovery commands. A purple-team run
+       against debian2/debian3 ran T1082+T1033+T1007 one command at a time,
+       >30s apart, specifically to stay under 100658 - zero alert of any kind
+       was produced (below that, individual matches sit at level 3, see 100657/
+       100667, well under nothing suspicious on their own).
+
+       This rule is the gap-closer: same host-wide correlation as 100658 (see
+       its comment - <same_field>audit.auid</same_field> does not fire in this
+       Wazuh version, so this is host-wide too, not per-user), but a longer
+       window and lower count catches paced/manual enumeration that a burst
+       counter structurally cannot.
+
+       REVERTED to frequency=5/timeframe=600 (2026-08-09, same day): an
+       intermediate version raised this to 8/300s to tolerate a login-time
+       false positive, traced at the time to Debian's update-motd.d. Checking
+       the agent's raw /var/log/audit/audit.log directly showed the real
+       source was pam_systemd (systemctl user-session env setup, session
+       plumbing, fires on every login on any systemd host) - not MOTD at all.
+       Fixed properly at the source in 100669 (exclusion by if_sid, matching
+       audit.execve.a1/a2 exactly), so this rule no longer needs desensitizing
+       to survive normal login traffic. Left permanently weakened it would
+       have missed slower/quieter real recon than intended.
+
+       Level 7 (MEDIUM): distinguishable from the level-3 baseline and from the
+       level-10 burst, but deliberately short of HIGH - this is a pattern
+       worth an analyst's attention, not a confirmed compromise. -->
+
+  <rule id="100668" level="7" frequency="5" timeframe="600">
+    <if_matched_group>discovery_baseline</if_matched_group>
+    <description>Paced system discovery (5+ discovery commands over 10 min) - reconnaissance below the burst threshold</description>
+    <mitre>
+      <id>T1082</id>
+      <id>T1033</id>
+      <id>T1057</id>
+      <id>T1007</id>
+      <id>T1016</id>
+      <id>T1018</id>
+      <id>T1049</id>
+    </mitre>
+  </rule>
+
+</group>

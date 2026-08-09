@@ -302,11 +302,23 @@ def rehydrater(texte: str | None, mapping: dict[str, str]) -> str | None:
 
     Du jeton le plus long au plus court : `<FICHIER_11>` avant `<FICHIER_1>`
     (même si le suffixe `>` les rend déjà non préfixes l'un de l'autre).
+
+    Repli sans chevrons : demandé de mettre un jeton en **gras**, le modèle
+    écrit parfois `**HOTE_1**` au lieu de `**<HOTE_1>**` — il traite `<...>`
+    comme du balisage à nettoyer plutôt qu'un jeton opaque (case #197,
+    régression du 2026-08-09 après ajout de la consigne de mise en forme).
+    Un remplacement exact du jeton entier laissait alors la forme nue
+    intacte, jamais réhydratée. Le nom nu (`HOTE_1`, `IP_3`…) est un jeton
+    forgé par ce module (préfixe fixe + compteur) : trop spécifique pour
+    matcher un mot du texte par accident, donc sûr en repli.
     """
     if not texte:
         return texte
     for token in sorted(mapping, key=len, reverse=True):
         texte = texte.replace(token, mapping[token])
+    for token in sorted(mapping, key=len, reverse=True):
+        if token.startswith("<") and token.endswith(">"):
+            texte = texte.replace(token[1:-1], mapping[token])
     return texte
 
 

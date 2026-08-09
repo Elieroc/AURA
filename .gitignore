@@ -55,3 +55,6 @@ docker-compose.override.yml
 # Contexte projet Claude Code : contient des détails propres au lab de l'auteur
 # (topologie, hôtes, historique d'incidents). Reste en local, jamais publié.
 CLAUDE.md
+
+# Conf Aura deployee generee depuis .env (topologie reseau) : jamais versionnee.
+/config/soc-ai.conf

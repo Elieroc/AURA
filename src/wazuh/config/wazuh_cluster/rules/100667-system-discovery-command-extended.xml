@@ -1,0 +1,44 @@
+<!-- Aura-SOC - rule 100667 (level 3). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- Fix 2 (2026-08-09), purple-team gap: 100657 only covers T1082/T1033
+       basename commands (whoami, uname, id...). A purple-team run on debian2
+       used systemctl to list running services (T1007,
+       service discovery) and generated zero match, in 100657 or anywhere else -
+       the command simply wasn't in the list.
+
+       Separate file/ID rather than extending 100657's regex: keeps the two
+       command families independently auditable/tunable, and avoids re-testing
+       a rule that's already proven in production. Both share the
+       `discovery_baseline` group so 100668's frequency correlation sees them
+       as one signal.
+
+       Coverage: T1007 (service discovery), T1057 (process discovery), T1016
+       (network config discovery), T1018 (remote system discovery), T1049
+       (network connection discovery). Matches on basename only (audit.command),
+       same constraint as 100657 - args are not evaluated, so e.g. `ps aux`
+       vs `ps -ef` both match on `ps`. `ls` and `find` deliberately excluded -
+       too high a baseline rate (every interactive session, cron, backup
+       script) to serve as a discovery signal at this granularity.
+
+       AMENDED same day: `df` and `env` also removed after live validation on
+       debian2 (agent 013) - Debian's update-motd.d scripts run both on every
+       plain SSH login, firing 100668 (paced-discovery, level 7) on routine
+       connections with zero attacker activity. -->
+
+  <rule id="100667" level="3">
+    <if_group>audit</if_group>
+    <field name="audit.command" type="pcre2">^(systemctl|service|ps|netstat|ss|ip|ifconfig|route|mount|lsblk|printenv|lsof|lsmod)$</field>
+    <description>System/service/process discovery command ($(audit.command))</description>
+    <mitre>
+      <id>T1007</id>
+      <id>T1057</id>
+      <id>T1016</id>
+      <id>T1018</id>
+      <id>T1049</id>
+    </mitre>
+    <group>discovery_baseline,</group>
+  </rule>
+
+</group>

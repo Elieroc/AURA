@@ -1,15 +1,30 @@
-<!-- Aura-SOC - rule 100657 (level 2). Domain: threat_hunting,linux,mitre_gaps,
+<!-- Aura-SOC - rule 100657 (level 3). Domain: threat_hunting,linux,mitre_gaps,
      Naming convention and load-order trap: see rules/README.md -->
 <group name="threat_hunting,linux,mitre_gaps,">
 
-  <!-- R8 T1082/T1033/T1057 - system discovery (level 2 baseline, level 10 burst
-       through 100658). -->
+  <!-- R8 T1082/T1033/T1057 - system discovery (level 3 baseline, level 10 burst
+       through 100658).
 
-  <rule id="100657" level="2">
+       LEVEL FIX (2026-08-09): was level 2. Manager's <log_alert_level>3</log_alert_level>
+       (wazuh_manager.conf) silently drops everything below 3 from alerts.json/
+       dashboard/IRIS ingest - the rule still fired internally (100658's frequency
+       counter kept working) but no individual match was ever visible anywhere.
+       A purple-team run confirmed zero visible trace for uname/whoami/id/who
+       even though 100657 matched every time. Bumped to 3, the floor, so baseline
+       discovery is now the lowest tier that actually surfaces - still far under
+       any HIGH/CRITICAL threshold.
+
+       GROUP TAG: `discovery_baseline` lets 100667 (extended command set) and
+       100668 (paced/slow discovery correlation) share frequency counting via
+       if_matched_group, without editing this regex every time new commands are
+       added. -->
+
+  <rule id="100657" level="3">
     <if_group>audit</if_group>
     <field name="audit.command" type="pcre2">^(whoami|id|uname|hostname|hostnamectl|uptime|lscpu|lsb_release|w|who|last|groups|arch|nproc|dnsdomainname|domainname)$</field>
     <description>System discovery command ($(audit.command))</description>
     <mitre><id>T1082</id></mitre>
+    <group>discovery_baseline,</group>
   </rule>
 
 </group>
