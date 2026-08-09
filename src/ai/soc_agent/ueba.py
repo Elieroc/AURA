@@ -110,7 +110,38 @@ VALEURS_IGNOREES = {
     "/bin/dash", "/usr/bin/zsh", "-", "", "unknown", "n/a", "none",
 }
 
+# Comptes qui ne désignent PAS une personne : comptes machine Active Directory
+# (`WIN-DC$`, `WIN-DC$@LAB.LOCAL` — le `$` final est la convention AD) et
+# pseudo-comptes du système d'exploitation. Ils authentifient en permanence,
+# pour le compte de services, et leur volume écrase tout le reste.
+#
+# Mesuré en production : l'incident #2550 (case IRIS #193) comptait 4598
+# alertes dont 3856 portées par `WIN-DC$`, soit 85 % d'ouvertures/fermetures de
+# session du contrôleur de domaine. Le signal l'a promu, le LLM l'a raconté
+# comme une compromission avérée, et `marquer_tp` a ensuite figé `WIN-DC$` à
+# 12 bits À VIE — la boucle se refermait sur elle-même.
+#
+# Le scope `user@host` disparaît aussi pour ces comptes : profiler « le
+# comportement de la personne WIN-DC$ » n'a pas de sens, et ce scope agrégerait
+# tout le trafic de service de la machine sous une identité unique.
+_RE_COMPTE_MACHINE = re.compile(r"\$(@|$)")
+COMPTES_NON_PERSONNE = {
+    "system", "système", "local system", "système local",
+    "local service", "service local", "network service", "service réseau",
+    "anonymous logon", "connexion anonyme", "nt authority\\system",
+}
+
 _WIN_SEP = re.compile(r"[\\/]+")
+
+
+def _norm_compte(valeur) -> str | None:
+    """Compte normalisé, ou None si ce n'est pas une identité de personne."""
+    v = _norm(valeur)
+    if v is None:
+        return None
+    if _RE_COMPTE_MACHINE.search(v) or v.lower() in COMPTES_NON_PERSONNE:
+        return None
+    return v
 
 
 def _norm(valeur) -> str | None:
@@ -146,7 +177,7 @@ def traits(a: dict) -> list[tuple[str, str, str, str]]:
     geo = raw.get("GeoLocation") or {}
 
     agent = str(a.get("agent_id") or "?")
-    compte = _norm(a.get("srcuser"))
+    compte = _norm_compte(a.get("srcuser"))
     hote = ("host", agent)
     # Le scope utilisateur n'existe que si l'événement porte un compte. Sinon on
     # se rabat sur le seul scope machine : inventer un « inconnu@hôte » créerait
@@ -509,11 +540,17 @@ def _persister(conn, etat: _Etat) -> None:
 
 # --- Signaux : regroupement et chaîne MITRE ----------------------------------
 
+# `ueba_signal_id IS NULL` et non `NOT ueba_seed` : une alerte qui a DÉJÀ
+# appartenu à un signal est consommée, définitivement. `ueba_seed` dit
+# « corrélable comme graine » et `correlate` peut le remettre à false quand il
+# écarte le groupe (score sous le plancher) ; s'en servir ici comme filtre
+# rendrait ces alertes à nouveau candidates, et le budget quotidien tournerait
+# en rond sur le même bruit à chaque cycle.
 SELECT_CANDIDATES = """
 SELECT id, ts, agent_id, agent_name, rule_id, rule_level, mitre_tactics,
        srcuser, ueba_score, ueba_traits
   FROM alerts
- WHERE ueba_vu AND NOT suppressed AND NOT ueba_seed
+ WHERE ueba_vu AND NOT suppressed AND ueba_signal_id IS NULL
    AND incident_id IS NULL
    AND ueba_score > 0
    AND rule_level < %s

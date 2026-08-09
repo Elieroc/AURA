@@ -2226,7 +2226,21 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     # Vrai positif : les traits UEBA impliqués ne doivent plus jamais devenir
     # une habitude. Sans ça, un attaquant patient normalise son propre outillage
     # en le lançant tous les jours jusqu'à ce qu'il cesse d'être scoré.
-    if not fp:
+    #
+    # JAMAIS sur un incident d'origine UEBA, en revanche : le gel serait
+    # circulaire. Le score comportemental désigne l'incident, le LLM le déclare
+    # vrai positif, et le gel réinjecte les traits qui ont produit le score en
+    # les portant au plafond — définitivement, `purger()` préservant
+    # explicitement `seen_in_tp`. Même raisonnement que `UEBA_MITIGATE` : un
+    # verdict rendu sur un score non calibré ne réécrit pas la baseline qui l'a
+    # produit.
+    #
+    # Constaté en production le 2026-08-08 : l'incident #2550 (case #193) a figé
+    # 24 traits, dont `compte=WIN-DC$` (38 650 observations), `heure=hors_ouvre`
+    # (27 954) et `rule_id=60137` (19 471) — les traits les plus banals du parc,
+    # bloqués à 12 bits. Les signaux suivants montaient à 238 sans qu'il se
+    # passe quoi que ce soit, et le budget quotidien partait dans ce bruit.
+    if not fp and not incident.get("ueba"):
         try:
             from . import ueba
             n = ueba.marquer_tp(incident["id"])
@@ -2373,7 +2387,8 @@ SELECT DISTINCT ON (i.id)
    AND (%(un_seul)s::bigint IS NULL OR i.id = %(un_seul)s)
  ORDER BY i.id, t.created_at DESC
 """
-SELECT_A_TRAITER = _SELECT_BASE.format(filtre="i.iris_case_id IS NULL")
+SELECT_A_TRAITER = _SELECT_BASE.format(
+    filtre="i.iris_case_id IS NULL AND i.status <> 'fp_ueba'")
 SELECT_A_RAFRAICHIR = _SELECT_BASE.format(
     filtre="i.iris_case_id IS NOT NULL AND i.needs_refresh")
 
@@ -2389,6 +2404,26 @@ def creer_cases(un_seul: int | None = None) -> list[tuple[int, int, str]]:
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         a_creer = conn.execute(SELECT_A_TRAITER, {"un_seul": un_seul}).fetchall()
         for inc in a_creer:
+            # Incident d'origine UEBA jugé faux positif : PAS de case.
+            #
+            # Un case FP a du sens pour un incident de niveau >= 12 : une règle
+            # a tiré fort, l'analyste veut voir pourquoi ça n'était rien. Un
+            # incident UEBA, lui, ne repose que sur un score comportemental non
+            # calibré (c'est aussi pourquoi UEBA_MITIGATE est à false) : quand
+            # le LLM dit « faux positif », il n'y a rien à documenter, et le
+            # case est du bruit pur dans la file de l'analyste. Le verdict reste
+            # en base (table `triages`) pour la whitelist et les métriques.
+            #
+            # Origine : case IRIS #192, ouvert sur 2 alertes de niveau 3
+            # (planification du service Software Protection de Windows).
+            if inc["ueba"] and inc["verdict"] == "false_positive":
+                conn.execute(
+                    "UPDATE incidents SET status = %s, needs_refresh = false "
+                    "WHERE id = %s", ("fp_ueba", inc["id"]))
+                conn.commit()
+                log.info("incident #%s (UEBA, score %s) jugé faux positif : "
+                         "aucun case IRIS ouvert", inc["id"], inc["ueba_score"])
+                continue
             triage = {k: inc[k] for k in
                       ("verdict", "confidence", "mitre", "actions", "reason")}
             try:

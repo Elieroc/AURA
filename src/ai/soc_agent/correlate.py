@@ -479,6 +479,7 @@ def correler(min_level: int, attach_min_level: int | None = None) -> tuple[int, 
 
         # Une seule transaction : en cas d'échec, les alertes restent
         # simplement non rattachées et un nouveau passage reprend le travail.
+        crees: list[list[dict]] = []
         for groupe in incidents:
             tactiques = sorted({t for a in groupe for t in a["mitre_tactics"]})
             entites = sorted({a["entity"] for a in groupe if a["entity"]})
@@ -502,6 +503,35 @@ def correler(min_level: int, attach_min_level: int | None = None) -> tuple[int, 
                 from . import ueba as _ueba
                 score_ueba, motifs = _ueba.scorer_groupe(ueba_alertes)
 
+            # Plancher de score sur l'INCIDENT, et pas seulement sur le signal.
+            # Le moteur UEBA promeut un signal entier ; le découpage d'ici peut
+            # en détacher un fragment dont le score propre n'a plus rien à voir
+            # avec celui qui a justifié la promotion. Sans ce garde-fou, un
+            # fragment de 2 alertes à 3,3 bits ouvrait un incident, un triage
+            # LLM et un case IRIS complets — c'est l'origine du case #192
+            # (« PHANTOM ALERT », planification du service Software Protection).
+            #
+            # Ne s'applique qu'aux groupes fondés UNIQUEMENT par UEBA : dès
+            # qu'une alerte de niveau >= min_level est présente, l'incident
+            # tient par son propre titre et le score comportemental n'est plus
+            # qu'un enrichissement.
+            #
+            # Les alertes écartées perdent `ueba_seed` : sans ça elles restent
+            # éligibles comme graine à CHAQUE cycle (SELECT_NON_RATTACHEES lit
+            # `rule_level >= plancher OR ueba_seed`) et le même groupe se
+            # représente indéfiniment. Elles gardent `ueba_signal_id`, qui est
+            # ce sur quoi `ueba.SELECT_CANDIDATES` s'appuie pour ne jamais les
+            # repromouvoir : consommées par le budget une fois, pour de bon.
+            if (ueba_alertes and score_ueba < config.UEBA_SCORE_PLANCHER
+                    and max(a["rule_level"] for a in groupe) < min_level):
+                conn.execute(
+                    "UPDATE alerts SET ueba_seed = false WHERE id = ANY(%s)",
+                    ([a["id"] for a in ueba_alertes],))
+                print(f"  UEBA : groupe de {len(groupe)} alertes écarté "
+                      f"(score {score_ueba:.1f} < plancher "
+                      f"{config.UEBA_SCORE_PLANCHER:.0f}) — pas d'incident")
+                continue
+
             inc_id = conn.execute(INSERT_INCIDENT, (
                 groupe[0]["agent_id"],
                 groupe[0]["agent_name"],
@@ -521,11 +551,12 @@ def correler(min_level: int, attach_min_level: int | None = None) -> tuple[int, 
                 "UPDATE alerts SET incident_id = %s WHERE id = ANY(%s)",
                 (inc_id, [a["id"] for a in groupe]),
             )
+            crees.append(groupe)
         conn.commit()
 
     rattachees = sum(len(v) for v in ajouts.values())
-    correlees = sum(len(g) for g in incidents) + rattachees
-    return len(incidents), correlees
+    correlees = sum(len(g) for g in crees) + rattachees
+    return len(crees), correlees
 
 
 def recommencer() -> None:

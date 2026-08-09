@@ -352,3 +352,29 @@ def test_tout_trait_non_attribut_est_pseudonymise():
     verifier_fuite(texte, interdits)      # ne doit pas lever
     assert "jdupont" not in texte
     assert "secret" not in texte
+
+
+def test_compte_machine_ne_porte_pas_de_trait():
+    """Un compte machine AD (`WIN-DC$`) n'est pas une personne.
+
+    Il authentifie en continu pour le compte de services : le profiler revient à
+    profiler le bruit de fond de la machine. Mesuré en production : l'incident
+    #2550 (case IRIS #193) comptait 4598 alertes dont 3856 portées par
+    `WIN-DC$` — des ouvertures/fermetures de session du contrôleur de domaine,
+    racontées par le LLM comme une compromission avérée.
+    """
+    for compte in ("WIN-DC$", "WIN-DC$@LAB.LOCAL", "SERVICE LOCAL",
+                   "Système", "ANONYMOUS LOGON"):
+        traits_ = ueba.traits(alerte(srcuser=compte))
+        assert not [t for t in traits_ if t[2] == "compte"], compte
+        # Le scope `user@host` disparaît aussi : il agrégerait tout le trafic
+        # de service de la machine sous une identité unique.
+        assert not [t for t in traits_ if t[0] == "user@host"], compte
+
+
+def test_compte_de_personne_reste_score():
+    """Le garde-fou ne doit pas emporter les vrais comptes — c'est là que vit
+    la latéralisation (un compte légitime sur un hôte où il n'a jamais servi)."""
+    traits_ = ueba.traits(alerte(srcuser="j.dupont"))
+    assert [t for t in traits_ if t[2] == "compte"]
+    assert [t for t in traits_ if t[0] == "user@host"]
