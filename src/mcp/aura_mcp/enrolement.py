@@ -140,10 +140,104 @@ def enroler_linux(hote: str, nom_agent: str | None, utilisateur: str,
         f"-m {manager} -n {nom} -k '{pubkey}'")
     etapes.append({"etape": "install-agent.sh", "ok": True, "sortie": sortie})
 
-    return {"etapes": etapes, "verification": verifier_linux(hote, utilisateur)}
+    etapes.append(assurer_identite(hote, utilisateur, nom, manager))
+    return {"etapes": etapes,
+            "verification": verifier_linux(hote, utilisateur, nom)}
 
 
-def verifier_linux(hote: str, utilisateur: str) -> dict:
+def identite_agent(hote: str, utilisateur: str) -> tuple[str | None, str | None]:
+    """(id, nom) déclarés dans le `client.keys` de la machine, ou (None, None)."""
+    brut = _ssh(hote, utilisateur,
+                "cat /var/ossec/etc/client.keys 2>/dev/null | head -1").strip()
+    if not brut:
+        return None, None
+    morceaux = brut.split()
+    return (morceaux[0], morceaux[1]) if len(morceaux) >= 2 else (None, None)
+
+
+def assurer_identite(hote: str, utilisateur: str, nom: str,
+                     manager: str) -> dict:
+    """Force l'agent à porter SA propre identité sur le manager.
+
+    `install-agent.sh` n'enrôle qu'à l'installation du paquet : sur une machine
+    où l'agent est déjà présent, il passe son chemin. Or c'est précisément là
+    que se cache le pire cas — une machine **clonée**, qui a hérité du
+    `client.keys` de son modèle. Deux agents présentent alors la même identité :
+    le manager n'en accepte qu'un, l'autre boucle en connexion/déconnexion, et
+    tout ce qu'il observe est perdu. Vu de l'inventaire, il « existe » pourtant.
+
+    On compare donc le nom déclaré localement au nom voulu, et on ré-enrôle
+    (`agent-auth` contre l'authd du manager, port 1515) s'ils divergent ou si
+    aucune clé n'est présente.
+    """
+    ident, nom_local = identite_agent(hote, utilisateur)
+    if nom_local == nom:
+        return {"etape": "identite", "ok": True, "reenrole": False,
+                "agent_id": ident, "nom": nom_local}
+
+    detail = ("aucune clé d'enrôlement" if not nom_local
+              else f"la machine porte l'identité « {nom_local} » "
+                   f"(agent {ident}), pas « {nom} »")
+    _ssh(hote, utilisateur,
+         f"systemctl stop wazuh-agent; "
+         f"/var/ossec/bin/agent-auth -m {manager} -A {nom} 2>&1 | tail -3; "
+         f"systemctl start wazuh-agent")
+    ident, nom_local = identite_agent(hote, utilisateur)
+    return {"etape": "identite", "ok": nom_local == nom, "reenrole": True,
+            "motif": detail, "agent_id": ident, "nom": nom_local}
+
+
+def etat_sur_le_manager(nom: str) -> dict:
+    """Ce que le MANAGER dit de cet agent — la seule vérité qui compte.
+
+    Une machine peut avoir l'agent actif, auditd chargé et les scripts en
+    place tout en n'étant connue de personne : identité en double, pare-feu
+    sur 1514, enrôlement jamais abouti. Tant que le manager ne la voit pas
+    `active`, elle n'est pas surveillée, quoi qu'en dise la machine.
+    """
+    import json
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    from soc_agent import config as soc_config
+
+    ssl_ctx = __import__("ssl")._create_unverified_context()
+    base = soc_config.WAZUH_API_URL.rstrip("/")
+
+    def _appel(chemin: str, entetes: dict) -> dict:
+        requete = urllib.request.Request(f"{base}{chemin}", headers=entetes)
+        with urllib.request.urlopen(requete, context=ssl_ctx,
+                                    timeout=20) as reponse:
+            return json.loads(reponse.read())
+
+    try:
+        import base64
+        creds = base64.b64encode(
+            f"{soc_config.WAZUH_API_USER}:"
+            f"{soc_config.WAZUH_API_PASSWORD}".encode()).decode()
+        jeton = _appel("/security/user/authenticate",
+                       {"Authorization": f"Basic {creds}"})["data"]["token"]
+        agents = _appel(
+            "/agents?name=" + urllib.parse.quote(nom),
+            {"Authorization": f"Bearer {jeton}"})["data"]["affected_items"]
+    except (urllib.error.URLError, KeyError, ValueError) as e:
+        return {"connu": None, "erreur": f"API Wazuh injoignable : {e}"}
+
+    if not agents:
+        return {"connu": False,
+                "consequence": f"Le manager ne connaît aucun agent « {nom} » : "
+                               f"cette machine n'est pas surveillée, quel que "
+                               f"soit son état local."}
+    a = agents[0]
+    return {"connu": True, "agent_id": a["id"], "statut": a.get("status"),
+            "ip": a.get("ip"), "version": a.get("version"),
+            "dernier_contact": a.get("lastKeepAlive"),
+            "groupes": a.get("group", [])}
+
+
+def verifier_linux(hote: str, utilisateur: str,
+                   nom_agent: str | None = None) -> dict:
     """Contrôle d'après la machine elle-même, pas d'après le code de retour.
 
     `audit_actif` est le point qui décide de tout : tant que `auditd` n'a pas
@@ -182,9 +276,25 @@ def verifier_linux(hote: str, utilisateur: str) -> dict:
             f"machines EN DIRECT, il ne passe par aucun rebond.")
         return resultat
 
+    # `enabled 2` = audit actif ET configuration verrouillée : c'est l'état
+    # visé, pas une anomalie (install-agent.sh, lui, ne teste que `= 1` et
+    # crie au loup sur une machine parfaitement instrumentée).
     connu = resultat.get("audit_actif") in ("0", "1", "2")
     resultat["redemarrage_requis"] = (
         resultat.get("audit_actif") not in ("1", "2") if connu else None)
+
+    # L'identité locale et ce que le manager en sait. Sans ce contrôle, une
+    # machine clonée passe pour enrôlée : agent actif, auditd chargé, scripts
+    # en place… et pas une alerte, parce qu'elle parle avec l'identité d'une
+    # autre.
+    ident, nom_local = identite_agent(hote, utilisateur)
+    resultat["identite_locale"] = {"agent_id": ident, "nom": nom_local}
+    if nom_agent:
+        resultat["manager"] = etat_sur_le_manager(nom_agent)
+        resultat["surveille"] = bool(
+            resultat["manager"].get("connu")
+            and resultat["manager"].get("statut") == "active"
+            and nom_local == nom_agent)
     if resultat["redemarrage_requis"]:
         resultat["pourquoi_redemarrer"] = (
             "L'audit noyau n'est pas actif : journald tient le socket netlink. "

@@ -150,10 +150,19 @@ d'active response, et la déclaration côté manager. Il manque toujours un de c
 étages sur une machine qui « a pourtant l'agent ».
 
 ```
-aura_enroll_agent(hote="10.0.1.42", systeme="linux")               # plan
-aura_enroll_agent(hote="10.0.1.42", systeme="linux", confirmer=true)
-aura_agent_health(hote="10.0.1.42", systeme="linux")
+aura_enroll_agent(hote="10.0.1.42", systeme="linux", nom_agent="web01")
+aura_enroll_agent(hote="10.0.1.42", systeme="linux", nom_agent="web01",
+                  confirmer=true)
+aura_agent_health(hote="10.0.1.42", systeme="linux", nom_agent="web01")
 ```
+
+`surveille` est la seule réponse qui compte : le manager voit-il cet agent
+`active`, et la machine porte-t-elle bien **sa propre** identité ? Une machine
+clonée hérite du `client.keys` de son modèle, présente une identité déjà prise
+et boucle en connexion/déconnexion — tout en paraissant impeccablement
+installée (agent actif, auditd chargé, scripts en place). C'est le cas
+rencontré à la mise en service sur `debian4`, cloné de `debian` : l'enrôlement
+détecte la divergence de nom et ré-enrôle par `agent-auth`.
 
 Linux : agent Wazuh épinglé, auditd et le jeu de règles `execve` d'AURA,
 `/etc/ld.so.preload` créé pour être surveillable, scripts d'active response,

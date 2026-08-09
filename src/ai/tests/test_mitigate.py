@@ -269,13 +269,32 @@ def test_statut_ar_mappe_les_quatre_issues():
                                    "refused": "refusé_agent", "error": "échec"}
 
 
-def test_actions_partie_figees_mais_echec_rejouable():
-    """Un refus ne se rejoue pas (il serait redéclíné à chaque cycle) ; un
-    échec de canal, si."""
-    for s in mitigate.STATUTS_PARTIS:
-        assert s in mitigate._STATUTS_FIGES
-    assert "échec" not in mitigate._STATUTS_FIGES
+def test_seules_les_reponses_de_l_agent_sont_figees():
+    """« Parti » et « abouti » ne sont pas la même chose.
+
+    Un refus ne se rejoue pas — il serait redécliné à chaque cycle. Un échec
+    de canal, si. Et surtout `émis` NON : c'est « la commande est partie »,
+    pas « elle a eu l'effet voulu ». Le figer laissait un compte attaquant
+    recréé sous un incident déjà ouvert sans jamais être désactivé (mesuré à
+    l'exercice : `art-backdoor` figé sur un `émis` hérité).
+
+    Ce test affirmait l'inverse jusqu'au 2026-08-09 : il imposait que TOUT
+    STATUTS_PARTIS soit figé, ce que le correctif d'`émis` a rendu faux. Il
+    échouait donc depuis, en décrivant une règle que le code avait
+    délibérément abandonnée.
+    """
+    reponses_agent = {"confirmé", "sans_effet", "refusé_agent"}
+    assert reponses_agent <= set(mitigate._STATUTS_FIGES)
     assert "annulé" in mitigate._STATUTS_FIGES
+
+    # Les deux rejouables, pour des raisons différentes.
+    assert "émis" not in mitigate._STATUTS_FIGES
+    assert "échec" not in mitigate._STATUTS_FIGES
+
+    # `émis` reste bien un statut « parti » — c'est ce qui le distingue de
+    # `dry_run`, qui n'a rien envoyé du tout.
+    assert "émis" in mitigate.STATUTS_PARTIS
+    assert "dry_run" not in mitigate.STATUTS_PARTIS
 
 
 def test_chaque_action_remediable_a_un_script_ar():

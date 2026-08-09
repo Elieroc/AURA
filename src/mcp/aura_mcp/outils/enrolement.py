@@ -150,7 +150,8 @@ def _suite(systeme: str) -> list[str]:
 
 
 @auth.exige("aura:read")
-def aura_agent_health(hote: str, systeme: str, ssh_user: str = "root",
+def aura_agent_health(hote: str, systeme: str, nom_agent: str | None = None,
+                      ssh_user: str = "root",
                       winrm_user: str | None = None,
                       winrm_password: str | None = None) -> dict:
     """Cette machine est-elle réellement couverte ? Contrôle sur pièces.
@@ -161,12 +162,20 @@ def aura_agent_health(hote: str, systeme: str, ssh_user: str = "root",
     est indiscernable d'une machine saine — jusqu'au jour où on lui demande
     quelque chose.
 
-    Sur Linux, `redemarrage_requis` est le point critique : tant que journald
-    tient le socket netlink, auditd n'émet rien.
+    Deux points décident, et aucun ne se lit sur un tableau de bord :
+
+    - `surveille` : le manager voit-il cet agent `active` ET la machine
+      porte-t-elle bien SA propre identité ? Une machine clonée hérite du
+      `client.keys` de son modèle, présente une identité déjà prise, et boucle
+      en connexion/déconnexion — tout en paraissant parfaitement installée.
+    - `redemarrage_requis` : tant que journald tient le socket netlink, auditd
+      n'émet rien.
 
     Args:
         hote: adresse de la machine.
         systeme: `linux` ou `windows`.
+        nom_agent: nom attendu côté manager. Sans lui, le contrôle reste local
+            et ne peut pas dire si la machine est réellement surveillée.
         ssh_user: compte SSH (Linux).
         winrm_user: compte administrateur (Windows).
         winrm_password: mot de passe associé (Windows).
@@ -174,7 +183,7 @@ def aura_agent_health(hote: str, systeme: str, ssh_user: str = "root",
     systeme = systeme.lower().strip()
     try:
         if systeme == "linux":
-            etat = enrolement.verifier_linux(hote, ssh_user)
+            etat = enrolement.verifier_linux(hote, ssh_user, nom_agent)
         elif systeme == "windows":
             if not (winrm_user and winrm_password):
                 return {"erreur": "winrm_user et winrm_password requis."}
