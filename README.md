@@ -75,27 +75,13 @@ schéma Postgres soc-agent, active response) : [`docs/INSTALL.md`](docs/INSTALL.
 
 ## Ressources
 
-Toute la stack tient sur une seule machine. Chiffres mesurés sur le serveur de
-production (17 agents Wazuh, 8 vCPU / 16 Gio / 99 Gio, 13 jours d'uptime) :
-~5,5 Gio de RAM réellement utilisés, load average 1,5, 32 Gio de disque
-consommés. L'IA appelle l'API DeepSeek — aucune inférence locale, donc **pas de
-GPU et pas de RAM de modèle** à prévoir.
-
-| Ressource | Strict minimum | Recommandé | Pourquoi |
-|---|---|---|---|
-| CPU | 4 vCPU x86-64 | 8 vCPU | Load moyen 1,5 ; pics sur l'analyse Wazuh et le feed vulnerability detector. En dessous de 4, l'indexer et l'OpenSearch de Shuffle se disputent le CPU au démarrage. |
-| RAM | 8 Gio | 16 Gio | Somme des RSS ≈ 5 Gio (indexer 1,7 · shuffle-opensearch 1,3 · manager 0,55 · dashboard 0,22 · pile IRIS 0,75 · Postgres 0,3 · MCP 0,1). À 8 Gio il faut baisser les deux heaps JVM à `-Xms512m -Xmx512m` et accepter du swap. |
-| Disque | 60 Gio SSD | 100 Gio SSD | 32 Gio occupés : images Docker 21 Gio, volumes 9,5 Gio dont **7,7 Gio pour la seule base CVE du vulnerability detector**. Les index d'alertes restent petits (~220 Mio) avec la rétention courte par défaut. |
-| Swap | 2 Gio | 2 Gio | Filet de sécurité, pas une réserve : sur 16 Gio il est déjà consommé à 90 % par des pages inactives. |
-| Réseau | — | sortie Internet | API DeepSeek, VirusTotal, AbuseIPDB, feed CVE Wazuh. Sans elle le triage IA et l'enrichissement sont morts. |
-
-Prévoir en plus, hors valeurs ci-dessus :
-
-- **+1 Gio de RAM et +2 vCPU par tranche de ~50 agents** supplémentaires (le
-  manager Wazuh est le premier à saturer).
-- **Croissance disque** : ~1 Gio/mois d'index d'alertes pour ce volume, à
-  multiplier si la rétention de `wazuh-*` est allongée.
-- `vm.max_map_count=262144` est obligatoire, sinon l'indexer refuse de démarrer.
+| Ressource | Strict minimum | Recommandé |
+|---|---|---|
+| CPU | 4 vCPU x86-64 | 8 vCPU |
+| RAM | 8 Gio | 16 Gio |
+| Disque | 60 Gio SSD | 100 Gio SSD |
+| Swap | 2 Gio | 2 Gio |
+| Réseau | — | sortie Internet |
 
 ## Documentation
 
