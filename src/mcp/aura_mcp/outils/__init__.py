@@ -7,3 +7,4 @@ d'abord, action ensuite, délibérément.
 """
 
 from . import lecture  # noqa: F401
+from . import simulation  # noqa: F401
