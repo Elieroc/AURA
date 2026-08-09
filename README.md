@@ -81,6 +81,7 @@ schéma Postgres soc-agent, active response) : [`docs/INSTALL.md`](docs/INSTALL.
 | [`docs/TRAINING.md`](docs/TRAINING.md) | mode training : apprendre le bruit ambiant du SI avant de laisser le SOC agir |
 | [`docs/UEBA.md`](docs/UEBA.md) | moteur comportemental : faire remonter les alertes LOW/MEDIUM qui le méritent, sans noyer le LLM |
 | [`docs/REMEDIATION.md`](docs/REMEDIATION.md) | remédiation autonome de bout en bout + catalogue de toutes les active responses |
+| [`docs/MCP.md`](docs/MCP.md) | serveur MCP : administrer AURA depuis n'importe quel client IA (relaie Wazuh et IRIS) |
 
 ## Security principles
 
@@ -94,7 +95,7 @@ schéma Postgres soc-agent, active response) : [`docs/INSTALL.md`](docs/INSTALL.
 AURA/
 ├── docker-compose.yml   # compose racine unique — les 4 stacks
 ├── .env.example         # config racine unique (copier en .env)
-├── docs/                # INSTALL, TRAINING, UEBA, REMEDIATION
+├── docs/                # INSTALL, TRAINING, UEBA, REMEDIATION, MCP
 ├── scripts/             # install-agent.sh, déploiement AR...
 ├── db/                  # bases de données (Postgres/OpenSearch), gitignoré
 └── src/                 # les 4 stacks buildables : ai/ · iris/ · shuffle/ · wazuh/

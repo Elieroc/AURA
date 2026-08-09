@@ -1,0 +1,19 @@
+{
+  "_commentaire": [
+    "Serveur MCP AURA — voir docs/MCP.md.",
+    "AURA_MCP_TOKEN doit être dans l'environnement du client, jamais ici :",
+    "  export AURA_MCP_TOKEN=$(ssh root@<manager> 'cd /opt/AURA && python3 scripts/aura-mcp-token.py --sujet claude-code --scope aura:read')",
+    "Le serveur n'écoute que sur la loopback du manager. Depuis un poste",
+    "distant, ouvrir un tunnel plutôt que le port :",
+    "  ssh -L 3100:127.0.0.1:3100 root@<manager>"
+  ],
+  "mcpServers": {
+    "aura": {
+      "type": "http",
+      "url": "http://127.0.0.1:3100/mcp",
+      "headers": {
+        "Authorization": "Bearer ${AURA_MCP_TOKEN}"
+      }
+    }
+  }
+}
