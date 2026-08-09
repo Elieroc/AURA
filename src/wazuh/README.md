@@ -476,7 +476,17 @@ quasi temps réel..
 
 - `dashboards/soc-ai-dashboards.ndjson` (généré par `dashboards/gen_dashboard.py`), 5 dashboards :
   - **Threat Intel** : carte GeoIP des IP sources, réputation AbuseIPDB, détections VirusTotal
-  - **Global** : compteur d'événements global + timeline des alertes par niveau
+  - **Global** : compteur d'événements global + timeline des alertes par niveau,
+    et **MTTD / MTTR** (moyenne, médiane, nombre d'incidents derrière le chiffre).
+    Ces deux panneaux lisent `wazuh-ai-*` (`event_type:incident_kpi`) et non les
+    alertes : le délai se calcule entre des bornes réparties sur trois tables
+    Postgres, ce qu'aucune visualisation OSD ne sait faire. Le calcul est fait à
+    l'export (`src/ai/soc_agent/metrics.py`, `_doc_kpi`). MTTD = premier événement
+    observé → incident créé par la corrélation ; MTTR = incident créé → première
+    remédiation **réellement appliquée** (statuts `exécuté`/`confirmé`/`sans_effet` ;
+    ni `dry_run`, ni un `émis` que l'agent n'a jamais confirmé). Un incident
+    détecté hors fenêtre mais remédié dedans est réexporté, son `_id` étant
+    déterministe (`kpi-<incident_id>`)
   - **Linux** : top règles, top alertes, échecs d'authentification, top agents (index `wazuh-linux-*`)
   - **Web** : top règles/alertes d'attaque, timeline, top URLs ciblées, top IP sources, codes HTTP (index `wazuh-web-*`)
   - **YARA** : fichiers malveillants détectés par Loki/YARITRUST, top machines infectées, timeline par gravité, liste des matches (index `wazuh-yara-*`)

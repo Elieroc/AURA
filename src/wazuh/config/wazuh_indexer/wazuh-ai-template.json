@@ -128,6 +128,37 @@
           },
           "alert_count": {
             "type": "integer"
+          },
+          "status": {
+            "type": "keyword"
+          }
+        }
+      },
+      "kpi": {
+        "properties": {
+          "mttd_minutes": {
+            "type": "double"
+          },
+          "mttr_minutes": {
+            "type": "double"
+          },
+          "mttr_total_minutes": {
+            "type": "double"
+          },
+          "triage_minutes": {
+            "type": "double"
+          },
+          "first_seen": {
+            "type": "date"
+          },
+          "detected_at": {
+            "type": "date"
+          },
+          "remediated_at": {
+            "type": "date"
+          },
+          "remediated": {
+            "type": "boolean"
           }
         }
       },

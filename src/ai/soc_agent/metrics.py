@@ -6,7 +6,7 @@ indexer, sous les mêmes conventions de champs, permet de les lire dans le même
 dashboard Wazuh que les alertes — et de croiser un pic de tokens avec un pic
 d'alertes sur le même axe de temps.
 
-Trois types de documents, distingués par `event_type` :
+Quatre types de documents, distingués par `event_type` :
 
 - `llm_call`  : un appel au modèle (table `llm_calls`). Porte les tokens, la
   durée, l'appelant, le coût estimé. C'est la source des métriques de
@@ -16,8 +16,12 @@ Trois types de documents, distingués par `event_type` :
   source des métriques de QUALITÉ.
 - `snapshot`  : compteurs de l'état du pipeline à l'instant du run (incidents,
   cases, whitelists, remédiations). Ce qui ne se déduit pas des deux autres.
+- `incident_kpi` : un document par incident, porteur des DÉLAIS (MTTD, MTTR).
+  Calculés en SQL et non dans une visualisation : OpenSearch Dashboards ne sait
+  pas soustraire deux dates de deux documents différents, et les bornes vivent
+  dans trois tables (`incidents`, `triages`, `mitigations`).
 
-Idempotence par `_id` déterministe (`llm-<id>`, `triage-<id>`) : on réexporte
+Idempotence par `_id` déterministe (`llm-<id>`, `triage-<id>`, `kpi-<id>`) : on réexporte
 une fenêtre glissante à chaque passage plutôt que de tenir un curseur. Un
 document déjà présent est simplement réécrit à l'identique. Le curseur en base
 aurait été une table de plus, et un rattrapage impossible après une purge
@@ -137,6 +141,92 @@ def _doc_triage(t: dict) -> dict:
     }
 
 
+# Statuts de remédiation qui comptent comme une RÉPONSE effectivement appliquée
+# sur la cible, et qui arrêtent donc le chronomètre du MTTR :
+#   exécuté / confirmé : l'action est passée, l'agent l'a confirmée.
+#   sans_effet         : l'action est passée et il n'y avait rien à faire
+#                        (cible absente, déjà dans cet état) — c'est une issue,
+#                        pas un échec.
+# Volontairement exclus : 'dry_run' (simulé, l'action reste à faire), 'échec',
+# 'refusé_agent', 'annulé', et 'émis' — une action émise sans compte rendu
+# d'agent n'est PAS une preuve de remédiation (cf. le rapport du 2026-08-02 qui
+# annonçait 26 quarantaines réussies, toutes refusées en réalité).
+STATUTS_REMEDIES = ("exécuté", "confirmé", "sans_effet")
+
+# `created_at OR une remédiation dans la fenêtre` : le MTTR d'un incident arrive
+# APRÈS sa détection, parfois des heures plus tard. Sans la seconde branche, le
+# document KPI d'un incident détecté hors fenêtre garderait à jamais son MTTR
+# vide. L'`_id` déterministe fait que le réexport le corrige en place.
+SQL_KPI = f"""
+    SELECT i.id, i.agent_name, i.max_level, i.alert_count, i.status,
+           i.first_seen, i.created_at,
+           (SELECT min(t.created_at) FROM triages t
+             WHERE t.incident_id = i.id) AS triage_at,
+           (SELECT min(m.executed_at) FROM mitigations m
+             WHERE m.incident_id = i.id
+               AND m.statut IN {STATUTS_REMEDIES}) AS remedie_at
+      FROM incidents i
+     WHERE i.created_at >= %(debut)s
+        OR EXISTS (SELECT 1 FROM mitigations m
+                    WHERE m.incident_id = i.id
+                      AND m.statut IN {STATUTS_REMEDIES}
+                      AND m.executed_at >= %(debut)s)
+     ORDER BY i.id
+"""
+
+
+def _minutes(fin, debut) -> float | None:
+    """Écart en minutes, arrondi à la seconde près. None si la borne manque."""
+    if fin is None or debut is None:
+        return None
+    return round((fin - debut).total_seconds() / 60, 4)
+
+
+def _doc_kpi(k: dict) -> dict:
+    """Délais de bout en bout d'un incident.
+
+    Trois bornes, trois délais :
+
+    - MTTD : `first_seen` (le plus ancien ÉVÉNEMENT de l'incident, horodaté sur
+      la machine) -> `created_at` (instant où la corrélation a créé l'incident,
+      c'est-à-dire où AURA a détecté). Mesure la chaîne capteur -> indexeur ->
+      ingest -> corrélation, cadence des cycles comprise.
+    - MTTR : `created_at` -> première remédiation appliquée. Détection -> action,
+      la définition SOC usuelle. MTTD + MTTR = délai total de bout en bout, aussi
+      exporté (`mttr_total_minutes`) pour n'avoir pas à additionner deux moyennes
+      — ce qui serait faux dès que les deux populations diffèrent (tous les
+      incidents détectés n'aboutissent pas à une remédiation).
+    - Triage : `created_at` -> premier verdict du modèle. Sous-partie du MTTR,
+      utile pour savoir si un MTTR qui dérive vient de l'IA ou du canal d'action.
+
+    Le document est horodaté sur `created_at` : un KPI se lit à la date de la
+    détection qu'il décrit, pas à celle de l'export.
+    """
+    return {
+        "@timestamp": k["created_at"].astimezone(timezone.utc).isoformat(),
+        "timestamp": k["created_at"].astimezone(timezone.utc).isoformat(),
+        "event_type": "incident_kpi",
+        "kpi": {
+            "mttd_minutes": _minutes(k["created_at"], k["first_seen"]),
+            "mttr_minutes": _minutes(k["remedie_at"], k["created_at"]),
+            "mttr_total_minutes": _minutes(k["remedie_at"], k["first_seen"]),
+            "triage_minutes": _minutes(k["triage_at"], k["created_at"]),
+            "first_seen": k["first_seen"].astimezone(timezone.utc).isoformat(),
+            "detected_at": k["created_at"].astimezone(timezone.utc).isoformat(),
+            "remediated_at": (k["remedie_at"].astimezone(timezone.utc).isoformat()
+                              if k["remedie_at"] else None),
+            "remediated": k["remedie_at"] is not None,
+        },
+        "incident": {
+            "id": k["id"],
+            "agent_name": k["agent_name"],
+            "max_level": k["max_level"],
+            "alert_count": k["alert_count"],
+            "status": k["status"],
+        },
+    }
+
+
 def _doc_snapshot(conn, maintenant: datetime) -> dict:
     """Compteurs d'état. Un document par run — c'est une jauge, pas un flux."""
     def un(sql, *args):
@@ -207,7 +297,7 @@ def exporter(depuis: str, simulation: bool) -> dict:
     maintenant = datetime.now(timezone.utc)
 
     lignes: list[str] = []
-    resume = {"llm_call": 0, "triage": 0, "snapshot": 0}
+    resume = {"llm_call": 0, "triage": 0, "incident_kpi": 0, "snapshot": 0}
 
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         for l in conn.execute(
@@ -224,6 +314,11 @@ def exporter(depuis: str, simulation: bool) -> dict:
             lignes += _ligne(_index_du_jour(t["created_at"]),
                              f"triage-{t['id']}", _doc_triage(t))
             resume["triage"] += 1
+
+        for k in conn.execute(SQL_KPI, {"debut": debut}):
+            lignes += _ligne(_index_du_jour(k["created_at"]),
+                             f"kpi-{k['id']}", _doc_kpi(k))
+            resume["incident_kpi"] += 1
 
         snap = _doc_snapshot(conn, maintenant)
 
@@ -258,7 +353,8 @@ def main() -> None:
     if args.simulation:
         return
     print(f"  {r['ecrits']} document(s) indexés "
-          f"({r['llm_call']} appels LLM, {r['triage']} triages, 1 snapshot)")
+          f"({r['llm_call']} appels LLM, {r['triage']} triages, "
+          f"{r['incident_kpi']} KPI d'incident, 1 snapshot)")
     for e in r["erreurs"]:
         print(f"  ERREUR {e}")
 

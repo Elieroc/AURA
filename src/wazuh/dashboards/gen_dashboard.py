@@ -3,7 +3,8 @@
 
 Dashboards :
 - Threat Intel : carte GeoIP, réputation AbuseIPDB, détections VirusTotal
-- Global      : timeline des alertes par niveau, compteur global d'événements
+- Global      : timeline des alertes par niveau, compteur global d'événements,
+                MTTD / MTTR (délais issus de l'index wazuh-ai-*)
 - Linux       : top règles, échecs d'auth, top alertes (index wazuh-linux-*)
 - AI          : tokens, coût, latence et qualité des verdicts (index wazuh-ai-*,
                 alimenté par le conteneur soc-agent-metrics)
@@ -909,6 +910,62 @@ objs.append(saved_search("soc-ai-ai-latest", "Derniers appels au modele",
     IDX_AI, query=Q_LLM))
 
 
+# ---------- Delais de bout en bout : MTTD / MTTR (event_type:incident_kpi) ----------
+#
+# Les deux chiffres qu'on demande a un SOC. Ils viennent de l'index wazuh-ai-*
+# et NON des alertes : le delai se calcule entre des bornes qui vivent dans
+# trois tables Postgres (incidents, triages, mitigations), et OSD ne sait pas
+# soustraire deux dates de deux documents. Le calcul est fait a l'export
+# (soc_agent/metrics.py, `_doc_kpi`), un document par incident.
+#
+#   MTTD = premier evenement observe -> incident cree par la correlation.
+#   MTTR = incident cree -> premiere remediation REELLEMENT appliquee
+#          (statuts execute/confirme/sans_effet ; ni dry_run, ni 'emis' non
+#          confirme). Les deux s'additionnent pour le delai total.
+#
+# La moyenne SEULE ment ici : un seul incident rattrape par le balayage de
+# retard (alerte indexee des heures apres l'evenement) la fait tripler. D'ou la
+# mediane a cote, et le nombre d'incidents derriere le chiffre — une moyenne sur
+# 3 incidents n'a pas le meme poids qu'une moyenne sur 300.
+Q_KPI = "event_type:incident_kpi"
+
+
+def kpi_delai(vid, titre, champ, query, compte_label):
+    return vis(vid, titre, {
+        "title": titre,
+        "type": "metric",
+        "aggs": [
+            {"id": "1", "enabled": True, "type": "avg", "schema": "metric",
+             "params": {"field": champ, "customLabel": "Moyenne (min)"}},
+            {"id": "2", "enabled": True, "type": "percentiles", "schema": "metric",
+             "params": {"field": champ, "percents": [50],
+                        "customLabel": "Mediane (min)"}},
+            {"id": "3", "enabled": True, "type": "count", "schema": "metric",
+             "params": {"customLabel": compte_label}},
+        ],
+        "params": {"addTooltip": True, "addLegend": False, "type": "metric",
+                   "metric": {"percentageMode": False, "useRanges": False,
+                              "colorSchema": "Green to Red", "metricColorMode": "None",
+                              "colorsRange": [{"from": 0, "to": 10 ** 12}],
+                              "labels": {"show": True}, "invertColors": False,
+                              "style": {"bgFill": "#000", "bgColor": False,
+                                        "labelColor": False, "subText": "",
+                                        "fontSize": 36}}},
+    }, IDX_AI, query=query)
+
+
+objs.append(kpi_delai(
+    "soc-ai-mttd", "MTTD — delai de detection", "kpi.mttd_minutes",
+    Q_KPI, "Incidents detectes"))
+
+# Filtre explicite sur l'existence du delai : la moyenne ignorerait les nuls de
+# toute facon, mais le COMPTE, lui, dirait « 11 incidents » la ou seuls 3 ont
+# ete remedies. Le denominateur affiche doit etre celui de la moyenne affichee.
+objs.append(kpi_delai(
+    "soc-ai-mttr", "MTTR — delai de remediation", "kpi.mttr_minutes",
+    f"{Q_KPI} and kpi.remediated:true", "Incidents remedies"))
+
+
 def compteur(vid, title, label, query="", idx=IDX_ALL, agg=None):
     """Grand chiffre unique sur l'index combiné."""
     return vis(vid, title, {
@@ -1076,22 +1133,28 @@ objs.append(dashboard("soc-ai-threat-intel", "Threat Intel",
     ]))
 
 objs.append(dashboard("soc-ai-global", "Global",
-    "Vue globale : volume et severite, repartition par machine et par capteur, "
-    "tactiques MITRE, flux des alertes High/Critical.",
+    "Vue globale : volume et severite, delais de detection et de remediation "
+    "(MTTD / MTTR), repartition par machine et par capteur, tactiques MITRE, "
+    "flux des alertes High/Critical.",
     [
         ("soc-ai-total-events",       0,  0, 12, 10),
         ("soc-ai-actionable-events", 12,  0, 12, 10),
         ("soc-ai-highcrit-events",   24,  0, 12, 10),
         ("soc-ai-active-agents",     36,  0, 12, 10),
-        ("soc-ai-alerts-timeline",    0, 10, 32, 15),
-        ("soc-ai-severity-pie",      32, 10, 16, 15),
-        ("soc-ai-events-by-host",     0, 25, 32, 16),
-        ("soc-ai-events-by-index",   32, 25, 16, 16),
-        ("soc-ai-global-top-rules",   0, 41, 26, 14),
-        ("soc-ai-mitre-tactics",     26, 41, 22, 14),
-        ("soc-ai-global-top-srcips",  0, 55, 24, 14),
-        ("soc-ai-geoip-map",         24, 55, 24, 14),
-        ("soc-ai-latest-alerts",      0, 69, 48, 20, "search"),
+        # Deuxieme ligne : ce que la plateforme MET DE TEMPS a faire, en face de
+        # ce qu'elle voit. Volontairement au-dessus des courbes de volume : un
+        # SOC se juge sur ces deux chiffres avant de se juger sur son debit.
+        ("soc-ai-mttd",               0, 10, 24, 10),
+        ("soc-ai-mttr",              24, 10, 24, 10),
+        ("soc-ai-alerts-timeline",    0, 20, 32, 15),
+        ("soc-ai-severity-pie",      32, 20, 16, 15),
+        ("soc-ai-events-by-host",     0, 35, 32, 16),
+        ("soc-ai-events-by-index",   32, 35, 16, 16),
+        ("soc-ai-global-top-rules",   0, 51, 26, 14),
+        ("soc-ai-mitre-tactics",     26, 51, 22, 14),
+        ("soc-ai-global-top-srcips",  0, 65, 24, 14),
+        ("soc-ai-geoip-map",         24, 65, 24, 14),
+        ("soc-ai-latest-alerts",      0, 79, 48, 20, "search"),
     ]))
 
 objs.append(dashboard("soc-ai-linux", "Linux",

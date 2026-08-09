@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from urllib.parse import quote
 
 DASHBOARD_URL = "https://localhost"
@@ -19,11 +20,27 @@ AUTH = f"admin:{os.environ['INDEXER_PASSWORD']}"
 
 
 def req(method, path, data=None):
+    """Le corps passe par un FICHIER (`-d @...`), jamais par argv.
+
+    Même piège que dans create_index_patterns.py : la liste de champs qu'on
+    réécrit ici dépasse la limite d'argv du noyau pour les patterns larges
+    (`OSError: [Errno 7] Argument list too long`), et le script mourait au
+    milieu du parcours — les patterns déjà traités rafraîchis, les suivants
+    jamais, sans que rien ne le dise.
+    """
     cmd = ["curl", "-sk", "-u", AUTH, "-X", method, DASHBOARD_URL + path,
            "-H", "osd-xsrf: true"]
-    if data is not None:
-        cmd += ["-H", "Content-Type: application/json", "-d", json.dumps(data)]
-    out = subprocess.run(cmd, capture_output=True, text=True).stdout
+    tmp = None
+    try:
+        if data is not None:
+            tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+            json.dump(data, tmp)
+            tmp.close()
+            cmd += ["-H", "Content-Type: application/json", "-d", "@" + tmp.name]
+        out = subprocess.run(cmd, capture_output=True, text=True).stdout
+    finally:
+        if tmp is not None:
+            os.unlink(tmp.name)
     return json.loads(out)
 
 
