@@ -185,12 +185,19 @@ def valider_signature(signature: dict, niveau: int, sig_tp: set[str]) -> str | N
     return None
 
 
-def lister() -> None:
+def exceptions() -> list[dict]:
+    """Les exceptions de whitelist, actives ou révoquées, plus récentes d'abord."""
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         lignes = conn.execute("""
-            SELECT id, match_all, source, fp_count, active, created_at
+            SELECT id, signature, match_all, reason, source, fp_count, active,
+                   origin_incidents, iris_task_id, created_at
               FROM whitelist_rules ORDER BY created_at DESC
         """).fetchall()
+    return [dict(r, created_at=r["created_at"].isoformat()) for r in lignes]
+
+
+def lister() -> None:
+    lignes = exceptions()
     if not lignes:
         print("Aucune exception de whitelist.")
         return

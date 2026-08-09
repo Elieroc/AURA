@@ -22,7 +22,8 @@ from .render import rendre
 VERDICTS = ("true_positive", "false_positive", "needs_investigation")
 
 
-def lister() -> None:
+def etat_labels() -> list[dict]:
+    """Un incident par ligne, avec son label humain et le verdict du modèle."""
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         lignes = conn.execute("""
             SELECT i.id, i.agent_name, i.first_seen, i.alert_count, i.max_level,
@@ -35,46 +36,77 @@ def lister() -> None:
               ) t ON true
              ORDER BY l.verdict IS NOT NULL, i.max_level DESC, i.first_seen DESC
         """).fetchall()
-
-        if not lignes:
-            print("Aucun incident.")
-            return
-
-        print(f"{'#':<5} {'date':<12} {'hôte':<14} {'lvl':<4} {'alertes':<8} "
-              f"{'label humain':<20} {'verdict modèle'}")
-        for r in lignes:
-            print(f"{r['id']:<5} {r['first_seen']:%m-%d %H:%M}  "
-                  f"{r['agent_name'] or '?':<14} {r['max_level']:<4} "
-                  f"{r['alert_count']:<8} {r['label'] or '— À LABELLISER':<20} "
-                  f"{r['modele'] or '-'}")
-
-        manquants = sum(1 for r in lignes if not r["label"])
-        print(f"\n{manquants} incident(s) sans label.")
+    return [{"id": r["id"], "agent_name": r["agent_name"],
+             "first_seen": r["first_seen"].isoformat(),
+             "alert_count": r["alert_count"], "max_level": r["max_level"],
+             "label": r["label"], "verdict_modele": r["modele"]}
+            for r in lignes]
 
 
-def montrer(incident_id: int) -> None:
-    """Affiche l'incident tel que le modèle le voit, pour juger sur pièces."""
+def lister() -> None:
+    lignes = etat_labels()
+    if not lignes:
+        print("Aucun incident.")
+        return
+
+    print(f"{'#':<5} {'date':<12} {'hôte':<14} {'lvl':<4} {'alertes':<8} "
+          f"{'label humain':<20} {'verdict modèle'}")
+    for r in lignes:
+        print(f"{r['id']:<5} {r['first_seen'][5:16].replace('T', ' ')}  "
+              f"{r['agent_name'] or '?':<14} {r['max_level']:<4} "
+              f"{r['alert_count']:<8} {r['label'] or '— À LABELLISER':<20} "
+              f"{r['verdict_modele'] or '-'}")
+
+    manquants = sum(1 for r in lignes if not r["label"])
+    print(f"\n{manquants} incident(s) sans label.")
+
+
+def vue_incident(incident_id: int) -> dict | None:
+    """L'incident **tel que le modèle le voit** (rendu du prompt) + son triage.
+
+    `None` si l'incident n'existe pas. Le rendu est le texte exact envoyé au
+    LLM : c'est ce qui permet de juger sur pièces, pas une reformulation.
+    """
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         inc = conn.execute(
             "SELECT * FROM incidents WHERE id = %s", (incident_id,)).fetchone()
         if not inc:
-            print(f"Incident {incident_id} inconnu.")
-            return
+            return None
         alertes = conn.execute(
             "SELECT id, ts, rule_id, rule_level, rule_desc, srcip, srcuser, "
             "entity, raw FROM alerts WHERE incident_id = %s ORDER BY ts",
             (incident_id,)).fetchall()
-
-        print(rendre(inc, alertes))
-
         t = conn.execute(
             "SELECT * FROM triages WHERE incident_id = %s "
             "ORDER BY created_at DESC LIMIT 1", (incident_id,)).fetchone()
-        if t:
-            print(f"\n-- verdict du modèle ({t['modele']}) --")
-            print(f"   {t['verdict']} / {t['confidence']} -> "
-                  f"{', '.join(t['actions'])}")
-            print(f"   {t['reason']}")
+
+    return {
+        "incident_id": incident_id,
+        "rendu": rendre(inc, alertes),
+        "triage": None if not t else {
+            "modele": t["modele"], "verdict": t["verdict"],
+            "confidence": t["confidence"], "actions": t["actions"],
+            "reason": t["reason"], "created_at": t["created_at"].isoformat(),
+            "incoherences": t["incoherences"],
+            "injection_motifs": t["injection_motifs"],
+            "garde_fous": t["garde_fous"],
+        },
+    }
+
+
+def montrer(incident_id: int) -> None:
+    """Affiche l'incident tel que le modèle le voit, pour juger sur pièces."""
+    v = vue_incident(incident_id)
+    if not v:
+        print(f"Incident {incident_id} inconnu.")
+        return
+    print(v["rendu"])
+    t = v["triage"]
+    if t:
+        print(f"\n-- verdict du modèle ({t['modele']}) --")
+        print(f"   {t['verdict']} / {t['confidence']} -> "
+              f"{', '.join(t['actions'])}")
+        print(f"   {t['reason']}")
 
 
 def enregistrer(incident_id: int, verdict: str, actions: list[str],

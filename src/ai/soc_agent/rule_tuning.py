@@ -488,21 +488,40 @@ def analyser(min_fp: int, simulation: bool) -> list[dict]:
     return decisions
 
 
-def lister() -> None:
+def regles_generees() -> list[dict]:
+    """Les règles auto-générées présentes sur disque.
+
+    Le répertoire EST l'état (pas de table) : on relit donc les fichiers plutôt
+    qu'une base qui pourrait mentir sur ce que le manager charge vraiment.
+    """
     dossier = Path(config.RULE_TUNING_DIR)
     fichiers = sorted(dossier.glob("*-auto-*.xml")) if dossier.is_dir() else []
-    if not fichiers:
-        print("Aucune règle générée automatiquement.")
-        return
+    regles = []
     for f in fichiers:
         texte = f.read_text(encoding="utf-8", errors="replace")
-        niveau = re.search(r'<rule id="\d+" level="(\d+)"', texte)
+        rid = re.search(r'<rule id="(\d+)" level="(\d+)"', texte)
         parent = re.search(r"<if_sid>([^<]+)</if_sid>", texte)
         canon = re.search(r"signature-canonique: (.+)", texte)
-        print(f"  {f.name}")
-        print(f"      parent {parent.group(1) if parent else '?'} -> niveau "
-              f"{niveau.group(1) if niveau else '?'}   "
-              f"{canon.group(1).strip() if canon else ''}")
+        regles.append({
+            "fichier": f.name,
+            "rule_id": rid.group(1) if rid else None,
+            "niveau": int(rid.group(2)) if rid else None,
+            "parent": parent.group(1) if parent else None,
+            "signature": canon.group(1).strip() if canon else None,
+        })
+    return regles
+
+
+def lister() -> None:
+    regles = regles_generees()
+    if not regles:
+        print("Aucune règle générée automatiquement.")
+        return
+    for r in regles:
+        print(f"  {r['fichier']}")
+        print(f"      parent {r['parent'] or '?'} -> niveau "
+              f"{r['niveau'] if r['niveau'] is not None else '?'}   "
+              f"{r['signature'] or ''}")
 
 
 def main() -> None:

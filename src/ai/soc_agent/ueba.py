@@ -805,13 +805,12 @@ def tourner() -> tuple[int, int, list[dict]]:
 
 # --- CLI ---------------------------------------------------------------------
 
-def etat() -> None:
+def rapport_etat(limite_signaux: int = 15) -> dict:
+    """Maturité de la baseline, budget de promotion, derniers signaux."""
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         r = conn.execute(
             "SELECT count(*) AS profils, count(DISTINCT scope_key) AS scopes, "
             "       coalesce(sum(total),0) AS obs FROM ueba_profiles").fetchone()
-        print(f"profils : {r['profils']} ({r['scopes']} scopes, "
-              f"{r['obs']} observations)")
         murs = conn.execute(
             "SELECT count(*) AS n FROM ueba_scopes "
             " WHERE premiere_obs <= now() - make_interval(days => %s) "
@@ -820,24 +819,53 @@ def etat() -> None:
         ).fetchone()["n"]
         total_scopes = conn.execute(
             "SELECT count(*) AS n FROM ueba_scopes").fetchone()["n"]
-        print(f"scopes mûrs : {murs}/{total_scopes} "
-              f"(>= {config.UEBA_MATURITE_JOURS} j et "
-              f"{config.UEBA_MATURITE_MIN_OBS} observations)")
         reste = conn.execute(
             "SELECT count(*) AS n FROM alerts WHERE NOT ueba_vu AND NOT suppressed"
         ).fetchone()["n"]
-        print(f"alertes à observer : {reste}")
-        print(f"budget : {_budget_restant(conn)}/{config.UEBA_BUDGET_JOUR} "
-              "promotions restantes sur 24 h")
-        for s in conn.execute(
-                "SELECT id, agent_name, score, statut, debut, motifs "
-                "  FROM ueba_signals ORDER BY created_at DESC LIMIT 15"):
-            phrases = "; ".join(
-                f"{m['trait']}={m['valeur']} +{m['bits']}" for m in
-                (s["motifs"] or [])[:3])
-            print(f"  #{s['id']:<5} {s['statut']:<11} {s['score']:6.1f} "
-                  f"{str(s['agent_name'] or '?'):<14} {s['debut']:%m-%d %H:%M}"
-                  f"  {phrases}")
+        budget = _budget_restant(conn)
+        signaux = conn.execute(
+            "SELECT id, agent_id, agent_name, score, statut, debut, fin, motifs "
+            "  FROM ueba_signals ORDER BY created_at DESC LIMIT %s",
+            (limite_signaux,)).fetchall()
+
+    return {
+        "profils": r["profils"],
+        "scopes": r["scopes"],
+        "observations": r["obs"],
+        "scopes_murs": murs,
+        "scopes_total": total_scopes,
+        "maturite_jours": config.UEBA_MATURITE_JOURS,
+        "maturite_min_obs": config.UEBA_MATURITE_MIN_OBS,
+        "alertes_a_observer": reste,
+        "budget_restant": budget,
+        "budget_jour": config.UEBA_BUDGET_JOUR,
+        "plancher_score": config.UEBA_SCORE_PLANCHER,
+        "signaux": [
+            {"id": s["id"], "agent_id": s["agent_id"],
+             "agent_name": s["agent_name"], "score": float(s["score"]),
+             "statut": s["statut"], "debut": s["debut"].isoformat(),
+             "fin": s["fin"].isoformat() if s["fin"] else None,
+             "motifs": s["motifs"] or []}
+            for s in signaux
+        ],
+    }
+
+
+def etat() -> None:
+    r = rapport_etat()
+    print(f"profils : {r['profils']} ({r['scopes']} scopes, "
+          f"{r['observations']} observations)")
+    print(f"scopes mûrs : {r['scopes_murs']}/{r['scopes_total']} "
+          f"(>= {r['maturite_jours']} j et {r['maturite_min_obs']} observations)")
+    print(f"alertes à observer : {r['alertes_a_observer']}")
+    print(f"budget : {r['budget_restant']}/{r['budget_jour']} "
+          "promotions restantes sur 24 h")
+    for s in r["signaux"]:
+        phrases = "; ".join(
+            f"{m['trait']}={m['valeur']} +{m['bits']}" for m in s["motifs"][:3])
+        print(f"  #{s['id']:<5} {s['statut']:<11} {s['score']:6.1f} "
+              f"{str(s['agent_name'] or '?'):<14} "
+              f"{s['debut'][5:16].replace('T', ' ')}  {phrases}")
 
 
 def main() -> None:

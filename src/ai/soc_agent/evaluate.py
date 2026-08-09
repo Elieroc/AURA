@@ -13,6 +13,9 @@ Deux mesures, de nature différente :
   disponible immédiatement, notamment après un changement de prompt.
 
     python -m soc_agent.evaluate
+
+Le calcul vit dans `rapport()`, qui rend un dict ; `afficher()` ne fait que le
+mettre en forme (voir report.py, même découpage, mêmes raisons).
 """
 
 import psycopg
@@ -25,99 +28,162 @@ from . import config
 # « 100 % » calculé sur quatre incidents.
 MINIMUM_UTILE = 30
 
+# Dernier triage par incident : les passages précédents reflètent des prompts
+# abandonnés.
+DERNIERS = """
+    SELECT DISTINCT ON (incident_id) *
+      FROM triages ORDER BY incident_id, created_at DESC
+"""
 
-def main() -> None:
+
+def rapport() -> dict:
+    """Cohérence et justesse du triage, en données brutes.
+
+    Clés toujours présentes : `n_triages`, `coherence`, `justesse`. `coherence`
+    et `justesse` valent `None` quand la mesure n'a pas de sens (aucun triage,
+    aucun label) — c'est un refus de conclure, pas un zéro.
+    """
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-        n_triages = conn.execute(
-            "SELECT count(*) n FROM triages").fetchone()["n"]
+        n_triages = conn.execute("SELECT count(*) n FROM triages").fetchone()["n"]
         if not n_triages:
-            print("Aucun triage enregistré — lancer soc_agent.triage.")
-            return
+            return {"n_triages": 0, "coherence": None, "justesse": None}
 
-        print("=" * 68)
-        print("COHÉRENCE  (sans label — disponible immédiatement)")
-        print("=" * 68)
-
-        # Dernier triage par incident : les passages précédents reflètent des
-        # prompts abandonnés.
-        derniers = """
-            SELECT DISTINCT ON (incident_id) *
-              FROM triages ORDER BY incident_id, created_at DESC
-        """
-        lignes = conn.execute(derniers).fetchall()
+        lignes = conn.execute(DERNIERS).fetchall()
         incoherents = [r for r in lignes if r["incoherences"]]
-        print(f"  Triages (dernier par incident) : {len(lignes)}")
-        print(f"  Sorties incohérentes           : {len(incoherents)} "
-              f"({100 * len(incoherents) / len(lignes):.0f} %)")
-        for r in incoherents:
-            print(f"    #{r['incident_id']} : {'; '.join(r['incoherences'])}")
-
-        modeles = conn.execute(
-            f"SELECT modele, count(*) n, avg(duree_ms)/1000 s, "
-            f"avg(prompt_tokens) tok FROM ({derniers}) d GROUP BY modele"
-        ).fetchall()
-        print()
-        for m in modeles:
-            print(f"  {m['modele']} : {m['n']} triages, "
-                  f"{m['s']:.1f} s en moyenne, {m['tok']:.0f} tokens de prompt")
-
-        print()
-        print("=" * 68)
-        print("JUSTESSE  (face aux labels humains)")
-        print("=" * 68)
+        coherence = {
+            "n_derniers_triages": len(lignes),
+            "n_incoherents": len(incoherents),
+            "part_incoherents_pct": 100 * len(incoherents) / len(lignes),
+            "incoherents": [
+                {"incident_id": r["incident_id"], "motifs": r["incoherences"]}
+                for r in incoherents
+            ],
+            "modeles": [
+                {"modele": m["modele"], "n": m["n"],
+                 "duree_moyenne_s": float(m["s"]),
+                 "prompt_tokens_moyen": float(m["tok"])}
+                for m in conn.execute(
+                    f"SELECT modele, count(*) n, avg(duree_ms)/1000 s, "
+                    f"avg(prompt_tokens) tok FROM ({DERNIERS}) d GROUP BY modele")
+            ],
+        }
 
         apparies = conn.execute(f"""
             SELECT d.incident_id, d.verdict AS modele, d.actions AS act_modele,
                    l.verdict AS humain, l.actions AS act_humain, l.origine
-              FROM ({derniers}) d
+              FROM ({DERNIERS}) d
               JOIN labels l ON l.incident_id = d.incident_id
         """).fetchall()
-
         n_incidents = conn.execute(
             "SELECT count(*) n FROM incidents").fetchone()["n"]
 
-        if not apparies:
-            print(f"  Aucun incident labellisé (sur {n_incidents}).")
-            print()
-            print("  Impossible de mesurer la justesse. Labelliser avec :")
-            print("    python -m soc_agent.label --lister")
-            print("    python -m soc_agent.label <id> --montrer")
-            print("    python -m soc_agent.label <id> --verdict true_positive")
-            return
+    if not apparies:
+        return {"n_triages": n_triages, "coherence": coherence,
+                "justesse": {"n_labellises": 0, "n_incidents": n_incidents,
+                             "taux_pct": None, "desaccords": [],
+                             "tp_classes_fp": 0, "conclusion": "sans_label"}}
 
-        justes = [r for r in apparies if r["modele"] == r["humain"]]
-        print(f"  Incidents labellisés : {len(apparies)} / {n_incidents}")
-        print(f"  Verdicts corrects    : {len(justes)}/{len(apparies)} "
-              f"({100 * len(justes) / len(apparies):.0f} %)")
+    justes = [r for r in apparies if r["modele"] == r["humain"]]
+    taux = len(justes) / len(apparies)
+    # Un faux positif classé vrai positif fait perdre du temps ; l'inverse
+    # laisse passer une intrusion. Les deux erreurs n'ont pas le même coût.
+    manques = [r for r in apparies
+               if r["humain"] == "true_positive" and r["modele"] == "false_positive"]
 
-        faux = [r for r in apparies if r["modele"] != r["humain"]]
-        if faux:
-            print("\n  Désaccords :")
-            for r in faux:
-                print(f"    #{r['incident_id']} : modèle {r['modele']}, "
-                      f"humain {r['humain']}")
+    if len(apparies) < MINIMUM_UTILE:
+        conclusion = "echantillon_insuffisant"
+    elif taux < 0.9:
+        conclusion = "shadow"
+    else:
+        conclusion = "automatisable"
 
-        # Un faux positif classé vrai positif fait perdre du temps ; l'inverse
-        # laisse passer une intrusion. Les deux erreurs n'ont pas le même coût.
-        manques = [r for r in apparies
-                   if r["humain"] == "true_positive"
-                   and r["modele"] == "false_positive"]
-        if manques:
-            print(f"\n  /!\\ {len(manques)} vrai(s) positif(s) classé(s) faux "
-                  f"positif(s) — c'est l'erreur qui laisse passer une intrusion.")
+    return {
+        "n_triages": n_triages,
+        "coherence": coherence,
+        "justesse": {
+            "n_labellises": len(apparies),
+            "n_incidents": n_incidents,
+            "n_corrects": len(justes),
+            "taux_pct": 100 * taux,
+            "minimum_utile": MINIMUM_UTILE,
+            "desaccords": [
+                {"incident_id": r["incident_id"], "modele": r["modele"],
+                 "humain": r["humain"]}
+                for r in apparies if r["modele"] != r["humain"]
+            ],
+            "tp_classes_fp": len(manques),
+            "conclusion": conclusion,
+        },
+    }
 
+
+CONCLUSIONS = {
+    "sans_label": None,  # traité à part : il faut le décompte d'incidents
+    "echantillon_insuffisant":
+        "  ÉCHANTILLON INSUFFISANT ({n} < {mini}). Le pourcentage ci-dessus "
+        "n'a pas de valeur statistique.\n  Rester en mode shadow.",
+    "shadow": "  Justesse en dessous de 90 % : rester en mode shadow.",
+    "automatisable":
+        "  Justesse suffisante sur un échantillon utilisable.\n"
+        "  L'automatisation peut être activée, par niveau d'autonomie "
+        "configurable — une fois active, les actions partent seules (pas de "
+        "validation humaine par action).",
+}
+
+
+def afficher(r: dict) -> None:
+    if not r["n_triages"]:
+        print("Aucun triage enregistré — lancer soc_agent.triage.")
+        return
+
+    c = r["coherence"]
+    print("=" * 68)
+    print("COHÉRENCE  (sans label — disponible immédiatement)")
+    print("=" * 68)
+    print(f"  Triages (dernier par incident) : {c['n_derniers_triages']}")
+    print(f"  Sorties incohérentes           : {c['n_incoherents']} "
+          f"({c['part_incoherents_pct']:.0f} %)")
+    for i in c["incoherents"]:
+        print(f"    #{i['incident_id']} : {'; '.join(i['motifs'])}")
+    print()
+    for m in c["modeles"]:
+        print(f"  {m['modele']} : {m['n']} triages, "
+              f"{m['duree_moyenne_s']:.1f} s en moyenne, "
+              f"{m['prompt_tokens_moyen']:.0f} tokens de prompt")
+
+    j = r["justesse"]
+    print()
+    print("=" * 68)
+    print("JUSTESSE  (face aux labels humains)")
+    print("=" * 68)
+
+    if j["conclusion"] == "sans_label":
+        print(f"  Aucun incident labellisé (sur {j['n_incidents']}).")
         print()
-        if len(apparies) < MINIMUM_UTILE:
-            print(f"  ÉCHANTILLON INSUFFISANT ({len(apparies)} < {MINIMUM_UTILE}). "
-                  f"Le pourcentage ci-dessus n'a pas de valeur statistique.")
-            print("  Rester en mode shadow.")
-        elif len(justes) / len(apparies) < 0.9:
-            print("  Justesse en dessous de 90 % : rester en mode shadow.")
-        else:
-            print("  Justesse suffisante sur un échantillon utilisable.")
-            print("  L'automatisation peut être activée, par niveau "
-                  "d'autonomie configurable — une fois active, les actions "
-                  "partent seules (pas de validation humaine par action).")
+        print("  Impossible de mesurer la justesse. Labelliser avec :")
+        print("    python -m soc_agent.label --lister")
+        print("    python -m soc_agent.label <id> --montrer")
+        print("    python -m soc_agent.label <id> --verdict true_positive")
+        return
+
+    print(f"  Incidents labellisés : {j['n_labellises']} / {j['n_incidents']}")
+    print(f"  Verdicts corrects    : {j['n_corrects']}/{j['n_labellises']} "
+          f"({j['taux_pct']:.0f} %)")
+    if j["desaccords"]:
+        print("\n  Désaccords :")
+        for d in j["desaccords"]:
+            print(f"    #{d['incident_id']} : modèle {d['modele']}, "
+                  f"humain {d['humain']}")
+    if j["tp_classes_fp"]:
+        print(f"\n  /!\\ {j['tp_classes_fp']} vrai(s) positif(s) classé(s) faux "
+              f"positif(s) — c'est l'erreur qui laisse passer une intrusion.")
+    print()
+    print(CONCLUSIONS[j["conclusion"]].format(
+        n=j["n_labellises"], mini=j["minimum_utile"]))
+
+
+def main() -> None:
+    afficher(rapport())
 
 
 if __name__ == "__main__":

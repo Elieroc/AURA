@@ -175,7 +175,18 @@ RETURNING id
 
 
 def trier(limite: int, un_seul: int | None, tous: bool,
-          afficher_prompt: bool) -> None:
+          afficher_prompt: bool) -> list[dict]:
+    """Trie un lot d'incidents et rend le résultat par incident.
+
+    Les `print` restent : ils sont les journaux du conteneur `soc-agent-cycle`,
+    lus quand un lot dérape. Le retour est là pour les appelants programmatiques
+    (serveur MCP), qui ne doivent pas avoir à parser cette sortie.
+
+    Chaque entrée porte un `statut` : `trié`, ou l'un des trois refus —
+    `fuite` (identifiant interne non pseudonymisé), `prompt_trop_long`,
+    `echec_llm`. Un refus n'interrompt pas le lot.
+    """
+    resultats: list[dict] = []
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         incidents = conn.execute(SELECT_INCIDENTS, {
             "tous": tous, "un_seul": un_seul,
@@ -185,7 +196,7 @@ def trier(limite: int, un_seul: int | None, tous: bool,
 
         if not incidents:
             print("Aucun incident à trier.")
-            return
+            return resultats
 
         for inc in incidents:
             alertes = conn.execute(SELECT_ALERTES, (inc["id"],)).fetchall()
@@ -212,6 +223,8 @@ def trier(limite: int, un_seul: int | None, tous: bool,
                 verifier_fuite(utilisateur, interdits)
             except FuiteError as e:
                 print(f"  #{inc['id']} IGNORÉ — fuite potentielle : {e}")
+                resultats.append({"incident_id": inc["id"], "statut": "fuite",
+                                  "detail": str(e)})
                 continue
 
             n_tokens = compter_tokens(systeme + utilisateur)
@@ -220,6 +233,9 @@ def trier(limite: int, un_seul: int | None, tous: bool,
                 # double le temps de triage, silencieusement.
                 print(f"  #{inc['id']} IGNORÉ — prompt de {n_tokens} tokens "
                       f"(plafond {PLAFOND_TOKENS}). Resserrer render.py.")
+                resultats.append({"incident_id": inc["id"],
+                                  "statut": "prompt_trop_long",
+                                  "tokens": n_tokens, "plafond": PLAFOND_TOKENS})
                 continue
 
             # Un incident empoisonné ne casse pas le lot. L'appel LLM peut
@@ -236,6 +252,8 @@ def trier(limite: int, un_seul: int | None, tous: bool,
             except Exception as e:  # noqa: BLE001
                 conn.rollback()
                 print(f"  #{inc['id']} SAUTÉ — triage LLM échoué : {e}")
+                resultats.append({"incident_id": inc["id"],
+                                  "statut": "echec_llm", "detail": str(e)})
                 continue
 
             sauver_map(conn, inc["id"], anon.mapping)
@@ -297,6 +315,23 @@ def trier(limite: int, un_seul: int | None, tous: bool,
             print(f"      {verdict['reason'][:160]}")
             if incoherences:
                 print(f"      /!\\ incohérence : {'; '.join(incoherences)}")
+
+            resultats.append({
+                "incident_id": inc["id"], "statut": "trié",
+                "agent_name": inc["agent_name"],
+                "verdict": verdict["verdict"],
+                "confidence": verdict["confidence"],
+                "mitre": verdict["mitre"], "actions": actions,
+                "actions_fort_impact": fort_impact,
+                "reason": verdict["reason"],
+                "incoherences": incoherences,
+                "injection_motifs": injections,
+                "garde_fous": garde_fous,
+                "modele": m["modele"], "tokens": n_tokens,
+                "duree_ms": m["duree_ms"],
+            })
+
+    return resultats
 
 
 def main() -> None:

@@ -418,22 +418,40 @@ def tick() -> dict:
             conn.execute("SELECT pg_advisory_unlock(%s)", (_VERROU_TRAINING,))
 
 
-def etat() -> None:
+def rapport_etat() -> list[dict]:
+    """Les fenêtres de training, plus récente d'abord, avec leurs exceptions."""
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         runs = conn.execute(
             "SELECT * FROM training_runs ORDER BY id DESC").fetchall()
-        if not runs:
-            print("Aucune fenêtre de training.")
-            return
+        sortie = []
         for r in runs:
             n = conn.execute(
                 "SELECT count(*) FILTER (WHERE active) AS a, count(*) AS t "
                 "FROM whitelist_rules WHERE training_run_id = %s",
                 (r["id"],)).fetchone()
-            print(f"  #{r['id']} [{r['status']}] {r['started_at']:%Y-%m-%d %H:%M}"
-                  f" → {r['ends_at']:%Y-%m-%d %H:%M} ({r['jours']} j)"
-                  f"  case IRIS {r['iris_case_id'] or '—'}"
-                  f"  exceptions {n['a']}/{n['t']} actives")
+            sortie.append({
+                "id": r["id"], "status": r["status"], "jours": r["jours"],
+                "started_at": r["started_at"].isoformat(),
+                "ends_at": r["ends_at"].isoformat(),
+                "finished_at": (r["finished_at"].isoformat()
+                                if r["finished_at"] else None),
+                "iris_case_id": r["iris_case_id"],
+                "exceptions_actives": n["a"], "exceptions_total": n["t"],
+            })
+    return sortie
+
+
+def etat() -> None:
+    runs = rapport_etat()
+    if not runs:
+        print("Aucune fenêtre de training.")
+        return
+    for r in runs:
+        print(f"  #{r['id']} [{r['status']}] {r['started_at'][:16]}"
+              f" → {r['ends_at'][:16]} ({r['jours']} j)"
+              f"  case IRIS {r['iris_case_id'] or '—'}"
+              f"  exceptions {r['exceptions_actives']}/{r['exceptions_total']} "
+              f"actives")
 
 
 def main() -> None:
