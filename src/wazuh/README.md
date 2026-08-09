@@ -24,10 +24,32 @@ secrets sortis vers `.env`, intégrations threat intel VirusTotal + AbuseIPDB.
      python3 scripts/set-indexer-password.py kibanaserver
      ```
      Le script lit le mot de passe dans le `.env` et pose le hachage ici, pour
-     que les deux fichiers ne puissent pas diverger. Sur un stack DÉJÀ démarré,
-     recharger la configuration de sécurité après coup (commande dans l'en-tête
-     du script) : sans cela l'indexer continue de servir l'ancienne base
-     d'utilisateurs depuis son index `.opendistro_security`.
+     que les deux fichiers ne puissent pas diverger.
+
+     Sur un stack DÉJÀ démarré, il faut ensuite, **dans cet ordre** :
+     ```
+     docker compose -p aura up -d wazuh.indexer wazuh.dashboard
+     # PUIS seulement : securityadmin.sh (commande dans l'en-tete du script)
+     ```
+     L'ordre inverse échoue **en annonçant un succès**. `internal_users.yml` est
+     monté comme FICHIER, pas comme répertoire : le montage est attaché à un
+     inode. Or `git pull` ne modifie pas le fichier en place, il le remplace —
+     nouvel inode. Le conteneur continue donc de voir l'ANCIEN contenu, et
+     `securityadmin` recharge consciencieusement l'ancienne liste
+     d'utilisateurs, comptes de démonstration compris, en affichant
+     « Done with success ». Recréer le conteneur d'abord réattache le montage au
+     nouveau fichier.
+
+     Le contrôle qui ne ment pas, après coup :
+     ```
+     docker exec aura-wazuh.indexer-1 \
+       grep -E '^[a-z]+:' /usr/share/wazuh-indexer/opensearch-security/internal_users.yml
+     curl -sk -o /dev/null -w '%{http_code}\n' -u readall:readall \
+       'https://127.0.0.1:9200/wazuh-alerts-*/_search?size=1'    # doit valoir 401
+     ```
+     Un `403` n'est PAS un succès : il signifie que le compte s'authentifie
+     toujours et n'est refusé que sur cet endpoint précis. Seul `401` prouve que
+     le compte n'existe plus.
 
      Ne pas réintroduire les comptes de démonstration d'OpenSearch (`kibanaro`,
      `logstash`, `readall`, `snapshotrestore`) : leurs hachages d'origine
