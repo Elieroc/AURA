@@ -265,10 +265,20 @@ services:
     depends_on:
       soc-agent-db:
         condition: service_healthy
+    environment:
+      # Racine du dépôt vue depuis le conteneur : l'enrôlement d'agent exécute
+      # les recettes versionnées (install-agent.sh, la recette Windows, les
+      # scripts d'active response) au lieu d'en recopier le contenu — une
+      # divergence entre les deux resterait invisible jusqu'à l'échec muet
+      # d'une remédiation sur une machine.
+      AURA_DEPOT: /aura
     volumes:
       # Lecture seule : le MCP lit l'état des règles auto-générées, il ne les
       # écrit pas (rule_tuning reste le seul à écrire, depuis son conteneur).
       - ${WAZUH_RULES_DIR:-./src/wazuh/config/wazuh_cluster/rules}:/wazuh-rules:ro
+      # Le dépôt, en lecture seule : recettes d'enrôlement et configuration du
+      # manager (relue pour vérifier les déclarations d'active response).
+      - ./:/aura:ro
       # Clé d'exploitation : etat_isolation et l'enrôlement d'agent passent
       # par ssh vers les hôtes du parc.
       - ${SSH_KEY_HOST:-/root/.ssh/wazuh_ops_ed25519}:/root/.ssh/wazuh_ops_ed25519:ro

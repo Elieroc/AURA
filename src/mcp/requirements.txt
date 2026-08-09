@@ -8,3 +8,8 @@
 mcp==2.0.0
 uvicorn==0.34.0
 PyJWT==2.10.1
+
+# Enrôlement d'un agent Windows : WinRM. L'outillage du script shell d'origine
+# (NetExec) n'est pas distribué sur PyPI, le chemin Windows est donc rejoué
+# ici sur le même canal, étape pour étape.
+pywinrm==0.5.0
