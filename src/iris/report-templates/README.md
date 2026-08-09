@@ -8,6 +8,7 @@ code (`src/ai/soc_agent/iris.py`), il n'en utilise aucun.
 | Fichier | Type | Langue | Contenu |
 |---|---|---|---|
 | `incident-technique-fr.md` | Investigation | FR | Rapport DFIR complet : synthèse, note d'analyse IA, machines, IOC, chronologie, remédiations, preuves |
+| `rapport-investigation-fr.md` | Investigation | FR | Adapté de Rapport-Investigation-IRIS.docx : page de garde, résumé exécutif, chronologie, analyse technique, IOC, actifs, remédiations, conclusion/recommandations à compléter par l'analyste, annexe preuves |
 
 ## Déploiement
 
@@ -15,6 +16,8 @@ code (`src/ai/soc_agent/iris.py`), il n'en utilise aucun.
 IRIS_URL=https://127.0.0.1:8443 \
 IRIS_API_KEY=<clé d'un compte server_administrator> \
   ../scripts/deploy-report-template.sh incident-technique-fr.md
+# ou, pour le second template :
+  ../scripts/deploy-report-template.sh rapport-investigation-fr.md "Aura-SOC — Rapport d'investigation d'incident (FR)"
 ```
 
 Le script supprime l'entrée de même nom avant de recréer : IRIS n'a **pas**
@@ -64,6 +67,13 @@ Produit par `app/datamgmt/reporter/report_db.py: export_case_json_for_report()`
   table se disloque (macro `cell()`).
 - **Nom de fichier généré** : `%case_name%` est évité dans le format de nommage,
   un `/` dans un titre de case casserait le chemin d'écriture.
+- **`rapport-investigation-fr.md` vient d'un .docx Word** (page de garde avec
+  logo) réécrit à la main : le gabarit d'origine utilisait des noms de
+  variables inventés (`timeline_events`, `note.title`, `ioc.ioc_type` en
+  chaîne, `asset.asset_type`, `task.task_assignee`, `evidences[].
+  file_description`) et une pseudo-syntaxe `{%p%}`/`{%tr%}` qui n'est pas du
+  Jinja valide — rien de tout ça n'aurait rendu tel quel. Vérifier tout .docx
+  converti contre la liste de variables ci-dessus avant déploiement.
 
 ## Tester un template sans le déployer
 
