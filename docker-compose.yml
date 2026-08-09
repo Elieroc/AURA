@@ -242,6 +242,44 @@ services:
       - ${WAZUH_RULES_DIR:-./src/wazuh/config/wazuh_cluster/rules}:/wazuh-rules
     command: sh -c "while true; do python -m soc_agent.rule_tuning; sleep 3600; done"
 
+  # Serveur MCP AURA : un seul endpoint pour piloter le SOC depuis un client IA
+  # (Claude Code, Claude Desktop, tout client MCP). Voir docs/MCP.md.
+  #
+  # Image distincte de soc-agent:latest — même code soc_agent embarqué, mais des
+  # dépendances en plus (SDK MCP, uvicorn, PyJWT) qu'il n'y a aucune raison de
+  # traîner dans les six conteneurs du pipeline. Contexte de build ./src pour
+  # pouvoir copier ai/soc_agent ET mcp/aura_mcp.
+  #
+  # network_mode: host, donc pas de `ports:` : c'est le serveur lui-même qui
+  # n'écoute que sur AURA_MCP_HOST (127.0.0.1 par défaut). L'exposer sur le LAN
+  # donnerait à qui atteint le port les droits d'isolation d'hôte du SOC.
+  aura-mcp:
+    build:
+      context: ./src
+      dockerfile: mcp/Dockerfile
+    image: aura-mcp:latest
+    container_name: aura-mcp
+    env_file: .env
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      soc-agent-db:
+        condition: service_healthy
+    volumes:
+      # Lecture seule : le MCP lit l'état des règles auto-générées, il ne les
+      # écrit pas (rule_tuning reste le seul à écrire, depuis son conteneur).
+      - ${WAZUH_RULES_DIR:-./src/wazuh/config/wazuh_cluster/rules}:/wazuh-rules:ro
+      # Clé d'exploitation : etat_isolation et l'enrôlement d'agent passent
+      # par ssh vers les hôtes du parc.
+      - ${SSH_KEY_HOST:-/root/.ssh/wazuh_ops_ed25519}:/root/.ssh/wazuh_ops_ed25519:ro
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,os; urllib.request.urlopen('http://%s:%s/health' % (os.environ.get('AURA_MCP_HOST','127.0.0.1'), os.environ.get('AURA_MCP_PORT','3100')))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   # ===================== DFIR-IRIS (iris/) =====================
   # UI : https://localhost:8443 (443 est déjà pris par le dashboard Wazuh).
   #

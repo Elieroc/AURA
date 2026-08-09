@@ -1,0 +1,10 @@
+# Dépendances propres au serveur MCP. Celles du pipeline viennent de
+# ../ai/soc_agent/requirements.txt, installé dans la même image : le serveur
+# importe le vrai code de soc_agent, il ne le réimplémente pas.
+#
+# Versions figées : mcp 2.0 a supprimé mcp.server.fastmcp, une montée de
+# version change l'API du serveur. Ça doit être un acte délibéré, pas l'effet
+# de bord d'un rebuild.
+mcp==2.0.0
+uvicorn==0.34.0
+PyJWT==2.10.1
