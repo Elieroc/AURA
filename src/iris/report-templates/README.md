@@ -8,7 +8,17 @@ code (`src/ai/soc_agent/iris.py`), il n'en utilise aucun.
 | Fichier | Type | Langue | Contenu |
 |---|---|---|---|
 | `incident-technique-fr.md` | Investigation | FR | Rapport DFIR complet : synthèse, note d'analyse IA, machines, IOC, chronologie, remédiations, preuves |
-| `rapport-investigation-fr.md` | Investigation | FR | Adapté de Rapport-Investigation-IRIS.docx : page de garde, résumé exécutif, chronologie, analyse technique, IOC, actifs, remédiations, conclusion/recommandations à compléter par l'analyste, annexe preuves |
+| `rapport-investigation-fr.docx` | Investigation | FR | Page de garde avec logo AURA·SOC, résumé exécutif, chronologie, analyse technique, IOC, actifs, remédiations, conclusion/recommandations à compléter par l'analyste, annexe preuves |
+
+Le second template est un **.docx Word** (pas du Markdown) : IRIS accepte
+`md`, `html`, `doc`, `docx` en pièce de template
+(`manage_templates_routes.py: ALLOWED_EXTENSIONS`) et bascule sur un moteur
+de rendu différent selon l'extension — `IrisMakeDocReport` /
+`docx_generator.DocxGenerator` (basé sur **docxtpl**) pour `.docx`, contre
+`IrisMakeMdReport` (Jinja pur, cf. `IrisJinjaEnv` ci-dessous) pour `.md`/`.html`.
+Choisir le format quand la mise en forme Word (logo, couleurs, styles) doit
+être conservée ; le contexte Jinja exposé est le même dans les deux cas
+(`export_case_json`/`export_case_json_for_report`, mêmes noms de champs).
 
 ## Déploiement
 
@@ -16,13 +26,14 @@ code (`src/ai/soc_agent/iris.py`), il n'en utilise aucun.
 IRIS_URL=https://127.0.0.1:8443 \
 IRIS_API_KEY=<clé d'un compte server_administrator> \
   ../scripts/deploy-report-template.sh incident-technique-fr.md
-# ou, pour le second template :
-  ../scripts/deploy-report-template.sh rapport-investigation-fr.md "Aura-SOC — Rapport d'investigation d'incident (FR)"
+# ou, pour le second template (docx) :
+  ../scripts/deploy-report-template.sh rapport-investigation-fr.docx "Aura-SOC — Rapport d'investigation d'incident (FR)"
 ```
 
 Le script supprime l'entrée de même nom avant de recréer : IRIS n'a **pas**
 d'endpoint de mise à jour, `add` empile des doublons. L'id du template change
-donc à chaque déploiement — ne pas le câbler en dur ailleurs.
+donc à chaque déploiement — ne pas le câbler en dur ailleurs. Fonctionne tel
+quel pour un `.docx` (`curl -F file=@...`), le script ne dépend pas du format.
 
 Le fichier est copié dans le volume `user_templates`, partagé entre `iris-app`
 et `iris-worker` (la génération peut tourner côté worker).
@@ -67,13 +78,30 @@ Produit par `app/datamgmt/reporter/report_db.py: export_case_json_for_report()`
   table se disloque (macro `cell()`).
 - **Nom de fichier généré** : `%case_name%` est évité dans le format de nommage,
   un `/` dans un titre de case casserait le chemin d'écriture.
-- **`rapport-investigation-fr.md` vient d'un .docx Word** (page de garde avec
-  logo) réécrit à la main : le gabarit d'origine utilisait des noms de
-  variables inventés (`timeline_events`, `note.title`, `ioc.ioc_type` en
-  chaîne, `asset.asset_type`, `task.task_assignee`, `evidences[].
-  file_description`) et une pseudo-syntaxe `{%p%}`/`{%tr%}` qui n'est pas du
-  Jinja valide — rien de tout ça n'aurait rendu tel quel. Vérifier tout .docx
-  converti contre la liste de variables ci-dessus avant déploiement.
+- **`rapport-investigation-fr.docx`** est un gabarit Word édité par un
+  non-développeur avec des noms de variables inventés (`timeline_events`,
+  `note.title`/`content`, `ioc.ioc_type` en chaîne, `asset.asset_type`,
+  `task.task_assignee`, `evidences[].file_description` — qui n'existe pas,
+  cf. piège evidences ci-dessus). Corrigés sur les vrais noms de champs
+  (`timeline`, `note.note_title`/`note_content`, `ioc.ioc_type.type_name`,
+  `asset.type`, `task.task_assignees[]`, `asset.asset_compromise_status` en
+  chaîne `"Compromised"/"Not Compromised"/…`, jamais un booléen).
+- **Piège docxtpl `{%tr for%}` / `{%tr endfor%}` dans la même ligne de
+  tableau.** Le patch XML de docxtpl (`docxtpl/__init__.py: patch_xml`, y in
+  `['tr','tc','p','r']`) repère un tag `{%tr ...%}` puis remplace **toute la
+  ligne** `<w:tr>…</w:tr>` qui le contient par le seul tag nu — si `for` et
+  `endfor` sont dans la même ligne (avec les cellules de données entre eux,
+  comme dans le .docx d'origine), la ligne du `for` avale aussi le `endfor` :
+  rendu en échec silencieux (`TemplateSyntaxError: Encountered unknown tag
+  'endfor'`) ou tableau vidé sans erreur. Reproduit isolément avec docxtpl
+  0.10.0 (celui vendu dans `iris-app`). **Fix** : structurer chaque boucle de
+  tableau sur **3 lignes** — une ligne marqueur portant seul `{%tr for … %}`
+  (gridSpan sur toutes les colonnes, bordures nil, hauteur ~1pt), la ligne de
+  données sans aucun tag `tr`, puis une ligne marqueur `{%tr endfor %}`
+  identique. Les tags `{%p if/else/endif%}` seuls dans leur propre paragraphe
+  n'ont pas ce problème (confirmé) ; un `{% if %}`/`{% else %}`/`{% endif %}`
+  simple (sans préfixe y) mélangé à du texte dans la même cellule est
+  également sans risque, seul le préfixe `tr`/`p` déclenche le découpage XML.
 
 ## Tester un template sans le déployer
 
@@ -99,3 +127,36 @@ EOF
 
 Le contexte de requête et le `login_user` sont obligatoires : `export_case_iocs_json`
 passe par un contrôle de permission qui lit `request.args`.
+
+Pour un template `.docx`, le moteur est différent (`DocxGenerator` /
+`export_case_json`, pas `IrisJinjaEnv` / `export_case_json_for_report`) :
+
+```bash
+docker cp mon-template.docx iris-app:/tmp/tpl.docx
+docker exec -e PYTHONPATH=/iriswebapp iris-app python - <<'EOF'
+from app import app
+from app.models.authorization import User
+from flask_login import login_user
+from app.datamgmt.reporter.report_db import export_case_json
+from app.iris_engine.reporter.ImageHandler import ImageHandler
+from docx_generator.docx_generator import DocxGenerator
+import tempfile, os
+
+CID = 197
+with app.app_context():
+    with app.test_request_context(f"/?cid={CID}"):
+        login_user(User.query.filter(User.id == 1).first())
+        info = export_case_json(CID)
+info.update(doc_id="TEST", user="administrator", date="2026-01-01")
+
+tmp = tempfile.mkdtemp()
+out = os.path.join(tmp, "out.docx")
+gen = DocxGenerator(image_handler=ImageHandler(template=None, base_path="/"))
+gen.generate_docx("/", "/tmp/tpl.docx", info, out)
+print("OK ->", out, os.path.getsize(out))
+EOF
+```
+
+Une `RenderingError` avec un `.strftime` ou un attribut manquant pointe vers
+un mauvais nom de champ ; un `TemplateSyntaxError` sur `endfor`/`else`/`endif`
+pointe presque toujours vers le piège `{%tr%}` décrit plus haut.
