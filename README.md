@@ -77,11 +77,10 @@ schéma Postgres soc-agent, active response) : [`docs/INSTALL.md`](docs/INSTALL.
 
 | Ressource | Strict minimum | Recommandé |
 |---|---|---|
-| CPU | 4 vCPU x86-64 | 8 vCPU |
+| CPU | 4 vCPU | 8 vCPU |
 | RAM | 8 Gio | 16 Gio |
 | Disque | 60 Gio SSD | 100 Gio SSD |
 | Swap | 2 Gio | 2 Gio |
-| Réseau | — | sortie Internet |
 
 ## Documentation
 
