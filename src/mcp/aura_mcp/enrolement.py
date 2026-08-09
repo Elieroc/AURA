@@ -24,6 +24,7 @@ Ce module n'invente rien : il exécute les recettes déjà éprouvées du dépô
 import base64
 import os
 import pathlib
+import re
 import subprocess
 
 # Racine du dépôt montée en lecture seule dans le conteneur (voir le service
@@ -51,6 +52,41 @@ DELAI = int(os.environ.get("AURA_ENROLL_TIMEOUT", "900"))
 
 class ErreurEnrolement(Exception):
     """Échec explicite, avec la sortie de la commande fautive."""
+
+
+# --------------------------------------------------------------------------
+# Validation des paramètres
+# --------------------------------------------------------------------------
+#
+# `_ssh` transmet sa commande en un seul argument : c'est le shell DISTANT qui
+# la découpe. Tout ce qui est interpolé dans cette chaîne — nom d'agent, adresse
+# du manager — est donc du code, pas une donnée. Idem côté Windows, où les mêmes
+# valeurs partent dans un `run_ps`.
+#
+# Le client de ce serveur MCP est un agent IA qui lit des alertes écrites par
+# les machines surveillées, donc potentiellement par un attaquant (cf. les
+# INSTRUCTIONS du serveur, et les mesures de sanitize.py : trois charges
+# d'injection sur quatre retournent le verdict du modèle). Une valeur suggérée
+# par un contenu d'alerte ne doit pas pouvoir devenir une commande. Partout
+# ailleurs dans AURA les cibles d'action sont dérivées par le code et jamais
+# choisies librement ; ces trois champs étaient l'exception.
+#
+# Liste blanche, pas échappement : on sait exactement à quoi ressemblent un nom
+# d'agent Wazuh, un nom d'hôte et un compte Unix, et tout le reste est refusé.
+
+_RE_NOM_AGENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_RE_HOTE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.:-]{0,253}$")
+_RE_UTILISATEUR = re.compile(r"^[A-Za-z_][A-Za-z0-9._-]{0,31}$")
+
+
+def _valider(valeur: str, motif: re.Pattern, champ: str, exemple: str) -> str:
+    valeur = str(valeur or "").strip()
+    if not motif.match(valeur):
+        raise ErreurEnrolement(
+            f"{champ} refusé : « {valeur[:80]} ». Cette valeur est interpolée "
+            f"dans une commande exécutée en root sur la machine cible, elle est "
+            f"donc restreinte au strict nécessaire (exemple : {exemple}).")
+    return valeur
 
 
 # --------------------------------------------------------------------------
@@ -109,6 +145,12 @@ def cle_publique() -> str:
 def enroler_linux(hote: str, nom_agent: str | None, utilisateur: str,
                   manager: str) -> dict:
     """Pose l'agent, auditd et les scripts d'active response sur un hôte Linux."""
+    hote = _valider(hote, _RE_HOTE, "hote", "192.168.10.12 ou srv-web.lab")
+    utilisateur = _valider(utilisateur, _RE_UTILISATEUR, "ssh_user", "root")
+    manager = _valider(manager, _RE_HOTE, "manager", "192.168.10.5")
+    nom_agent = _valider(nom_agent or hote, _RE_NOM_AGENT, "nom_agent",
+                         "srv-web-01")
+
     for chemin in (INSTALL_LINUX, REGLES_AUDIT, AR_LINUX):
         if not chemin.exists():
             raise ErreurEnrolement(
@@ -170,6 +212,11 @@ def assurer_identite(hote: str, utilisateur: str, nom: str,
     (`agent-auth` contre l'authd du manager, port 1515) s'ils divergent ou si
     aucune clé n'est présente.
     """
+    # Revalidé ici et pas seulement chez l'appelant : cette fonction construit
+    # elle aussi une commande distante, et elle est appelable directement.
+    nom = _valider(nom, _RE_NOM_AGENT, "nom_agent", "srv-web-01")
+    manager = _valider(manager, _RE_HOTE, "manager", "192.168.10.5")
+
     ident, nom_local = identite_agent(hote, utilisateur)
     if nom_local == nom:
         return {"etape": "identite", "ok": True, "reenrole": False,
@@ -244,6 +291,13 @@ def verifier_linux(hote: str, utilisateur: str,
     la main sur le socket netlink (journald le lui prend), aucune règle
     d'exécution ne se déclenche — et il faut un REDÉMARRAGE pour le régler.
     """
+    # Atteignable en `aura:read` (aura_agent_health). Les commandes ci-dessous
+    # sont figées, mais l'hôte et le compte partent dans une cible SSH : on les
+    # borne à ce qu'ils sont censés être plutôt que de compter sur le fait que
+    # subprocess n'ouvre pas de shell.
+    hote = _valider(hote, _RE_HOTE, "hote", "192.168.10.12 ou srv-web.lab")
+    utilisateur = _valider(utilisateur, _RE_UTILISATEUR, "ssh_user", "root")
+
     commandes = {
         "agent_actif": "systemctl is-active wazuh-agent",
         "auditd_actif": "systemctl is-active auditd",
@@ -393,6 +447,13 @@ def enroler_windows(hote: str, nom_agent: str | None, utilisateur: str,
                     motdepasse: str, manager: str,
                     sans_sysmon: bool = False) -> dict:
     """Pose l'agent Windows, sa télémétrie complète, puis l'active response."""
+    # `options` est concaténé dans un script PowerShell exécuté sur la cible :
+    # même exigence que côté Linux.
+    hote = _valider(hote, _RE_HOTE, "hote", "192.168.10.20 ou win-dc.lab")
+    manager = _valider(manager, _RE_HOTE, "manager", "192.168.10.5")
+    nom_agent = _valider(nom_agent or hote, _RE_NOM_AGENT, "nom_agent",
+                         "WIN-DC")
+
     if not INSTALL_WINDOWS.is_file():
         raise ErreurEnrolement(f"{INSTALL_WINDOWS} absent du conteneur.")
 

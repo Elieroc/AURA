@@ -12,11 +12,27 @@ secrets sortis vers `.env`, intégrations threat intel VirusTotal + AbuseIPDB.
    cp src/wazuh/config/wazuh_cluster/wazuh_manager.conf.example src/wazuh/config/wazuh_cluster/wazuh_manager.conf
    cp src/wazuh/config/wazuh_dashboard/wazuh.yml.example src/wazuh/config/wazuh_dashboard/wazuh.yml
    ```
-   - `.env` (racine) : `INDEXER_PASSWORD`, `WAZUH_API_PASSWORD`, clés VT/AbuseIPDB
+   - `.env` (racine) : `INDEXER_PASSWORD`, `DASHBOARD_PASSWORD`, `WAZUH_API_PASSWORD`, clés VT/AbuseIPDB
    - `wazuh_manager.conf` : remplacer `CHANGEME_VT_API_KEY` / `CHANGEME_ABUSEIPDB_API_KEY` (valeurs du `.env`)
    - `wazuh.yml` dashboard : remplacer `CHANGEME_API_PASSWORD` (= `WAZUH_API_PASSWORD`)
-   - `src/wazuh/config/wazuh_indexer/internal_users.yml` : hash bcrypt de `INDEXER_PASSWORD` pour `admin`
-     (générer : `docker compose exec wazuh.indexer bash -c 'export JAVA_HOME=/usr/share/wazuh-indexer/jdk; bash /usr/share/wazuh-indexer/plugins/opensearch-security/tools/hash.sh -p MOT_DE_PASSE'`)
+   - `src/wazuh/config/wazuh_indexer/internal_users.yml` : hachages bcrypt des deux
+     comptes de l'indexer. **Obligatoire avant le premier démarrage** —
+     `kibanaserver` y est livré avec le marqueur `__HASH_KIBANASERVER__`, et le
+     dashboard n'affichera rien tant qu'il n'est pas remplacé :
+     ```
+     python3 scripts/set-indexer-password.py admin
+     python3 scripts/set-indexer-password.py kibanaserver
+     ```
+     Le script lit le mot de passe dans le `.env` et pose le hachage ici, pour
+     que les deux fichiers ne puissent pas diverger. Sur un stack DÉJÀ démarré,
+     recharger la configuration de sécurité après coup (commande dans l'en-tête
+     du script) : sans cela l'indexer continue de servir l'ancienne base
+     d'utilisateurs depuis son index `.opendistro_security`.
+
+     Ne pas réintroduire les comptes de démonstration d'OpenSearch (`kibanaro`,
+     `logstash`, `readall`, `snapshotrestore`) : leurs hachages d'origine
+     correspondent à des mots de passe publiquement documentés, et deux d'entre
+     eux donnent la lecture de tous les index — donc de toutes les alertes.
 3. Générer les certificats SSL : `docker compose -f src/wazuh/generate-indexer-certs.yml run --rm generator`
 4. `docker compose up -d` (toute la stack AURA — Wazuh + soc-agent + IRIS + Shuffle)
 5. Dashboard : https://localhost — `admin` / `INDEXER_PASSWORD`

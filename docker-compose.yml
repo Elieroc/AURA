@@ -35,6 +35,15 @@ services:
       nofile:
         soft: 655360
         hard: 655360
+    # 1514/1515/514 doivent être joignables par les agents du parc, donc publiés
+    # sur toutes les interfaces — c'est leur raison d'être.
+    # 55000 (API) reste publié À REGRET : les workflows Shuffle joignent l'API
+    # par l'IP de l'hôte depuis le réseau docker « shuffle » (cf.
+    # src/shuffle/workflows/build_workflows.py, WAZUH_HOST), un bind loopback
+    # casserait l'isolation et le kill. Sa seule serrure est donc
+    # WAZUH_API_PASSWORD : ce mot de passe doit être fort et distinct des
+    # autres. Un pare-feu devant 55000, limité aux hôtes qui en ont besoin, est
+    # la vraie réponse.
     ports:
       - "1514:1514"
       - "1515:1515"
@@ -90,8 +99,13 @@ services:
     image: wazuh/wazuh-indexer:4.9.2
     hostname: wazuh.indexer
     restart: always
+    # Bind loopback : l'indexer contient TOUTES les alertes du parc, c'est-à-dire
+    # la cartographie de ce que le SOC voit et de ce qu'il ne voit pas. Rien n'a
+    # besoin du port publié : le manager et le dashboard joignent l'indexer par
+    # le réseau docker (https://wazuh.indexer:9200), et le soc-agent par la
+    # loopback (INDEXER_URL). Publier sur 0.0.0.0 exposait tout le corpus au LAN.
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"
     environment:
       - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
     ulimits:
@@ -122,7 +136,13 @@ services:
       - INDEXER_PASSWORD=${INDEXER_PASSWORD}
       - WAZUH_API_URL=https://wazuh.manager
       - DASHBOARD_USERNAME=kibanaserver
-      - DASHBOARD_PASSWORD=kibanaserver
+      # Mot de passe du compte de service du dashboard. Il était figé à
+      # « kibanaserver » — le mot de passe de démonstration d'OpenSearch,
+      # publiquement documenté. Il vient maintenant du .env, et le hachage
+      # correspondant est posé dans internal_users.yml par
+      # scripts/set-indexer-password.py (les deux doivent être régénérés
+      # ensemble, sinon le dashboard ne s'authentifie plus).
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
       - API_USERNAME=wazuh-wui
       - API_PASSWORD=${WAZUH_API_PASSWORD}
     volumes:
@@ -451,13 +471,22 @@ services:
   # ===================== SHUFFLE (shuffle/) =====================
   # UI : http://localhost:3001 — API : http://localhost:5001
   # Bootstrap admin via SHUFFLE_DEFAULT_* (voir .env.example).
+  #
+  # Bind loopback par défaut (SHUFFLE_BIND_ADDR), comme IRIS. Ce n'est pas une
+  # précaution de principe : shuffle-backend monte /var/run/docker.sock, donc
+  # quiconque s'authentifie sur son API peut faire exécuter du code par le démon
+  # Docker de l'hôte — c'est-à-dire devenir root SUR LE MANAGER. Publier 5001 sur
+  # 0.0.0.0 mettait cette porte à portée du LAN, avec les identifiants de
+  # bootstrap pour seule serrure. Pour ouvrir l'UI au LAN, changer
+  # SHUFFLE_BIND_ADDR dans .env APRÈS avoir changé SHUFFLE_DEFAULT_PASSWORD et
+  # SHUFFLE_DEFAULT_APIKEY.
   shuffle-frontend:
     image: ghcr.io/shuffle/shuffle-frontend:latest
     container_name: shuffle-frontend
     hostname: shuffle-frontend
     restart: unless-stopped
     ports:
-      - "3001:80"
+      - "${SHUFFLE_BIND_ADDR:-127.0.0.1}:3001:80"
     environment:
       - BACKEND_HOSTNAME=shuffle-backend
     depends_on:
@@ -471,9 +500,11 @@ services:
     hostname: shuffle-backend
     restart: unless-stopped
     ports:
-      - "5001:5001"
+      - "${SHUFFLE_BIND_ADDR:-127.0.0.1}:5001:5001"
     volumes:
-      # Requis : le backend/orborus pilote Docker pour exécuter les apps
+      # Requis : le backend/orborus pilote Docker pour exécuter les apps.
+      # C'est aussi ce qui fait de l'API Shuffle un chemin vers root sur l'hôte,
+      # d'où le bind loopback ci-dessus.
       - /var/run/docker.sock:/var/run/docker.sock
       - shuffle-apps:/shuffle-apps
       - shuffle-files:/shuffle-files

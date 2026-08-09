@@ -120,6 +120,37 @@ def _slug(texte: str, taille: int = 40) -> str:
     return _RE_SLUG.sub("-", str(texte).lower()).strip("-")[:taille] or "signature"
 
 
+# Ce qu'un commentaire XML ne peut pas contenir sans cesser d'être un
+# commentaire : `--` (illégal par la spec) et `<`/`>` (qui permettent d'en
+# sortir). Les caractères de contrôle sautent aussi — ils servent à masquer du
+# texte à la relecture humaine.
+_RE_HORS_COMMENTAIRE = re.compile(r"-{2,}|[<>\x00-\x08\x0b-\x1f\x7f]")
+
+
+# Caractères qu'un document XML 1.0 ne peut pas porter, même échappés : tous
+# les contrôles hors tabulation, retour chariot et saut de ligne.
+_RE_XML_INTERDIT = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _commentable(valeur, taille: int = 200) -> str:
+    """Valeur rendue inoffensive dans un commentaire XML.
+
+    Les valeurs de signature (`command`, `file`, `url`, `src_user`) sont écrites
+    par les machines surveillées, donc éventuellement par un attaquant. Elles ne
+    passent PAS par `saxutils.escape` ici, et il ne le faudrait pas : `escape`
+    ne traite pas `--`, qui suffit à fermer un commentaire XML.
+
+    Sans cette neutralisation, une URL contenant `-->` refermait le commentaire
+    d'en-tête et le reste de la valeur devenait du XML interprété par le
+    manager — soit l'injection d'une règle arbitraire dans le moteur de
+    détection, chargée au redémarrage qui suit. Le champ `url` est le pire cas :
+    c'est le plus gros contributeur de faux positifs de cette plateforme, et il
+    est intégralement choisi par le client qui frappe le reverse proxy.
+    """
+    texte = _RE_HORS_COMMENTAIRE.sub("_", str(valeur)).replace("\n", " ")
+    return texte[:taille]
+
+
 # --- construction des conditions --------------------------------------------
 
 def _chemin_fichier(raw: dict) -> str | None:
@@ -140,7 +171,15 @@ def _condition(champ: str, valeur: str, raw: dict) -> str | None:
     Ancrée (`^…$`) et échappée : une exception ne doit couvrir QUE la valeur
     observée. Sans ancrage, `<field name="command">rm</field>` exonérerait toute
     commande contenant « rm ».
+
+    Une valeur portant un caractère interdit par XML 1.0 est REFUSÉE (None) :
+    `escape()` ne les traite pas, et le fichier produit serait illisible par le
+    moteur de règles. L'effet ne serait pas silencieux mais coûteux —
+    analysisd refuse de démarrer, `_redemarrer` échoue, le lot entier est retiré
+    et le manager redémarre une seconde fois. Refuser en amont vaut mieux.
     """
+    if _RE_XML_INTERDIT.search(valeur):
+        return None
     motif = f"^{re.escape(valeur)}$"
     option = _OPTION_STATIQUE.get(champ)
     if option:
@@ -181,13 +220,13 @@ def construire_xml(rule_id: int, parent: str, niveau: int, signature: dict,
                  "d'ouverture d'incident. La règle parente reste entière.")
 
     valeurs = "\n".join(
-        f"       - {c} = {signature[c]}"
+        f"       - {c} = {_commentable(signature[c])}"
         for c in CHAMPS_DISCRIMINANTS_REGLE if c in signature)
 
     return f"""<!-- Aura-SOC - rule {rule_id} (level {niveau}). GÉNÉRÉ AUTOMATIQUEMENT.
      Ne pas éditer à la main : régénéré par `python -m soc_agent.rule_tuning`.
      Convention de nommage et piège d'ordre de chargement : voir rules/README.md
-     signature-canonique: {_canonique(signature)} -->
+     signature-canonique: {_commentable(_canonique(signature), 400)} -->
 <group name="local,soc_ai_auto_tuning,">
 
   <!-- Exception dérivée de {n_fp} incidents jugés `false_positive` par le
@@ -325,7 +364,14 @@ def _exemple_fp(conn, incidents: list[int]) -> tuple[dict, tuple[str, str]] | No
 
 
 def _signatures_deja_traitees(dossier: Path) -> set[str]:
-    """Signatures canoniques déjà couvertes par une règle générée."""
+    """Signatures canoniques déjà couvertes par une règle générée.
+
+    Les valeurs relues ici sont celles ÉCRITES dans le commentaire, donc passées
+    par `_commentable`. La comparaison côté `analyser` applique la même
+    transformation : sans cela, toute signature contenant `--`, `<` ou `>` ne se
+    reconnaîtrait jamais elle-même et sa règle serait régénérée à chaque
+    passage — un redémarrage du manager par cycle, indéfiniment.
+    """
     vues: set[str] = set()
     for f in dossier.glob("*.xml"):
         texte = f.read_text(encoding="utf-8", errors="replace")
@@ -377,7 +423,9 @@ def analyser(min_fp: int, simulation: bool) -> list[dict]:
                 decisions.append({"signature": canon, "action": "refusé",
                                   "raison": raison})
 
-            if canon in deja:
+            # Comparé sous la forme écrite dans le commentaire (cf.
+            # _signatures_deja_traitees), pas sous la forme brute.
+            if _commentable(canon, 400) in deja:
                 continue
             if canon in sig_tp:
                 refus("vue aussi en true_positive"); continue

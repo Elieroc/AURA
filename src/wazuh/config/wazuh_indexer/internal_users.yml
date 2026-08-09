@@ -1,56 +1,40 @@
 ---
-# This is the internal user database
-# The hash value is a bcrypt hash and can be generated with plugin/tools/hash.sh
+# Base d'utilisateurs internes de l'indexer.
+#
+# Les hachages sont du bcrypt. NE PAS les écrire à la main : utiliser
+#     python3 scripts/set-indexer-password.py <utilisateur>
+# qui lit le mot de passe dans le .env racine et pose le hachage ici. Le
+# fichier et le .env doivent rester cohérents — un hachage qui ne correspond
+# plus au mot de passe se manifeste par un dashboard qui n'affiche plus rien,
+# sans message clair.
+#
+# Ce fichier ne contient QUE les comptes réellement utilisés par le stack :
+#
+#   admin        - INDEXER_PASSWORD. Utilisé par le manager (filebeat), le
+#                  dashboard et le soc-agent.
+#   kibanaserver - DASHBOARD_PASSWORD. Compte de service du dashboard.
+#
+# Les comptes de démonstration livrés par OpenSearch (kibanaro, logstash,
+# readall, snapshotrestore) ont été RETIRÉS. Aucun composant d'AURA ne les
+# utilisait, et ils conservaient les hachages de démonstration d'upstream :
+# leurs mots de passe sont publiquement documentés et identiques au nom du
+# compte. Deux d'entre eux portaient le backend role `readall`, c'est-à-dire la
+# lecture de tous les index — donc de toutes les alertes du parc. Ne pas les
+# réintroduire ; un besoin de lecture seule se traite par un compte dédié avec
+# son propre secret.
 
 _meta:
   type: "internalusers"
   config_version: 2
-
-# Define your internal users here
-
-## Demo users
 
 admin:
   hash: "__HASH_ADMIN__"
   reserved: true
   backend_roles:
   - "admin"
-  description: "Admin user (hash bcrypt de INDEXER_PASSWORD — regénérer via plugins/opensearch-security/tools/hash.sh si changement)"
+  description: "Compte admin de l'indexer (hachage bcrypt de INDEXER_PASSWORD)"
 
 kibanaserver:
-  hash: "$2a$12$4AcgAt3xwOWadA5s5blL6ev39OXDNhmOesEoo33eZtrq2N0YrU3H."
+  hash: "__HASH_KIBANASERVER__"
   reserved: true
-  description: "Demo kibanaserver user"
-
-kibanaro:
-  hash: "$2a$12$JJSXNfTowz7Uu5ttXfeYpeYE0arACvcwlPBStB1F.MI7f0U9Z4DGC"
-  reserved: false
-  backend_roles:
-  - "kibanauser"
-  - "readall"
-  attributes:
-    attribute1: "value1"
-    attribute2: "value2"
-    attribute3: "value3"
-  description: "Demo kibanaro user"
-
-logstash:
-  hash: "$2a$12$u1ShR4l4uBS3Uv59Pa2y5.1uQuZBrZtmNfqB3iM/.jL0XoV9sghS2"
-  reserved: false
-  backend_roles:
-  - "logstash"
-  description: "Demo logstash user"
-
-readall:
-  hash: "$2a$12$ae4ycwzwvLtZxwZ82RmiEunBbIPiAmGZduBAjKN0TXdwQFtCwARz2"
-  reserved: false
-  backend_roles:
-  - "readall"
-  description: "Demo readall user"
-
-snapshotrestore:
-  hash: "$2y$12$DpwmetHKwgYnorbgdvORCenv4NAK8cPUg8AI6pxLCuWf/ALc0.v7W"
-  reserved: false
-  backend_roles:
-  - "snapshotrestore"
-  description: "Demo snapshotrestore user"
+  description: "Compte de service du dashboard (hachage bcrypt de DASHBOARD_PASSWORD)"

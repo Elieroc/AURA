@@ -33,6 +33,7 @@ import argparse
 import ipaddress
 import json
 import logging
+import ntpath
 import re
 import subprocess
 import time
@@ -718,6 +719,12 @@ _WIN_EXE_EXT = (".exe", ".dll", ".ps1", ".bat", ".scr", ".com", ".vbs")
 # exercice purple-team en a tué et mis en quarantaine dix.
 _RE_SONDE_PS = re.compile(r"__PSScriptPolicyTest_", re.IGNORECASE)
 
+# Préfixes de chemin long Windows : `\\?\`, `\??\` (forme objet NT) et leurs
+# variantes UNC. Ils désignent exactement le même fichier que le chemin nu mais
+# ne commencent pas par `c:\windows` — ce qui suffisait à faire passer un
+# binaire de System32 pour un implant déposé (cf. _norm_chemin_win).
+_RE_PREFIXE_LONG = re.compile(r"^\\{1,2}\?{1,2}\\(?P<unc>UNC\\)?", re.IGNORECASE)
+
 # Noms de process trop génériques pour être tués « par nom » : Stop-Process
 # -Name tue TOUTES les instances de la machine. Sur le DC d'un exercice purple-team, le
 # kill de `powershell` et `wsmprovhost` a coupé les sessions d'administration
@@ -744,18 +751,48 @@ def _norm_chemin_win(brut: str) -> str:
     contrôleur de domaine (cmd.exe, net.exe, powershell.exe, dsquery.exe…),
     rattrapés uniquement par la safelist du script AR. Normaliser ici est la
     PREMIÈRE barrière ; celle du script reste la dernière.
+
+    La normalisation va plus loin que le dédoublement des antislashes, parce que
+    l'exclusion des répertoires système est une comparaison de PRÉFIXE : toute
+    écriture non canonique du même chemin la contourne. Deux formes, toutes deux
+    acceptées telles quelles par l'API Windows en bout de chaîne :
+
+    - le préfixe de chemin long `\\\\?\\` — `\\\\?\\C:\\Windows\\System32\\lsass.exe`
+      ne commence pas par `c:\\windows` ;
+    - les segments `..` — `C:\\Users\\Public\\..\\..\\Windows\\System32\\lsass.exe`
+      non plus.
+
+    On retire donc le préfixe long et on résout la remontée de répertoires
+    (`ntpath.normpath`, qui raisonne en syntaxe Windows quel que soit l'OS qui
+    exécute ce code — le soc-agent tourne sous Linux).
     """
     p = str(brut or "").strip().strip('"')
     while "\\\\" in p:
         p = p.replace("\\\\", "\\")
-    return p
+    # Le repli ci-dessus ramène `\\?\` à `\?\` : le préfixe est donc reconnu
+    # sous ses deux formes, avant et après dédoublement. La variante UNC
+    # (`\\?\UNC\serveur\partage`) redevient un chemin UNC ordinaire.
+    m = _RE_PREFIXE_LONG.match(p)
+    if m:
+        p = ("\\\\" if m.group("unc") else "") + p[m.end():]
+    return ntpath.normpath(p) if p else p
 
 
 def _chemin_win_hors_systeme(p: str) -> bool:
     """Vrai si `p` est un chemin Windows plausible, hors répertoire système et
     hors sonde AppLocker. Ne présume rien de l'extension : un webshell ou un
-    payload sans extension exécutable reste quarantainable."""
+    payload sans extension exécutable reste quarantainable.
+
+    `p` DOIT venir de `_norm_chemin_win` : la comparaison est un test de
+    préfixe, elle ne vaut que sur un chemin canonique. Un `..` résiduel suffit
+    à faire passer un binaire de System32 pour un implant déposé.
+    """
+    p = _norm_chemin_win(p)
     pl = p.lower()
+    if ".." in pl.split("\\"):
+        # normpath n'a pas pu résoudre (chemin relatif, remontée au-delà de la
+        # racine) : on ne sait pas ce que ce chemin désigne, donc on n'agit pas.
+        return False
     return bool((":\\" in p or p.startswith("\\"))
                 and not pl.startswith(config.VT_DIRS_SYSTEME)
                 and not _RE_SONDE_PS.search(p))

@@ -74,6 +74,20 @@ case "$TARGET" in
         ;;
 esac
 
+# La liste PROTECTED plus bas est un test de PRÉFIXE : un segment « .. » suffit
+# à la contourner (/var/tmp/../../etc/shadow ne commence par aucun répertoire
+# protégé, et `mv` le résout quand même). On refuse donc tout chemin non
+# canonique plutôt que de tenter de le résoudre — cet AR tourne en root, et un
+# chemin qu'on ne sait pas nommer exactement n'est pas un chemin sur lequel on
+# agit.
+case "$TARGET" in
+    */../*|*/..|../*|..)
+        log "REFUS: chemin non canonique (segment ..) : '$TARGET'"
+        ar_result refused "$TARGET" "chemin non canonique (segment ..)"
+        exit 1
+        ;;
+esac
+
 # Nom de stockage : chemin absolu avec les '/' remplacés par '_'.
 STORED="$QUARANTINE_DIR/$(echo "$TARGET" | sed 's|^/||; s|/|_|g')"
 
