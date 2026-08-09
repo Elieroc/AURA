@@ -290,6 +290,43 @@ services:
       retries: 3
       start_period: 10s
 
+  # Serveur MCP Wazuh amont (gensecaihq/Wazuh-MCP-Server, image patchée pour
+  # l'active response — voir mcp/README.md, hors dépôt). Le serveur AURA le
+  # relaie : les clients IA n'en déclarent qu'un seul.
+  #
+  # Publié sur la loopback uniquement. Ses 19 outils d'active response sont
+  # masqués par le relais d'AURA — mais un client qui atteindrait CE port les
+  # aurait tous, sans le moindre garde-fou. D'où l'écoute locale.
+  wazuh-mcp:
+    image: wazuh-main-server:4.2.1
+    container_name: wazuh-mcp
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${WAZUH_MCP_PORT:-3000}:3000"
+    environment:
+      MCP_HOST: 0.0.0.0
+      AUTH_MODE: bearer
+      AUTH_SECRET_KEY: ${WAZUH_MCP_SECRET:?WAZUH_MCP_SECRET manquant}
+      ALLOWED_ORIGINS: http://localhost,http://127.0.0.1
+      WAZUH_HOST: wazuh.manager
+      WAZUH_PORT: "55000"
+      WAZUH_USER: ${WAZUH_API_USER:-wazuh-wui}
+      WAZUH_PASS: ${WAZUH_API_PASSWORD:?WAZUH_API_PASSWORD manquant}
+      WAZUH_INDEXER_HOST: wazuh.indexer
+      WAZUH_INDEXER_PORT: "9200"
+      WAZUH_INDEXER_USER: ${INDEXER_USERNAME:-admin}
+      WAZUH_INDEXER_PASS: ${INDEXER_PASSWORD:?INDEXER_PASSWORD manquant}
+      # Certificats auto-signés sur le réseau interne du compose. Les trois
+      # variables sont nécessaires : VERIFY_SSL seule ne suffit pas, le client
+      # manager et le client indexer lisent chacun la leur (le serveur amont
+      # journalisait « verify_ssl=True » alors que VERIFY_SSL valait false).
+      VERIFY_SSL: "false"
+      WAZUH_VERIFY_SSL: "false"
+      WAZUH_INDEXER_VERIFY_SSL: "false"
+      WAZUH_ALLOW_SELF_SIGNED: "true"
+    networks:
+      - default
+
   # ===================== DFIR-IRIS (iris/) =====================
   # UI : https://localhost:8443 (443 est déjà pris par le dashboard Wazuh).
   #
