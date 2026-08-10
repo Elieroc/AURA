@@ -6,6 +6,8 @@ Dashboards :
 - Global      : timeline des alertes par niveau, compteur global d'événements,
                 MTTD / MTTR (délais issus de l'index wazuh-ai-*)
 - Linux       : top règles, échecs d'auth, top alertes (index wazuh-linux-*)
+- Windows     : Event IDs, types d'ouverture de session, processus créés, fichiers
+                déposés, accès aux identifiants, PowerShell (index wazuh-windows-*)
 - AI          : tokens, coût, latence et qualité des verdicts (index wazuh-ai-*,
                 alimenté par le conteneur soc-agent-metrics)
 """
@@ -14,6 +16,7 @@ import os
 
 IDX_ALL = "soc-ai-all-alerts"    # pattern combiné wazuh-alerts-*,wazuh-linux-*,wazuh-windows-*,wazuh-web-*,wazuh-firewall-*,wazuh-proxy-*
 IDX_LINUX = "wazuh-linux-*"
+IDX_WINDOWS = "wazuh-windows-*"
 IDX_WEB = "wazuh-web-*"
 IDX_YARA = "wazuh-yara-*"
 IDX_AI = "wazuh-ai-*"      # métriques d'IA produites par ai/soc_agent/metrics.py
@@ -349,7 +352,8 @@ objs.append(vis("soc-ai-linux-top-alerts", "Top alertes", {
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_LINUX, query=SEV_ACTIONABLE))
 
-def hbar_agents(vid, title, metric_label, query=""):
+def hbar_agents(vid, title, metric_label, query="", idx=IDX_LINUX, field="agent.name",
+                bucket_label="Agent"):
     return vis(vid, title, {
         "title": title,
         "type": "horizontal_bar",
@@ -357,7 +361,7 @@ def hbar_agents(vid, title, metric_label, query=""):
             {"id": "1", "enabled": True, "type": "count", "schema": "metric",
              "params": {"customLabel": metric_label}},
             {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
-             "params": {**TERMS, "field": "agent.name", "size": 10, "customLabel": "Agent"}},
+             "params": {**TERMS, "field": field, "size": 10, "customLabel": bucket_label}},
         ],
         "params": {"type": "histogram", "grid": {"categoryLines": False},
                    "categoryAxes": [{"id": "CategoryAxis-1", "type": "category", "position": "left",
@@ -377,7 +381,7 @@ def hbar_agents(vid, title, metric_label, query=""):
                    "times": [], "addTimeMarker": False, "labels": {},
                    "thresholdLine": {"show": False, "value": 10, "width": 1, "style": "full",
                                       "color": "#E7664C"}},
-    }, IDX_LINUX, query=query)
+    }, idx, query=query)
 
 
 objs.append(hbar_agents("soc-ai-linux-agents-alerts", "Top agents par alertes (sévérité ≥ Medium)",
@@ -1120,6 +1124,245 @@ objs.append(vis("soc-ai-mitre-tactics", "Tactiques MITRE (>= Medium)", {
                               "title": {"text": "Alertes"}}]},
 }, IDX_ALL, query=SEV_ACTIONABLE))
 
+# ---------- Visualisations : Windows (index wazuh-windows-*) ----------
+# Le volume Windows est ecrase par les 4624/4634 (ouverture / fermeture de
+# session) : 32 000 des 43 000 evenements, tous en Info. Les panneaux qui
+# comptent le bruit (Event IDs, types de session, volume par agent) le lisent
+# donc BRUT, et ceux qui montrent une menace filtrent >= Medium ou ciblent un
+# comportement precis. Melanger les deux donnerait un dashboard ou tout est vert
+# parce que tout est noye.
+
+# Les groupes Wazuh cotes Windows arrivent parfois avec un espace de tete
+# (" powershell", " WEF") : la liste <group> des regles built-in est ecrite sur
+# plusieurs lignes dans le XML et l'espace d'indentation part dans la valeur.
+# `rule.groups:"powershell"` (terme exact sur un keyword) ne matche donc RIEN.
+# D'ou les jokers : ce sont eux qui rendent ces requetes fiables, pas du confort.
+Q_WIN_CRED = ('rule.groups:(*credential_access* or *lsass_dump* or *mimikatz* or '
+              '*kerberoasting* or *ntds_dump* or *dcsync*) or rule.id:(100910 or 100915 or 100918)')
+Q_WIN_PS = 'rule.groups:*powershell* or data.win.system.eventID:("4103" or "4104")'
+Q_WIN_AUTH_FAIL = ('rule.groups:(*authentication_failed* or *win_authentication_failed*) or '
+                   'data.win.system.eventID:("4625" or "4771" or "4776" or "4740")')
+
+objs.append(compteur("soc-ai-win-total-events", "Evenements Windows",
+                     "Evenements", idx=IDX_WINDOWS))
+
+objs.append(compteur("soc-ai-win-actionable", "Alertes actionnables (>= Medium)",
+                     "Alertes", query=SEV_ACTIONABLE, idx=IDX_WINDOWS))
+
+# Cardinalite sur data.win.system.computer et non agent.name : c'est le nom vu
+# DANS l'event, donc le FQDN reel de la machine (WIN-DC.lab.local). Un agent
+# dont l'identite a ete clonee depuis un template emet sous le nom d'agent d'une
+# autre machine — les deux chiffres divergent alors, et c'est le signal.
+objs.append(compteur("soc-ai-win-hosts", "Machines Windows emettrices",
+                     "Machines", idx=IDX_WINDOWS,
+                     agg={"type": "cardinality",
+                          "params": {"field": "data.win.system.computer"}}))
+
+objs.append(compteur("soc-ai-win-cred-count", "Acces aux identifiants",
+                     "Evenements", query=Q_WIN_CRED, idx=IDX_WINDOWS))
+
+objs.append(vis("soc-ai-win-timeline", "Alertes Windows par severite (timeline)", {
+    "title": "Alertes Windows par severite (timeline)",
+    "type": "histogram",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
+        {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
+         "params": {"field": "timestamp", "timeRange": {"from": "now-30d", "to": "now"},
+                     "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
+                     "interval": "auto", "drop_partials": False, "min_doc_count": 1,
+                     "extended_bounds": {}}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "group", "params": SEV_TERMS},
+    ],
+    "params": HIST_PARAMS,
+}, IDX_WINDOWS, query=SEV_ACTIONABLE, ui_state=SEV_COLORS))
+
+objs.append(vis("soc-ai-win-mitre", "Tactiques MITRE Windows (>= Medium)", {
+    "title": "Tactiques MITRE Windows (>= Medium)",
+    "type": "horizontal_bar",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Alertes"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "rule.mitre.tactic", "size": 12,
+                    "customLabel": "Tactique"}},
+    ],
+    "params": {**HIST_PARAMS, "type": "horizontal_bar",
+               "seriesParams": [{"show": True, "type": "histogram", "mode": "stacked",
+                                 "data": {"label": "Alertes", "id": "1"},
+                                 "valueAxis": "ValueAxis-1",
+                                 "drawLinesBetweenPoints": True, "lineWidth": 2,
+                                 "showCircles": True}],
+               "categoryAxes": [{**HIST_PARAMS["categoryAxes"][0], "position": "left",
+                                 "labels": {"show": True, "rotate": 0, "filter": False,
+                                            "truncate": 200}}],
+               "valueAxes": [{**HIST_PARAMS["valueAxes"][0], "name": "BottomAxis-1",
+                              "position": "bottom", "title": {"text": "Alertes"}}],
+               "addLegend": False},
+}, IDX_WINDOWS, query=SEV_ACTIONABLE))
+
+objs.append(vis("soc-ai-win-top-rules", "Top regles Windows (>= Medium)", {
+    "title": "Top regles Windows (>= Medium)",
+    "type": "pie",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "rule.description", "size": 10,
+                     "otherBucket": True, "otherBucketLabel": "Autres"}},
+    ],
+    "params": {"type": "pie", "addTooltip": True, "addLegend": True, "legendPosition": "right",
+               "isDonut": True, "labels": {"show": False, "values": True,
+                                            "last_level": True, "truncate": 100}},
+}, IDX_WINDOWS, query=SEV_ACTIONABLE))
+
+objs.append(vis("soc-ai-win-top-alerts", "Top alertes Windows", {
+    "title": "Top alertes Windows",
+    "type": "table",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Occurrences"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alerte"}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**SEV_TERMS, "customLabel": "Severite"}},
+        {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "agent.name", "size": 3, "customLabel": "Agent"}},
+    ],
+    "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
+               "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
+}, IDX_WINDOWS, query=SEV_ACTIONABLE))
+
+# Volume BRUT (pas de filtre severite) : la lecture utile ici est la forme de la
+# telemetrie, pas la menace. Un Event ID qui disparait de ce graphe = une
+# sous-categorie d'audit qui s'est eteinte sur la machine.
+objs.append(hbar_agents("soc-ai-win-event-ids", "Top Event IDs Windows",
+                        "Evenements", idx=IDX_WINDOWS,
+                        field="data.win.system.eventID", bucket_label="Event ID"))
+
+objs.append(vis("soc-ai-win-logon-types",
+                "Ouvertures de session par type (2 interactif, 3 reseau, 5 service, 10 RDP)", {
+    "title": "Ouvertures de session par type (2 interactif, 3 reseau, 5 service, 10 RDP)",
+    "type": "pie",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Sessions"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "data.win.eventdata.logonType", "size": 10,
+                     "customLabel": "Type"}},
+    ],
+    "params": {"type": "pie", "addTooltip": True, "addLegend": True, "legendPosition": "right",
+               "isDonut": True, "labels": {"show": True, "values": True,
+                                            "last_level": True, "truncate": 100}},
+}, IDX_WINDOWS, query='data.win.system.eventID:"4624"'))
+
+objs.append(hbar_agents("soc-ai-win-top-accounts", "Top comptes cibles (ouvertures de session)",
+                        "Sessions", idx=IDX_WINDOWS,
+                        field="data.win.eventdata.targetUserName", bucket_label="Compte",
+                        query='data.win.system.eventID:"4624"'))
+
+objs.append(vis("soc-ai-win-auth-failures", "Echecs d'authentification Windows", {
+    "title": "Echecs d'authentification Windows",
+    "type": "histogram",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
+        {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
+         "params": {"field": "timestamp", "timeRange": {"from": "now-30d", "to": "now"},
+                     "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
+                     "interval": "auto", "drop_partials": False, "min_doc_count": 1,
+                     "extended_bounds": {}}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "group",
+         "params": {**TERMS, "field": "agent.name", "size": 10}},
+    ],
+    "params": HIST_PARAMS,
+}, IDX_WINDOWS, query=Q_WIN_AUTH_FAIL))
+
+# Filiation parent -> enfant, pas la liste des processus : un powershell.exe
+# seul ne dit rien, un powershell.exe lance par winword.exe dit tout.
+objs.append(vis("soc-ai-win-processes", "Processus crees (parent -> enfant)", {
+    "title": "Processus crees (parent -> enfant)",
+    "type": "table",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Executions"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "data.win.eventdata.parentImage", "size": 10,
+                     "customLabel": "Processus parent"}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "data.win.eventdata.image", "size": 3,
+                     "customLabel": "Processus cree"}},
+        {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "agent.name", "size": 2, "customLabel": "Agent"}},
+    ],
+    "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
+               "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
+}, IDX_WINDOWS))
+
+objs.append(vis("soc-ai-win-dropped-files", "Fichiers deposes (Sysmon EID 11)", {
+    "title": "Fichiers deposes (Sysmon EID 11)",
+    "type": "table",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Depots"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "data.win.eventdata.targetFilename", "size": 15,
+                     "customLabel": "Fichier"}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "agent.name", "size": 2, "customLabel": "Agent"}},
+    ],
+    "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
+               "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
+}, IDX_WINDOWS, query='data.win.eventdata.targetFilename:*'))
+
+# Regles maison 100910 / 100915 / 100918 (kerberoasting RC4, DCSync, dump lsass)
+# + groupes built-in equivalents. C'est le panneau ou une compromission AD se
+# voit en premier, d'ou sa place au-dessus du flux brut.
+objs.append(vis("soc-ai-win-cred-access", "Acces aux identifiants (lsass, DCSync, Kerberoasting)", {
+    "title": "Acces aux identifiants (lsass, DCSync, Kerberoasting)",
+    "type": "table",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Evenements"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alerte"}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**SEV_TERMS, "customLabel": "Severite"}},
+        {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "agent.name", "size": 2, "customLabel": "Agent"}},
+    ],
+    "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
+               "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
+}, IDX_WINDOWS, query=Q_WIN_CRED))
+
+objs.append(vis("soc-ai-win-powershell", "Activite PowerShell", {
+    "title": "Activite PowerShell",
+    "type": "table",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Evenements"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alerte"}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**SEV_TERMS, "customLabel": "Severite"}},
+        {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "agent.name", "size": 2, "customLabel": "Agent"}},
+    ],
+    "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
+               "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
+}, IDX_WINDOWS, query=Q_WIN_PS))
+
+objs.append(hbar_agents("soc-ai-win-agents-alerts", "Top agents Windows par alertes (>= Medium)",
+                        "Alertes", query=SEV_ACTIONABLE, idx=IDX_WINDOWS))
+objs.append(hbar_agents("soc-ai-win-agents-logs", "Top agents Windows par volume de logs",
+                        "Evenements", idx=IDX_WINDOWS))
+
+objs.append(saved_search("soc-ai-win-latest", "Dernieres alertes Windows (High / Critical)",
+    "Flux chronologique des alertes Windows High et Critical, plus recentes en tete. "
+    "Colonnes choisies pour trancher sans ouvrir le document : qui (targetUserName), "
+    "sur quoi (computer), avec quoi (commandLine).",
+    ["agent.name", "rule.severity", "rule.level", "rule.description",
+     "data.win.system.eventID", "data.win.eventdata.targetUserName",
+     "data.win.eventdata.commandLine"],
+    IDX_WINDOWS, query=SEV_HIGH_CRIT))
+
 # ---------- Dashboards ----------
 
 objs.append(dashboard("soc-ai-threat-intel", "Threat Intel",
@@ -1165,6 +1408,33 @@ objs.append(dashboard("soc-ai-linux", "Linux",
         ("soc-ai-auth-failures",    0, 15, 48, 14),
         ("soc-ai-linux-agents-alerts", 0, 29, 24, 12),
         ("soc-ai-linux-agents-logs",  24, 29, 24, 12),
+    ]))
+
+objs.append(dashboard("soc-ai-windows", "Windows",
+    "Alertes Windows / Active Directory (index wazuh-windows-*) : Event IDs, "
+    "ouvertures de session, echecs d'authentification, filiation de processus, "
+    "fichiers deposes, acces aux identifiants (lsass / DCSync / Kerberoasting), "
+    "activite PowerShell.",
+    [
+        ("soc-ai-win-total-events",   0,  0, 12, 10),
+        ("soc-ai-win-actionable",    12,  0, 12, 10),
+        ("soc-ai-win-cred-count",    24,  0, 12, 10),
+        ("soc-ai-win-hosts",         36,  0, 12, 10),
+        ("soc-ai-win-timeline",       0, 10, 32, 15),
+        ("soc-ai-win-mitre",         32, 10, 16, 15),
+        ("soc-ai-win-top-rules",      0, 25, 24, 15),
+        ("soc-ai-win-top-alerts",    24, 25, 24, 15),
+        ("soc-ai-win-event-ids",      0, 40, 20, 14),
+        ("soc-ai-win-logon-types",   20, 40, 12, 14),
+        ("soc-ai-win-top-accounts",  32, 40, 16, 14),
+        ("soc-ai-win-auth-failures",  0, 54, 48, 13),
+        ("soc-ai-win-processes",      0, 67, 26, 15),
+        ("soc-ai-win-dropped-files", 26, 67, 22, 15),
+        ("soc-ai-win-cred-access",    0, 82, 24, 14),
+        ("soc-ai-win-powershell",    24, 82, 24, 14),
+        ("soc-ai-win-agents-alerts",  0, 96, 24, 12),
+        ("soc-ai-win-agents-logs",   24, 96, 24, 12),
+        ("soc-ai-win-latest",         0, 108, 48, 20, "search"),
     ]))
 
 objs.append(dashboard("soc-ai-web", "Web",
