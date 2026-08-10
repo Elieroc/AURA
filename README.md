@@ -9,7 +9,7 @@
 
 ---
 
-XDR autonome piloté par IA. Détection moderne avec Wazuh, enrichissement threat intel, triage, whitelisting et remédiation automatique pilotés par un LLM - pas de validation humaine requise. Parce que votre SOC mérite d'être à la hauteur de l'ère de l'intelligence artificielle.
+XDR autonome piloté par IA. Détection moderne avec Wazuh, enrichissement threat intel, triage, whitelisting et remédiation automatique pilotés par un LLM - pas de validation humaine nécessaire. Parce que votre SOC mérite d'être à la hauteur de l'ère de l'intelligence artificielle et des exigences actuelles.
 
 ## Architecture
 
