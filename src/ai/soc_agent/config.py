@@ -59,6 +59,41 @@ PG_DSN = os.environ.get(
     ),
 )
 
+# Plafond de durée d'UNE requête, appliqué à toutes les connexions du soc-agent.
+#
+# Sans lui, une requête partie de travers immobilise sa session sans fin, et
+# tout ce qui a besoin d'un verrou sur les mêmes tables attend derrière —
+# constaté le 2026-08-11, un `ALTER TABLE` de migration resté bloqué derrière
+# des sessions du cycle. Une requête de ce pipeline qui dépasse cinq minutes est
+# de toute façon anormale : les gros lots sont découpés (INGEST_LOT, UEBA_LOT).
+#
+# Volontairement PAS de idle_in_transaction_session_timeout : le cycle tient son
+# verrou consultatif dans une transaction ouverte pendant toute son exécution
+# (cf. cycle.VERROU). Le tuer sur inactivité libérerait le verrou et
+# autoriserait deux cycles concurrents — la panne serait pire que le mal.
+PG_STATEMENT_TIMEOUT_MS = int(
+    os.environ.get("PG_STATEMENT_TIMEOUT_MS", "300000"))
+
+
+def _avec_statement_timeout(dsn: str, ms: int) -> str:
+    """Ajoute `options=-c statement_timeout=<ms>` au DSN, sans rien écraser.
+
+    Passer par le DSN plutôt que par un `SET` après connexion : il n'existe pas
+    un point de passage unique où toutes les connexions sont ouvertes (chaque
+    module fait son `psycopg.connect`), donc le seul endroit qui les couvre
+    toutes est la chaîne de connexion elle-même.
+    """
+    if ms <= 0 or "options=" in dsn:
+        return dsn
+    opt = f"-c statement_timeout={ms}"
+    if dsn.startswith(("postgresql://", "postgres://")):
+        from urllib.parse import quote
+        return f"{dsn}{'&' if '?' in dsn else '?'}options={quote(opt)}"
+    return f"{dsn} options='{opt}'"
+
+
+PG_DSN = _avec_statement_timeout(PG_DSN, PG_STATEMENT_TIMEOUT_MS)
+
 # --- Filtrage ---------------------------------------------------------------
 #
 # Niveau Wazuh minimal pour OUVRIR un incident (graine). 12 = seuil HIGH de
@@ -190,6 +225,21 @@ DEEPSEEK_URL = os.environ.get("DEEPSEEK_URL", "https://api.deepseek.com")
 # deepseek-v4-flash (rapide/économique, équivalent le plus proche du chat sur
 # lequel le pipeline a été calé) et deepseek-v4-pro (verdict plus robuste).
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+
+# Délais d'attente de l'appel LLM, en secondes : (connexion, lecture).
+#
+# Les deux comptent séparément dans `requests`, et le second est un délai
+# d'INACTIVITÉ, pas une durée totale : un serveur qui envoie un octet toutes les
+# 100 s ne déclenche jamais un timeout de lecture de 120 s. C'est pour cela
+# qu'ils sont explicites ici plutôt qu'écrits en dur — un fournisseur lent ou en
+# panne partielle ne doit pas immobiliser le cycle, qui tient son verrou
+# consultatif pendant toute son exécution.
+#
+# Connexion courte (10 s) : si le TCP ne s'établit pas, réessayer plus tard est
+# la bonne réponse. Lecture longue (120 s) : un modèle raisonnant met du temps à
+# produire le premier octet, et couper trop tôt gaspille des tokens déjà payés.
+LLM_TIMEOUT_CONNECT_S = float(os.environ.get("LLM_TIMEOUT_CONNECT_S", "10"))
+LLM_TIMEOUT_READ_S = float(os.environ.get("LLM_TIMEOUT_READ_S", "120"))
 
 
 # --- DFIR-IRIS (case management) --------------------------------------------

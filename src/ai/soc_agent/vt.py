@@ -202,6 +202,14 @@ def filtrer(conn: psycopg.Connection | None = None) -> int:
             if appels >= config.VT_MAX_LOOKUPS:
                 continue                 # plafond réseau atteint, au prochain cycle
             if appels:
+                # Rendre la transaction AVANT de dormir. `_lire_cache` en a
+                # ouvert une, et psycopg ne la referme pas tout seul : sans ce
+                # commit, la session reste « idle in transaction » pendant toute
+                # la pause. Avec VT_MAX_LOOKUPS appels, cela fait des dizaines
+                # de minutes de verrous tenus pour rien — le 2026-08-11, deux
+                # sessions du cycle bloquées 19 min ont mis l'ingestion à
+                # l'arrêt et fait échouer un ALTER TABLE de migration.
+                conn.commit()
                 time.sleep(16)           # API publique : 4 req/min
             rep = _interroger_vt(h)
             appels += 1

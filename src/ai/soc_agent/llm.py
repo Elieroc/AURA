@@ -134,7 +134,11 @@ def _completion(systeme: str, utilisateur: str, max_tokens: int,
             "temperature": temperature,
             "stream": False,
         },
-        timeout=120,
+        # (connexion, lecture) explicites : le second est un délai d'INACTIVITÉ,
+        # pas une durée totale. Le cycle tient son verrou consultatif pendant
+        # tout son déroulé — un fournisseur qui répond au ralenti ne doit pas
+        # l'immobiliser (cf. config.LLM_TIMEOUT_*).
+        timeout=(config.LLM_TIMEOUT_CONNECT_S, config.LLM_TIMEOUT_READ_S),
     )
     rep.raise_for_status()
     corps = rep.json()
