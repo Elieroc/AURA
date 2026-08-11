@@ -365,6 +365,45 @@ def test_iocs_argv_laisse_passer_le_hash_du_meme_fichier():
     assert valeurs == {"/tmp/.implant.py", "cafe1234"}
 
 
+def test_iocs_ecarte_l_infrastructure_du_soc():
+    """L'IP du manager Wazuh n'est jamais un IOC. Le SIEM parle à tout le parc
+    (active-responses, keepalives), donc son IP tombe en `srcip` et en cible de
+    connexion sur des alertes normales. Case #207 : elle y figurait en « cible
+    interne — connexion /dev/tcp », à côté du vrai rootkit."""
+    import json
+    from soc_agent import config
+    from soc_agent.iris import _ip_ioc_valide
+
+    siem = next(iter(config.SOC_INFRA_IPS), None) or "192.168.3.5"
+    ancien = set(config.SOC_INFRA_IPS)
+    config.SOC_INFRA_IPS = ancien | {siem}
+    try:
+        assert not _ip_ioc_valide(siem)
+        alertes = [
+            {"srcip": siem, "entity": None, "raw": json.dumps({"data": {}})},
+            {"srcip": None, "entity": None,
+             "raw": json.dumps({"full_log": f"bash -c /dev/tcp/{siem}/4444",
+                                "data": {}})},
+        ]
+        assert _iocs(alertes) == []
+        # Une IP quelconque du même parc reste, elle, un IOC de contexte.
+        autre = [{"srcip": "192.168.5.99", "entity": None,
+                  "raw": json.dumps({"data": {}})}]
+        assert {v for v, _, _ in _iocs(autre)} == {"192.168.5.99"}
+    finally:
+        config.SOC_INFRA_IPS = ancien
+
+
+def test_soc_infra_ips_deduit_des_url_configurees():
+    """L'IP du SOC se déduit des URL déjà déclarées : rien à maintenir en
+    double. Un nom DNS est ignoré — la comparaison se fait sur une IP."""
+    from soc_agent.config import _hote_url
+
+    assert _hote_url("https://192.168.3.5:55000") == "192.168.3.5"
+    assert _hote_url("https://wazuh.lab:9200") is None
+    assert _hote_url("") is None
+
+
 def test_iocs_epargne_les_binaires_systeme_et_sondes():
     import json
 

@@ -388,13 +388,23 @@ for _cidr in config.RESEAUX_INTERNES:
 
 
 def _ip_ioc_valide(ip: str) -> bool:
-    """IP exploitable comme IOC : ni 'none', ni loopback, ni non-spécifiée.
+    """IP exploitable comme IOC : ni 'none', ni loopback, ni non-spécifiée, ni
+    l'infrastructure du SOC.
 
     Écarte le bruit qui polluait la threat intel (`ip-any = none`, 0.0.0.0,
-    127.0.0.1, link-local, multicast)."""
+    127.0.0.1, link-local, multicast).
+
+    Le SOC lui-même (`config.SOC_INFRA_IPS` : manager, indexer, IRIS, Shuffle)
+    est exclu ici plutôt qu'à chaque appelant : c'est le seul point de passage
+    commun aux IOC et au choix des cibles de blocage de `mitigate`, donc le seul
+    endroit où l'exclusion ne peut pas être oubliée par un futur bloc. Le SIEM
+    dialogue avec tout le parc ; son IP en `srcip` ou en cible de connexion ne
+    dit rien d'une attaque, et la bloquer coupe le SOC de ses agents."""
     try:
         o = ipaddress.ip_address(str(ip).strip())
     except ValueError:
+        return False
+    if str(o) in config.SOC_INFRA_IPS:
         return False
     return not (o.is_loopback or o.is_unspecified or o.is_link_local
                 or o.is_multicast)

@@ -4,8 +4,10 @@ Aucune valeur par défaut pour les secrets : une absence doit faire échouer le
 démarrage, pas passer silencieusement sur une valeur de repli.
 """
 
+import ipaddress
 import os
 import sys
+from urllib.parse import urlparse
 
 
 def _requis(nom: str) -> str:
@@ -703,3 +705,54 @@ UEBA_MEMOIRE_JOURS = int(os.environ.get("UEBA_MEMOIRE_JOURS", "90"))
 # donc son verdict VP/FP, le case IRIS est créé avec toutes les actions
 # proposées, mais rien n'est exécuté tant que ce drapeau est à false.
 UEBA_MITIGATE = os.environ.get("UEBA_MITIGATE", "false").lower() == "true"
+
+
+# --- Infrastructure du SOC lui-même ----------------------------------------
+#
+# Défini en fin de fichier : dépend des URL déclarées plus haut.
+
+def _hote_url(url: str) -> str | None:
+    """Hôte d'une URL de configuration, uniquement si c'est une IP littérale.
+
+    Un nom DNS ne sert à rien ici : la comparaison se fera contre l'IP telle
+    qu'elle apparaît dans une alerte.
+    """
+    try:
+        hote = urlparse(url or "").hostname
+    except ValueError:
+        return None
+    if not hote:
+        return None
+    try:
+        ipaddress.ip_address(hote)
+    except ValueError:
+        return None
+    return hote
+
+
+# IP de l'infrastructure du SOC : manager Wazuh, indexer, IRIS, Shuffle.
+# JAMAIS un IOC, jamais une cible de blocage.
+#
+# Le SIEM parle à toutes les machines qu'il surveille — il pousse ses
+# active-responses, ses agents lui répondent — donc son IP apparaît en `srcip`
+# ou en cible de connexion sur des alertes parfaitement normales. Publiée comme
+# indicateur, elle salit la threat intel ; traitée au premier degré par un
+# analyste ou un automatisme de blocage, elle coupe le SOC de son propre parc.
+# Constaté sur le case #207 : l'IP du manager y figurait en « cible interne —
+# connexion /dev/tcp », à côté du vrai rootkit.
+#
+# Trois sources, cumulées :
+#
+#  - MITIGATE_ISOLATE_ALLOW : par définition « l'IP du manager telle que
+#    l'AGENT la joint », c'est-à-dire exactement celle qui apparaît dans les
+#    alertes. La source la plus juste des trois.
+#  - les URL du soc-agent : utiles en déploiement à plat, mais en conteneur
+#    elles pointent vers des noms de service Docker et ne donnent rien.
+#  - SOC_INFRA_IPS, pour le reste : VIP, seconde interface du manager,
+#    collecteur tiers.
+SOC_INFRA_IPS = {
+    ip for ip in (_hote_url(INDEXER_URL), _hote_url(IRIS_URL),
+                  _hote_url(SHUFFLE_URL), _hote_url(WAZUH_API_URL)) if ip
+} | set(MITIGATE_ISOLATE_ALLOW) | {
+    ip.strip() for ip in os.environ.get("SOC_INFRA_IPS", "").split(",")
+    if ip.strip()}

@@ -332,6 +332,7 @@ docker exec soc-agent-cycle python -m soc_agent.mitigate --desisoler 003
 | `MITIGATE_MAX_TENTATIVES` | `3` | rejeux d'une action restée `émis` |
 | `MITIGATE_AR_GAP_SECONDS` | `1.5` | espacement des appels AR (une rafale se perd) |
 | `MITIGATE_ISOLATE_ALLOW` | *(vide)* | IP(s) restant joignables depuis un hôte isolé — à définir par déploiement |
+| `SOC_INFRA_IPS` | *(déduit)* | IP du SOC (manager, indexer, IRIS, Shuffle) : jamais un IOC, jamais une cible de blocage. Déduit des URL et de `MITIGATE_ISOLATE_ALLOW`, complétable à la main |
 | `AGENTS_PROTEGES` | `000` | jamais une cible |
 | `AGENTS_CAPTEURS` | *(vide)* | capteurs d'hôte : jamais une cible (théâtre réel = machine surveillée) — id d'agents à lister par déploiement |
 | `AGENTS_WINDOWS` | *(vide)* | route vers les AR Windows — id d'agents à lister par déploiement |
