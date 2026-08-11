@@ -117,6 +117,33 @@ Detection ransomware (T1486 / T1490 / T1489)
      (voir agent.conf), donc cout inotify negligeable et volume d'events ~0.
 ```
 
+### `suricata,ids,`
+
+Règles : 100940, 100941, 100942, 100943, 100944, 100945
+
+```
+Pack Suricata - promouvoir ce qui merite une alerte, taire le reste.
+
+     La regle native 86601 alerte au niveau 3 sur TOUTE alerte Suricata, et les
+     autres types d'evenement (tls, http, dns, flow) sont au niveau 0 donc
+     jetes avant l'etape d'alerte. Resultat mesure le 2026-08-11 sur 20 000
+     lignes d'eve.json : 28 651 evenements de severite 3 pour 13 de severite 1,
+     dont l'ecrasante majorite sont des plaintes du decodeur (QUIC non
+     dechiffrable, HTTP/2, bannieres SSH non OpenSSH).
+
+     Le tri se fait sur trois axes, jamais sur une liste de signatures :
+      - la FAMILLE de signature (MALWARE/TROJAN/CNC/ATTACK_RESPONSE = hote deja
+        compromis, 100942) ;
+      - l'INTERFACE (vtnet0 = WAN, bruit de fond d'internet et deja bloque par
+        le pare-feu ; vtnet2-5 = entre machines a nous, donc laterale, 100943
+        et 100944) ;
+      - le SNI TLS pour l'hebergement serverless anonyme (100945), seul
+        discriminant disponible quand le C2 est fronte par Cloudflare.
+
+     Le niveau 12 est reserve a ce qui doit ouvrir un case dans le soc-agent
+     (MIN_LEVEL=12). Le reste reste visible au niveau 3, ou passe a 0.
+```
+
 ### `authentication,ssh,threat_hunting,`
 
 Règles : 100690, 100691

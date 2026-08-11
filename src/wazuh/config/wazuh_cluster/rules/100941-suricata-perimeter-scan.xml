@@ -1,0 +1,31 @@
+<!-- Aura-SOC - rule 100941 (level 3). Domain: suricata,ids,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="suricata,ids,">
+
+  <!-- Internet background radiation on the WAN interface, kept visible but
+       never an incident.
+
+       vtnet0 is the WAN. Everything that hits it from the outside is unsolicited
+       and constant: port scans, Sipvicious, LeakIX, mySQL/MSSQL/PostgreSQL probes,
+       Nmap NSE user-agents. It is not a signal about THIS network, it is what the
+       internet does to every public IP, and it is already dropped by the firewall.
+
+       Level 3 = visible in Discover and in the dashboards, below the level 12
+       that seeds an incident in the soc-agent. Without this rule the sibling
+       100942 (high severity) would promote every internet Nmap scan to a case:
+       11 of the 13 severity-1 events measured on 2026-08-11 were exactly that.
+
+       An internal source reaching the WAN interface is a different story and is
+       NOT covered here - see 100943, which keys on the internal interfaces. -->
+
+  <rule id="100941" level="3">
+    <if_sid>86601</if_sid>
+    <field name="in_iface" type="pcre2">^vtnet0$</field>
+    <field name="alert.signature" type="pcre2">^(?:ET|ETPRO|GPL) (?:SCAN|USER_AGENTS|POLICY|INFO)\b</field>
+    <description>Suricata perimeter noise on WAN (scan/recon from the internet): $(alert.signature)</description>
+    <mitre>
+      <id>T1595</id>
+    </mitre>
+  </rule>
+
+</group>

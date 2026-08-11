@@ -1,0 +1,34 @@
+<!-- Aura-SOC - rule 100940 (level 0). Domain: suricata,ids,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="suricata,ids,">
+
+  <!-- Engine-decode noise, demoted to level 0.
+
+       The native rule 86601 alerts at level 3 on EVERY Suricata alert. On this
+       lab that is 28 000+ events per 20 000-line sample, and the overwhelming
+       majority are the engine complaining about protocols it could not parse -
+       not about an attacker. Measured 2026-08-11 across the five interfaces:
+
+         5142  SURICATA HTTP Request unrecognized authorization method
+         3380  SURICATA QUIC failed decrypt
+          434  SURICATA SSH invalid banner
+          246  SURICATA Applayer (protocol mismatch / wrong direction)
+           55  SURICATA STREAM ...
+           51  SURICATA HTTP2 too long frame data
+
+       These fire on normal encrypted traffic (QUIC keys the sensor does not
+       have, HTTP/2, non-OpenSSH banners). Keeping them at level 3 buries the
+       signal and inflates every dashboard count.
+
+       Scope is deliberately narrow: only the `SURICATA ` prefix, i.e. the
+       engine's own decoder events (gid 1, sid 22xxxxx / 2xxxxxx internal), and
+       only the families listed above. `SURICATA` rules that describe an actual
+       protocol abuse are NOT in the list and keep their level. -->
+
+  <rule id="100940" level="0">
+    <if_sid>86601</if_sid>
+    <field name="alert.signature" type="pcre2">^SURICATA (?:QUIC|HTTP2|STREAM|Applayer|HTTP Request unrecognized authorization method|HTTP unable to match response to request|HTTP Unexpected Request body|SSH invalid banner|NFS|SMB)</field>
+    <description>Suricata engine decode noise (not an attack): $(alert.signature)</description>
+  </rule>
+
+</group>

@@ -1,0 +1,37 @@
+<!-- Aura-SOC - rule 100943 (level 12). Domain: suricata,ids,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="suricata,ids,">
+
+  <!-- A high-severity signature seen INSIDE the network.
+
+       Suricata grades its own signatures: severity 1 = high, 2 = medium,
+       3 = informational. Severity 1 is rare here - 13 events in a 20 000-line
+       sample on 2026-08-11 - which makes it usable as-is, provided the
+       perimeter is excluded (see 100941: 11 of those 13 were internet scans
+       hitting the WAN).
+
+       Interface mapping on home-r-pf01, checked 2026-08-11:
+         vtnet0 = WAN/LAN100   vtnet2 = CONT200   vtnet3 = ADMIN300
+         vtnet4 = LAB500       vtnet5 = DMZ600
+
+       On vtnet2-5 the traffic is between machines we own. A high-severity
+       signature there means either a compromised host attacking its neighbours
+       (lateral movement) or something that already got through the firewall -
+       both worth a case, hence level 12.
+
+       Exploit and web-attack families are included at the same level on those
+       segments only: an exploit attempt from the internet is background noise,
+       the same attempt from CONT200 towards ADMIN300 is an incident. -->
+
+  <rule id="100943" level="12">
+    <if_sid>86601</if_sid>
+    <field name="in_iface" type="pcre2">^vtnet[2-5]$</field>
+    <field name="alert.severity" type="pcre2">^1$</field>
+    <description>Suricata: high-severity signature on an internal segment ($(in_iface)) - $(alert.signature) [$(src_ip) -> $(dest_ip)]</description>
+    <mitre>
+      <id>T1210</id>
+    </mitre>
+    <group>lateral_movement,</group>
+  </rule>
+
+</group>

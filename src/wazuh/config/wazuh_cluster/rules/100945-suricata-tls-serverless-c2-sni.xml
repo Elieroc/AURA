@@ -1,0 +1,42 @@
+<!-- Aura-SOC - rule 100945 (level 12). Domain: suricata,ids,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="suricata,ids,">
+
+  <!-- TLS handshake towards anonymous serverless hosting: modern C2 fronting.
+
+       The native rule 86604 decodes `event_type: tls` at level 0, so the SNI
+       never reaches an alert. That is the right default - logging every TLS
+       handshake of the estate would drown the SIEM - but it makes one specific
+       case invisible, and it is the case that matters.
+
+       Cloudflare Workers, Cloudflare Tunnel quick tunnels, ngrok and their
+       equivalents give an attacker a free, throwaway, TLS-terminated endpoint on
+       a reputable IP range. Blocking by IP is useless (172.64.0.0/13 is shared
+       with half the web) and reputation feeds rate the domain as clean. The SNI
+       is the only discriminator available on the wire.
+
+       No legitimate server-to-server traffic in this estate calls a *.workers.dev
+       or a *.trycloudflare.com. A developer testing their own Worker from a
+       workstation is the expected false positive - hence the exclusion below,
+       to be filled per deployment rather than left open.
+
+       Found in production 2026-08-11: /tmp/.cache-update.py on debian (LAB500)
+       beaconing to cipherfall-c2.<compte>.workers.dev every 2-3 seconds. The
+       firewall saw nothing (LAB500 pass rule was not logged), the DNS pipeline
+       was empty, and the case had already been opened on host telemetry alone -
+       the network side of the same incident was completely dark.
+
+       Level 12: one handshake is enough to open a case. -->
+
+  <rule id="100945" level="12">
+    <if_sid>86604</if_sid>
+    <field name="tls.sni" type="pcre2">\.(?:workers\.dev|trycloudflare\.com|ngrok\.io|ngrok-free\.app|loca\.lt|serveo\.net|telebit\.io|pagekite\.me)$</field>
+    <description>C2 over anonymous serverless hosting: TLS to $(tls.sni) from $(src_ip) ($(in_iface))</description>
+    <mitre>
+      <id>T1071.001</id>
+      <id>T1090.004</id>
+    </mitre>
+    <group>command_and_control,</group>
+  </rule>
+
+</group>
