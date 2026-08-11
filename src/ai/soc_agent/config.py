@@ -502,6 +502,19 @@ WATCHDOG_SILENCE_PAR_CAPTEUR = {
 WATCHDOG_CASE_IRIS = os.environ.get(
     "WATCHDOG_CASE_IRIS", "true").lower() == "true"
 
+# Retard d'ingestion au-delà duquel le watchdog se tait plutôt que de crier.
+#
+# Il mesure le silence des capteurs contre l'horizon d'ingestion, pas contre
+# l'horloge. Si l'ingestion elle-même cale, cet horizon se fige : plus aucun
+# capteur ne paraît muet et la surveillance devient un mensonge tranquille. On
+# détecte donc ce cas séparément, contre l'horloge cette fois, et on suspend le
+# reste — un pipeline arrêté est UNE panne, pas une par capteur.
+#
+# 30 min = six cycles d'ingestion (300 s) : au-delà, ce n'est plus un cycle qui
+# a pris du retard.
+WATCHDOG_RETARD_INGEST_MAX = int(
+    os.environ.get("WATCHDOG_RETARD_INGEST_MAX", "30"))
+
 # Reconstruction des commandes (rapport IRIS) : le compte compromis est souvent
 # aussi une session légitime (le même uid génère du bruit de login — gpg-agent,
 # générateurs systemd). On ne montre que les commandes RATTACHÉES à l'attaque :

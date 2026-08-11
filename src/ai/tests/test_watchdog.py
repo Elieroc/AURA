@@ -66,3 +66,22 @@ def test_note_couvre_chaque_capteur_surveille():
     from soc_agent.watchdog import _PORTEE
     for capteur in config.WATCHDOG_CAPTEURS:
         assert capteur in _PORTEE, capteur
+
+
+def test_silence_mesure_contre_l_horizon_pas_l_horloge():
+    """La base est alimentée par cycles de 5 min : mesurer contre l'horloge
+    fabrique une panne à chaque intervalle. Mesuré le 2026-08-11 — `audit` et
+    `suricata` déclarés en panne pour « 15 min » quatre minutes après un
+    redémarrage des conteneurs, alors que les deux émettaient."""
+    horizon = datetime.now(timezone.utc) - timedelta(minutes=14)
+    dernier = horizon - timedelta(minutes=2)
+    # Contre l'horloge : 16 min -> au-dessus du seuil, fausse panne.
+    assert _minutes(dernier) > config.WATCHDOG_SILENCE_MINUTES
+    # Contre l'horizon : 2 min -> rien à signaler.
+    assert _minutes(dernier, horizon) < config.WATCHDOG_SILENCE_MINUTES
+
+
+def test_seuil_retard_ingestion_couvre_plusieurs_cycles():
+    """Le garde-fou anti-aveuglement ne doit pas se déclencher sur un cycle en
+    retard : 300 s de cadence, il faut plusieurs cycles manqués."""
+    assert config.WATCHDOG_RETARD_INGEST_MAX >= 25

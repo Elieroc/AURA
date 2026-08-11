@@ -66,21 +66,40 @@ _PORTEE = {
 
 # Un capteur muet = un groupe de règles vu >= BASELINE_MIN fois sur la fenêtre de
 # référence, mais dont la dernière alerte remonte à plus de son seuil de silence.
+#
+# Le silence se mesure contre l'HORIZON D'INGESTION, jamais contre l'horloge.
+# Cette base n'est pas alimentée en continu : le cycle ingère toutes les 5 min,
+# donc entre deux passages TOUT capteur paraît muet, et d'autant plus longtemps
+# que le cycle vient d'être redémarré. Mesuré le 2026-08-11 en mettant ce module
+# en service : quatre minutes après un redémarrage des conteneurs, `audit` sur
+# home-s-pve01 et `suricata` sur la pfSense étaient déclarés en panne pour
+# « 15 min de silence » alors que les deux émettaient normalement — la base
+# n'avait simplement pas encore été rafraîchie. Comparé à l'horizon, un retard
+# d'ingestion décale tous les capteurs du même montant et ne peut plus fabriquer
+# de panne.
+#
+# Le corollaire est que le watchdog devient aveugle si l'ingestion elle-même
+# s'arrête : c'est un autre mode de panne, couvert par `horizon_ingestion()`.
 _SQL = """
-WITH grp AS (
+WITH horizon AS (
+    SELECT COALESCE((SELECT last_ts FROM ingest_cursor LIMIT 1),
+                    (SELECT max(ts) FROM alerts)) AS h
+), grp AS (
     SELECT agent_id, agent_name, unnest(rule_groups) AS g, ts
       FROM alerts
-     WHERE ts >= now() - (%(ref)s || ' hours')::interval
+     WHERE ts >= (SELECT h FROM horizon) - (%(ref)s || ' hours')::interval
 )
 SELECT agent_id, agent_name, g AS capteur,
        count(*) AS volume, max(ts) AS dernier,
+       (SELECT h FROM horizon) AS horizon,
        COALESCE((%(par_capteur)s::jsonb ->> g)::int, %(silence)s) AS seuil
   FROM grp
  WHERE g = ANY(%(capteurs)s)
  GROUP BY agent_id, agent_name, g
 HAVING count(*) >= %(baseline)s
-   AND max(ts) < now() - (COALESCE(%(par_capteur)s::jsonb ->> g,
-                                   %(silence)s::text) || ' minutes')::interval
+   AND max(ts) < (SELECT h FROM horizon)
+                 - (COALESCE(%(par_capteur)s::jsonb ->> g,
+                             %(silence)s::text) || ' minutes')::interval
  ORDER BY dernier
 """
 
@@ -99,8 +118,26 @@ def capteurs_muets(conn) -> list[dict]:
     }).fetchall()
 
 
-def _minutes(depuis) -> int:
-    return int((datetime.now(timezone.utc) - depuis).total_seconds() // 60)
+def _minutes(depuis, reference=None) -> int:
+    """Minutes écoulées depuis `depuis`, mesurées contre l'horizon d'ingestion
+    quand il est fourni — cf. le commentaire de `_SQL`. L'horloge n'est le bon
+    repère que pour l'ingestion elle-même."""
+    fin = reference or datetime.now(timezone.utc)
+    return int((fin - depuis).total_seconds() // 60)
+
+
+def horizon_ingestion(conn):
+    """Jusqu'où la base est à jour, et depuis combien de temps elle ne l'est plus.
+
+    Le watchdog raisonne sur ce que le pipeline a ingéré ; si l'ingestion cale,
+    il ne voit plus rien passer et se tairait — panne silencieuse de l'outil qui
+    surveille les pannes. On mesure donc aussi ce retard-là, contre l'horloge.
+    """
+    r = conn.execute(
+        "SELECT COALESCE((SELECT last_ts FROM ingest_cursor LIMIT 1),"
+        "                (SELECT max(ts) FROM alerts)) AS h").fetchone()
+    h = r["h"] if r else None
+    return h, (_minutes(h) if h else None)
 
 
 def _duree(minutes: int) -> str:
@@ -213,11 +250,23 @@ def surveiller() -> dict:
     """
     ouvertes, fermees = [], []
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
+        horizon, retard = horizon_ingestion(conn)
+        # Ingestion à l'arrêt : tous les capteurs vont paraître muets au même
+        # instant. Ce n'est pas une panne de capteur, c'est une panne du
+        # pipeline — on le dit et on ne fabrique pas six dossiers pour un seul
+        # problème.
+        if retard is not None and retard > config.WATCHDOG_RETARD_INGEST_MAX:
+            log.error("INGESTION EN RETARD de %s (horizon %s) — surveillance "
+                      "des capteurs suspendue : tout paraîtrait muet.",
+                      _duree(retard), horizon)
+            return {"muets": [], "ouvertes": [], "fermees": [],
+                    "retard_ingest": retard}
+
         muets = capteurs_muets(conn)
         vus = {(m["agent_id"], m["capteur"]) for m in muets}
 
         for m in muets:
-            minutes = _minutes(m["dernier"])
+            minutes = _minutes(m["dernier"], m["horizon"])
             log.warning(
                 "CAPTEUR MUET : '%s' sur %s (agent %s) — %d events de "
                 "référence, rien depuis %s (%s). Angle mort : les règles "
@@ -258,7 +307,7 @@ def surveiller() -> dict:
                 "SELECT * FROM capteur_pannes WHERE statut='ouverte'").fetchall():
             if (p["agent_id"], p["capteur"]) in vus:
                 continue
-            minutes = _minutes(p["dernier_event"])
+            minutes = _minutes(p["dernier_event"], horizon)
             if p["iris_case_id"] and config.WATCHDOG_CASE_IRIS:
                 try:
                     _fermer_case(p["iris_case_id"], p, minutes)
