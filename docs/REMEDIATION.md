@@ -129,11 +129,17 @@ plusieurs machines. Chaque remédiation part donc sur **la machine où sa preuve
 été observée** (l'`agent_id` de l'alerte), jamais sur un agent global ; la table
 `mitigations` porte l'`agent_id` visé.
 
-- **Agents capteurs d'hôte exclus** (`AGENTS_CAPTEURS`, ex. l'hôte Proxmox) :
-  leur télémétrie décrit d'autres machines, donc on ne sait pas où agir. Un
-  backdoor vu seulement par un capteur (conteneur sans auditd propre) n'est
-  **pas** désactivé automatiquement — c'était le bug où `disable-account` tirait
-  sur l'hôte où le compte n'existe pas.
+- **Agents capteurs exclus** (`AGENTS_CAPTEURS`) : leur télémétrie décrit
+  d'autres machines, donc on ne sait pas où agir. Deux formes — capteur d'hôte
+  (l'hôte Proxmox, dont l'auditd voit les execve de ses conteneurs) et capteur
+  réseau (la passerelle qui porte l'IDS et le pare-feu : Suricata et filterlog
+  décrivent le trafic du parc, mais les alertes portent l'agent de la
+  passerelle). Un backdoor vu seulement par un capteur (conteneur sans auditd
+  propre) n'est **pas** désactivé automatiquement — c'était le bug où
+  `disable-account` tirait sur l'hôte où le compte n'existe pas. Côté réseau, le
+  2026-08-11, l'incident #2697 — 926 alertes de C2 émises par 192.168.5.15 — a
+  été attribué à l'agent du pare-feu : sans cette exclusion, un `block_ip`
+  calculé sur cet incident visait l'équipement qui achemine tout le réseau.
 - **Isolation seulement** (`raison_non_isolable`, trois barrières dans l'ordre) :
   agent de `AGENTS_PROTEGES` (défaut `000`, le manager — qui n'a d'ailleurs
   aucun groupe, le mécanisme de groupes ne le couvrirait pas) ; agent d'un
@@ -334,7 +340,7 @@ docker exec soc-agent-cycle python -m soc_agent.mitigate --desisoler 003
 | `MITIGATE_ISOLATE_ALLOW` | *(vide)* | IP(s) restant joignables depuis un hôte isolé — à définir par déploiement |
 | `SOC_INFRA_IPS` | *(déduit)* | IP du SOC (manager, indexer, IRIS, Shuffle) : jamais un IOC, jamais une cible de blocage. Déduit des URL et de `MITIGATE_ISOLATE_ALLOW`, complétable à la main |
 | `AGENTS_PROTEGES` | `000` | jamais une cible |
-| `AGENTS_CAPTEURS` | *(vide)* | capteurs d'hôte : jamais une cible (théâtre réel = machine surveillée) — id d'agents à lister par déploiement |
+| `AGENTS_CAPTEURS` | *(vide)* | capteurs d'hôte **et de réseau** (hôte Proxmox, passerelle IDS/pare-feu) : jamais une cible (théâtre réel = machine surveillée) — id d'agents à lister par déploiement |
 | `AGENTS_WINDOWS` | *(vide)* | route vers les AR Windows — id d'agents à lister par déploiement |
 | `AGENTS_DC` | *(vide)* | contrôleurs de domaine : exécutent les actions AD — id d'agents à lister par déploiement |
 | `SHUFFLE_WEBHOOK_ISOLATE` / `_KILL` | — | webhooks des workflows Shuffle |

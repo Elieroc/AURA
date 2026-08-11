@@ -302,12 +302,21 @@ AGENTS_PROTEGES = {
 # large (isoler tout l'hôte pour un seul conteneur). Dans le doute sur la vraie
 # machine, on n'agit pas.
 #
-# Un agent « capteur d'hôte » typique : l'hôte Proxmox d'une flotte de LXC, dont
-# l'auditd voit les execve de tous les conteneurs et se les attribue. Sans
-# cette exclusion, une remédiation peut cibler le capteur pour un incident dont
-# le vrai théâtre est un conteneur qu'il héberge — isoler l'hôte couperait alors
-# tout ce qu'il héberge. Aucun défaut : à lister explicitement par déploiement
-# (id d'agent Wazuh) via AGENTS_CAPTEURS.
+# Deux formes, la seconde souvent oubliée :
+#
+#  - capteur d'HÔTE : l'hôte Proxmox d'une flotte de LXC, dont l'auditd voit les
+#    execve de tous les conteneurs et se les attribue. Isoler l'hôte pour un seul
+#    conteneur coupe tout ce qu'il héberge.
+#  - capteur RÉSEAU : la passerelle qui porte l'IDS et le pare-feu. Suricata et
+#    filterlog décrivent le trafic des AUTRES machines, mais les alertes portent
+#    l'agent de la passerelle. Un beacon C2 émis par un poste du LAN ouvre donc
+#    un incident sur l'agent du pare-feu — et une remédiation calculée là-dessus
+#    viserait l'équipement qui achemine tout le réseau, SOC compris. Constaté le
+#    2026-08-11 : incident #2697 (926 alertes de C2) attribué à home-r-pf01
+#    alors que la machine coupable était 192.168.5.15.
+#
+# Aucun défaut : à lister explicitement par déploiement (id d'agent Wazuh) via
+# AGENTS_CAPTEURS.
 AGENTS_CAPTEURS = {
     a.strip() for a in os.environ.get("AGENTS_CAPTEURS", "").split(",")
     if a.strip()}
