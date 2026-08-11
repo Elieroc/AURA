@@ -204,6 +204,17 @@ services:
     container_name: soc-agent-cycle
     command: sh -c "while true; do python -m soc_agent.cycle; sleep 300; done"
 
+  # Surveillance continue des capteurs. Un capteur muet est un angle mort du SOC
+  # lui-même : aucune règle ne peut le détecter, seul un contrôle périodique le
+  # voit. Cadence 2 min, indépendante du cycle de triage (5 min) : avec un seuil
+  # de panne à 10 min, la détection tombe au pire à 12 min du dernier événement.
+  # Ouvre un case IRIS par panne, le referme quand le capteur réémet.
+  soc-agent-watchdog:
+    <<: *soc-agent
+    container_name: soc-agent-watchdog
+    command: >
+      sh -c "while true; do python -m soc_agent.watchdog --surveiller; sleep 120; done"
+
   # Défait les remédiations dont la tâche IRIS est passée en 'Canceled'.
   # Cadence courte (1 min, comme l'ancien soc-agent-reconcile.timer) : une
   # désisolation/déblocage demandée par l'analyste doit être réactive.

@@ -453,9 +453,17 @@ WATCHDOG_REF_HEURES = int(os.environ.get("WATCHDOG_REF_HEURES", "168"))  # 7 j
 # Volume minimal sur la fenêtre de référence pour ne pas alerter sur un capteur
 # anecdotique (un unique event isolé n'est pas une base).
 WATCHDOG_BASELINE_MIN = int(os.environ.get("WATCHDOG_BASELINE_MIN", "20"))
-# Silence toléré avant de crier. 90 min : au-delà, ce n'est plus un creux de
-# trafic normal (Suricata/sshd émettent en continu sur ces hôtes).
-WATCHDOG_SILENCE_MINUTES = int(os.environ.get("WATCHDOG_SILENCE_MINUTES", "90"))
+# Silence toléré avant de déclarer la PANNE. 10 min, réglage opérateur du
+# 2026-08-11, cohérent avec la cadence réelle des capteurs continus mesurée sur
+# 7 jours de base : écart entre deux événements, p95 / max
+#
+#     audit      5,4 min / 8,3 min
+#     suricata   0,0 min / 3,7 min
+#
+# Un silence de 10 min sur ces deux-là ne s'explique donc plus par un creux de
+# trafic. Les capteurs ÉVÉNEMENTIELS (sshd, syscheck) ont leur propre seuil
+# ci-dessous : chez eux le silence est l'état normal.
+WATCHDOG_SILENCE_MINUTES = int(os.environ.get("WATCHDOG_SILENCE_MINUTES", "10"))
 
 # Seuil PAR CAPTEUR, pour ceux qui n'émettent pas en continu.
 #
@@ -470,9 +478,29 @@ WATCHDOG_SILENCE_MINUTES = int(os.environ.get("WATCHDOG_SILENCE_MINUTES", "90"))
 #
 # 840 min = 12 h de cycle + 2 h de marge : un syscheckd réellement figé (le cas
 # bookstack/journald) est encore vu, au scan planifié suivant.
+#
+# sshd relève du même raisonnement, mesuré le 2026-08-11 sur 7 jours : écart
+# médian entre deux événements 0,2 min, mais p95 à 254 min et maximum à 63 h.
+# Un hôte sur lequel personne ne se connecte n'émet RIEN, et c'est normal — au
+# seuil de 10 min, chaque machine au repos serait déclarée en panne. Pire, un
+# hôte isolé par la remédiation n'accepte plus le SSH que depuis le manager :
+# son capteur sshd se tait par construction (constaté sur debian2/3/4, muets
+# depuis le 2026-08-09 parce qu'isolés, pas parce que cassés).
+#
+# 1440 min (24 h) : au-delà, même une machine oubliée aurait dû voir passer une
+# session ou un scan. Un lecteur journald réellement figé finit donc par sortir,
+# sans noyer l'analyste d'ici là.
 WATCHDOG_SILENCE_PAR_CAPTEUR = {
     "syscheck": int(os.environ.get("WATCHDOG_SILENCE_SYSCHECK", "840")),
+    "sshd": int(os.environ.get("WATCHDOG_SILENCE_SSHD", "1440")),
 }
+
+# Ouvrir un case IRIS quand une panne est constatée. Un capteur muet est un
+# angle mort du SOC lui-même : il mérite un dossier traçable, pas seulement une
+# ligne de log que personne ne lit. Un case par panne (agent + capteur), fermé
+# automatiquement au rétablissement.
+WATCHDOG_CASE_IRIS = os.environ.get(
+    "WATCHDOG_CASE_IRIS", "true").lower() == "true"
 
 # Reconstruction des commandes (rapport IRIS) : le compte compromis est souvent
 # aussi une session légitime (le même uid génère du bruit de login — gpg-agent,

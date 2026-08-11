@@ -482,3 +482,33 @@ ALTER TABLE incidents ADD COLUMN IF NOT EXISTS ueba boolean NOT NULL DEFAULT fal
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS ueba_score double precision;
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS ueba_motifs jsonb;
 CREATE INDEX IF NOT EXISTS incidents_ueba ON incidents (ueba) WHERE ueba;
+
+-- Pannes de capteur (watchdog.py).
+--
+-- Une panne est un ÉTAT, pas un événement : le watchdog repasse toutes les deux
+-- minutes et reverrait le même capteur muet à chaque tour. Sans cette table il
+-- ouvrirait un case IRIS par passage. On y garde donc l'ouverture, le case
+-- associé et le rétablissement.
+--
+-- L'index unique partiel est le garde-fou d'idempotence : une seule panne
+-- OUVERTE par (agent, capteur), garantie par la base et pas par une relecture
+-- applicative qui peut courir avec elle-même.
+CREATE TABLE IF NOT EXISTS capteur_pannes (
+    id            bigserial PRIMARY KEY,
+    agent_id      text        NOT NULL,
+    agent_name    text,
+    capteur       text        NOT NULL,
+    -- Dernier événement réellement vu de ce capteur : c'est le début de la
+    -- panne, pas l'instant où on l'a remarquée.
+    dernier_event timestamptz NOT NULL,
+    volume_ref    bigint      NOT NULL,
+    seuil_minutes integer     NOT NULL,
+    detectee_a    timestamptz NOT NULL DEFAULT now(),
+    retablie_a    timestamptz,
+    iris_case_id  bigint,
+    statut        text        NOT NULL DEFAULT 'ouverte'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS capteur_pannes_une_seule_ouverte
+    ON capteur_pannes (agent_id, capteur) WHERE statut = 'ouverte';
+CREATE INDEX IF NOT EXISTS capteur_pannes_recentes
+    ON capteur_pannes (detectee_a DESC);
