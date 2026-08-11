@@ -369,6 +369,14 @@ _RE_USERADD = re.compile(r"\b(?:useradd|adduser)\b.*?([A-Za-z_][\w-]*)\s*$")
 _RE_NETUSER_ADD = re.compile(r"\bnet\d?\s+user\s+([^\s/]+).*?/add", re.IGNORECASE)
 # Préfixe du montage sshfs du scanner YARA : /mnt/yaritrust/<hôte>_<ip>/…
 _RE_MONTAGE_SCAN = re.compile(r"^/mnt/yaritrust/[^/]+/")
+# Chemin absolu dans une ligne de commande. On s'arrête aux caractères qui
+# séparent les tokens d'un shell plutôt qu'à une liste de caractères permis :
+# un nom de fichier d'attaquant peut contenir à peu près n'importe quoi.
+_RE_CHEMIN_ARGV = re.compile(r"/[^\s'\"><|;,()]+")
+# Chemins de /tmp qui appartiennent à la machinerie du système, pas à
+# l'attaquant : montages privés des units systemd, sockets X11/ICE.
+_RE_ARGV_BRUIT = re.compile(
+    r"^/tmp/(?:systemd-private-|\.X11-unix|\.ICE-unix|\.font-unix|\.XIM-unix)")
 
 # Réseaux internes du parc, précompilés une fois.
 _NETS_INTERNES = []
@@ -481,6 +489,45 @@ def _chemin_suspect(p: str | None) -> bool:
     base = p.rsplit("/", 1)[-1]
     # Exécutable planqué (nom en point) hors des emplacements légitimes.
     return base.startswith(".") and not p.startswith(("/etc", "/home", "/root/."))
+
+
+def _chemins_argv(audit: dict, full_log: str) -> list[str]:
+    """Chemins de fichiers suspects cités en ARGUMENT d'une commande auditd.
+
+    `audit.file.name` et `entity` portent le binaire que le NOYAU a chargé, pas
+    le fichier sur lequel il agit : pour `python3 /tmp/x.py` c'est
+    /usr/bin/python3, pour `insmod /tmp/rk.ko` c'est /usr/bin/kmod (et
+    `audit.file.name` peut même désigner un fichier sans rapport, /etc/hosts
+    étant lu par le loader). L'artefact déposé par l'attaquant — le seul
+    chassable sur le reste du parc — ne vit donc que dans l'argv.
+
+    Deux sources, dans cet ordre : le champ `audit.execve` décodé par Wazuh
+    (a0, a1…) et, à défaut, le proctitle hex du full_log. Les chemins de la
+    machinerie de session (montages privés systemd, sockets X11) sont écartés :
+    ils sont dans /tmp sans rien devoir à l'attaquant.
+    """
+    morceaux: list[str] = []
+    execve = audit.get("execve")
+    if isinstance(execve, dict):
+        def _rang(cle: str) -> tuple[int, str]:
+            suffixe = str(cle).lstrip("a")
+            return (int(suffixe), "") if suffixe.isdigit() else (10**6, str(cle))
+        morceaux += [str(v) for _, v in sorted(execve.items(),
+                                               key=lambda kv: _rang(kv[0]))]
+    morceaux.append(_decoder_proctitle(full_log))
+
+    out: list[str] = []
+    vus: set[str] = set()
+    for texte in morceaux:
+        for chemin in _RE_CHEMIN_ARGV.findall(texte or ""):
+            chemin = chemin.rstrip(".,;:")
+            if chemin in vus or _RE_ARGV_BRUIT.search(chemin):
+                continue
+            if not _chemin_suspect(chemin):
+                continue
+            vus.add(chemin)
+            out.append(chemin)
+    return out
 
 
 # Ordre de préférence pour REPRÉSENTER un fichier dans la liste d'IOC. Un hash
@@ -748,6 +795,20 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
         fichier = (audit.get("file", {}) or {}).get("name") or a.get("entity")
         if _chemin_suspect(fichier):
             ajouter(fichier, "filename", "Fichier déposé (emplacement suspect)")
+
+        # Fichier cité en ARGUMENT de la commande. Les deux champs ci-dessus ne
+        # portent que le binaire chargé par le noyau : `insmod /tmp/rootkit.ko`
+        # produisait `/usr/bin/kmod`, `python3 /tmp/.implant.py` produisait
+        # `/usr/bin/python3`. L'artefact réellement déposé n'apparaissait donc
+        # dans AUCUN IOC du case, alors que c'est le premier que l'analyste
+        # cherche et le seul qu'il puisse chasser sur les autres hôtes.
+        # `ajouter` et non `ajouter_fichier` : sans hash sous la main, réserver
+        # le chemin dans `fichiers_vus` empêcherait un bloc suivant (FIM, VT,
+        # YARA) de publier le MÊME fichier porté par son hash — la valeur la
+        # plus utile des deux.
+        for chemin in _chemins_argv(audit, full_log):
+            ajouter(chemin, "filename", "Fichier déposé en emplacement suspect "
+                    "(cité en argument de commande)")
 
         # Outil offensif Windows, exécuté ou déposé hors des répertoires
         # système. Sans ce bloc, un exercice purple-team a produit un case avec

@@ -290,6 +290,81 @@ def test_iocs_capte_lexecutable_windows_depose():
     assert valeurs == {chemin.replace("\\\\", "\\")}
 
 
+def _alerte_auditd(execve: dict, proctitle: str = "", exe: str = "/usr/bin/sh",
+                   fichier: str | None = None) -> dict:
+    """Alerte auditd telle que la stocke l'ingest : le champ `entity` et
+    `audit.file.name` portent le binaire chargé, jamais l'argument."""
+    import json
+    full_log = ""
+    if proctitle:
+        full_log = "type=PROCTITLE proctitle=" + proctitle.encode().hex()
+    data = {"audit": {"execve": execve, "exe": exe,
+                      "file": {"name": fichier or exe}}}
+    return {"srcip": None, "entity": exe,
+            "raw": json.dumps({"data": data, "full_log": full_log})}
+
+
+def test_iocs_capte_le_fichier_cite_en_argument():
+    """`insmod /tmp/ironveil.ko` et `python3 /tmp/.cache-update.py` ne
+    produisaient aucun IOC : auditd met le binaire chargé par le noyau dans
+    `audit.exe`/`entity` (/usr/bin/kmod, /usr/bin/python3) et l'artefact déposé
+    reste dans l'argv. Case #207 du 2026-08-11, rootkit non indexé."""
+    alertes = [
+        _alerte_auditd({"a0": "insmod", "a1": "/tmp/ironveil.ko"},
+                       exe="/usr/bin/kmod", fichier="/etc/hosts"),
+        _alerte_auditd({"a0": "python3", "a1": "/tmp/.cache-update.py",
+                        "a2": "--id"}, exe="/usr/bin/python3"),
+    ]
+    valeurs = {v for v, _, _ in _iocs(alertes)}
+    assert valeurs == {"/tmp/ironveil.ko", "/tmp/.cache-update.py"}
+    assert all(t == "filename" for _, t, _ in _iocs(alertes))
+
+
+def test_iocs_argv_replie_sur_le_proctitle():
+    """Sans champ `execve` décodé, le proctitle hex reste la seule source."""
+    alertes = [_alerte_auditd({}, proctitle="insmod /dev/shm/.k.ko",
+                              exe="/usr/bin/kmod")]
+    assert {v for v, _, _ in _iocs(alertes)} == {"/dev/shm/.k.ko"}
+
+
+def test_iocs_argv_ignore_les_chemins_systeme_et_la_machinerie_tmp():
+    """Un argument légitime n'est pas un IOC : ni les binaires/config système,
+    ni les montages privés systemd et sockets X11, qui vivent dans /tmp sans
+    rien devoir à l'attaquant."""
+    alertes = [
+        _alerte_auditd({"a0": "cat", "a1": "/etc/passwd"}, exe="/usr/bin/cat"),
+        _alerte_auditd({"a0": "systemd-tmpfiles", "a1": "--clean",
+                        "a2": "/tmp/systemd-private-abc/tmp"},
+                       exe="/usr/bin/systemd-tmpfiles"),
+        _alerte_auditd({"a0": "ls", "a1": "/tmp/.X11-unix"}, exe="/usr/bin/ls"),
+    ]
+    assert _iocs(alertes) == []
+
+
+def test_iocs_argv_dedup_avec_le_chemin_deja_vu():
+    """Le même fichier vu par l'argv et par le FIM sans hash ne fait qu'un IOC."""
+    import json
+    argv = _alerte_auditd({"a0": "python3", "a1": "/tmp/.implant.py"},
+                          exe="/usr/bin/python3")
+    fim = {"srcip": None, "entity": None,
+           "raw": json.dumps({"syscheck": {"path": "/tmp/.implant.py"}})}
+    assert len(_iocs([argv, fim])) == 1
+
+
+def test_iocs_argv_laisse_passer_le_hash_du_meme_fichier():
+    """Le chemin vu dans l'argv ne doit pas masquer le HASH du même fichier
+    publié ensuite par le FIM : le hash survit au renommage et vaut sur tout le
+    parc, c'est la valeur la plus utile des deux."""
+    import json
+    argv = _alerte_auditd({"a0": "python3", "a1": "/tmp/.implant.py"},
+                          exe="/usr/bin/python3")
+    fim = {"srcip": None, "entity": None,
+           "raw": json.dumps({"syscheck": {"path": "/tmp/.implant.py",
+                                           "sha256_after": "cafe1234"}})}
+    valeurs = {v for v, _, _ in _iocs([argv, fim])}
+    assert valeurs == {"/tmp/.implant.py", "cafe1234"}
+
+
 def test_iocs_epargne_les_binaires_systeme_et_sondes():
     import json
 
