@@ -265,9 +265,34 @@ def declarer_role(nom_agent: str, role: str | None) -> dict:
     groupe = _groupe_du_role(role)
     _creer_groupe(groupe)
     _affecter_groupe(agent_id, groupe)
-    ligne = soc_assets.definir(agent_id, role=role, source="groupe")
+
+    # Le groupe a-t-il RÉELLEMENT pris ? L'API accepte l'affectation sans
+    # broncher sur des agents qui ne peuvent pas appartenir à un groupe — le
+    # manager lui-même (000) en est un. Sans ce contrôle, la déclaration
+    # paraissait réussie et la resynchronisation suivante remettait la machine
+    # en P4, en silence : constaté sur `wazuh.manager`, classé soc puis
+    # redescendu au premier `assets --sync`.
+    #
+    # Dans ce cas on bascule sur la source `operateur`, la seule que la
+    # synchronisation ne réécrit jamais.
+    groupes = {str(g).lower()
+               for g in (etat_sur_le_manager(nom_agent).get("groupes") or [])}
+    tenu = groupe.lower() in groupes
+    ligne = soc_assets.definir(agent_id, role=role,
+                               source="groupe" if tenu else "operateur",
+                               notes=None if tenu else
+                               f"agent {agent_id} : le manager n'accepte pas "
+                               f"le groupe {groupe}, priorité posée en dur")
     return {"etape": "role", "ok": True, "role": role, "groupe": groupe,
-            "agent_id": agent_id, "priorite": ligne["priorite"]}
+            "agent_id": agent_id, "priorite": ligne["priorite"],
+            "source": ligne["priorite_source"],
+            **({} if tenu else {
+                "avertissement":
+                    f"le manager n'a pas retenu le groupe {groupe} pour "
+                    f"l'agent {agent_id} (cas du manager lui-même) : la "
+                    f"priorité est enregistrée en source « operateur », que "
+                    f"la synchronisation ne réécrit pas."}),
+            }
 
 
 def enroler_linux(hote: str, nom_agent: str | None, utilisateur: str,
