@@ -180,9 +180,12 @@ Pour placer un reverse proxy devant, trois variables et **pas une de moins** :
 | `MISP_BASE_URL` | URL **publique** du proxy — les liens, cookies et redirections de MISP en dépendent |
 | `MISP_REAL_IP_FROM` + `MISP_X_FORWARDED_FOR=true` | sinon toutes les connexions sont journalisées avec l'IP du proxy |
 
-`MISP_URL` reste en loopback : c'est l'URL **client** du soc-agent. Les faire
-pointer au même endroit rendrait le pipeline CTI dépendant du proxy et du DNS
-pour parler à un service qui tourne sur la même machine.
+`MISP_URL` est l'URL **client** du soc-agent : elle doit suivre
+`MISP_BIND_ADDR` (le port n'écoute que sur cette interface — viser la loopback
+alors que le bind est sur l'IP d'admin donne un « Connection refused », mesuré
+le 2026-08-12), mais ne doit **jamais** être l'URL publique du proxy. Le
+pipeline CTI n'a pas à dépendre du proxy et du DNS pour parler à un service qui
+tourne sur la même machine.
 
 ## Vérifier que ça détecte vraiment
 
