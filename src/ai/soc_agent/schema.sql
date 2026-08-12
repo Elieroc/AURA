@@ -644,3 +644,38 @@ CREATE TABLE IF NOT EXISTS vuln_scans (
     agents_muets   text[] NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS vuln_scans_recents ON vuln_scans (lance_a DESC);
+
+-- Articles de veille déjà traités par cti_articles.py.
+--
+-- Sert de CURSEUR, et c'est sa fonction vitale : sans lui, chaque passe
+-- retélécharge les mêmes articles et les fait relire au modèle — coût qui
+-- augmente à chaque exécution, pour zéro information nouvelle. C'est aussi ce
+-- curseur qui transforme la bibliographie Malpedia (sans date ni flux de
+-- nouveautés) en flux de nouveautés.
+--
+-- Les articles SANS IOC sont enregistrés eux aussi, avec le motif. Deux
+-- raisons : ne pas les relire indéfiniment (la majorité des billets de presse
+-- ne décrivent aucune infrastructure), et pouvoir mesurer le rendement réel de
+-- chaque source — une source qui ne rend jamais rien coûte des appels au
+-- modèle et mérite d'être désactivée, ce qui ne se voit que si les échecs sont
+-- tracés.
+CREATE TABLE IF NOT EXISTS cti_articles (
+    id             bigserial PRIMARY KEY,
+    source         text NOT NULL,
+    -- L'URL est la clé de déduplication, pas le titre : les médias réécrivent
+    -- leurs titres, jamais leurs permaliens.
+    url            text NOT NULL UNIQUE,
+    traite_a       timestamptz NOT NULL DEFAULT now(),
+    iocs_retenus   integer NOT NULL DEFAULT 0,
+    -- Événement MISP créé, quand il y en a un. Permet de retrouver ce que le
+    -- SOC a publié à partir de quel article, et de le retirer si l'extraction
+    -- se révèle mauvaise.
+    misp_event_id  integer,
+    menace         text NOT NULL DEFAULT '',
+    -- Pourquoi rien n'a été retenu (aucun candidat, arbitrage négatif, plafond
+    -- dépassé, warninglists). Le champ qui rend le taux de rejet lisible.
+    motif          text NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS cti_articles_recents ON cti_articles (traite_a DESC);
+CREATE INDEX IF NOT EXISTS cti_articles_avec_iocs ON cti_articles (source, traite_a DESC)
+    WHERE iocs_retenus > 0;

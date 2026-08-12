@@ -1,0 +1,36 @@
+<!-- Aura-SOC - rule 100957 (level 12). Domain: misp,threat_intel,cti,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="misp,threat_intel,cti,">
+
+  <!-- Indicator extracted from a public security report (The Hacker News,
+       BleepingComputer, RST Cloud, reports indexed by Malpedia), by
+       soc_agent.cti_articles: regex finds the candidates, the model decides
+       which ones belong to the described threat, deterministic checks then
+       reject anything absent from the source text.
+
+       Level 12 - one notch BELOW curated outbound matches (100952, level 14),
+       one notch above mass reputation (100953, level 10). The threat is real
+       and contextualised, so this seeds an incident; but the extraction is
+       automatic and a news outlet carries no CERT mandate, so it does not get
+       to claim the same certainty as a CERT-FR or ThreatFox indicator.
+
+       Direction is deliberately NOT used here, unlike 100951/100952: an
+       indicator lifted from prose rarely states whether the infrastructure was
+       a C2 or a staging server, so splitting on direction would encode a
+       precision the source does not have. It stays in the alert fields for the
+       analyst and the triage model.
+
+       misp.event_url opens the MISP event, which carries the link to the
+       original article as its first attribute - the fastest way to judge
+       whether the extraction was sound. -->
+
+  <rule id="100957" level="12">
+    <if_sid>100950</if_sid>
+    <field name="misp.confidence" type="pcre2">^extracted$</field>
+    <description>CTI - indicator from a public report matched: $(misp.ioc) ($(misp.ioc_type), $(misp.direction)) on $(misp.agent) - "$(misp.event_info)"</description>
+    <mitre>
+      <id>T1071</id>
+    </mitre>
+  </rule>
+
+</group>

@@ -763,6 +763,33 @@ services:
       sh -c "python -m soc_agent.cti --feeds || true;
              while true; do python -m soc_agent.cti; sleep 3600; done"
 
+  # Veille : extrait les IOC des articles publics (presse et blogs de sécurité)
+  # et les publie comme événements MISP, tagués `aura:source:extracted`
+  # -> règle 100957. Cf. src/ai/soc_agent/cti_articles.py et docs/CTI.md.
+  #
+  # Conteneur SÉPARÉ de soc-agent-cti, à dessein : celui-ci appelle le LLM, donc
+  # il coûte de l'argent et peut échouer sur un quota ou un timeout d'API.
+  # Partager le processus ferait tomber la synchronisation du cache d'IOC — la
+  # partie sur laquelle repose toute la détection — avec la partie la plus
+  # fragile du dispositif.
+  #
+  # Cadence 30 min : les flux RSS publient quelques articles par heure, et
+  # `--max` borne le nombre d'articles lus par passe, donc le coût par passe.
+  # AMORÇAGE OBLIGATOIRE avant le premier démarrage (cf. docs/CTI.md) :
+  #   docker compose run --rm soc-agent-cti-articles python -m soc_agent.cti_articles --amorcage
+  # sans quoi la première passe tente de traiter toute la bibliographie
+  # Malpedia (des dizaines de milliers de rapports).
+  soc-agent-cti-articles:
+    <<: *soc-agent
+    container_name: soc-agent-cti-articles
+    depends_on:
+      soc-agent-db:
+        condition: service_healthy
+    command: >
+      sh -c "while true;
+             do python -m soc_agent.cti_articles --max ${CTI_ARTICLES_MAX:-8};
+             sleep 1800; done"
+
 volumes:
   # Noms épinglés (`name:`) plutôt que laissés au préfixe de projet Compose
   # implicite : avant la fusion, chaque stack tournait dans son propre projet

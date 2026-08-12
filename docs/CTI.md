@@ -28,8 +28,15 @@ Ce volet le comble en trois pièces, volontairement découplées.
    │  aura_cti_ioc (ro)   │               │
    └──────────────────────┘     ┌─────────┴──────────────┐
                                 │ custom-misp            │
-      alerte Wazuh ────────────►│ (intégration manager)  │──► règles 100950-100956
+      alerte Wazuh ────────────►│ (intégration manager)  │──► règles 100950-100957
                                 └────────────────────────┘
+
+   ┌──────────────────────┐  RSS / annuaire   ┌────────────────────────────┐
+   │ soc-agent-cti-articles│◄─────────────────┤ TheHackerNews · Bleeping · │
+   │ regex -> LLM -> code  │                  │ RST Cloud · Malpedia       │
+   └──────────┬────────────┘                  └────────────────────────────┘
+              │ événements MISP tagués `aura:source:extracted` -> 100957
+              ▼  (remontent ensuite par le même chemin que les feeds)
 ```
 
 ## Pourquoi un cache, et pas un appel à MISP par alerte
@@ -82,6 +89,63 @@ analytique : aucun de ces IOC ne porte d'événement à corréler. Elles sont
 déclarées à MISP en **cache seul** (cache Redis, interrogeable depuis l'UI :
 « cette IP est-elle connue ? ») et tirées en direct par `cti.py` pour la
 détection.
+
+### Renseignement non structuré — articles publics (niveau 12)
+
+| Source | Mécanique | Rendement observé |
+|---|---|---|
+| **The Hacker News** | RSS (50 articles) | faible : la plupart des billets ne décrivent aucune infrastructure |
+| **BleepingComputer** | RSS (15 articles) | faible, même raison |
+| **RST Cloud** ([@rst_cloud](https://medium.com/@rst_cloud)) | RSS Medium, **contenu complet dans le flux** | très élevé : un « TI Report Digest » porte ~400 candidats |
+| **Malpedia** | `/api/get/references` + curseur sur les URL vues | file de rapports techniques, **avec attribution** |
+
+Ces sources publient les IOC **en prose**, souvent défangés (`hxxp://evil[.]com`),
+sans format commun. `cti_articles.py` les traite en trois étages :
+
+1. **Récupération** — RSS ou annuaire, puis texte de l'article (les balises
+   `<script>`/`<nav>` sont retirées : elles sont pleines de domaines tiers,
+   donc de faux candidats).
+2. **Candidats** (déterministe) — défanging puis expressions régulières. Trouve
+   tout ce qui *ressemble* à un IOC, sans juger.
+3. **Arbitrage** (LLM) — décide lesquels appartiennent à la menace décrite.
+
+**Pourquoi le LLM et pas une regex de plus.** Un article cite en permanence des
+domaines légitimes : le média lui-même, ses sources, l'éditeur du rapport, la
+victime, les outils détournés. Mesuré sur un article de The Hacker News, l'étage
+régulier remonte `1.1.1.1` (résolveur Cloudflare), `1.7.2.0` et `1.7.3.0` (des
+**numéros de version** pris pour des IP) et `release.zip` (un **nom de fichier**,
+`.zip` étant un TLD réel) — le modèle a rejeté les quatre, et retenu les trois
+vrais domaines Lazarus d'un autre article. Un faux IOC coûte plus cher qu'un IOC
+manqué : il fait alerter au niveau 12 sur du trafic normal.
+
+**Le LLM n'est pas une frontière de sécurité**, donc sa sortie est revérifiée
+par du code : présence *littérale* de chaque valeur dans les candidats
+(anti-hallucination), exclusions dures (IP privées et de documentation, infra du
+SOC, domaines des médias par suffixe), warninglists MISP, plafond par article.
+Mesuré sur 148 IOC extraits d'un digest : zéro rejet — le modèle recopie, il
+n'invente pas.
+
+Les IOC retenus deviennent un **événement MISP** (lien vers l'article en premier
+attribut, famille de malware en tag), publié et tagué `aura:source:extracted`.
+`cti.py` relit ce tag et classe l'IOC en `extracted` : il matche la
+règle **100957 (niveau 12)** et non 100952 (niveau 14). Une extraction
+automatique d'article de presse ne vaut pas un IOC signé par un CERT, et le
+ruleset doit le dire.
+
+À savoir sur le coût et la robustesse :
+
+- les candidats sont soumis par **lots** (le modèle est raisonnant, son
+  raisonnement épuise le budget de sortie sur un gros lot et l'appel ne rend
+  alors *rien*). L'article est renvoyé à chaque lot, mais le préfixe étant
+  identique il est servi par le cache DeepSeek (50× moins cher) ;
+- un lot qui déborde est **rejoué en deux moitiés** ; un lot définitivement
+  perdu ne fait pas perdre l'article (mesuré : 6 lots perdus, 148 IOC quand
+  même publiés) ;
+- ce qui dépasse `MAX_LOTS` est écarté mais **journalisé** — un plafond muet
+  laisserait croire à un article entièrement couvert ;
+- les articles **sans** IOC sont enregistrés aussi, avec le motif : c'est ce qui
+  évite de les relire à chaque passe, et ce qui rend le rendement de chaque
+  source mesurable.
 
 ### Écartés, et pourquoi
 
@@ -151,6 +215,7 @@ aucun point d'entrée.
 | 100953 | 10 | IP sur une liste de réputation de masse |
 | 100954 | 5 | Nœud de sortie Tor |
 | 100955 | 13 | Empreinte de fichier malveillant connue sur une machine |
+| 100957 | 12 | IOC **extrait d'un article public** par le modèle |
 | 100956 | 12 | **Cache d'IOC inutilisable ou périmé** (auto-surveillance) |
 
 Deux choix de niveau portent tout le dispositif :
@@ -159,6 +224,11 @@ Deux choix de niveau portent tout le dispositif :
 dire que quelqu'un a essayé ; une de nos machines qui parle à une IP
 malveillante veut dire que quelque chose tourne déjà chez nous et appelle son
 opérateur. Ce n'est pas le même incident, ça ne peut pas être le même niveau.
+
+**Trois niveaux de confiance, trois niveaux d'alerte.** `curated` (feed d'un
+CERT ou d'un projet reconnu) > `extracted` (IOC tiré d'un article par le modèle)
+> `bulk` (réputation de masse). Quand une même valeur est portée par plusieurs
+sources, c'est la meilleure qui décide du niveau.
 
 **Masse à 10, une marche SOUS le seuil d'incident** (`MIN_LEVEL=12`). Ces
 listes tiennent 100 000 IP tournantes : le moindre SSH ou port web exposé les
@@ -189,6 +259,30 @@ docker compose exec soc-agent-cti python -m soc_agent.cti --test 185.220.101.1
 #    custom-misp de wazuh_manager.conf.example dans le wazuh_manager.conf
 #    déployé, puis
 docker compose restart wazuh.manager
+```
+
+### Veille (extraction d'articles)
+
+```bash
+# AMORÇAGE OBLIGATOIRE avant le premier démarrage : marque l'existant comme vu
+# sans rien traiter. Sans lui, la première passe tente de faire lire au modèle
+# toute la bibliographie Malpedia (des dizaines de milliers de rapports).
+docker compose run --rm soc-agent-cti-articles \
+    python -m soc_agent.cti_articles --amorcage
+
+docker compose up -d soc-agent-cti-articles
+
+# Essai à blanc sur un article précis (n'écrit ni dans MISP ni en base)
+docker compose exec soc-agent-cti-articles \
+    python -m soc_agent.cti_articles --url https://... --simulation
+```
+
+Rendement par source (`iocs_retenus = 0` est le résultat NORMAL pour la presse) :
+
+```sql
+SELECT source, count(*) articles, sum(iocs_retenus) iocs,
+       count(*) FILTER (WHERE iocs_retenus > 0) utiles
+FROM cti_articles GROUP BY source ORDER BY iocs DESC;
 ```
 
 UI MISP : https://127.0.0.1:8444 — `MISP_ADMIN_EMAIL` / `MISP_ADMIN_PASSWORD`.

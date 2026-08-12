@@ -41,6 +41,17 @@ PEREMPTION_RAPPEL_S = 3600
 NOS_REGLES = range(100950, 100960)
 
 
+# Ordre de confiance des sources, du plus sûr au moins sûr. Une même valeur peut
+# être portée par plusieurs sources : c'est la MEILLEURE qui décide du niveau de
+# l'alerte, donc de ce qui devient un incident.
+#   curated   feed d'un CERT ou d'un projet reconnu     -> 100951/100952/100955
+#   extracted IOC tiré d'un article par le modèle       -> 100957
+#   bulk      liste de réputation de masse              -> 100953
+POIDS_CONFIANCE = {"curated": 3, "extracted": 2, "bulk": 1}
+ORDRE_CONFIANCE_SQL = (
+    "CASE confiance WHEN 'curated' THEN 0 WHEN 'extracted' THEN 1 ELSE 2 END ASC")
+
+
 def envoyer(evenement):
     msg = f"1:custom-misp:{json.dumps(evenement)}"
     sock = socket(AF_UNIX, SOCK_DGRAM)
@@ -320,16 +331,17 @@ def main():
             lignes = conn.execute(
                 "SELECT source, categorie, evenement, event_id, tags, "
                 "niveau_menace, confiance FROM ioc WHERE valeur = ? AND type = ? "
-                "ORDER BY confiance = 'curated' DESC, niveau_menace ASC",
+                "ORDER BY " + ORDRE_CONFIANCE_SQL + ", niveau_menace ASC",
                 (valeur, type_cache)).fetchall()
             if not lignes:
                 continue
             total += len(lignes)
             source, categorie, evenement, event_id, tags, menace, confiance = lignes[0]
-            # Ordre de gravité : le renseignement curé prime sur la réputation
-            # de masse, et un flux SORTANT prime sur un flux entrant — c'est
-            # la seule des deux directions qui dit « chez nous ».
-            rang = (confiance == "curated", direction == "outbound", -int(menace or 4))
+            # Ordre de gravité : la confiance de la source d'abord, puis le
+            # flux SORTANT sur le flux entrant — c'est la seule des deux
+            # directions qui dit « chez nous ».
+            rang = (POIDS_CONFIANCE.get(confiance, 0),
+                    direction == "outbound", -int(menace or 4))
             if meilleur is None or rang > meilleur[0]:
                 # Noms de champs EN ANGLAIS : ils partent dans les alertes, les
                 # dashboards et les cases IRIS, aux côtés des champs natifs de

@@ -131,6 +131,60 @@ blocklists:
     commentaire: Active phishing URL (OpenPhish community feed)
     tags: [cti:openphish, phishing]
 
+#   articles : renseignement NON STRUCTURÉ (presse et blogs de sécurité). Les
+#     IOC sont dans la prose, souvent « défangés », sans format commun. Un
+#     étage déterministe trouve les candidats, le LLM tranche lesquels sont des
+#     indicateurs de la menace, et le résultat est publié comme ÉVÉNEMENT MISP
+#     tagué `aura:source:extracted` -> règle 100957, niveau 12. Voir
+#     cti_articles.py. Ni curé (extraction automatique, média sans mandat de
+#     CERT) ni de masse (la menace décrite est réelle et contextualisée).
+
+articles:
+  # --- Presse généraliste de sécurité. Beaucoup de volume, peu d'IOC par
+  # article : la plupart des billets ne décrivent aucune infrastructure et
+  # ressortent donc à vide. C'est le régime NORMAL de ces deux sources, pas un
+  # dysfonctionnement — le rendement se joue sur les quelques articles qui
+  # publient une section « Indicators of Compromise ».
+  - nom: thehackernews
+    url: https://feeds.feedburner.com/TheHackersNews
+    type: rss
+    active: true
+
+  - nom: bleepingcomputer
+    url: https://www.bleepingcomputer.com/feed/
+    type: rss
+    active: true
+
+  # --- RST Cloud publie des rapports de veille avec des listes d'IOC
+  # explicites, et Medium livre le CONTENU COMPLET dans le flux : pas de page à
+  # télécharger, et le taux de rendement le plus élevé des quatre sources.
+  # Plafond relevé : un seul « RST TI Report Digest » porte 400 candidats, dont
+  # la majorité sont de vrais indicateurs — c'est le format de la source, pas
+  # une extraction folle. Le plafond par défaut (300) rejetterait en bloc
+  # l'article le plus riche des quatre sources.
+  - nom: rst-cloud
+    url: https://medium.com/feed/@rst_cloud
+    type: rss
+    active: true
+    max_iocs: 450
+
+  # --- Malpedia : sa bibliographie (`/api/get/references`) est un annuaire
+  # rapport -> familles de malware et acteurs. Les IOC eux-mêmes ne sont PAS
+  # accessibles sans clé d'API (`/api/list/samples` répond 403), mais cet
+  # annuaire apporte deux choses qu'aucune autre source ne donne : une file de
+  # rapports techniques (pas de la presse), et l'ATTRIBUTION faite par des
+  # chercheurs, passée au modèle comme contexte.
+  #
+  # Il n'y a ni date ni flux de nouveautés : c'est le curseur des URL déjà vues
+  # qui en tient lieu. D'où l'AMORÇAGE OBLIGATOIRE au premier lancement
+  # (`--amorcage`), qui marque les dizaines de milliers d'entrées existantes
+  # comme vues sans les traiter. Sans lui, la première passe essaierait de faire
+  # lire au modèle toute la littérature du domaine.
+  - nom: malpedia
+    url: https://malpedia.caad.fkie.fraunhofer.de/api/get/references
+    type: malpedia_references
+    active: true
+
 # --- Écartés délibérément, pour ne pas laisser croire à une omission ---
 #
 # firehol_level1 / Spamhaus DROP : excellents, mais publiés en CIDR. Le cache de

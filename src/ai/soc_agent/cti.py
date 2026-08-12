@@ -55,12 +55,23 @@ if not config.MISP_VERIFY_TLS:
 
 TIMEOUT = 120
 
-# Confiance portée par la source, et non par l'IOC. Elle décide du niveau de la
+# Confiance portée par la SOURCE, et non par l'IOC. Elle décide du niveau de la
 # règle Wazuh, donc de ce qui devient un incident :
-#   cure -> renseignement contextualisé (MISP)     -> 100951/100952, niveau 12-14
-#   masse -> réputation de volume (blocklists)      -> 100953, niveau 10
+#   cure    -> renseignement contextualisé, publié par un CERT ou un projet
+#              reconnu (MISP)                       -> 100951/100952, niveau 12-14
+#   extraite-> IOC tiré d'un article public par le modèle (cf. cti_articles.py).
+#              La menace est réelle, l'extraction est automatique et le média
+#              n'est pas un CERT                    -> 100957, niveau 12
+#   masse   -> réputation de volume (blocklists)    -> 100953, niveau 10
 CONFIANCE_CUREE = "curated"
+CONFIANCE_EXTRAITE = "extracted"
 CONFIANCE_MASSE = "bulk"
+
+# Tag posé par cti_articles.py sur les événements qu'il crée. C'est lui qui
+# porte la distinction de confiance depuis MISP jusqu'à la règle Wazuh : sans
+# ce marquage, un IOC deviné dans un article de presse serait indiscernable
+# d'un IOC signé CERT-FR, et déclencherait au même niveau.
+TAG_EXTRACTION = "aura:source:extracted"
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +158,11 @@ def charger_catalogue(chemin: str | None = None) -> dict:
     with open(chemin or config.CTI_CATALOGUE) as f:
         cat = yaml.safe_load(f) or {}
     return {"misp_feeds": cat.get("misp_feeds") or [],
-            "blocklists": cat.get("blocklists") or []}
+            "blocklists": cat.get("blocklists") or [],
+            # Sources d'articles, exploitées par cti_articles.py. Elles ne sont
+            # PAS des feeds MISP : rien à déclarer côté MISP, c'est nous qui y
+            # écrivons les événements après extraction.
+            "articles": cat.get("articles") or []}
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +367,12 @@ def attributs_misp(page_taille: int = 5000):
                 "event_id": str(attr.get("event_id") or ""),
                 "tags": ",".join(t for t in tags if t)[:300],
                 "niveau_menace": int(evenement.get("threat_level_id") or 4),
-                "confiance": CONFIANCE_CUREE,
+                # Nos propres extractions d'articles remontent par le même
+                # chemin que les feeds officiels — c'est voulu, MISP est la
+                # seule mémoire — mais elles ne valent pas la même chose, et le
+                # tag est le seul endroit où cette différence survit.
+                "confiance": (CONFIANCE_EXTRAITE if TAG_EXTRACTION in tags
+                              else CONFIANCE_CUREE),
             }
             total += 1
             if total > config.CTI_MAX_IOC:
@@ -494,8 +514,9 @@ def interroger(valeur: str, chemin: str | None = None) -> list[dict]:
     conn.row_factory = sqlite3.Row
     try:
         lignes = conn.execute(
-            "SELECT * FROM ioc WHERE valeur = ? "
-            "ORDER BY confiance = 'curated' DESC, niveau_menace ASC",
+            "SELECT * FROM ioc WHERE valeur = ? ORDER BY "
+            "CASE confiance WHEN 'curated' THEN 0 WHEN 'extracted' THEN 1 "
+            "ELSE 2 END ASC, niveau_menace ASC",
             (valeur,)).fetchall()
     finally:
         conn.close()
