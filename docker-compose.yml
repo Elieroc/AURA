@@ -671,11 +671,20 @@ services:
       misp-redis:
         condition: service_healthy
     environment:
-      # BASE_URL doit être l'URL par laquelle on ATTEINT MISP : c'est elle que
-      # MISP met dans ses liens, ses cookies et ses redirections. Un décalage
-      # avec le port publié ci-dessous casse l'authentification de l'UI sans
-      # message clair.
-      - BASE_URL=${MISP_URL:-https://127.0.0.1:8444}
+      # BASE_URL est l'URL vue par le NAVIGATEUR : c'est elle que MISP met dans
+      # ses liens, ses cookies et ses redirections. Derrière un reverse proxy,
+      # c'est donc l'URL publique du proxy, pas l'adresse du conteneur — un
+      # décalage casse l'authentification de l'UI sans message clair.
+      #
+      # Distincte de MISP_URL, que le soc-agent utilise comme CLIENT et qui doit
+      # rester en loopback : faire passer le pipeline CTI par le reverse proxy
+      # le rendrait dépendant d'une brique qui n'a rien à voir avec lui.
+      - BASE_URL=${MISP_BASE_URL:-https://127.0.0.1:8444}
+      # Derrière un reverse proxy, sans ces deux variables MISP journalise
+      # l'IP du proxy pour toutes les connexions — donc plus aucune traçabilité
+      # de qui consulte le renseignement.
+      - NGINX_X_FORWARDED_FOR=${MISP_X_FORWARDED_FOR:-false}
+      - NGINX_SET_REAL_IP_FROM=${MISP_REAL_IP_FROM:-}
       - ADMIN_EMAIL=${MISP_ADMIN_EMAIL:-admin@aura.local}
       - ADMIN_PASSWORD=${MISP_ADMIN_PASSWORD:?MISP_ADMIN_PASSWORD requis, cf. .env.example}
       - ADMIN_ORG=${MISP_ADMIN_ORG:-AURA}

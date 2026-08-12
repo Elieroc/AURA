@@ -164,6 +164,26 @@ docker compose restart wazuh.manager
 
 UI MISP : https://127.0.0.1:8444 — `MISP_ADMIN_EMAIL` / `MISP_ADMIN_PASSWORD`.
 
+### Publier l'UI (tunnel, ou reverse proxy)
+
+Le port n'écoute que sur la loopback par défaut. Sans rien changer :
+
+```bash
+ssh -L 8444:127.0.0.1:8444 root@<manager>   # puis https://localhost:8444
+```
+
+Pour placer un reverse proxy devant, trois variables et **pas une de moins** :
+
+| Variable | Rôle |
+|---|---|
+| `MISP_BIND_ADDR` | interface d'écoute du port publié (IP d'admin plutôt que `0.0.0.0`) |
+| `MISP_BASE_URL` | URL **publique** du proxy — les liens, cookies et redirections de MISP en dépendent |
+| `MISP_REAL_IP_FROM` + `MISP_X_FORWARDED_FOR=true` | sinon toutes les connexions sont journalisées avec l'IP du proxy |
+
+`MISP_URL` reste en loopback : c'est l'URL **client** du soc-agent. Les faire
+pointer au même endroit rendrait le pipeline CTI dépendant du proxy et du DNS
+pour parler à un service qui tourne sur la même machine.
+
 ## Vérifier que ça détecte vraiment
 
 Le seul test qui prouve quelque chose part d'un IOC **réellement présent dans
