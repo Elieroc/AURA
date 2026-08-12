@@ -12,19 +12,32 @@
 
        Severity is driven by two fields, never by the indicator itself:
 
-         misp.confiance  curated -> contextualised intelligence (CERT-FR, CIRCL,
-                                    Botvrij, ThreatFox, URLhaus). A match is an
-                                    incident: level 12+.
-                         bulk    -> mass reputation lists (100k+ rotating IPs,
-                                    no context). A match is background noise
-                                    from the internet: level 10, deliberately
-                                    below the incident pipeline (MIN_LEVEL=12).
+         misp.confidence  curated -> contextualised intelligence (CERT-FR, CIRCL,
+                                     Botvrij, ThreatFox, URLhaus). A match is an
+                                     incident: level 12+.
+                          bulk    -> mass reputation lists (100k+ rotating IPs,
+                                     no context). A match is background noise
+                                     from the internet: level 10, deliberately
+                                     below the incident pipeline (MIN_LEVEL=12).
 
-         misp.direction  entrant -> a flagged host talked to us. Common, cheap.
-                         sortant -> one of OUR hosts talked to a flagged
-                                    destination. That host is likely already
-                                    compromised - the expensive case.
-                         artefact -> a file hash on one of our machines.
+         misp.direction   inbound  -> a flagged host talked to us. Common, cheap.
+                          outbound -> one of OUR hosts talked to a flagged
+                                      destination. That host is likely already
+                                      compromised - the expensive case.
+                          artifact -> a file hash on one of our machines.
+
+       Full field set carried by every match (all under data.misp.*):
+
+         ioc, ioc_type, field, direction, source, confidence, category,
+         event_info, event_id, event_url, search_url, tags, threat_level,
+         match_count, source_alert_rule_id, source_alert_description,
+         agent, agent_id
+
+       event_url points at the MISP event when the indicator is curated;
+       search_url always resolves, and is the only entry point for bulk lists
+       (they live in MISP's Redis cache and carry no event). Both are built
+       from the PUBLIC MISP url, stored in the cache by cti.py - a link to the
+       loopback address would only be clickable from the manager itself.
 
        Rules below are mutually exclusive by these fields (see rules/README.md:
        never rely on file order to arbitrate between siblings).
@@ -35,7 +48,7 @@
   <rule id="100950" level="3">
     <decoded_as>json</decoded_as>
     <field name="integration">custom-misp</field>
-    <description>CTI - MISP indicator match: $(misp.ioc) ($(misp.type), source $(misp.source))</description>
+    <description>CTI - MISP indicator match: $(misp.ioc) ($(misp.ioc_type), source $(misp.source))</description>
     <options>no_full_log</options>
   </rule>
 

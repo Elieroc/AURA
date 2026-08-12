@@ -52,9 +52,9 @@ CAS = [
     ("ip", "185.220.101.1|443", "185.220.101.1"),
     ("ip", "[2001:0db8::0001]", "2001:db8::1"),
     ("ip", "pas-une-ip", None),
-    ("domaine", "Evil.Example.COM.", "evil.example.com"),
-    ("domaine", "localhost", None),          # sans point : nom interne
-    ("domaine", "deux mots", None),
+    ("domain", "Evil.Example.COM.", "evil.example.com"),
+    ("domain", "localhost", None),          # sans point : nom interne
+    ("domain", "deux mots", None),
     ("url", "HTTP://Evil.example.com/Payload/", "http://evil.example.com/payload"),
     ("url", "/wp-login.php", None),          # chemin nu : matcherait n'importe quel hôte
     ("hash", "  D41D8CD98F00B204E9800998ECF8427E  ", "d41d8cd98f00b204e9800998ecf8427e"),
@@ -316,7 +316,7 @@ def test_catalogue_livre_est_coherent():
     for feed in catalogue["misp_feeds"]:
         assert feed["url"].startswith("https://")
     for bl in catalogue["blocklists"]:
-        assert bl["urls"] and bl.get("type") in ("ip", "url", "domaine")
+        assert bl["urls"] and bl.get("type") in ("ip", "url", "domain")
     # Le feed demandé nommément, et celui qui justifie la moitié du dispositif.
     urls = [f["url"] for f in catalogue["misp_feeds"]]
     assert any("cert.ssi.gouv.fr" in u for u in urls)
@@ -338,8 +338,8 @@ def test_extraction_des_candidats_par_direction():
     trouves = integration.candidats(_alerte(data={
         "srcip": "185.220.101.1", "dstip": "23.45.67.89"}))
     par_valeur = {v: (t, champ, direction) for t, v, champ, direction in trouves}
-    assert par_valeur["185.220.101.1"][2] == "entrant"
-    assert par_valeur["23.45.67.89"][2] == "sortant"
+    assert par_valeur["185.220.101.1"][2] == "inbound"
+    assert par_valeur["23.45.67.89"][2] == "outbound"
 
 
 def test_ip_privee_jamais_cherchee():
@@ -372,7 +372,7 @@ def test_hash_du_fim_extrait():
     trouves = integration.candidats({
         "rule": {"id": "550"},
         "syscheck": {"sha256_after": "a" * 64}})
-    assert ("hash", "a" * 64, "syscheck.sha256_after", "artefact") in trouves
+    assert ("hash", "a" * 64, "syscheck.sha256_after", "artifact") in trouves
 
 
 def _lancer(monkeypatch, tmp_path, alerte, iocs=(), age_heures=1.0):
@@ -424,13 +424,73 @@ def test_evenement_enrichi_sur_correspondance(monkeypatch, tmp_path):
     assert len(envoyes) == 1
     misp = envoyes[0]["misp"]
     assert envoyes[0]["integration"] == "custom-misp"
-    assert (misp["ioc"], misp["direction"], misp["confiance"]) == (
-        "185.220.101.1", "entrant", "curated")
+    assert (misp["ioc"], misp["direction"], misp["confidence"]) == (
+        "185.220.101.1", "inbound", "curated")
     assert misp["source_alert_rule_id"] == "5710"
     assert misp["agent"] == "web01"
     # srcip à la racine : c'est ce qui fait géolocaliser l'IOC par le pipeline
     # d'ingest de l'indexer, comme pour custom-abuseipdb.
     assert envoyes[0]["srcip"] == "185.220.101.1"
+
+
+def test_liens_misp_poses_dans_levenement(monkeypatch, tmp_path):
+    monkeypatch.setattr(cti.config, "MISP_BASE_URL", "https://misp.example.fr")
+    envoyes = _lancer(monkeypatch, tmp_path, _alerte(data={"srcip": "185.220.101.1"}),
+                      [_ioc("185.220.101.1")])
+    misp = envoyes[0]["misp"]
+    # Le lien vient de l'URL PUBLIQUE, pas de l'adresse d'appel du client : un
+    # lien vers la loopback n'est cliquable que depuis le manager.
+    assert misp["event_url"] == "https://misp.example.fr/events/view/42"
+    assert misp["search_url"] == (
+        "https://misp.example.fr/events/index/searchall:185.220.101.1")
+
+
+def test_ioc_de_masse_na_pas_devenement_mais_garde_un_lien(monkeypatch, tmp_path):
+    monkeypatch.setattr(cti.config, "MISP_BASE_URL", "https://misp.example.fr")
+    ioc = _ioc("1.1.1.2", source="data-shield", confiance=cti.CONFIANCE_MASSE)
+    ioc["event_id"] = ""     # les blocklists vivent en cache Redis, sans événement
+    envoyes = _lancer(monkeypatch, tmp_path,
+                      _alerte(data={"srcip": "1.1.1.2"}), [ioc])
+    misp = envoyes[0]["misp"]
+    assert misp["event_url"] == ""
+    # Sans ce lien de recherche, l'analyste n'aurait aucun point d'entrée dans
+    # MISP pour la moitié la plus volumineuse du renseignement.
+    assert misp["search_url"].endswith("searchall:1.1.1.2")
+
+
+def test_cache_sans_url_publique_ne_casse_pas_lenrichissement(monkeypatch, tmp_path):
+    # Cache écrit par une version antérieure : pas de meta base_url. La
+    # détection doit continuer, sans liens — pas planter.
+    chemin = str(tmp_path / "ioc.db")
+    cti.ecrire_cache([_ioc("185.220.101.1")], chemin)
+    conn = sqlite3.connect(chemin)
+    conn.execute("DELETE FROM meta WHERE cle = 'base_url'")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(integration, "CACHE", chemin)
+    monkeypatch.setattr(integration, "TEMOIN_PEREMPTION", str(tmp_path / "temoin"))
+    envoyes = []
+    monkeypatch.setattr(integration, "envoyer", envoyes.append)
+    fichier = tmp_path / "alerte.json"
+    fichier.write_text(json.dumps(_alerte(data={"srcip": "185.220.101.1"})))
+    monkeypatch.setattr(integration.sys, "argv", ["custom-misp", str(fichier)])
+    integration.main()
+    assert envoyes[0]["misp"]["ioc"] == "185.220.101.1"
+    assert envoyes[0]["misp"]["event_url"] == ""
+
+
+def test_tous_les_champs_enrichis_sont_en_anglais(monkeypatch, tmp_path):
+    # Ces noms partent dans les alertes, les dashboards et les cases IRIS, à
+    # côté des champs natifs de Wazuh. Ce test fige le contrat : les règles
+    # 100951-100956 matchent dessus, les renommer sans les suivre rend les
+    # règles muettes sans la moindre erreur.
+    envoyes = _lancer(monkeypatch, tmp_path, _alerte(data={"srcip": "185.220.101.1"}),
+                      [_ioc("185.220.101.1")])
+    assert set(envoyes[0]["misp"]) == {
+        "ioc", "ioc_type", "field", "direction", "source", "confidence",
+        "category", "event_info", "event_id", "event_url", "search_url",
+        "tags", "threat_level", "match_count", "source_alert_rule_id",
+        "source_alert_description", "agent", "agent_id"}
 
 
 def test_sans_correspondance_aucun_evenement(monkeypatch, tmp_path):
@@ -448,15 +508,15 @@ def test_le_sortant_cure_prime_sur_lentrant_de_masse(monkeypatch, tmp_path):
         _ioc("23.45.67.89", source="ThreatFox", confiance=cti.CONFIANCE_CUREE),
     ])
     assert envoyes[0]["misp"]["ioc"] == "23.45.67.89"
-    assert envoyes[0]["misp"]["direction"] == "sortant"
-    assert envoyes[0]["misp"]["correspondances"] == "2"
+    assert envoyes[0]["misp"]["direction"] == "outbound"
+    assert envoyes[0]["misp"]["match_count"] == "2"
 
 
 def test_cache_perime_signale_une_seule_fois(monkeypatch, tmp_path):
     alerte = _alerte(data={"srcip": "185.220.101.1"})
     envoyes = _lancer(monkeypatch, tmp_path, alerte, [_ioc("9.9.9.9")],
                       age_heures=72)
-    assert len(envoyes) == 1 and "erreur" in envoyes[0]["misp"]
+    assert len(envoyes) == 1 and "error" in envoyes[0]["misp"]
 
     # Second passage immédiat : le témoin doit museler le rappel, sinon le SOC
     # se noie sous son propre voyant de panne — une alerte par alerte traitée.
@@ -474,4 +534,4 @@ def test_cache_absent_signale_sans_planter(monkeypatch, tmp_path):
     fichier.write_text(json.dumps(_alerte(data={"srcip": "185.220.101.1"})))
     monkeypatch.setattr(integration.sys, "argv", ["custom-misp", str(fichier)])
     integration.main()
-    assert len(envoyes) == 1 and "erreur" in envoyes[0]["misp"]
+    assert len(envoyes) == 1 and "error" in envoyes[0]["misp"]

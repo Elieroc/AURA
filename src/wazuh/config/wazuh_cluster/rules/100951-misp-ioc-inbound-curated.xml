@@ -9,9 +9,9 @@
 
   <rule id="100951" level="12">
     <if_sid>100950</if_sid>
-    <field name="misp.confiance" type="pcre2">^curated$</field>
-    <field name="misp.direction" type="pcre2">^entrant$</field>
-    <description>CTI - inbound contact from a known malicious indicator: $(misp.ioc) (source $(misp.source), event "$(misp.evenement)", triggered on rule $(misp.source_alert_rule_id))</description>
+    <field name="misp.confidence" type="pcre2">^curated$</field>
+    <field name="misp.direction" type="pcre2">^inbound$</field>
+    <description>CTI - inbound contact from a known malicious indicator: $(misp.ioc) (source $(misp.source), event "$(misp.event_info)", triggered on rule $(misp.source_alert_rule_id))</description>
     <mitre>
       <id>T1595</id>
     </mitre>

@@ -21,6 +21,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from socket import AF_UNIX, SOCK_DGRAM, socket
+from urllib.parse import quote
 
 SOCKET_ADDR = "/var/ossec/queue/sockets/queue"
 CACHE = os.environ.get("CTI_CACHE", "/var/ossec/integrations/cti/ioc.db")
@@ -77,7 +78,7 @@ def normaliser(type_cache, valeur):
         except ValueError:
             return None
 
-    if type_cache == "domaine":
+    if type_cache == "domain":
         v = v.split("|", 1)[0].strip().lower().rstrip(".")
         return v if "." in v and " " not in v else None
 
@@ -101,10 +102,10 @@ def normaliser(type_cache, valeur):
 # d'internet) et « une de nos machines a parlé à une IP malveillante » (elle
 # est compromise) — d'où deux règles de niveaux différents, 100951 et 100952.
 CHAMPS_IP = [
-    ("data.srcip", "entrant"), ("data.src_ip", "entrant"),
-    ("data.dstip", "sortant"), ("data.dest_ip", "sortant"),
-    ("data.win.eventdata.destinationIp", "sortant"),
-    ("data.win.eventdata.sourceIp", "entrant"),
+    ("data.srcip", "inbound"), ("data.src_ip", "inbound"),
+    ("data.dstip", "outbound"), ("data.dest_ip", "outbound"),
+    ("data.win.eventdata.destinationIp", "outbound"),
+    ("data.win.eventdata.sourceIp", "inbound"),
 ]
 
 CHAMPS_DOMAINE = [
@@ -165,12 +166,12 @@ def candidats(alerte):
     for champ in CHAMPS_DOMAINE:
         brut = lire(alerte, champ)
         if brut:
-            ajouter("domaine", brut, champ, "sortant")
+            ajouter("domain", brut, champ, "outbound")
 
     for champ in CHAMPS_URL:
         brut = lire(alerte, champ)
         if brut:
-            ajouter("url", brut, champ, "sortant")
+            ajouter("url", brut, champ, "outbound")
 
     # Suricata et les logs web livrent l'hôte et le chemin séparément : pris
     # isolément, le chemin (`/wp-login.php`) ne vaut rien comme IOC, recollé à
@@ -178,18 +179,18 @@ def candidats(alerte):
     hote = lire(alerte, "data.http.hostname")
     chemin = lire(alerte, "data.http.url") or lire(alerte, "data.url")
     if hote and chemin and str(chemin).startswith("/"):
-        ajouter("url", f"http://{hote}{chemin}", "data.http.url", "sortant")
-        ajouter("url", f"https://{hote}{chemin}", "data.http.url", "sortant")
+        ajouter("url", f"http://{hote}{chemin}", "data.http.url", "outbound")
+        ajouter("url", f"https://{hote}{chemin}", "data.http.url", "outbound")
 
     for champ in CHAMPS_HASH:
         brut = lire(alerte, champ)
         if brut:
-            ajouter("hash", brut, champ, "artefact")
+            ajouter("hash", brut, champ, "artifact")
 
     empreintes = lire(alerte, CHAMP_HASHES_SYSMON)
     if empreintes:
         for trouve in MOTIF_HASH.findall(str(empreintes)):
-            ajouter("hash", trouve, CHAMP_HASHES_SYSMON, "artefact")
+            ajouter("hash", trouve, CHAMP_HASHES_SYSMON, "artifact")
 
     return sortie
 
@@ -212,6 +213,37 @@ def age_cache(conn):
     return (datetime.now(timezone.utc) - horodatage).total_seconds() / 3600
 
 
+def base_url(conn):
+    """URL publique de MISP, posée dans le cache par cti.py.
+
+    Elle vient du cache et non d'une variable d'environnement du manager :
+    c'est déjà le seul canal entre la CTI et la détection, y dupliquer la
+    configuration MISP ferait deux endroits à tenir à jour — et le jour où ils
+    divergent, les liens des alertes pointent en silence vers une instance qui
+    n'existe plus.
+    """
+    try:
+        ligne = conn.execute(
+            "SELECT valeur FROM meta WHERE cle = 'base_url'").fetchone()
+    except sqlite3.Error:
+        return ""
+    return (ligne[0] if ligne and ligne[0] else "").rstrip("/")
+
+
+def liens(base, event_id, valeur):
+    """(event_url, search_url) — vides si l'URL publique est inconnue.
+
+    Deux liens et non un seul : un IOC curé a un événement MISP à ouvrir, une
+    IP de blocklist n'en a pas (ces listes sont en cache Redis, sans
+    événement). Sans le lien de recherche, l'analyste n'aurait aucun point
+    d'entrée pour la moitié la plus volumineuse du renseignement.
+    """
+    if not base:
+        return "", ""
+    event_url = f"{base}/events/view/{event_id}" if event_id else ""
+    return event_url, f"{base}/events/index/searchall:{quote(str(valeur), safe='')}"
+
+
 def signaler_peremption(motif, alerte):
     """Alerte sur une CTI qui ne se met plus à jour — au plus une fois par heure.
 
@@ -230,7 +262,7 @@ def signaler_peremption(motif, alerte):
     except OSError:
         pass  # /var/ossec/tmp indisponible : mieux vaut répéter que taire
     envoyer({"integration": "custom-misp",
-             "misp": {"erreur": motif,
+             "misp": {"error": motif,
                       "cache": CACHE,
                       "source_alert_rule_id": str(
                           (alerte.get("rule") or {}).get("id", ""))}})
@@ -272,6 +304,7 @@ def main():
         return
 
     try:
+        base = base_url(conn)
         age = age_cache(conn)
         if age is None or age > PEREMPTION_HEURES:
             signaler_peremption(
@@ -293,14 +326,19 @@ def main():
             # Ordre de gravité : le renseignement curé prime sur la réputation
             # de masse, et un flux SORTANT prime sur un flux entrant — c'est
             # la seule des deux directions qui dit « chez nous ».
-            rang = (confiance == "curated", direction == "sortant", -int(menace or 4))
+            rang = (confiance == "curated", direction == "outbound", -int(menace or 4))
             if meilleur is None or rang > meilleur[0]:
+                # Noms de champs EN ANGLAIS : ils partent dans les alertes, les
+                # dashboards et les cases IRIS, aux côtés des champs natifs de
+                # Wazuh — même règle que pour les descriptions de règles.
+                event_url, search_url = liens(base, event_id, valeur)
                 meilleur = (rang, {
-                    "ioc": valeur, "type": type_cache, "champ": champ,
+                    "ioc": valeur, "ioc_type": type_cache, "field": champ,
                     "direction": direction, "source": source,
-                    "categorie": categorie or "", "evenement": evenement or "",
-                    "event_id": event_id or "", "tags": tags or "",
-                    "niveau_menace": str(menace or 4), "confiance": confiance,
+                    "category": categorie or "", "event_info": evenement or "",
+                    "event_id": event_id or "", "event_url": event_url,
+                    "search_url": search_url, "tags": tags or "",
+                    "threat_level": str(menace or 4), "confidence": confiance,
                 })
     finally:
         conn.close()
@@ -309,7 +347,7 @@ def main():
         return
 
     misp = meilleur[1]
-    misp["correspondances"] = str(total)
+    misp["match_count"] = str(total)
     misp["source_alert_rule_id"] = str(regle.get("id", ""))
     misp["source_alert_description"] = str(regle.get("description", ""))[:200]
     misp["agent"] = str((alerte.get("agent") or {}).get("name", ""))
@@ -320,7 +358,7 @@ def main():
     # pipeline d'ingest de l'indexer, comme pour custom-abuseipdb. Uniquement
     # pour un IOC d'IP : mettre là une IP qui n'est pas l'indicateur induirait
     # la carte en erreur.
-    if misp["type"] == "ip":
+    if misp["ioc_type"] == "ip":
         evenement["srcip"] = misp["ioc"]
 
     envoyer(evenement)

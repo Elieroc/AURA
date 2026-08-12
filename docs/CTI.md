@@ -112,6 +112,35 @@ Les IP privées ne sont jamais cherchées : une IP RFC1918 ne peut pas être un
 IOC public, et un feed qui en publie une par erreur (ça arrive) ferait alerter
 sur nos propres machines.
 
+## Les champs de l'alerte enrichie
+
+Tous sous `data.misp.*`, **noms en anglais** comme les descriptions de règles :
+ils partent dans les alertes, les dashboards et les cases IRIS, à côté des
+champs natifs de Wazuh.
+
+| Champ | Contenu |
+|---|---|
+| `ioc` | l'indicateur qui a matché, sous sa forme normalisée |
+| `ioc_type` | `ip` \| `domain` \| `url` \| `hash` |
+| `field` | où il a été trouvé dans l'alerte d'origine (`data.srcip`, `syscheck.sha256_after`…) |
+| `direction` | `inbound` \| `outbound` \| `artifact` |
+| `source` | feed ou organisation MISP |
+| `confidence` | `curated` \| `bulk` — décide du niveau de la règle |
+| `category`, `event_info`, `tags`, `threat_level` | contexte MISP |
+| `event_id`, **`event_url`** | l'événement MISP et son lien direct (vide pour une liste de masse) |
+| **`search_url`** | recherche de la valeur dans MISP — toujours résolu |
+| `match_count` | nombre de sources qui portent cet IOC |
+| `source_alert_rule_id`, `source_alert_description` | l'alerte qui a déclenché le lookup |
+| `agent`, `agent_id` | la machine concernée |
+| `error`, `cache` | uniquement sur l'alerte 100956 (cache inutilisable) |
+
+Les deux liens sont construits à partir de **`MISP_BASE_URL`** (l'URL publique),
+que `cti.py` recopie dans le cache — un lien vers `https://127.0.0.1:8444` ne
+serait cliquable que depuis le manager. `search_url` existe parce que les
+listes de masse vivent dans le cache Redis de MISP et ne portent aucun
+événement : sans lui, la moitié la plus volumineuse du renseignement n'aurait
+aucun point d'entrée.
+
 ## Les règles
 
 | ID | Niveau | Ce qu'elle dit |

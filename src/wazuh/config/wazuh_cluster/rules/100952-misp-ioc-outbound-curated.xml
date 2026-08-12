@@ -12,9 +12,9 @@
 
   <rule id="100952" level="14">
     <if_sid>100950</if_sid>
-    <field name="misp.confiance" type="pcre2">^curated$</field>
-    <field name="misp.direction" type="pcre2">^sortant$</field>
-    <description>CTI - outbound contact to known malicious infrastructure: $(misp.ioc) ($(misp.type)) from agent $(misp.agent) (source $(misp.source), event "$(misp.evenement)")</description>
+    <field name="misp.confidence" type="pcre2">^curated$</field>
+    <field name="misp.direction" type="pcre2">^outbound$</field>
+    <description>CTI - outbound contact to known malicious infrastructure: $(misp.ioc) ($(misp.ioc_type)) from agent $(misp.agent) (source $(misp.source), event "$(misp.event_info)")</description>
     <mitre>
       <id>T1071</id>
     </mitre>

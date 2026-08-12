@@ -86,7 +86,7 @@ blocklists:
       - https://raw.githubusercontent.com/duggytuxy/Data-Shield_IPv4_Blocklist/main/prod_data-shield_ipv4_blocklist.txt
       - https://raw.githubusercontent.com/duggytuxy/Data-Shield_IPv4_Blocklist/main/prod_critical_data-shield_ipv4_blocklist.txt
     categorie: Network activity
-    commentaire: Scanner / attaquant vu sur des cibles web et infra exposee
+    commentaire: Scanner or attacker seen against web targets and exposed infrastructure
     tags: [cti:data-shield, reputation:scanner]
 
   # --- blocklist.de : IP ayant attaqué (SSH, mail, web) un capteur du réseau
@@ -97,7 +97,7 @@ blocklists:
     type: ip
     urls: [https://lists.blocklist.de/lists/all.txt]
     categorie: Network activity
-    commentaire: IP ayant attaque un capteur fail2ban (SSH, mail, web)
+    commentaire: IP that attacked a fail2ban sensor (SSH, mail, web)
     tags: [cti:blocklist-de, reputation:bruteforce]
 
   # --- CINS Army (Sentinel IPS) : IP à mauvaise réputation confirmée par de
@@ -107,7 +107,7 @@ blocklists:
     type: ip
     urls: [https://cinsscore.com/list/ci-badguys.txt]
     categorie: Network activity
-    commentaire: Mauvaise reputation confirmee par capteurs multiples (CINS)
+    commentaire: Bad reputation confirmed by multiple sensors (CINS)
     tags: [cti:cins, reputation:malicious]
 
   # --- Nœuds de sortie Tor. NE PAS confondre avec de la malveillance : c'est
@@ -118,8 +118,8 @@ blocklists:
     type: ip
     urls: [https://check.torproject.org/torbulkexitlist]
     categorie: Network activity
-    commentaire: Noeud de sortie Tor (provenance, pas malveillance)
-    tags: [cti:tor, anonymisation:tor]
+    commentaire: Tor exit node (provenance, not maliciousness)
+    tags: [cti:tor, anonymizer:tor]
 
   # --- OpenPhish (flux gratuit) : URL de phishing actives. Volume modéré,
   # rotation rapide.
@@ -128,7 +128,7 @@ blocklists:
     type: url
     urls: [https://openphish.com/feed.txt]
     categorie: Payload delivery
-    commentaire: URL de phishing active (flux communautaire OpenPhish)
+    commentaire: Active phishing URL (OpenPhish community feed)
     tags: [cti:openphish, phishing]
 
 # --- Écartés délibérément, pour ne pas laisser croire à une omission ---

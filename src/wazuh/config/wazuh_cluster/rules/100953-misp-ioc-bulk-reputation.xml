@@ -13,8 +13,8 @@
 
   <rule id="100953" level="10">
     <if_sid>100950</if_sid>
-    <field name="misp.confiance" type="pcre2">^bulk$</field>
-    <description>CTI - IP with known bad reputation: $(misp.ioc) ($(misp.direction), list $(misp.source): $(misp.evenement))</description>
+    <field name="misp.confidence" type="pcre2">^bulk$</field>
+    <description>CTI - IP with known bad reputation: $(misp.ioc) ($(misp.direction), list $(misp.source): $(misp.event_info))</description>
   </rule>
 
 </group>

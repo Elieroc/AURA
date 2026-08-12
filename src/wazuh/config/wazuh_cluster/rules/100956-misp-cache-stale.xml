@@ -14,8 +14,8 @@
 
   <rule id="100956" level="12">
     <if_sid>100950</if_sid>
-    <field name="misp.erreur">\.+</field>
-    <description>SOC tampering: CTI indicator cache unusable - $(misp.erreur)</description>
+    <field name="misp.error">\.+</field>
+    <description>SOC tampering: CTI indicator cache unusable - $(misp.error)</description>
     <mitre>
       <id>T1562.001</id>
     </mitre>

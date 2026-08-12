@@ -84,9 +84,9 @@ TYPES = {
     "ip-dst": "ip",
     "ip-src|port": "ip",
     "ip-dst|port": "ip",
-    "domain": "domaine",
-    "hostname": "domaine",
-    "domain|ip": "domaine",
+    "domain": "domain",
+    "hostname": "domain",
+    "domain|ip": "domain",
     "url": "url",
     "md5": "hash",
     "sha1": "hash",
@@ -117,7 +117,7 @@ def normaliser(type_cache: str, valeur: str) -> str | None:
         except ValueError:
             return None
 
-    if type_cache == "domaine":
+    if type_cache == "domain":
         v = v.split("|", 1)[0].strip().lower().rstrip(".")
         # Un domaine sans point n'en est pas un : c'est un nom de machine
         # interne, et il matcherait le hostname de nos propres agents.
@@ -468,6 +468,12 @@ def ecrire_cache(iocs, chemin: str | None = None) -> dict:
                          (datetime.now(timezone.utc).isoformat(),))
             conn.execute("INSERT INTO meta VALUES ('compte', ?)",
                          (json.dumps(compte),))
+            # URL publique embarquée dans le cache : c'est elle qui rend les
+            # liens des alertes cliquables depuis un poste d'analyste. La poser
+            # ici évite de redéclarer la configuration MISP côté manager — le
+            # cache est déjà le seul canal entre les deux.
+            conn.execute("INSERT INTO meta VALUES ('base_url', ?)",
+                         (config.MISP_BASE_URL.rstrip("/"),))
             conn.commit()
         finally:
             conn.close()
@@ -568,7 +574,7 @@ def main() -> None:
         return
 
     if args.test:
-        type_devine = next((t for t in ("ip", "hash", "url", "domaine")
+        type_devine = next((t for t in ("ip", "hash", "url", "domain")
                             if normaliser(t, args.test)), None)
         if not type_devine:
             sys.exit(f"valeur inexploitable : {args.test}")

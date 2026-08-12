@@ -12,9 +12,9 @@
 
   <rule id="100955" level="13">
     <if_sid>100950</if_sid>
-    <field name="misp.type" type="pcre2">^hash$</field>
-    <field name="misp.confiance" type="pcre2">^curated$</field>
-    <description>CTI - known malicious file hash on $(misp.agent): $(misp.ioc) (source $(misp.source), event "$(misp.evenement)")</description>
+    <field name="misp.ioc_type" type="pcre2">^hash$</field>
+    <field name="misp.confidence" type="pcre2">^curated$</field>
+    <description>CTI - known malicious file hash on $(misp.agent): $(misp.ioc) (source $(misp.source), event "$(misp.event_info)")</description>
     <mitre>
       <id>T1105</id>
     </mitre>

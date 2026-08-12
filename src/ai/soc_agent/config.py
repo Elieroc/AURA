@@ -983,6 +983,16 @@ UEBA_MITIGATE = os.environ.get("UEBA_MITIGATE", "false").lower() == "true"
 # d'API. Elle lit un fichier local. Si MISP tombe, la détection continue sur le
 # dernier état connu — et la règle 100956 signale la péremption.
 MISP_URL = os.environ.get("MISP_URL", "https://127.0.0.1:8444")
+
+# URL PUBLIQUE de MISP (celle du reverse proxy), utilisée uniquement pour
+# fabriquer les liens posés dans les alertes enrichies. Distincte de MISP_URL,
+# qui est l'adresse d'appel du client : un lien vers https://127.0.0.1:8444
+# n'est cliquable que depuis le manager lui-même, donc inutile dans un case
+# IRIS ou un dashboard consulté depuis un poste d'analyste.
+#
+# Elle est recopiée dans le cache d'IOC (table meta) pour que l'intégration
+# Wazuh la connaisse sans avoir à dupliquer la configuration côté manager.
+MISP_BASE_URL = os.environ.get("MISP_BASE_URL") or MISP_URL
 MISP_KEY = os.environ.get("MISP_KEY", "")
 MISP_VERIFY_TLS = os.environ.get("MISP_VERIFY_TLS", "false").lower() == "true"
 
