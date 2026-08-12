@@ -1837,6 +1837,18 @@ def _lien_cve(cve: str) -> str:
     return f"https://nvd.nist.gov/vuln/detail/{cve}"
 
 
+def _paquet(nom: str) -> str:
+    """Nom de paquet raccourci pour une cellule de table.
+
+    Sur Windows, `package.name` vaut le libellé complet de l'OS, version
+    comprise (« Microsoft Windows Server 2022 Standard Evaluation
+    10.0.20348.587 ») : répété sur dix lignes à côté d'une colonne Version qui
+    dit la même chose, il noie la colonne CVE, qui est l'information utile.
+    """
+    nom = str(nom or "—")
+    return nom if len(nom) <= 46 else nom[:45] + "…"
+
+
 def _table_cve(lignes: list[dict], avec_age: bool = True) -> list[str]:
     """Table Markdown de vulnérabilités. Colonnes stables d'un bloc à l'autre
     pour que l'analyste ne relise pas l'en-tête à chaque section."""
@@ -1849,7 +1861,7 @@ def _table_cve(lignes: list[dict], avec_age: bool = True) -> list[str]:
             f"| [{v['cve']}]({_lien_cve(v['cve'])}) "
             f"| {(v['severite'] or 'non classée').capitalize()} "
             f"| {v['score_base'] if v['score_base'] is not None else '—'} "
-            f"| `{v['paquet']}` | {v['version'] or '—'} |{age}")
+            f"| `{_paquet(v['paquet'])}` | {v['version'] or '—'} |{age}")
     return tete
 
 
@@ -1921,6 +1933,26 @@ def _note_exposition(conn, incident: dict, alertes: list[dict]) -> str:
         "",
     ]
 
+    # Le journal ne peut pas mesurer un retard plus long que sa propre
+    # existence. Tant qu'il est jeune, « 0 hors délai » et « plus ancienne :
+    # 3 jours » sont exacts et trompeurs : ils décrivent notre ancienneté de
+    # mesure, pas l'état du parc. Sans cet encadré, un lecteur y verrait un parc
+    # tenu à jour alors qu'il traîne peut-être des CVE de 2019.
+    jeune = expo.get("journal_jours")
+    if jeune is not None and jeune < 30:
+        lignes += [
+            f"> ℹ️ **Le suivi VOC n'a que {jeune:.0f} jour(s) d'historique.** "
+            f"L'ancienneté et le retard se comptent depuis la première "
+            f"observation par AURA, pas depuis la publication de la CVE : "
+            f"« {expo['plus_ancienne_jours']:.0f} jours » et "
+            f"« {expo['hors_sla_total']} hors délai » mesurent ici la durée de "
+            f"la mesure, **pas** l'état réel du parc. Ces deux chiffres ne "
+            f"deviennent significatifs qu'au-delà du premier seuil de SLA "
+            f"applicable. Les compteurs par sévérité, eux, sont valables "
+            f"immédiatement.",
+            "",
+        ]
+
     # --- Lien avec CE case ------------------------------------------------
     if lien["confirmees"]:
         lignes += [
@@ -1984,7 +2016,7 @@ def _note_exposition(conn, incident: dict, alertes: list[dict]) -> str:
         ] + [
             f"| [{v['cve']}]({_lien_cve(v['cve'])}) "
             f"| {(v['severite'] or 'non classée').capitalize()} "
-            f"| `{v['paquet']}` | {v['age_jours']:.0f} j "
+            f"| `{_paquet(v['paquet'])}` | {v['age_jours']:.0f} j "
             f"| {v['sla_jours']} j | **+{v['retard_jours']:.0f} j** |"
             for v in top
         ] + [""]

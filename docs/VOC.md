@@ -124,6 +124,16 @@ réinitialise quand le scanner recalcule. Sur cette date-là, un redémarrage du
 manager remettrait tous les compteurs de retard à zéro et le VOC se
 féliciterait tout seul.
 
+> **Conséquence à connaître : le journal ne mesure pas de retard plus long que
+> sa propre existence.** Au premier scan, *toutes* les vulnérabilités sont
+> « ouvertes depuis 0 jour » et *aucune* n'est hors délai — sur un parc qui
+> traîne pourtant des CVE de 2019. Ces chiffres sont exacts et trompeurs : ils
+> décrivent l'ancienneté de la **mesure**, pas l'état du parc. Le premier
+> hors-délai apparaîtra au bout de 7 jours (Critical sur P1) et la courbe de
+> MTTR ne veut rien dire avant plusieurs semaines. Les compteurs par sévérité,
+> eux, sont valables immédiatement. La note IRIS et la CLI affichent
+> l'avertissement tant que le journal a moins de 30 jours.
+
 ## Le garde-fou qui compte
 
 > Une machine qui a cessé de répondre disparaît de l'index d'état **avec toutes

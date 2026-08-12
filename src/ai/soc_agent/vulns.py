@@ -375,10 +375,27 @@ def exposition(conn, agent_id: str) -> dict:
         "hors_sla_total": len(hors_sla),
         "plus_ancienne_jours": round(max((v["age_jours"] for v in lignes),
                                          default=0), 1),
+        "journal_jours": anciennete_journal(conn),
         "pires": pires,
         "corrigees_90j": corrigees["n"],
         "mttr_jours": round(corrigees["mttr"], 1) if corrigees["mttr"] else None,
     }
+
+
+def anciennete_journal(conn) -> float | None:
+    """Âge du journal en jours, ou None s'il n'a jamais tourné.
+
+    Indispensable pour lire honnêtement l'ancienneté et le retard : ces deux
+    grandeurs se comptent depuis NOTRE première observation, pas depuis la
+    publication de la CVE. Un journal de trois jours affiche donc « plus ancienne
+    ouverte : 3 jours » et « 0 hors délai » sur un parc qui traîne des CVE de
+    2019 — chiffres exacts, conclusion inverse de la vérité si l'on ne dit pas
+    depuis quand on mesure.
+    """
+    ligne = conn.execute(
+        "SELECT extract(epoch FROM now() - min(lance_a)) / 86400 AS j "
+        "  FROM vuln_scans").fetchone()
+    return round(ligne["j"], 1) if ligne and ligne["j"] is not None else None
 
 
 def _nom_agent(conn, agent_id: str) -> str | None:
@@ -723,6 +740,10 @@ def _afficher_agent(e: dict) -> None:
                       for k, v in sorted(e["par_severite"].items())))
     print(f"  hors SLA : {e['hors_sla_total']} — plus ancienne : "
           f"{e['plus_ancienne_jours']} j")
+    if e.get("journal_jours") is not None and e["journal_jours"] < 30:
+        print(f"  (journal de {e['journal_jours']:.0f} j seulement : "
+              f"l'ancienneté et le retard mesurent la durée de la MESURE, pas "
+              f"l'état du parc)")
     if e["mttr_jours"] is not None:
         print(f"  corrigées sur 90 j : {e['corrigees_90j']} "
               f"(délai moyen {e['mttr_jours']} j)")
