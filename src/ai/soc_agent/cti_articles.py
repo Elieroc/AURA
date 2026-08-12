@@ -356,7 +356,28 @@ def _ip_a_ignorer(valeur: str) -> bool:
     # le SOC contre lui-même.
     if str(ip) in config.SOC_INFRA_IPS:
         return True
-    return any(ip in reseau for reseau in getattr(config, "RESEAUX_INTERNES", []) or [])
+    return any(ip in reseau for reseau in _reseaux_internes())
+
+
+def _reseaux_internes() -> list:
+    """`config.RESEAUX_INTERNES` converti en réseaux comparables.
+
+    La configuration les livre en CHAÎNES ("192.168.1.0/24, ..."), et
+    `ip in "192.168.1.0/24"` lève un TypeError — vu en prod le 2026-08-12, il a
+    emporté toute la source The Hacker News au milieu d'une passe. Une entrée
+    mal écrite est ignorée plutôt que fatale : elle ne doit pas décider de la
+    disponibilité de la veille.
+    """
+    reseaux = []
+    for brut in getattr(config, "RESEAUX_INTERNES", None) or []:
+        if isinstance(brut, (ipaddress.IPv4Network, ipaddress.IPv6Network)):
+            reseaux.append(brut)
+            continue
+        try:
+            reseaux.append(ipaddress.ip_network(str(brut).strip(), strict=False))
+        except ValueError:
+            log.debug("RESEAUX_INTERNES : entrée ignorée %r", brut)
+    return reseaux
 
 
 def candidats(texte: str) -> dict[str, list[str]]:
@@ -721,7 +742,8 @@ TYPES_A_AMORCER = {"malpedia_references"}
 
 
 def collecter(source: dict, deja: set[str], depuis: datetime,
-              maximum: int, amorcage: bool, simulation: bool) -> list[dict]:
+              maximum: int, amorcage: bool, simulation: bool,
+              journal=None) -> list[dict]:
     if amorcage and source.get("type") not in TYPES_A_AMORCER:
         # Ne PAS marquer les flux RSS pendant un amorçage : ce serait griller
         # les articles récents, qui sont précisément ceux qu'on veut traiter à
@@ -746,7 +768,17 @@ def collecter(source: dict, deja: set[str], depuis: datetime,
     resultats = []
     for entree in entrees[:maximum]:
         log.info("→ %s", entree["url"])
-        resultats.append(traiter(entree, source, simulation=simulation))
+        resultat = traiter(entree, source, simulation=simulation)
+        resultats.append(resultat)
+        # Marquage IMMÉDIAT, article par article, et non à la fin de la source :
+        # une panne au milieu d'une passe (ou un arrêt du conteneur) perdrait
+        # sinon le travail déjà fait, appels au modèle compris. Constaté en prod
+        # le 2026-08-12 sur une erreur de type — l'article traité juste avant a
+        # été payé puis oublié.
+        if journal is not None and not simulation:
+            marquer(journal, source["nom"], resultat["url"],
+                    len(resultat["iocs"]), resultat["event_id"],
+                    resultat["menace"], resultat["motif"])
     return resultats
 
 
@@ -762,17 +794,17 @@ def passe(nom_source: str | None = None, maximum: int = 10,
             deja = deja_vues(conn, source["nom"])
             try:
                 resultats = collecter(source, deja, depuis, maximum, amorcage,
-                                      simulation)
+                                      simulation, journal=conn)
             except Exception as exc:                          # noqa: BLE001
                 # Une source en panne ne doit pas emporter les autres : elles
                 # sont indépendantes, et le renseignement perdu serait celui
-                # de tout le monde.
+                # de tout le monde. Les articles déjà traités de cette source
+                # sont, eux, déjà enregistrés (marquage au fil de l'eau).
                 log.warning("source %s en échec : %s", source["nom"], exc)
                 continue
             for r in resultats:
-                if not simulation:
-                    marquer(conn, source["nom"], r["url"], len(r["iocs"]),
-                            r["event_id"], r["menace"], r["motif"])
+                if amorcage and not simulation:
+                    marquer(conn, source["nom"], r["url"], 0, None, "", "amorçage")
                 if r["iocs"]:
                     log.info("%d IOC publiés (event %s) — %s", len(r["iocs"]),
                              r["event_id"], r["menace"] or "menace non nommée")
