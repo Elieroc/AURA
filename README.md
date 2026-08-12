@@ -27,6 +27,8 @@ XDR autonome piloté par IA. Détection moderne avec Wazuh, enrichissement threa
                                          │              │  MISP + soc-agent-cti    │
                                          │              │  CERT-FR, CIRCL,         │
                                          │              │  abuse.ch, Data-Shield   │
+                                         │              │  + veille LLM (presse,   │
+                                         │              │    blogs, Malpedia)      │
                                          │              └──────────────────────────┘
                                          │ filebeat
                           ┌──────────────▼──────────────┐
@@ -59,7 +61,8 @@ XDR autonome piloté par IA. Détection moderne avec Wazuh, enrichissement threa
 | [`src/shuffle/`](src/shuffle/) | SOAR — orchestration des remédiations (isolation, kill) | ✅ Testé E2E |
 | [`src/iris/`](src/iris/) | DFIR-IRIS — case management, un case par incident trié | ✅ Boucle fermée |
 | [`src/iris/mcp/`](src/iris/mcp/) | Serveur MCP IRIS — investigation interactive | ✅ Connecté |
-| [`src/ai/soc_agent/cti.py`](src/ai/soc_agent/cti.py) | CTI — MISP + feeds, cache d'IOC, détection dans Wazuh (règles 100950-100956) | 🆕 À déployer |
+| [`src/ai/soc_agent/cti.py`](src/ai/soc_agent/cti.py) | CTI — MISP + feeds, cache d'IOC, détection dans Wazuh (règles 100950-100957) | ✅ En prod |
+| [`src/ai/soc_agent/cti_articles.py`](src/ai/soc_agent/cti_articles.py) | Veille — IOC extraits des articles publics (regex → LLM → code), publiés dans MISP | ✅ En prod |
 
 ## Quick start
 
@@ -97,7 +100,7 @@ schéma Postgres soc-agent, active response) : [`docs/INSTALL.md`](docs/INSTALL.
 | [`docs/TRAINING.md`](docs/TRAINING.md) | mode training : apprendre le bruit ambiant du SI avant de laisser le SOC agir |
 | [`docs/UEBA.md`](docs/UEBA.md) | moteur comportemental : faire remonter les alertes LOW/MEDIUM qui le méritent, sans noyer le LLM |
 | [`docs/CMDB.md`](docs/CMDB.md) | priorité des assets (P1-P4) : un incident sur le contrôleur de domaine ne vaut pas un incident sur un poste de test |
-| [`docs/CTI.md`](docs/CTI.md) | volet renseignement : MISP, feeds (CERT-FR, CIRCL, abuse.ch, Data-Shield…), et détection des IOC dans Wazuh |
+| [`docs/CTI.md`](docs/CTI.md) | volet renseignement : MISP, feeds (CERT-FR, CIRCL, abuse.ch, Data-Shield…), extraction d'IOC des articles publics par le LLM, et détection dans Wazuh |
 | [`docs/VOC.md`](docs/VOC.md) | gestion des vulnérabilités : l'index d'état de Wazuh est destructif, ce module en fait un historique (burn-down, MTTR, SLA) et l'injecte dans les cases IRIS |
 | [`docs/REMEDIATION.md`](docs/REMEDIATION.md) | remédiation autonome de bout en bout + catalogue de toutes les active responses |
 | [`docs/MCP.md`](docs/MCP.md) | serveur MCP : administrer AURA depuis n'importe quel client IA (relaie Wazuh et IRIS) |
@@ -114,7 +117,7 @@ schéma Postgres soc-agent, active response) : [`docs/INSTALL.md`](docs/INSTALL.
 AURA/
 ├── docker-compose.yml   # compose racine unique — les 4 stacks
 ├── .env.example         # config racine unique (copier en .env)
-├── docs/                # INSTALL, TRAINING, UEBA, CMDB, VOC, REMEDIATION, MCP
+├── docs/                # INSTALL, TRAINING, UEBA, CMDB, CTI, VOC, REMEDIATION, MCP
 ├── scripts/             # install-agent.sh, déploiement AR...
 ├── db/                  # bases de données (Postgres/OpenSearch), gitignoré
 └── src/                 # les 4 stacks buildables : ai/ · iris/ · shuffle/ · wazuh/
