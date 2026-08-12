@@ -52,6 +52,146 @@ CLASSIF_INTRUSION = 14      # intrusion-attempts:exploit-known-vuln
 CLASSIF_BRUTE = 15          # intrusion-attempts:login-attempts
 CLASSIF_DEFAUT = CLASSIF_INTRUSION
 
+# --------------------------------------------------------------------------
+# Sévérité du case IRIS
+# --------------------------------------------------------------------------
+#
+# Une file de cases où tout est « Low » ne se trie pas. IRIS pose 4 (Low) par
+# défaut à la création et son API `add_case` n'expose pas la sévérité : elle se
+# règle après coup, par `/manage/cases/update/<id>` (`case_severity_id`).
+#
+# PIÈGE : les ids de l'échelle IRIS ne suivent PAS l'ordre de gravité —
+# 3=Informational, 4=Low, 1=Medium, 5=High, 6=Critical, 2=Unspecified. Toute
+# correspondance écrite sur les ids serait fausse (« sévérité 2 » = Unspecified,
+# pas Low). On travaille donc sur les NOMS, et on résout l'id à l'exécution
+# depuis le serveur : un autre déploiement d'IRIS peut très bien les numéroter
+# autrement.
+SEV_INFO, SEV_LOW, SEV_MEDIUM = "Informational", "Low", "Medium"
+SEV_HIGH, SEV_CRITICAL = "High", "Critical"
+
+# Correspondance sévérité effective (échelle Wazuh 1-15, cf. assets.severite)
+# -> nom IRIS. Bornes basses inclusives, lues de haut en bas.
+#
+# On repart de la sévérité EFFECTIVE et non du seul `max_level` : c'est déjà
+# « à quel point ça tire » x « sur quoi », et le projet n'a besoin que d'une
+# définition de la gravité. L'analyste retrouve donc dans la file IRIS l'ordre
+# exact que le pipeline a appliqué, et la valeur affichée dans la description du
+# case (« sévérité effective 14/15 ») explique la couleur qu'il voit.
+SEUILS_SEVERITE = (
+    (15, SEV_CRITICAL),   # attaque avérée sur un asset qui compte
+    (12, SEV_HIGH),       # niveau d'ouverture d'incident du pipeline
+    (8, SEV_MEDIUM),
+    (4, SEV_LOW),
+    (0, SEV_INFO),
+)
+
+
+def nom_severite(severite: int, ueba: bool = False, verdict: str = "",
+                 actions=()) -> str:
+    """Nom de sévérité IRIS pour un incident. Fonction pure.
+
+    Trois règles, dans cet ordre :
+
+    1. le barème `SEUILS_SEVERITE` appliqué à la sévérité effective ;
+    2. **plancher UEBA à Medium** : un incident né du moteur comportemental a un
+       `max_level` bas PAR CONSTRUCTION (il vient d'alertes 3-11, cf. ueba.py).
+       Le barème le classerait « Low » alors qu'il n'existe que parce qu'un
+       écart statistique l'a justifié — c'est-à-dire l'inverse de ce que la
+       couleur dirait à l'analyste ;
+    3. **plafond faux positif à Low** : un case documentant une activité
+       légitime ne doit pas trôner en tête de file. SAUF si le garde-fou
+       déterministe a refusé la clôture (`escalate_human` dans les actions
+       finales) : le verdict du modèle est alors précisément ce qu'on ne croit
+       pas, et rétrograder la sévérité reviendrait à appliquer quand même la
+       décision qu'on vient de refuser — exactement ce qu'une injection cherche
+       à obtenir.
+    """
+    nom = SEV_INFO
+    for plancher, libelle in SEUILS_SEVERITE:
+        if severite >= plancher:
+            nom = libelle
+            break
+
+    ordre = [SEV_INFO, SEV_LOW, SEV_MEDIUM, SEV_HIGH, SEV_CRITICAL]
+    if ueba and ordre.index(nom) < ordre.index(SEV_MEDIUM):
+        nom = SEV_MEDIUM
+    if (verdict == "false_positive" and "escalate_human" not in (actions or [])
+            and ordre.index(nom) > ordre.index(SEV_LOW)):
+        nom = SEV_LOW
+    return nom
+
+
+# Correspondance nom -> id, lue une fois par processus sur le serveur IRIS.
+_SEVERITES_ID: dict[str, int] | None = None
+
+# Repli si `/manage/severities/list` est injoignable : les ids observés sur
+# IRIS 2.4. Le repli est explicitement DÉCLARÉ faux-possible — mieux vaut une
+# sévérité approchée qu'un case sans sévérité, mais on journalise.
+_SEVERITES_REPLI = {"informational": 3, "low": 4, "medium": 1, "high": 5,
+                    "critical": 6}
+
+
+def _id_severite(case, nom: str) -> int | None:
+    global _SEVERITES_ID
+    if _SEVERITES_ID is None:
+        try:
+            liste = case._s.pi_get("/manage/severities/list").get_data()
+            _SEVERITES_ID = {str(s["severity_name"]).lower(): s["severity_id"]
+                             for s in liste}
+        except Exception as e:  # noqa: BLE001
+            log.warning("liste des sévérités IRIS illisible (%s) : repli sur "
+                        "les ids par défaut", e)
+            _SEVERITES_ID = dict(_SEVERITES_REPLI)
+    return _SEVERITES_ID.get(nom.lower())
+
+
+def _poser_severite(case, case_id: int, incident: dict, triage: dict) -> str | None:
+    """Règle la sévérité du case. Best-effort : jamais bloquant.
+
+    `add_case` ne prend pas de sévérité (tous les cases naissent « Low ») et
+    `update_case` du client non plus : on passe par l'endpoint brut.
+    """
+    severite = incident.get("severite") or incident.get("max_level") or 0
+    nom = nom_severite(severite, bool(incident.get("ueba")),
+                       triage.get("verdict") or "", triage.get("actions") or [])
+    sid = _id_severite(case, nom)
+    if sid is None:
+        log.warning("sévérité « %s » inconnue du serveur IRIS : case #%s laissé "
+                    "tel quel", nom, case_id)
+        return None
+    try:
+        r = case._s.pi_post(f"/manage/cases/update/{case_id}",
+                            data={"case_severity_id": sid})
+        if not r.is_success():
+            log.warning("sévérité non posée sur le case #%s : %s", case_id,
+                        r.get_msg())
+            return None
+    except Exception as e:  # noqa: BLE001
+        log.warning("sévérité non posée sur le case #%s : %s", case_id, e)
+        return None
+    return nom
+
+
+def _description(incident: dict, verdict: str, maj: bool = False) -> str:
+    """Description du case. UNE seule forme, création comme rafraîchissement.
+
+    Le rafraîchissement réécrivait une description sans la priorité de l'asset :
+    un case vieux de dix minutes perdait le contexte qui justifiait sa place
+    dans la file.
+    """
+    desc = (f"Incident #{incident['id']} corrélé par le soc-agent, "
+            f"{incident['alert_count']} alertes, niveau max "
+            f"{incident['max_level']}/15")
+    if incident.get("priorite"):
+        role = incident.get("asset_role") or "rôle non déclaré"
+        desc += (f", asset P{incident['priorite']} ({role}), sévérité effective "
+                 f"{incident.get('severite') or incident['max_level']}/15")
+    desc += f". Verdict IA : {verdict}."
+    if maj:
+        desc += " (mis à jour — nouvelles alertes rattachées)"
+    return desc
+
+
 # Descriptions courtes des actions, pour un rapport lisible par un humain.
 LIBELLE_ACTION = {
     "propose_kill_process": "Tuer le process malveillant",
@@ -2229,19 +2369,11 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
         raise RuntimeError(f"client IRIS échoué : {e}") from e
 
     nom = _nommer_case(conn, incident, triage, alertes)
-    # Priorité de l'asset dans la DESCRIPTION et dans un TAG : l'API legacy
-    # d'IRIS ne prend pas de sévérité à la création du case (cf. add_case), et
-    # l'analyste doit pouvoir trier sa file sur ce critère. Le tag `P1` est
-    # filtrable côté IRIS, la description reste lisible sans filtre.
+    # Priorité de l'asset dans la DESCRIPTION et dans un TAG (filtrable côté
+    # IRIS). La SÉVÉRITÉ du case, elle, se pose après création : `add_case` ne
+    # la prend pas et tous les cases naissent « Low ».
     priorite = incident.get("priorite")
-    desc = (f"Incident #{incident['id']} corrélé par le soc-agent, "
-            f"{incident['alert_count']} alertes, niveau max "
-            f"{incident['max_level']}/15")
-    if priorite:
-        role = incident.get("asset_role") or "rôle non déclaré"
-        desc += (f", asset P{priorite} ({role}), sévérité effective "
-                 f"{incident.get('severite') or incident['max_level']}/15")
-    desc += f". Verdict IA : {verdict}."
+    desc = _description(incident, verdict)
 
     log.debug("  appel add_case (nom=%s, cust=%s)", nom[:50], config.IRIS_CUSTOMER)
     r = case.add_case(
@@ -2271,6 +2403,10 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     # prend pas de tags, d'où l'update juste après la création).
     _taguer(case, case_id, incident.get("agent_name"),
             f"P{priorite}" if priorite else None)
+    sev = _poser_severite(case, case_id, incident, triage)
+    if sev:
+        log.info("case #%s : sévérité IRIS %s (effective %s/15, asset P%s)",
+                 case_id, sev, incident.get("severite"), priorite)
 
     # IOC (best-effort : un type inconnu ne doit pas faire échouer le case) et
     # asset « machine touchée ». Les ids récupérés servent à lier la timeline :
@@ -2398,16 +2534,19 @@ def rafraichir_case(conn, incident: dict, triage: dict) -> int:
 
     alertes = _alertes(conn, incident["id"])
     fp = triage["verdict"] == "false_positive"
-    desc = (f"Incident #{incident['id']} corrélé par le soc-agent, "
-            f"{incident['alert_count']} alertes, niveau max "
-            f"{incident['max_level']}/15. Verdict IA : {triage['verdict']}. "
-            "(mis à jour — nouvelles alertes rattachées)")
+    desc = _description(incident, triage["verdict"], maj=True)
     try:
         case.update_case(case_id=case_id, case_description=desc)
     except Exception as e:  # noqa: BLE001
         log.debug("maj description case #%s : %s", case_id, e)
 
-    _taguer(case, case_id, incident.get("agent_name"))
+    _taguer(case, case_id, incident.get("agent_name"),
+            f"P{incident['priorite']}" if incident.get("priorite") else None)
+    # La sévérité est REJOUÉE : une salve peut avoir fait monter le niveau max,
+    # donc la sévérité effective. Un case ouvert « High » qui devient une
+    # attaque avérée doit changer de couleur dans la file, sans quoi l'analyste
+    # trie sur une information périmée.
+    _poser_severite(case, case_id, incident, triage)
     ioc_ids = _poser_iocs(case, case_id, alertes)
     asset_ids = _poser_asset_machine(case, case_id, incident, alertes,
                                      compromis=not fp)

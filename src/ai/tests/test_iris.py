@@ -5,6 +5,7 @@ doivent l'être : c'est ce qui atterrit dans le dossier d'incident lu par un
 analyste.
 """
 
+from soc_agent import iris
 from soc_agent.iris import (
     CLASSIF_BRUTE,
     CLASSIF_DEFAUT,
@@ -488,3 +489,54 @@ def test_note_tp_fallback_sans_llm(monkeypatch):
                                          "entity": "/root/c.docx", "raw": "{}"}])
     assert "Ransomware confirmé" in note           # justification du triage en repli
     assert "Isoler l'hôte" in note                  # action décidée listée
+
+
+# --- Sévérité du case IRIS ---------------------------------------------------
+
+def test_severite_iris_suit_la_severite_effective():
+    # Niveau 12 (seuil d'ouverture d'incident) sur un asset ordinaire.
+    assert iris.nom_severite(12) == iris.SEV_HIGH
+    # Le même niveau 12 sur un P1 : sévérité effective 14, toujours High.
+    assert iris.nom_severite(14) == iris.SEV_HIGH
+    # Niveau 13 sur un P1 : 15, attaque avérée sur un asset qui compte.
+    assert iris.nom_severite(15) == iris.SEV_CRITICAL
+    # Niveau 12 sur un poste de laboratoire : 11.
+    assert iris.nom_severite(11) == iris.SEV_MEDIUM
+
+
+def test_severite_iris_plancher_ueba():
+    # max_level bas PAR CONSTRUCTION : le barème dirait « Low », alors que
+    # l'incident n'existe que parce qu'un écart statistique l'a justifié.
+    assert iris.nom_severite(5) == iris.SEV_LOW
+    assert iris.nom_severite(5, ueba=True) == iris.SEV_MEDIUM
+    # Le plancher ne RABAISSE jamais un incident UEBA déjà élevé.
+    assert iris.nom_severite(15, ueba=True) == iris.SEV_CRITICAL
+
+
+def test_severite_iris_plafond_faux_positif():
+    assert iris.nom_severite(14, verdict="false_positive",
+                             actions=["close_false_positive"]) == iris.SEV_LOW
+
+
+def test_severite_iris_pas_de_plafond_si_le_garde_fou_a_refuse():
+    # Clôture refusée (niveau trop haut, ou motif d'injection) : le verdict du
+    # modèle est précisément ce qu'on ne croit pas. Rétrograder la sévérité
+    # appliquerait quand même la décision qu'on vient de refuser.
+    assert iris.nom_severite(
+        14, verdict="false_positive",
+        actions=["escalate_human", "open_case"]) == iris.SEV_HIGH
+
+
+def test_severite_iris_correspondance_par_nom_pas_par_id():
+    # Les ids IRIS ne suivent pas l'ordre de gravité (1=Medium, 3=Informational,
+    # 4=Low) : une correspondance écrite sur les ids serait fausse.
+    ids = iris._SEVERITES_REPLI
+    assert ids["medium"] < ids["informational"] < ids["low"] < ids["high"]
+
+
+def test_description_porte_la_priorite_a_la_mise_a_jour():
+    inc = {"id": 7, "alert_count": 3, "max_level": 12, "priorite": 1,
+           "asset_role": "dc", "severite": 14}
+    for maj in (False, True):
+        d = iris._description(inc, "true_positive", maj=maj)
+        assert "asset P1 (dc)" in d and "14/15" in d

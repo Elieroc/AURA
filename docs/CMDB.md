@@ -116,8 +116,44 @@ la vraie machine reprend sa priorité.
   contexte qui était le sien.
 - Le prompt de triage porte une ligne `criticité asset`, avec la conséquence
   écrite en clair — « P1 » seul n'apprend rien à un modèle.
-- Le case IRIS porte un tag `P1`…`P4` (filtrable) et la sévérité effective dans
-  sa description. L'API legacy d'IRIS ne prend pas de sévérité à la création du
-  case, d'où le tag.
+- Le case IRIS porte un tag `P1`…`P4` (filtrable), la sévérité effective dans sa
+  description, et **sa sévérité IRIS est calculée** (voir plus bas).
 - Les KPI exportés (`wazuh-ai-*`) portent la priorité : un MTTD moyen ne veut
   rien dire tant qu'il mélange le DC et les postes de test.
+
+## Sévérité du case IRIS
+
+IRIS pose « Low » à tout case créé, et `add_case` n'expose pas la sévérité :
+elle se règle après coup (`/manage/cases/update/<id>`, `case_severity_id`), à la
+création comme à chaque rafraîchissement — une salve qui fait monter le niveau
+max doit changer la couleur du case.
+
+Le barème part de la **sévérité effective**, pas de `max_level` : le projet n'a
+qu'une définition de la gravité, et l'analyste retrouve dans sa file l'ordre que
+le pipeline a appliqué.
+
+| Sévérité effective | Case IRIS | Exemple |
+|---|---|---|
+| ≥ 15 | Critical | niveau 13 sur un P1, niveau 15 sur un P3 |
+| 12-14 | High | niveau 12 (seuil d'ouverture), niveau 12 sur un P1 → 14 |
+| 8-11 | Medium | niveau 12 sur un P4 → 11 |
+| 4-7 | Low | |
+| ≤ 3 | Informational | |
+
+Deux correctifs par-dessus le barème :
+
+- **plancher UEBA à Medium.** Un incident comportemental a un `max_level` bas
+  *par construction* (alertes 3-11) : le barème le peindrait « Low » alors qu'il
+  n'existe que parce qu'un écart statistique l'a justifié.
+- **plafond « Low » sur un faux positif** — une activité jugée légitime ne
+  trône pas en tête de file. **Sauf** si le garde-fou déterministe a refusé la
+  clôture (`escalate_human` dans les actions finales) : le verdict est alors
+  précisément ce qu'on ne croit pas, et rétrograder la sévérité reviendrait à
+  appliquer la décision qu'on vient de refuser — ce qu'une injection cherche
+  justement à obtenir.
+
+**Piège : les ids de l'échelle IRIS ne suivent pas l'ordre de gravité** —
+`3`=Informational, `4`=Low, `1`=Medium, `5`=High, `6`=Critical, `2`=Unspecified.
+Une correspondance écrite sur les ids serait silencieusement fausse. Le code
+raisonne sur les **noms** et résout l'id à l'exécution
+(`/manage/severities/list`), avec repli journalisé si le serveur ne répond pas.
