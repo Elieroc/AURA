@@ -312,7 +312,15 @@ def surveiller() -> dict:
                 try:
                     _fermer_case(p["iris_case_id"], p, minutes)
                 except Exception as e:  # noqa: BLE001
-                    log.warning("clôture case %s : %s", p["iris_case_id"], e)
+                    # On laisse la panne OUVERTE en base pour retenter au tour
+                    # suivant. La marquer rétablie ici alors que le dossier
+                    # reste ouvert dans IRIS laisserait un case fantôme que
+                    # plus rien ne referme — arrivé le 2026-08-12, IRIS
+                    # OOM-killé pile au moment où debian2 réémettait.
+                    log.warning("clôture case %s impossible (%s) — panne "
+                                "laissée ouverte, nouvelle tentative au "
+                                "prochain passage", p["iris_case_id"], e)
+                    continue
             conn.execute(
                 "UPDATE capteur_pannes SET statut='retablie', retablie_a=now() "
                 "WHERE id=%s", (p["id"],))
