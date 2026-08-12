@@ -535,3 +535,24 @@ def test_cache_absent_signale_sans_planter(monkeypatch, tmp_path):
     monkeypatch.setattr(integration.sys, "argv", ["custom-misp", str(fichier)])
     integration.main()
     assert len(envoyes) == 1 and "error" in envoyes[0]["misp"]
+
+
+# --- Confiance d'après les tags ---------------------------------------------
+
+def test_automate_non_supervise_traite_comme_de_la_masse():
+    # Mesuré le 2026-08-12 : le feed OSINT du CIRCL relaie les publications
+    # quotidiennes de Maltrail, soit 255 361 des 692 543 IOC « curés » du cache,
+    # tous avec to_ids=1. En `curated`, ils matchaient aux niveaux 12 à 14 —
+    # donc un incident et un triage LLM par match, sur ce qui est par
+    # construction une blocklist. La taxonomie MISP l'annonce elle-même.
+    assert cti._confiance([cti.TAG_NON_SUPERVISE, "tlp:clear"]) == cti.CONFIANCE_MASSE
+
+
+def test_extraction_aura_reste_distincte_du_cure():
+    assert cti._confiance([cti.TAG_EXTRACTION]) == cti.CONFIANCE_EXTRAITE
+    assert cti._confiance(["tlp:clear", "type:OSINT"]) == cti.CONFIANCE_CUREE
+
+
+def test_le_plus_prudent_gagne_si_les_deux_tags_sont_presents():
+    assert cti._confiance([cti.TAG_EXTRACTION,
+                           cti.TAG_NON_SUPERVISE]) == cti.CONFIANCE_MASSE

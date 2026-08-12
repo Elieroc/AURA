@@ -73,6 +73,19 @@ CONFIANCE_MASSE = "bulk"
 # d'un IOC signé CERT-FR, et déclencherait au même niveau.
 TAG_EXTRACTION = "aura:source:extracted"
 
+# Marquage de la taxonomie MISP pour un événement produit par un automate, sans
+# vérification humaine. Ces événements sont traités comme de la RÉPUTATION DE
+# MASSE, pas comme du renseignement curé.
+#
+# Ce n'est pas un principe, c'est une mesure : le feed OSINT du CIRCL relaie les
+# publications quotidiennes de Maltrail (agrégation de blacklists), soit 255 361
+# des 692 543 IOC « curés » du cache le 2026-08-12 — 37 %, tous avec to_ids=1.
+# Les laisser en `curated` les faisait matcher aux niveaux 12 à 14, donc ouvrir
+# un incident et payer un triage LLM sur ce qui est, par construction, la même
+# chose qu'une blocklist. La taxonomie MISP l'annonce elle-même ; il suffisait
+# de la lire.
+TAG_NON_SUPERVISE = 'misp:automation-level="unsupervised"'
+
 
 # ---------------------------------------------------------------------------
 # Normalisation
@@ -290,6 +303,22 @@ def rafraichir_feeds(simulation: bool = False) -> None:
 # Extraction des IOC
 # ---------------------------------------------------------------------------
 
+def _confiance(tags: list[str]) -> str:
+    """Confiance d'un attribut MISP, d'après les tags de son événement.
+
+    L'ordre des deux tests compte : un événement produit par NOTRE extraction
+    porte les deux marquages possibles dans certains cas, et c'est le plus
+    prudent qui doit gagner. Un automate non supervisé (Maltrail et assimilés,
+    relayés par les feeds OSINT) est de la réputation de masse, quelle que soit
+    l'organisation qui le publie.
+    """
+    if TAG_NON_SUPERVISE in tags:
+        return CONFIANCE_MASSE
+    if TAG_EXTRACTION in tags:
+        return CONFIANCE_EXTRAITE
+    return CONFIANCE_CUREE
+
+
 def _ip_perimee(type_cache: str, evenement: dict) -> bool:
     """Une IP dont l'événement d'origine est trop vieux ne vaut plus rien.
 
@@ -367,12 +396,10 @@ def attributs_misp(page_taille: int = 5000):
                 "event_id": str(attr.get("event_id") or ""),
                 "tags": ",".join(t for t in tags if t)[:300],
                 "niveau_menace": int(evenement.get("threat_level_id") or 4),
-                # Nos propres extractions d'articles remontent par le même
-                # chemin que les feeds officiels — c'est voulu, MISP est la
-                # seule mémoire — mais elles ne valent pas la même chose, et le
-                # tag est le seul endroit où cette différence survit.
-                "confiance": (CONFIANCE_EXTRAITE if TAG_EXTRACTION in tags
-                              else CONFIANCE_CUREE),
+                # Tout remonte par le même chemin — c'est voulu, MISP est la
+                # seule mémoire — mais tout ne vaut pas la même chose, et les
+                # tags sont le seul endroit où la différence survit.
+                "confiance": _confiance(tags),
             }
             total += 1
             if total > config.CTI_MAX_IOC:

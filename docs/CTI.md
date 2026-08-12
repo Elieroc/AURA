@@ -225,6 +225,19 @@ dire que quelqu'un a essayé ; une de nos machines qui parle à une IP
 malveillante veut dire que quelque chose tourne déjà chez nous et appelle son
 opérateur. Ce n'est pas le même incident, ça ne peut pas être le même niveau.
 
+**Attention aux automates relayés par les feeds OSINT.** Le feed du CIRCL
+relaie les publications quotidiennes de Maltrail (agrégation de blacklists) :
+255 361 des 692 543 IOC « curés » du cache le 2026-08-12, soit 37 %, tous avec
+`to_ids=1`. En `curated` ils matchaient aux niveaux 12 à 14 — donc un incident
+et un triage LLM par match, sur ce qui est par construction une blocklist. Ils
+sont désormais classés `bulk` d'après leur propre tag de taxonomie MISP,
+`misp:automation-level="unsupervised"`. À vérifier après tout ajout de feed :
+
+```sql
+-- côté cache : ce qui prétend être curé sans l'être
+SELECT source, count(*) FROM ioc WHERE confiance='curated' GROUP BY 1 ORDER BY 2 DESC;
+```
+
 **Trois niveaux de confiance, trois niveaux d'alerte.** `curated` (feed d'un
 CERT ou d'un projet reconnu) > `extracted` (IOC tiré d'un article par le modèle)
 > `bulk` (réputation de masse). Quand une même valeur est portée par plusieurs
