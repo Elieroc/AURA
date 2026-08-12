@@ -122,3 +122,12 @@ def test_le_prompt_reste_muet_sans_priorite():
 def test_role_non_declare_dit_comme_tel():
     texte = rendre(_incident(priorite=4), [])
     assert "rôle non déclaré" in texte
+
+
+def test_capteur_n_affiche_pas_le_role_de_la_machine():
+    # Priorité rabattue : afficher « P3 — firewall » à côté de « serveur interne
+    # sans exposition » est contradictoire, et fait analyser le mauvais hôte.
+    texte = rendre(_incident(priorite=3, asset_role="capteur"), [])
+    assert "firewall" not in texte
+    assert "agent capteur" in texte
+    assert "autres machines" in texte

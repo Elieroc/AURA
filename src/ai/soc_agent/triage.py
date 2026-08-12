@@ -85,9 +85,11 @@ SELECT i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
        i.ueba, i.ueba_score, i.ueba_motifs,
        COALESCE(i.priorite, %(prio_defaut)s) AS priorite,
        COALESCE(i.severite, i.max_level) AS severite,
-       a.role AS asset_role
+       -- Colonne de l'incident, PAS une jointure sur `assets` : le rôle qui a
+       -- servi au calcul peut différer du rôle déclaré (capteur rabattu), et
+       -- une jointure afficherait une priorité et un rôle qui se contredisent.
+       i.asset_role
   FROM incidents i
-  LEFT JOIN assets a ON a.agent_id = i.agent_id
  WHERE (%(tous)s
         OR NOT EXISTS (SELECT 1 FROM triages t WHERE t.incident_id = i.id)
         -- incident enrichi depuis son dernier triage, MAIS pas indéfiniment :

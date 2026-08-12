@@ -563,3 +563,12 @@ CREATE INDEX IF NOT EXISTS assets_nom ON assets (nom);
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS priorite smallint;
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS severite smallint;
 CREATE INDEX IF NOT EXISTS incidents_priorite ON incidents (priorite, severite DESC);
+
+-- Rôle de l'asset TEL QU'IL A COMPTÉ pour cet incident. Figé à l'ouverture,
+-- comme la priorité, et pour la même raison — mais aussi parce que le rôle
+-- déclaré dans `assets` et celui qui a servi au calcul peuvent DIVERGER : sur un
+-- agent capteur, la priorité est rabattue et le rôle vaut « capteur », pas
+-- « firewall ». Une jointure sur `assets` au moment de la lecture affichait donc
+-- « P3 — firewall (serveur interne sans exposition) », qui se contredit tout
+-- seul. Constaté sur l'incident #2829 (pfSense) le 2026-08-12.
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS asset_role text;

@@ -2456,11 +2456,10 @@ SELECT DISTINCT ON (i.id)
        i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
        i.alert_count, i.max_level, i.mitre_tactics, i.entities, i.iris_case_id,
        i.ueba, i.ueba_score, i.ueba_motifs, i.priorite, i.severite,
-       a.role AS asset_role,
+       i.asset_role,
        t.verdict, t.confidence, t.mitre, t.actions, t.reason
   FROM incidents i
   JOIN triages t ON t.incident_id = i.id
-  LEFT JOIN assets a ON a.agent_id = i.agent_id
  WHERE {filtre}
    AND (%(un_seul)s::bigint IS NULL OR i.id = %(un_seul)s)
  ORDER BY i.id, t.created_at DESC

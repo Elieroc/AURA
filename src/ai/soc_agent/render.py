@@ -22,6 +22,10 @@ MAX_REGLES = 6
 MAX_OBJETS = 5
 MAX_IPS = 3
 
+# Valeur de `asset_role` posée par la corrélation quand la priorité vient du
+# rabattement capteur (cf. assets.priorite_agent) et non du rôle de la machine.
+ROLE_CAPTEUR = "capteur"
+
 # Ce que « P1 » signifie, en clair. Un chiffre nu n'apprend rien au modèle : il
 # lui faut la CONSÉQUENCE d'une compromission pour la peser dans son verdict.
 ECHELLE_PRIORITE = {
@@ -141,10 +145,20 @@ def rendre(incident: dict, alertes: list[dict], max_regles: int = MAX_REGLES) ->
     priorite = incident.get("priorite")
     if priorite:
         role = incident.get("asset_role")
+        if role == ROLE_CAPTEUR:
+            # Le rôle propre de la machine (pare-feu, hyperviseur) serait ici
+            # trompeur : ce qu'elle remonte décrit d'AUTRES machines. Le dire au
+            # modèle change son analyse — l'hôte visé n'est pas celui qui parle.
+            detail = ("agent capteur — sa télémétrie décrit l'activité d'autres "
+                      "machines (IDS, hyperviseur), la machine réellement "
+                      "concernée est à identifier dans les données")
+        else:
+            detail = ECHELLE_PRIORITE.get(int(priorite), "")
         lignes.append(
             f"criticité asset  : P{priorite}"
-            + (f" — {role}" if role else " — rôle non déclaré")
-            + f" ({ECHELLE_PRIORITE.get(int(priorite), '')})")
+            + ("" if role == ROLE_CAPTEUR else
+               f" — {role}" if role else " — rôle non déclaré")
+            + f" ({detail})")
 
     tactiques = incident.get("mitre_tactics") or []
     if tactiques:

@@ -175,8 +175,9 @@ SELECT id, ts, agent_id, rule_id, rule_level, rule_groups, mitre_tactics,
 INSERT_INCIDENT = """
 INSERT INTO incidents (agent_id, agent_name, first_seen, last_seen,
                        alert_count, max_level, rule_ids, mitre_tactics, entities,
-                       ueba, ueba_score, ueba_motifs, priorite, severite)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ueba, ueba_score, ueba_motifs, priorite, severite,
+                       asset_role)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 RETURNING id
 """
 
@@ -562,6 +563,9 @@ def correler(min_level: int, attach_min_level: int | None = None) -> tuple[int, 
                 json.dumps(motifs, ensure_ascii=False) if motifs else None,
                 prio["priorite"],
                 assets.severite(niveau_max, prio["priorite"]),
+                # Le rôle TEL QU'IL A COMPTÉ, et pas celui de la CMDB : sur un
+                # capteur, la priorité est rabattue et le rôle vaut « capteur ».
+                prio["role"],
             )).fetchone()["id"]
 
             conn.execute(
