@@ -180,6 +180,29 @@ Pour placer un reverse proxy devant, trois variables et **pas une de moins** :
 | `MISP_BASE_URL` | URL **publique** du proxy — les liens, cookies et redirections de MISP en dépendent |
 | `MISP_REAL_IP_FROM` + `MISP_X_FORWARDED_FOR=true` | sinon toutes les connexions sont journalisées avec l'IP du proxy |
 
+`MISP_REAL_IP_FROM` doit lister **tous** les sauts de confiance, et le premier
+n'est pas celui qu'on croit : le port étant publié par `docker-proxy`, le nginx
+de MISP voit comme source la passerelle du réseau docker, pas le reverse proxy.
+Nginx ne remonte la chaîne `X-Forwarded-For` que de saut en saut — il faut donc
+les deux, sinon il s'arrête au premier et journalise l'adresse du proxy.
+Mesuré en prod le 2026-08-12 :
+
+```
+MISP_REAL_IP_FROM=172.23.0.0/16,192.168.2.11   # bridge docker, puis le proxy
+```
+
+Vérification (l'IP doit être celle du client, pas celle d'un intermédiaire) :
+
+```sql
+SELECT ip, action, created FROM logs ORDER BY id DESC LIMIT 5;
+```
+
+Contrepartie assumée : nginx fait alors confiance à l'en-tête `X-Forwarded-For`
+de tout ce qui vient du bridge docker. Quiconque atteint directement le port
+publié peut donc falsifier l'adresse journalisée. C'est acceptable tant que ce
+port n'est ouvert qu'au réseau d'administration ; ça ne l'est plus s'il est
+exposé plus largement.
+
 `MISP_URL` est l'URL **client** du soc-agent : elle doit suivre
 `MISP_BIND_ADDR` (le port n'écoute que sur cette interface — viser la loopback
 alors que le bind est sur l'IP d'admin donne un « Connection refused », mesuré
