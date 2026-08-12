@@ -184,6 +184,24 @@ Rappel du piège documenté dans
 peut masquer un décalage de champ. La validation qui compte se fait sur une
 alerte réelle du pipeline.
 
+## Fraîcheur : ce que `CTI_FENETRE` ne fait pas
+
+Le paramètre `last` de l'API MISP filtre sur la date de **dernière
+modification** de l'attribut, pas sur l'âge du renseignement. Tout ce qu'un
+feed vient d'importer a été modifié aujourd'hui : au premier import,
+`CTI_FENETRE=90d` ne filtre quasiment rien. Mesuré à la mise en service du
+2026-08-12 — des IP publiées comme C2 en **2015** (rapport Rocket Kitten,
+via CIRCL) étaient dans le cache, prêtes à déclencher du niveau 12-14.
+
+Le vrai filtre de fraîcheur est `CTI_IP_MAX_JOURS` (365 par défaut), qui porte
+sur la date de l'**événement** et ne vise **que les IP** :
+
+| Type | Périme ? | Pourquoi |
+|---|---|---|
+| IP | oui | Seul IOC qui change de main. Une IP de C2 de 2015 est aujourd'hui un hébergeur mutualisé ou un CDN. |
+| Empreinte | non | Le fichier est le même pour toujours. |
+| Domaine / URL | non | Reste rattaché à qui l'a déposé. |
+
 ## Modes de panne à connaître
 
 - **Cache périmé.** Une CTI figée ne lève aucune erreur : elle répond, avec du

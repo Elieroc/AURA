@@ -998,10 +998,28 @@ CTI_CACHE = os.environ.get("CTI_CACHE", "/var/lib/aura-cti/ioc.db")
 CTI_CATALOGUE = os.environ.get(
     "CTI_CATALOGUE", str(Path(__file__).parent / "cti_feeds.yaml"))
 
-# Profondeur de l'extraction MISP. 90 jours : au-delà, un IOC de C2 n'a plus
-# de valeur de détection (l'infrastructure a tourné) mais garde son coût de
-# faux positif — une IP de cloud recyclée redevient légitime.
+# Profondeur de l'extraction MISP, au sens du paramètre `last` de son API.
+#
+# ATTENTION à ce que cette fenêtre filtre RÉELLEMENT : la date de dernière
+# MODIFICATION de l'attribut, pas l'âge du renseignement. Tout ce qu'un feed
+# vient d'importer a été modifié aujourd'hui, donc au premier import elle ne
+# filtre presque rien. Son vrai rôle est d'éviter de retirer sans arrêt le
+# corpus entier ; la fraîcheur du renseignement, elle, est traitée par
+# CTI_IP_MAX_JOURS ci-dessous.
 CTI_FENETRE = os.environ.get("CTI_FENETRE", "90d")
+
+# Âge maximum, en jours, de l'ÉVÉNEMENT d'origine pour qu'une IP soit retenue.
+# 0 désactive le filtre.
+#
+# Le seul type d'IOC qui change de main. Une IP publiée comme C2 en 2015 est
+# aujourd'hui un hébergeur mutualisé ou le CDN de quelqu'un — la garder, c'est
+# se garantir des alertes de niveau 12 à 14 sur du trafic parfaitement
+# légitime, signées « CIRCL ». Constaté au premier import en prod le
+# 2026-08-12 : 1 603 IP curées, dont des adresses de rapports de 2015.
+#
+# Ne s'applique QU'AUX IP : une empreinte de fichier ne périme jamais (le
+# fichier est le même), et un domaine reste rattaché à qui l'a déposé.
+CTI_IP_MAX_JOURS = int(os.environ.get("CTI_IP_MAX_JOURS", "365"))
 
 # Types d'attributs MISP retenus. Tout le reste (fichiers, clés de registre,
 # mutex, adresses mail...) n'a pas de champ correspondant dans une alerte Wazuh

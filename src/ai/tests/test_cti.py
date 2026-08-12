@@ -183,6 +183,44 @@ def test_attributs_misp_ignore_les_types_sans_equivalent(monkeypatch):
     assert iocs[0]["confiance"] == cti.CONFIANCE_CUREE
 
 
+def _attribut(type_misp, valeur, date_evenement):
+    return {"type": type_misp, "value": valeur, "category": "Network activity",
+            "event_id": "7", "Event": {"info": "Rapport", "threat_level_id": "2",
+                                       "date": date_evenement,
+                                       "Orgc": {"name": "CIRCL"}}}
+
+
+def test_ip_dun_vieux_rapport_ecartee_mais_pas_son_hash(monkeypatch):
+    # `CTI_FENETRE` porte sur la date de MODIFICATION de l'attribut : tout ce
+    # qu'un feed vient d'importer passe, y compris des IP de rapports de 2015.
+    # Les garder, c'est alerter au niveau 12-14 sur l'hébergeur mutualisé qui a
+    # récupéré l'adresse depuis. Un hash, lui, ne périme jamais.
+    monkeypatch.setattr(cti, "_misp", _fausse_reponse([
+        _attribut("ip-dst", "107.6.172.54", "2015-09-01"),
+        _attribut("md5", "d41d8cd98f00b204e9800998ecf8427e", "2015-09-01"),
+        _attribut("domain", "evil.example.com", "2015-09-01"),
+        _attribut("ip-dst", "23.45.67.89", "2026-08-01"),
+    ]))
+    valeurs = {i["valeur"] for i in cti.attributs_misp()}
+    assert valeurs == {"d41d8cd98f00b204e9800998ecf8427e", "evil.example.com",
+                       "23.45.67.89"}
+
+
+def test_ip_sans_date_devenement_conservee(monkeypatch):
+    # Sans date, on ne sait pas : jeter serait perdre du renseignement valide
+    # sur une simple lacune de métadonnée.
+    monkeypatch.setattr(cti, "_misp", _fausse_reponse([
+        _attribut("ip-dst", "23.45.67.89", "")]))
+    assert [i["valeur"] for i in cti.attributs_misp()] == ["23.45.67.89"]
+
+
+def test_peremption_ip_desactivable(monkeypatch):
+    monkeypatch.setattr(cti.config, "CTI_IP_MAX_JOURS", 0)
+    monkeypatch.setattr(cti, "_misp", _fausse_reponse([
+        _attribut("ip-dst", "107.6.172.54", "2015-09-01")]))
+    assert [i["valeur"] for i in cti.attributs_misp()] == ["107.6.172.54"]
+
+
 def test_extraction_misp_demande_bien_les_indicateurs_de_detection(monkeypatch):
     vus = {}
 

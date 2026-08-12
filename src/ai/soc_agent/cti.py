@@ -275,6 +275,35 @@ def rafraichir_feeds(simulation: bool = False) -> None:
 # Extraction des IOC
 # ---------------------------------------------------------------------------
 
+def _ip_perimee(type_cache: str, evenement: dict) -> bool:
+    """Une IP dont l'événement d'origine est trop vieux ne vaut plus rien.
+
+    `CTI_FENETRE` ne filtre PAS l'âge du renseignement : le paramètre `last` de
+    MISP porte sur la date de dernière MODIFICATION de l'attribut, et tout ce
+    qu'un feed vient d'importer est modifié aujourd'hui. Mesuré au premier
+    import en prod le 2026-08-12 : des IP publiées comme C2 en 2015 (rapport
+    Rocket Kitten) se retrouvaient dans le cache, prêtes à déclencher une
+    alerte de niveau 12 à 14.
+
+    Une adresse IP est le seul type d'IOC qui change de main : une IP de C2 de
+    2015 est aujourd'hui, au mieux, un hébergeur mutualisé, au pire le CDN de
+    quelqu'un. Un HASH, lui, ne périme jamais — le fichier est le même — et un
+    domaine reste rattaché à qui l'a déposé. D'où une péremption qui ne vise
+    que les IP, sur la date de l'ÉVÉNEMENT et non celle de l'attribut.
+    """
+    if type_cache != "ip" or not config.CTI_IP_MAX_JOURS:
+        return False
+    date = (evenement or {}).get("date") or ""
+    if not date:
+        return False   # sans date, on ne jette pas : on ne sait pas
+    try:
+        age = (datetime.now(timezone.utc)
+               - datetime.fromisoformat(date).replace(tzinfo=timezone.utc)).days
+    except ValueError:
+        return False
+    return age > config.CTI_IP_MAX_JOURS
+
+
 def attributs_misp(page_taille: int = 5000):
     """IOC curés de MISP : attributs `to_ids`, publiés, dans la fenêtre.
 
@@ -311,6 +340,8 @@ def attributs_misp(page_taille: int = 5000):
             if not valeur:
                 continue
             evenement = attr.get("Event") or {}
+            if _ip_perimee(type_cache, evenement):
+                continue
             tags = [t.get("name", "") for t in (attr.get("Tag") or [])]
             yield {
                 "valeur": valeur,
