@@ -197,13 +197,26 @@ def _corps_feed(feed: dict) -> dict:
     }
 
 
+def _cle_url(url: str) -> str:
+    """Forme de comparaison d'une URL de feed.
+
+    Le slash final est ignoré : MISP livre d'origine le feed CIRCL sous
+    `.../feed-osint` et le catalogue l'écrit `.../feed-osint/`. Sans cette
+    normalisation, le bootstrap ne reconnaît pas le feed préinstallé et en crée
+    un second — mesuré en prod le 2026-08-12, deux entrées pour CIRCL et deux
+    pour Botvrij. Les deux exemplaires activés, MISP tire le même feed deux
+    fois et double les événements.
+    """
+    return (url or "").strip().rstrip("/").lower()
+
+
 def bootstrap_feeds(simulation: bool = False, catalogue: dict | None = None) -> dict:
     """Déclare et active dans MISP les feeds du catalogue. Idempotent.
 
     Rapproché sur l'URL et non sur le nom : c'est l'URL qui identifie un feed,
     et c'est elle qui casse quand un fournisseur déménage. Un feed déjà présent
-    est mis à jour, jamais dupliqué — la fonction peut tourner à chaque
-    démarrage.
+    — y compris ceux livrés d'origine par MISP — est mis à jour, jamais
+    dupliqué : la fonction peut tourner à chaque démarrage.
     """
     cat = catalogue or charger_catalogue()
     voulus = list(cat["misp_feeds"]) + [
@@ -217,13 +230,14 @@ def bootstrap_feeds(simulation: bool = False, catalogue: dict | None = None) -> 
         for bl in cat["blocklists"] for url in bl["urls"]
     ]
 
-    existants = {f["Feed"]["url"]: f["Feed"] for f in _misp("GET", "/feeds/index")
+    existants = {_cle_url(f["Feed"]["url"]): f["Feed"]
+                 for f in _misp("GET", "/feeds/index")
                  if isinstance(f, dict) and "Feed" in f} if not simulation else {}
 
     resume = {"crees": [], "mis_a_jour": [], "inchanges": []}
     for feed in voulus:
         corps = _corps_feed(feed)
-        deja = existants.get(feed["url"])
+        deja = existants.get(_cle_url(feed["url"]))
         if simulation:
             resume["crees" if not deja else "mis_a_jour"].append(feed["nom"])
             continue
@@ -246,10 +260,14 @@ def rafraichir_feeds(simulation: bool = False) -> None:
     Les deux appels sont asynchrones (MISP met des jobs en file) : ils rendent
     la main tout de suite, et le premier `--sync` utile peut donc arriver
     quelques minutes plus tard. C'est normal, pas une panne.
+
+    `fetchFromAllFeeds` et non `fetchFromFeed/all` : le second attend un
+    identifiant numérique et répond 404 sur « all » (mesuré en prod le
+    2026-08-12). Seul `cacheFeeds` accepte une portée nommée.
     """
     if simulation:
         return
-    _misp("POST", "/feeds/fetchFromFeed/all")
+    _misp("POST", "/feeds/fetchFromAllFeeds")
     _misp("POST", "/feeds/cacheFeeds/all")
 
 

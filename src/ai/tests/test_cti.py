@@ -239,6 +239,39 @@ def test_blocklist_injoignable_ne_fait_pas_echouer_les_autres(monkeypatch):
     assert [i["source"] for i in cti.blocklists(catalogue)] == ["vivante"]
 
 
+def test_bootstrap_reconnait_un_feed_preinstalle_par_misp(monkeypatch):
+    # MISP livre le feed CIRCL sous `.../feed-osint`, le catalogue l'écrit avec
+    # un slash final. Sans normalisation, le bootstrap crée un DOUBLON : les
+    # deux exemplaires activés, MISP tire le même feed deux fois et double les
+    # événements. Constaté en prod le 2026-08-12.
+    appels = []
+
+    def _misp(methode, chemin, corps=None):
+        appels.append((methode, chemin))
+        if chemin == "/feeds/index":
+            return [{"Feed": {"id": "1", "url": "https://www.circl.lu/doc/misp/feed-osint",
+                              "enabled": True, "caching_enabled": True}}]
+        return {}
+
+    monkeypatch.setattr(cti, "_misp", _misp)
+    catalogue = {"misp_feeds": [{"nom": "CIRCL OSINT Feed", "format": "misp",
+                                 "url": "https://www.circl.lu/doc/misp/feed-osint/"}],
+                 "blocklists": []}
+    resume = cti.bootstrap_feeds(catalogue=catalogue)
+    assert resume["crees"] == []
+    assert not any(chemin == "/feeds/add" for _, chemin in appels)
+
+
+def test_rafraichissement_utilise_le_bon_endpoint(monkeypatch):
+    # /feeds/fetchFromFeed/{id} attend un identifiant numérique et répond 404
+    # sur « all » — mesuré en prod. Seul cacheFeeds accepte une portée nommée.
+    appels = []
+    monkeypatch.setattr(cti, "_misp",
+                        lambda m, c, corps=None: appels.append(c))
+    cti.rafraichir_feeds()
+    assert appels == ["/feeds/fetchFromAllFeeds", "/feeds/cacheFeeds/all"]
+
+
 def test_catalogue_livre_est_coherent():
     catalogue = cti.charger_catalogue()
     assert catalogue["misp_feeds"] and catalogue["blocklists"]
