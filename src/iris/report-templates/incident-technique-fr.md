@@ -29,7 +29,13 @@
 {{ (v if v else '—') | string | replace('\n', ' ') | replace('\r', ' ') | replace('|', '\\|') | truncate(n, true, '…') }}
 {%- endmacro -%}
 {%- set notes_ia = notes | selectattr('directory') | selectattr('directory.name', 'equalto', 'Analyse IA') | list -%}
-{%- set notes_autres = notes | rejectattr('note_id', 'in', notes_ia | map(attribute='note_id') | list) | list -%}
+{#- Notes du répertoire « Exposition » : posées par soc_agent.iris._note_exposition,
+    calculées en Python depuis l'inventaire de vulnérabilités (aucun LLM). Elles
+    ont leur SECTION propre et sortent donc de `notes_autres`, sinon elles
+    atterriraient dans le fourre-tout de fin de rapport. -#}
+{%- set notes_expo = notes | selectattr('directory') | selectattr('directory.name', 'equalto', 'Exposition') | list -%}
+{%- set notes_traitees = (notes_ia + notes_expo) | map(attribute='note_id') | list -%}
+{%- set notes_autres = notes | rejectattr('note_id', 'in', notes_traitees) | list -%}
 {%- set evts_cles = timeline | selectattr('event_in_summary') | list -%}
 {%- set assets_compromis = assets | selectattr('asset_compromise_status_id', 'equalto', 1) | list -%}
 
@@ -79,7 +85,20 @@ _Aucune note dans le répertoire « Analyse IA » : le triage LLM n'a pas produi
 _Aucun asset rattaché au case._
 {%- endif %}
 
-## 4. Indicateurs de compromission
+## 4. Exposition aux vulnérabilités
+
+{% if notes_expo -%}
+{% for note in notes_expo %}
+> Source : inventaire Wazuh (Vulnerability Detection), journalisé par `soc_agent.vulns` — dernière mise à jour {{ dt(note.note_lastupdate) }}. Contenu **calculé**, pas rédigé par le modèle : contrairement à la section 2, il ne comporte ni interprétation ni verdict.
+
+{{ corps(note.note_content) }}
+
+{% endfor -%}
+{%- else -%}
+_Aucune note d'exposition sur ce case._ Deux causes possibles, qu'il faut distinguer avant de conclure quoi que ce soit : le case est antérieur à la mise en service du suivi VOC, ou le module `soc_agent.vulns` n'a pas pu répondre au moment de sa création. Dans les deux cas, l'absence de cette section ne signifie **pas** que la machine est à jour — l'état courant se lit avec `python -m soc_agent.vulns --agent <id>` ou dans le dashboard VOC.
+{%- endif %}
+
+## 5. Indicateurs de compromission
 
 {% if iocs -%}
 | Valeur | Type | Description | Tags |
@@ -91,7 +110,7 @@ _Aucun asset rattaché au case._
 _Aucun IOC rattaché au case._
 {%- endif %}
 
-## 5. Chronologie
+## 6. Chronologie
 
 {% if timeline -%}
 Fenêtre : {{ dt((timeline | first).event_date) }} → {{ dt((timeline | last).event_date) }} (UTC).
@@ -103,7 +122,7 @@ Fenêtre : {{ dt((timeline | first).event_date) }} → {{ dt((timeline | last).e
 {% endfor %}
 
 {% if evts_cles -%}
-### 5.1 Détail des évènements marquants
+### 6.1 Détail des évènements marquants
 
 {% for e in evts_cles %}
 #### {{ dt(e.event_date, '%Y-%m-%d %H:%M:%S') }} — {{ e.event_title }}
@@ -118,7 +137,7 @@ IOC liés : {% for i in e.iocs %}`{{ i.ioc_value }}`{{ ", " if not loop.last }}{
 _Timeline vide._
 {%- endif %}
 
-## 6. Actions et remédiations
+## 7. Actions et remédiations
 
 {% if tasks -%}
 | Action | Statut | Ouverte le | Clôturée le | Tags | Détail |
@@ -132,7 +151,7 @@ Rappel : les tâches posées par le soc-agent tracent des remédiations **déjà
 _Aucune action enregistrée sur ce case._
 {%- endif %}
 
-## 7. Preuves conservées
+## 8. Preuves conservées
 
 {% if evidences -%}
 {{ evidences | length }} alerte(s) Wazuh brute(s) archivée(s) dans l'onglet Evidence du case (full_log + JSON complet consultables dans IRIS).
@@ -147,7 +166,7 @@ _Aucune pièce de preuve attachée._
 {%- endif %}
 
 {% if notes_autres %}
-## 8. Notes complémentaires
+## 9. Notes complémentaires
 
 {% for note in notes_autres %}
 ### {{ note.note_title }}

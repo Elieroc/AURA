@@ -46,6 +46,10 @@ SIMPLE_PATTERNS = {
     # combiné soc-ai-all-alerts : ce ne sont pas des alertes, les compter avec
     # elles fausserait tous les totaux du dashboard Global.
     "wazuh-ai-*": "wazuh-ai-*",
+    # VOC (soc-agent-vulns). Hors du pattern combiné pour la même raison que
+    # wazuh-ai-* : ce ne sont pas des alertes. Couvre à la fois les index datés
+    # de séries temporelles et l'index stable wazuh-voc-vulns.
+    "wazuh-voc-*": "wazuh-voc-*",
 }
 
 # Candidats du pattern combiné — filtrés à l'existence réelle avant de

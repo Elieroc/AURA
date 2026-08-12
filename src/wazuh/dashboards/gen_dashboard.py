@@ -20,6 +20,7 @@ IDX_WINDOWS = "wazuh-windows-*"
 IDX_WEB = "wazuh-web-*"
 IDX_YARA = "wazuh-yara-*"
 IDX_AI = "wazuh-ai-*"      # métriques d'IA produites par ai/soc_agent/metrics.py
+IDX_VOC = "wazuh-voc-*"    # VOC : vulnérabilités du parc, produit par ai/soc_agent/vulns.py
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "soc-ai-dashboards.ndjson")
 
 HIST_PARAMS = {
@@ -126,9 +127,15 @@ def saved_search(sid, title, description, columns, idx, query="", sort=None):
     }
 
 
-def dashboard(did, title, description, layout):
+def dashboard(did, title, description, layout, time_from="now-30d"):
     """layout: liste de (obj_id, x, y, w, h[, type]) — grille 48 colonnes.
-    type vaut "visualization" (défaut) ou "search"."""
+    type vaut "visualization" (défaut) ou "search".
+
+    `time_from` : fenêtre restaurée à l'ouverture. Paramétrable pour le VOC, dont
+    les documents de vulnérabilité sont horodatés à leur PREMIÈRE observation —
+    une fenêtre de 30 jours y masquerait justement les plus anciennes, donc les
+    plus en retard.
+    """
     panels, refs = [], []
     for i, item in enumerate(layout, 1):
         vid, x, y, w, h = item[:5]
@@ -144,7 +151,7 @@ def dashboard(did, title, description, layout):
             "description": description,
             "hits": 0,
             "timeRestore": True,
-            "timeFrom": "now-30d",
+            "timeFrom": time_from,
             "timeTo": "now",
             "refreshInterval": {"pause": False, "value": 60000},
             "panelsJSON": json.dumps(panels),
@@ -1482,6 +1489,330 @@ objs.append(dashboard("soc-ai-ai", "AI",
         ("soc-ai-ai-cost-by-agent",   32, 89, 16, 13),
         ("soc-ai-ai-latest",           0, 102, 48, 20, "search"),
     ]))
+
+# ---------- Visualisations : VOC (index wazuh-voc-*) ----------
+#
+# Trois natures de documents dans le meme index pattern, distinguees par
+# event_type (meme convention que wazuh-ai-*) :
+#
+#   voc_parc  : une ligne par passage du scanner — compteurs du parc entier.
+#               C'est la SERIE TEMPORELLE : burn-down, flux, couverture.
+#   voc_asset : une ligne par machine par passage — score d'exposition.
+#   voc_vuln  : une ligne par vulnerabilite, REECRITE a chaque passage, dans
+#               l'index STABLE wazuh-voc-vulns. Horodatee a sa premiere
+#               observation, pas au run : c'est ce qui permet de lire l'age.
+#
+# PIEGE, consequence directe : toute visualisation basee sur voc_vuln est
+# tributaire de la fenetre de temps du dashboard. Une fenetre de 30 jours
+# masquerait les vulnerabilites vues il y a plus de 30 jours — c'est-a-dire
+# exactement les plus vieilles, donc les plus en retard, donc les seules qui
+# comptent pour un VOC. D'ou le time_from a 3 ans sur ce dashboard.
+
+Q_PARC = "event_type:voc_parc"
+Q_ASSET = "event_type:voc_asset"
+Q_VULN_OUVERTE = "event_type:voc_vuln and voc.statut:ouverte"
+Q_VULN_CORRIGEE = "event_type:voc_vuln and voc.resolue:true"
+
+
+def dernier(vid, titre, champ, label, query=Q_PARC, taille=48):
+    """Grand chiffre = DERNIERE valeur relevee, via top_hits.
+
+    Pas `max` ni `avg` : ces documents sont des JAUGES, pas des evenements. Un
+    `max` sur 30 jours afficherait le pic de dette du mois en le faisant passer
+    pour l'etat courant — exactement le contraire de ce qu'un VOC doit montrer.
+    """
+    return vis(vid, titre, {
+        "title": titre,
+        "type": "metric",
+        "aggs": [{"id": "1", "enabled": True, "type": "top_hits",
+                  "schema": "metric",
+                  "params": {"field": champ, "aggregate": "concat", "size": 1,
+                             "sortField": "timestamp", "sortOrder": "desc",
+                             "customLabel": label}}],
+        "params": {"addTooltip": True, "addLegend": False, "type": "metric",
+                   "metric": {"percentageMode": False, "useRanges": False,
+                              "colorSchema": "Green to Red", "metricColorMode": "None",
+                              "colorsRange": [{"from": 0, "to": 10 ** 12}],
+                              "labels": {"show": True}, "invertColors": False,
+                              "style": {"bgFill": "#000", "bgColor": False,
+                                        "labelColor": False, "subText": "",
+                                        "fontSize": taille}}},
+    }, IDX_VOC, query=query)
+
+
+objs.append(dernier("soc-ai-voc-ouvertes", "Vulnerabilites ouvertes",
+                    "voc.ouvertes", "Ouvertes"))
+objs.append(dernier("soc-ai-voc-critical", "Dont critiques",
+                    "voc.critical", "Critical"))
+objs.append(dernier("soc-ai-voc-horssla", "Hors delai (SLA depasse)",
+                    "voc.hors_sla_total", "Hors SLA"))
+objs.append(dernier("soc-ai-voc-score-max", "Machine la plus exposee (score)",
+                    "voc.score_max", "Score /100"))
+
+# La couverture d'abord, et en premier ecran du dashboard. Une dette qui baisse
+# parce que des machines ont cesse de repondre n'est pas une amelioration : sans
+# ce chiffre a cote du burn-down, rien ne permet de faire la difference. Le VOC
+# de la flotte a deja connu ce type d'angle mort (auditd absent partout, agents
+# clones muets) — la lecon est cablee ici.
+objs.append(dernier("soc-ai-voc-couverture", "Couverture d'inventaire",
+                    "voc.couverture_pct", "% des machines connues", taille=36))
+objs.append(dernier("soc-ai-voc-muettes", "Machines sans inventaire",
+                    "voc.machines_muettes", "Machines", taille=36))
+
+# Burn-down : la dette par severite dans le temps. `max` par intervalle et non
+# `avg` : plusieurs passages par intervalle relevent la meme jauge, la moyenne
+# lisserait une variation reelle survenue entre deux scans.
+objs.append(vis("soc-ai-voc-burndown", "Dette de vulnerabilites dans le temps", {
+    "title": "Dette de vulnerabilites dans le temps",
+    "type": "area",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "max", "schema": "metric",
+         "params": {"field": "voc.critical", "customLabel": "Critical"}},
+        {"id": "3", "enabled": True, "type": "max", "schema": "metric",
+         "params": {"field": "voc.high", "customLabel": "High"}},
+        {"id": "4", "enabled": True, "type": "max", "schema": "metric",
+         "params": {"field": "voc.medium", "customLabel": "Medium"}},
+        {"id": "5", "enabled": True, "type": "max", "schema": "metric",
+         "params": {"field": "voc.low", "customLabel": "Low"}},
+        {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
+         "params": {"field": "timestamp", "timeRange": {"from": "now-90d", "to": "now"},
+                    "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
+                    "interval": "auto", "drop_partials": False, "min_doc_count": 1,
+                    "extended_bounds": {}}},
+    ],
+    "params": {"type": "area", "grid": {"categoryLines": False},
+               "categoryAxes": [{"id": "CategoryAxis-1", "type": "category",
+                                  "position": "bottom", "show": True, "style": {},
+                                  "scale": {"type": "linear"},
+                                  "labels": {"show": True, "filter": True, "truncate": 100},
+                                  "title": {}}],
+               "valueAxes": [{"id": "ValueAxis-1", "name": "LeftAxis-1", "type": "value",
+                               "position": "left", "show": True, "style": {},
+                               "scale": {"type": "linear", "mode": "normal"},
+                               "labels": {"show": True, "rotate": 0, "filter": False,
+                                          "truncate": 100},
+                               "title": {"text": "Vulnerabilites ouvertes"}}],
+               "seriesParams": [
+                   {"show": True, "type": "area", "mode": "stacked",
+                    "data": {"label": lbl, "id": i}, "valueAxis": "ValueAxis-1",
+                    "drawLinesBetweenPoints": True, "lineWidth": 2,
+                    "showCircles": False, "interpolate": "linear"}
+                   for i, lbl in (("1", "Critical"), ("3", "High"),
+                                  ("4", "Medium"), ("5", "Low"))],
+               "addTooltip": True, "addLegend": True, "legendPosition": "right",
+               "times": [], "addTimeMarker": False, "labels": {"show": False},
+               "thresholdLine": {"show": False, "value": 10, "width": 1,
+                                  "style": "full", "color": "#E7664C"}},
+}, IDX_VOC, query=Q_PARC,
+   ui_state={"vis": {"colors": {"Critical": "#BD271E", "High": "#EC7014",
+                                "Medium": "#F5C700", "Low": "#6092C0"}}}))
+
+# Capacite de remediation : ce qui arrive contre ce qui part. Une dette stable
+# avec un flux eleve des deux cotes n'a pas le meme sens qu'une dette stable
+# sans aucun mouvement — la premiere est un parc vivant, la seconde un parc
+# abandonne. `sum` ici (et non `max`) : ce sont des DELTAS par passage.
+objs.append(vis("soc-ai-voc-flux", "Vulnerabilites apparues / corrigees", {
+    "title": "Vulnerabilites apparues / corrigees",
+    "type": "histogram",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "sum", "schema": "metric",
+         "params": {"field": "voc.nouvelles", "customLabel": "Apparues"}},
+        {"id": "3", "enabled": True, "type": "sum", "schema": "metric",
+         "params": {"field": "voc.corrigees", "customLabel": "Corrigees"}},
+        {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
+         "params": {"field": "timestamp", "timeRange": {"from": "now-90d", "to": "now"},
+                    "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
+                    "interval": "1d", "drop_partials": False, "min_doc_count": 1,
+                    "extended_bounds": {}}},
+    ],
+    "params": {**HIST_PARAMS,
+               "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
+                              "title": {"text": "Vulnerabilites"}}]},
+}, IDX_VOC, query=Q_PARC,
+   ui_state={"vis": {"colors": {"Apparues": "#E7664C", "Corrigees": "#54B399"}}}))
+
+# MTTR de remediation. `voc.age_jours` porte deux sens selon le statut — age
+# tant que c'est ouvert, delai de correction une fois resolu — d'ou le filtre
+# `voc.resolue:true`, sans lequel ce chiffre melangerait la dette et la vitesse.
+objs.append(vis("soc-ai-voc-mttr", "Delai moyen de correction", {
+    "title": "Delai moyen de correction",
+    "type": "metric",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "avg", "schema": "metric",
+         "params": {"field": "voc.age_jours", "customLabel": "Moyenne (jours)"}},
+        {"id": "2", "enabled": True, "type": "percentiles", "schema": "metric",
+         "params": {"field": "voc.age_jours", "percents": [50],
+                    "customLabel": "Mediane (jours)"}},
+        {"id": "3", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Vulnerabilites corrigees"}},
+    ],
+    "params": {"addTooltip": True, "addLegend": False, "type": "metric",
+               "metric": {"percentageMode": False, "useRanges": False,
+                          "colorSchema": "Green to Red", "metricColorMode": "None",
+                          "colorsRange": [{"from": 0, "to": 10 ** 12}],
+                          "labels": {"show": True}, "invertColors": False,
+                          "style": {"bgFill": "#000", "bgColor": False,
+                                    "labelColor": False, "subText": "",
+                                    "fontSize": 36}}},
+}, IDX_VOC, query=Q_VULN_CORRIGEE))
+
+objs.append(vis("soc-ai-voc-mttr-severite", "Delai de correction par severite", {
+    "title": "Delai de correction par severite",
+    "type": "horizontal_bar",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "avg", "schema": "metric",
+         "params": {"field": "voc.age_jours", "customLabel": "Jours (moyenne)"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "vulnerability.severity", "size": 6,
+                    "customLabel": "Severite"}},
+    ],
+    "params": {"type": "histogram", "grid": {"categoryLines": False},
+               "categoryAxes": [{"id": "CategoryAxis-1", "type": "category",
+                                  "position": "left", "show": True, "style": {},
+                                  "scale": {"type": "linear"},
+                                  "labels": {"show": True, "rotate": 0, "filter": False,
+                                             "truncate": 200}, "title": {}}],
+               "valueAxes": [{"id": "ValueAxis-1", "name": "BottomAxis-1", "type": "value",
+                               "position": "bottom", "show": True, "style": {},
+                               "scale": {"type": "linear", "mode": "normal"},
+                               "labels": {"show": True, "rotate": 75, "filter": True,
+                                          "truncate": 100},
+                               "title": {"text": "Jours"}}],
+               "seriesParams": [{"show": True, "type": "histogram", "mode": "normal",
+                                  "data": {"label": "Jours (moyenne)", "id": "1"},
+                                  "valueAxis": "ValueAxis-1",
+                                  "drawLinesBetweenPoints": True, "lineWidth": 2,
+                                  "showCircles": True}],
+               "addTooltip": True, "addLegend": False, "legendPosition": "right",
+               "times": [], "addTimeMarker": False, "labels": {},
+               "thresholdLine": {"show": False, "value": 10, "width": 1,
+                                  "style": "full", "color": "#E7664C"}},
+}, IDX_VOC, query=Q_VULN_CORRIGEE))
+
+# Score d'exposition par machine. `max` sur voc.score et non un compte de
+# documents : chaque passage ecrit une ligne par machine, donc un `count` classerait
+# les agents par nombre de scans — c'est-a-dire par rien du tout. Le max sur la
+# fenetre donne le pire etat de la machine, ce qu'on veut dans une liste de
+# priorisation. Trie par la metrique (orderBy "1"), pas alphabetiquement.
+objs.append(vis("soc-ai-voc-score-agents",
+                "Machines les plus exposees (score /100)", {
+    "title": "Machines les plus exposees (score /100)",
+    "type": "horizontal_bar",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "max", "schema": "metric",
+         "params": {"field": "voc.score", "customLabel": "Score /100"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "agent.name", "size": 20,
+                    "customLabel": "Machine"}},
+    ],
+    "params": {"type": "histogram", "grid": {"categoryLines": False},
+               "categoryAxes": [{"id": "CategoryAxis-1", "type": "category",
+                                  "position": "left", "show": True, "style": {},
+                                  "scale": {"type": "linear"},
+                                  "labels": {"show": True, "rotate": 0,
+                                             "filter": False, "truncate": 200},
+                                  "title": {}}],
+               "valueAxes": [{"id": "ValueAxis-1", "name": "BottomAxis-1",
+                               "type": "value", "position": "bottom", "show": True,
+                               "style": {}, "scale": {"type": "linear", "mode": "normal"},
+                               "labels": {"show": True, "rotate": 75, "filter": True,
+                                          "truncate": 100},
+                               "title": {"text": "Score d'exposition /100"}}],
+               "seriesParams": [{"show": True, "type": "histogram", "mode": "normal",
+                                  "data": {"label": "Score /100", "id": "1"},
+                                  "valueAxis": "ValueAxis-1",
+                                  "drawLinesBetweenPoints": True, "lineWidth": 2,
+                                  "showCircles": True}],
+               "addTooltip": True, "addLegend": False, "legendPosition": "right",
+               "times": [], "addTimeMarker": False, "labels": {},
+               "thresholdLine": {"show": False, "value": 10, "width": 1,
+                                  "style": "full", "color": "#E7664C"}},
+}, IDX_VOC, query=Q_ASSET))
+
+objs.append(vis("soc-ai-voc-risque-priorite",
+                "Vulnerabilites ouvertes par priorite d'asset", {
+    "title": "Vulnerabilites ouvertes par priorite d'asset",
+    "type": "histogram",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Vulnerabilites"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "asset.priorite_label", "orderBy": "_key",
+                    "order": "asc", "size": 4, "customLabel": "Priorite"}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "group",
+         "params": {**TERMS, "field": "vulnerability.severity", "size": 6,
+                    "customLabel": "Severite"}},
+    ],
+    "params": {**HIST_PARAMS,
+               "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
+                              "title": {"text": "Vulnerabilites ouvertes"}}]},
+}, IDX_VOC, query=Q_VULN_OUVERTE,
+   ui_state={"vis": {"colors": {"critical": "#BD271E", "high": "#EC7014",
+                                "medium": "#F5C700", "low": "#6092C0"}}}))
+
+# Top paquets : le meilleur retour sur investissement de patch. Un seul paquet
+# (le meta-paquet noyau) porte souvent la moitie de la dette d'un hote Debian —
+# ce panneau evite de la traiter CVE par CVE.
+objs.append(vis("soc-ai-voc-top-paquets", "Paquets porteurs de la dette", {
+    "title": "Paquets porteurs de la dette",
+    "type": "table",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Vulnerabilites"}},
+        {"id": "3", "enabled": True, "type": "cardinality", "schema": "metric",
+         "params": {"field": "agent.name", "customLabel": "Machines"}},
+        {"id": "4", "enabled": True, "type": "max", "schema": "metric",
+         "params": {"field": "vulnerability.score_base",
+                    "customLabel": "Pire CVSS"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
+         "params": {**TERMS, "field": "package.name", "size": 20,
+                    "customLabel": "Paquet"}},
+    ],
+    "params": {"perPage": 10, "showPartialRows": False,
+               "showMetricsAtAllLevels": False, "showTotal": False,
+               "totalFunc": "sum", "percentageCol": ""},
+}, IDX_VOC, query=Q_VULN_OUVERTE))
+
+# La file d'attente reelle du VOC : ce qui a depasse son delai, trie par retard.
+# Une recherche sauvegardee et non une table d'agregation, pour que l'analyste
+# puisse ouvrir la ligne, voir le paquet exact et pivoter.
+objs.append(saved_search(
+    "soc-ai-voc-horssla-liste", "Vulnerabilites hors delai (a traiter)",
+    "Vulnerabilites ouvertes dont le SLA (severite x priorite de l'asset) est "
+    "depasse, du plus gros retard au plus faible.",
+    ["agent.name", "asset.priorite_label", "vulnerability.id",
+     "vulnerability.severity", "vulnerability.score_base", "package.name",
+     "package.version", "voc.age_jours", "voc.sla_jours", "voc.retard_jours"],
+    IDX_VOC, query="event_type:voc_vuln and voc.hors_sla:true",
+    sort=[["voc.retard_jours", "desc"]]))
+
+objs.append(dashboard("soc-ai-voc", "VOC",
+    "Gestion des vulnerabilites du parc (index wazuh-voc-*, alimente par le "
+    "conteneur soc-agent-vulns) : dette, capacite de remediation, respect des "
+    "delais, et couverture d'inventaire. La couverture se lit AVANT le "
+    "burn-down : une dette qui baisse parce qu'une machine a cesse de repondre "
+    "n'est pas une amelioration.",
+    [
+        ("soc-ai-voc-ouvertes",       0,  0, 12, 10),
+        ("soc-ai-voc-critical",      12,  0, 12, 10),
+        ("soc-ai-voc-horssla",       24,  0, 12, 10),
+        ("soc-ai-voc-score-max",     36,  0, 12, 10),
+        ("soc-ai-voc-couverture",     0, 10, 24,  8),
+        ("soc-ai-voc-muettes",       24, 10, 24,  8),
+        ("soc-ai-voc-burndown",       0, 18, 48, 15),
+        ("soc-ai-voc-flux",           0, 33, 32, 14),
+        ("soc-ai-voc-mttr",          32, 33, 16, 14),
+        ("soc-ai-voc-score-agents",   0, 47, 24, 15),
+        ("soc-ai-voc-risque-priorite", 24, 47, 24, 15),
+        ("soc-ai-voc-mttr-severite",  0, 62, 16, 14),
+        ("soc-ai-voc-top-paquets",   16, 62, 32, 14),
+        ("soc-ai-voc-horssla-liste",  0, 76, 48, 20, "search"),
+    ],
+    # 3 ans : les documents `voc_vuln` sont horodates a leur PREMIERE
+    # observation. Une fenetre courte masquerait les vulnerabilites les plus
+    # anciennes — donc les plus en retard — et le panneau « hors delai »
+    # afficherait le contraire de la verite.
+    time_from="now-3y"))
 
 with open(OUT, "w") as f:
     for o in objs:

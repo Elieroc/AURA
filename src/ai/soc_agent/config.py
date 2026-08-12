@@ -704,6 +704,85 @@ LLM_COUT_USD_PAR_MTOKEN_IN_CACHE = float(
 LLM_COUT_USD_PAR_MTOKEN_OUT = float(
     os.environ.get("LLM_COUT_USD_PAR_MTOKEN_OUT", "0.28"))
 
+# --- VOC : gestion des vulnérabilités (vulns.py) ----------------------------
+#
+# Le module Vulnerability Detection de Wazuh écrit dans un index d'ÉTAT
+# (`wazuh-states-vulnerabilities-*`) : le document d'une vulnérabilité corrigée
+# est SUPPRIMÉ, pas archivé. On y voit donc toujours « où on en est », jamais
+# « est-ce qu'on progresse ». Un VOC a besoin de la seconde question — burn-down,
+# MTTR de remédiation, respect des SLA — et elle ne se répond qu'avec un
+# historique qu'il faut construire soi-même. C'est tout l'objet de vulns.py.
+VULN_INDICES = os.environ.get("VULN_INDICES", "wazuh-states-vulnerabilities-*")
+
+# Index d'export du VOC, distinct de `wazuh-ai-*` : ce ne sont ni des alertes ni
+# des métriques d'IA, et les mélanger fausserait les compteurs des deux.
+VOC_INDEX_PREFIX = os.environ.get("VOC_INDEX_PREFIX", "wazuh-voc")
+
+# Poids d'une vulnérabilité selon sa sévérité, pour l'agrégat de risque. Échelle
+# volontairement TRÈS non linéaire : il faut dix Medium, ou cinquante Low, pour
+# peser une seule Critical. Un score qui les additionnerait à poids égal serait
+# dominé par le bruit de fond des distributions (2 500 CVE ouvertes sur un Debian
+# à jour, en écrasante majorité Low/Medium sans exploit connu) et classerait les
+# machines par nombre de paquets installés.
+VULN_POIDS_SEVERITE = {
+    "critical": 10.0, "high": 4.0, "medium": 1.0, "low": 0.2,
+    # Sévérité absente du feed (334 par hôte Debian mesurées le 2026-08-12) :
+    # ni ignorée — c'est une CVE réelle — ni traitée comme grave.
+    "": 0.5, "untriaged": 0.5, "unknown": 0.5,
+}
+
+# Multiplicateur de risque par priorité CMDB (P1..P4). Même logique que
+# `SEVERITE_BONUS_PRIORITE` sur les incidents : une CVE critique sur le
+# contrôleur de domaine et la même sur un poste de lab ne sont pas le même
+# problème, et un VOC qui les compte pareil fait patcher dans le désordre.
+VOC_FACTEUR_PRIORITE = {
+    p + 1: float(v) for p, v in enumerate(
+        os.environ.get("VOC_FACTEUR_PRIORITE", "4,2,1,0.5").split(","))}
+
+# Délai de correction attendu, EN JOURS, par sévérité puis par priorité (P1..P4).
+# Ce sont des objectifs de service, pas une norme : ils viennent du bon sens
+# (« une critical sur le DC se traite dans la semaine ») et se règlent par
+# déploiement. Leur seule fonction est de rendre le retard MESURABLE — sans
+# échéance, « vulnérabilité ouverte depuis 210 jours » n'est qu'un nombre.
+VOC_SLA_JOURS = {
+    "critical": [7, 14, 30, 60],
+    "high": [15, 30, 60, 90],
+    "medium": [30, 60, 90, 180],
+    "low": [90, 180, 365, 365],
+}
+for _ligne in os.environ.get("VOC_SLA_JOURS", "").split(";"):
+    if ":" in _ligne:
+        _sev, _jours = _ligne.split(":", 1)
+        try:
+            _v = [int(j) for j in _jours.split(",")]
+        except ValueError:
+            sys.exit(f"VOC_SLA_JOURS : valeur non entière dans « {_ligne} »")
+        if len(_v) != 4:
+            sys.exit(f"VOC_SLA_JOURS : 4 valeurs (P1..P4) attendues dans « {_ligne} »")
+        VOC_SLA_JOURS[_sev.strip().lower()] = _v
+
+# Charge pondérée qui vaut 100/100 dans le score d'exposition. Le score est
+# log-compressé : la charge va de quelques unités (serveur tenu à jour) à
+# plusieurs dizaines de milliers (un Debian dont le méta-paquet noyau traîne
+# 2 500 CVE), et une échelle linéaire écraserait tout le parc en bas. À relever
+# si l'essentiel des machines sature à 100 — auquel cas le score ne trie plus
+# rien et il faut lire les compteurs bruts, exportés à côté.
+VOC_CHARGE_MAX = float(os.environ.get("VOC_CHARGE_MAX", "20000"))
+
+# Sévérité minimale à partir de laquelle une vulnérabilité hors SLA est exportée
+# document par document dans l'index VOC. Les Low/Medium ouvertes se comptent par
+# milliers et n'ont pas de valeur d'action individuelle : elles restent dans les
+# agrégats, pas dans la table « à traiter ».
+VOC_SEVERITES_DETAIL = {
+    s.strip().lower() for s in
+    os.environ.get("VOC_SEVERITES_DETAIL", "critical,high").split(",")
+    if s.strip()}
+
+# Nombre de CVE listées nommément dans la section « Exposition aux
+# vulnérabilités » d'un case IRIS. Au-delà, la note devient un catalogue que
+# personne ne lit et le rapport généré déborde.
+VOC_MAX_CVE_RAPPORT = int(os.environ.get("VOC_MAX_CVE_RAPPORT", "10"))
+
 # --- Réglage automatique des règles Wazuh (rule_tuning.py) ------------------
 #
 # Second étage de la whitelist : au lieu d'écarter l'alerte APRÈS coup dans le

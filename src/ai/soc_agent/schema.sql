@@ -572,3 +572,75 @@ CREATE INDEX IF NOT EXISTS incidents_priorite ON incidents (priorite, severite D
 -- « P3 — firewall (serveur interne sans exposition) », qui se contredit tout
 -- seul. Constaté sur l'incident #2829 (pfSense) le 2026-08-12.
 ALTER TABLE incidents ADD COLUMN IF NOT EXISTS asset_role text;
+
+-- ---------------------------------------------------------------------------
+-- VOC : cycle de vie des vulnérabilités (cf. vulns.py)
+-- ---------------------------------------------------------------------------
+--
+-- Pourquoi une table ici alors que Wazuh a déjà `wazuh-states-vulnerabilities-*` :
+-- cet index est un index d'ÉTAT. Quand un paquet est corrigé, Wazuh SUPPRIME le
+-- document. On y lit donc en permanence « ce qui est ouvert maintenant », et
+-- jamais « combien y en avait-il il y a un mois », ni « en combien de temps
+-- corrige-t-on ». Les deux questions d'un VOC sont précisément celles-là.
+--
+-- Cette table est donc le JOURNAL que l'index d'état n'est pas : une ligne par
+-- (machine, CVE, paquet), qui naît à la première observation, se met à jour tant
+-- que la vulnérabilité est vue, et est CLÔTURÉE (jamais supprimée) quand elle
+-- disparaît de l'inventaire.
+CREATE TABLE IF NOT EXISTS vulnerabilites (
+    id            bigserial PRIMARY KEY,
+    agent_id      text NOT NULL,
+    agent_name    text,
+    cve           text NOT NULL,
+    -- Le paquet, pas sa VERSION, fait partie de la clé. Une montée de version
+    -- qui ne corrige pas la CVE (backport, correctif partiel) doit prolonger la
+    -- même ligne : sinon chaque `apt upgrade` fabriquerait une résolution et une
+    -- réapparition, et le MTTR mesurerait la cadence des mises à jour au lieu du
+    -- délai de correction.
+    paquet        text NOT NULL,
+    version       text,
+    severite      text NOT NULL DEFAULT '',
+    score_base    real,
+    -- Date de publication de la CVE, telle que le feed la donne. Sert à
+    -- distinguer « ouverte depuis longtemps chez nous » de « publiée hier » :
+    -- une CVE de 2019 encore ouverte est une dette, une CVE d'hier est normale.
+    publiee_a     timestamptz,
+    -- Première observation PAR NOUS. Distincte de `vulnerability.detected_at`
+    -- de Wazuh, qui se réinitialise quand le scanner recalcule : le SLA doit
+    -- courir depuis une date stable, sinon un redémarrage du manager remet tous
+    -- les compteurs de retard à zéro et le VOC se félicite tout seul.
+    vue_a         timestamptz NOT NULL DEFAULT now(),
+    derniere_vue  timestamptz NOT NULL DEFAULT now(),
+    -- Renseignée quand la vulnérabilité disparaît de l'inventaire de la machine.
+    -- La ligne n'est PAS supprimée : c'est elle qui porte l'historique de
+    -- remédiation, donc le seul MTTR mesurable.
+    corrigee_a    timestamptz,
+    statut        text NOT NULL DEFAULT 'ouverte',
+    os_nom        text,
+    UNIQUE (agent_id, cve, paquet)
+);
+CREATE INDEX IF NOT EXISTS vuln_ouvertes
+    ON vulnerabilites (agent_id, severite) WHERE statut = 'ouverte';
+CREATE INDEX IF NOT EXISTS vuln_corrigees ON vulnerabilites (corrigee_a)
+    WHERE corrigee_a IS NOT NULL;
+CREATE INDEX IF NOT EXISTS vuln_cve ON vulnerabilites (cve);
+
+-- Un passage du scanner. Sert à deux choses, dont une vitale :
+--
+-- 1. tracer la couverture (combien de machines ont réellement répondu) ;
+-- 2. GARDE-FOU de clôture. Une machine dont l'agent est arrêté, ou dont
+--    syscollector est cassé, disparaît de l'index d'état — ses vulnérabilités
+--    aussi. Sans mémoire des agents VUS à ce passage, le diff conclurait que
+--    tout a été corrigé d'un coup : burn-down parfait, MTTR magnifique, et un
+--    parc devenu invisible. On ne clôture donc QUE sur les agents qui ont
+--    effectivement répondu à ce scan.
+CREATE TABLE IF NOT EXISTS vuln_scans (
+    id             bigserial PRIMARY KEY,
+    lance_a        timestamptz NOT NULL DEFAULT now(),
+    agents_vus     integer NOT NULL DEFAULT 0,
+    vulns_vues     integer NOT NULL DEFAULT 0,
+    nouvelles      integer NOT NULL DEFAULT 0,
+    corrigees      integer NOT NULL DEFAULT 0,
+    agents_muets   text[] NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS vuln_scans_recents ON vuln_scans (lance_a DESC);

@@ -392,6 +392,23 @@ donc `decoder.name` ne discrimine rien. Ce test est placé **avant** celui de
   `wazuh-ai-*` est un index pattern à part et reste **hors** du pattern combiné
   `soc-ai-all-alerts` : ces documents ne sont pas des alertes, les y compter
   fausserait tous les totaux du dashboard Global.
+- **Template d'index `wazuh-voc` — À CRÉER aussi** (VOC, `src/ai/soc_agent/vulns.py`,
+  cf. `docs/VOC.md`). Même piège de mapping que les deux précédents, plus un
+  second qui lui est propre : `voc.hors_sla` est un **booléen** sur les documents
+  `voc_vuln` et n'existe pas ailleurs (les agrégats portent `voc.hors_sla_total`,
+  un entier). Sans mapping explicite, le premier document indexé fixe le type et
+  les suivants sont **rejetés en silence** par le bulk.
+  ```bash
+  source .env   # depuis la racine du dépôt
+  curl -sk -u admin:$INDEXER_PASSWORD -X PUT "https://localhost:9200/_template/wazuh-voc" \
+    -H "Content-Type: application/json" -d @src/wazuh/config/wazuh_indexer/wazuh-voc-template.json
+  ```
+  Comme `wazuh-ai-*`, `wazuh-voc-*` reste **hors** de `soc-ai-all-alerts`. Noter
+  que ce pattern couvre deux natures de documents : les index datés
+  (`wazuh-voc-YYYY.MM.DD`, séries temporelles) et l'index **stable**
+  `wazuh-voc-vulns`, qui porte un document par vulnérabilité réécrit à chaque
+  passage. Ne pas appliquer de politique de rétention par date à ce dernier :
+  c'est lui qui porte le cycle de vie, donc le MTTR.
 - **Vérifier les visualisations après chaque import** : `_import` de saved
   objects réussit même quand les champs référencés n'existent pas — la visu
   s'ouvre ensuite sur « No results found » ou une erreur d'agrégation, sans

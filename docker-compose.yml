@@ -258,6 +258,21 @@ services:
     container_name: soc-agent-metrics
     command: sh -c "while true; do python -m soc_agent.metrics; sleep 300; done"
 
+  # VOC : tient le journal des vulnérabilités du parc et alimente le dashboard
+  # VOC (cf. vulns.py, docs/VOC.md). L'index d'état de Wazuh
+  # (wazuh-states-vulnerabilities-*) supprime le document d'une vulnérabilité
+  # corrigée — sans ce job, aucun historique, donc ni burn-down, ni MTTR, ni
+  # suivi de SLA.
+  #
+  # Cadence HORAIRE : syscollector inventorie toutes les heures et le feed CTI
+  # est rafraîchi toutes les heures (feed-update-interval). Scanner plus souvent
+  # ne ferait que relire la même chose — la dette de vulnérabilités bouge à la
+  # journée, pas à la minute.
+  soc-agent-vulns:
+    <<: *soc-agent
+    container_name: soc-agent-vulns
+    command: sh -c "while true; do python -m soc_agent.vulns; sleep 3600; done"
+
   # Génère des règles Wazuh d'exception à partir des FP récurrents, pour que le
   # bruit soit écarté DANS le moteur de règles et non après coup par le
   # soc-agent (cf. rule_tuning.py). Seul job à écrire dans le répertoire de

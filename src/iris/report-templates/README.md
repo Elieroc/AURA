@@ -7,7 +7,7 @@ code (`src/ai/soc_agent/iris.py`), il n'en utilise aucun.
 
 | Fichier | Type | Langue | Contenu |
 |---|---|---|---|
-| `incident-technique-fr.md` | Investigation | FR | Rapport DFIR complet : synthèse, note d'analyse IA, machines, IOC, chronologie, remédiations, preuves |
+| `incident-technique-fr.md` | Investigation | FR | Rapport DFIR complet : synthèse, note d'analyse IA, machines, exposition aux vulnérabilités, IOC, chronologie, remédiations, preuves |
 | `rapport-investigation-fr.docx` | Investigation | FR | Page de garde avec logo AURA·SOC, résumé exécutif, chronologie, analyse technique, IOC, actifs, remédiations, conclusion/recommandations à compléter par l'analyste, annexe preuves |
 
 Le second template est un **.docx Word** (pas du Markdown) : IRIS accepte
@@ -72,8 +72,13 @@ Produit par `app/datamgmt/reporter/report_db.py: export_case_json_for_report()`
   appel d'un type interdit. Appeler une méthode d'instance (`strftime`) passe.
 - **Titres de notes.** Le rapport d'analyse du soc-agent commence en `#` ; sans
   rétrogradation (macro `corps()`), ses sections écrasent le plan du rapport.
-- **`notes` est une liste plate**, le répertoire est dans `note.directory.name`
-  (`Analyse IA` pour les notes du soc-agent).
+- **`notes` est une liste plate**, le répertoire est dans `note.directory.name`.
+  Le soc-agent en utilise deux, et le template les traite séparément :
+  `Analyse IA` (récit produit par le modèle → section 2) et `Exposition`
+  (exposition aux vulnérabilités, calculée en Python depuis l'inventaire Wazuh,
+  sans LLM → section 4). Toute note d'un autre répertoire retombe dans la
+  section « Notes complémentaires ». **En ajouter un troisième impose de
+  l'exclure explicitement de `notes_autres`**, sinon il apparaîtra deux fois.
 - **Markdown en tableau** : filtrer les `\n` et échapper les `|`, sinon la
   table se disloque (macro `cell()`).
 - **Nom de fichier généré** : `%case_name%` est évité dans le format de nommage,

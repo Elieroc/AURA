@@ -1,0 +1,183 @@
+{
+  "index_patterns": [
+    "wazuh-voc-*"
+  ],
+  "order": 1,
+  "settings": {
+    "index": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "refresh_interval": "5s"
+    }
+  },
+  "mappings": {
+    "date_detection": false,
+    "dynamic_templates": [
+      {
+        "strings_as_keyword": {
+          "match_mapping_type": "string",
+          "mapping": {
+            "type": "keyword"
+          }
+        }
+      }
+    ],
+    "properties": {
+      "@timestamp": {
+        "type": "date"
+      },
+      "timestamp": {
+        "type": "date"
+      },
+      "event_type": {
+        "type": "keyword"
+      },
+      "agent": {
+        "properties": {
+          "id": {
+            "type": "keyword"
+          },
+          "name": {
+            "type": "keyword"
+          }
+        }
+      },
+      "asset": {
+        "properties": {
+          "priorite": {
+            "type": "integer"
+          },
+          "priorite_label": {
+            "type": "keyword"
+          },
+          "role": {
+            "type": "keyword"
+          }
+        }
+      },
+      "vulnerability": {
+        "properties": {
+          "id": {
+            "type": "keyword"
+          },
+          "severity": {
+            "type": "keyword"
+          },
+          "score_base": {
+            "type": "float"
+          },
+          "published_at": {
+            "type": "date"
+          }
+        }
+      },
+      "package": {
+        "properties": {
+          "name": {
+            "type": "keyword"
+          },
+          "version": {
+            "type": "keyword"
+          }
+        }
+      },
+      "voc": {
+        "properties": {
+          "statut": {
+            "type": "keyword"
+          },
+          "resolue": {
+            "type": "boolean"
+          },
+          "vue_a": {
+            "type": "date"
+          },
+          "corrigee_a": {
+            "type": "date"
+          },
+          "age_jours": {
+            "type": "double"
+          },
+          "sla_jours": {
+            "type": "integer"
+          },
+          "hors_sla": {
+            "type": "boolean"
+          },
+          "hors_sla_total": {
+            "type": "long"
+          },
+          "retard_jours": {
+            "type": "double"
+          },
+          "poids": {
+            "type": "float"
+          },
+          "score": {
+            "type": "integer"
+          },
+          "niveau": {
+            "type": "keyword"
+          },
+          "charge": {
+            "type": "double"
+          },
+          "ouvertes": {
+            "type": "long"
+          },
+          "critical": {
+            "type": "long"
+          },
+          "high": {
+            "type": "long"
+          },
+          "medium": {
+            "type": "long"
+          },
+          "low": {
+            "type": "long"
+          },
+          "inconnue": {
+            "type": "long"
+          },
+          "plus_ancienne_jours": {
+            "type": "double"
+          },
+          "corrigees_90j": {
+            "type": "long"
+          },
+          "mttr_jours": {
+            "type": "double"
+          },
+          "machines_inventoriees": {
+            "type": "integer"
+          },
+          "machines_scannees": {
+            "type": "integer"
+          },
+          "machines_connues": {
+            "type": "integer"
+          },
+          "machines_muettes": {
+            "type": "integer"
+          },
+          "couverture_pct": {
+            "type": "double"
+          },
+          "nouvelles": {
+            "type": "long"
+          },
+          "corrigees": {
+            "type": "long"
+          },
+          "score_max": {
+            "type": "integer"
+          },
+          "score_moyen": {
+            "type": "double"
+          }
+        }
+      }
+    }
+  }
+}

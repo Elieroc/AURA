@@ -23,7 +23,7 @@ FICHIER="${1:?usage: $0 <template.md> [nom]}"
 # Valeurs par défaut posées à part : une apostrophe dans un ${VAR:-défaut}
 # ouvre une citation pour bash et casse la substitution.
 NOM_DEFAUT="Aura-SOC — Rapport d'incident technique (FR)"
-DESCRIPTION_DEFAUT="Rapport d'investigation complet : synthèse, analyse IA, machines, IOC, chronologie, remédiations, preuves."
+DESCRIPTION_DEFAUT="Rapport d'investigation complet : synthèse, analyse IA, machines, exposition aux vulnérabilités, IOC, chronologie, remédiations, preuves."
 NOM="${2:-$NOM_DEFAUT}"
 DESCRIPTION="${DESCRIPTION:-$DESCRIPTION_DEFAUT}"
 # %code_name% = doc_id (AAMMJJ_HHMM). On n'injecte PAS %case_name% : les titres

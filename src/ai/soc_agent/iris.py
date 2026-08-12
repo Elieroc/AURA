@@ -231,6 +231,14 @@ def _client():
 # Répertoire de notes où atterrit l'analyse IA (créé au besoin).
 DIR_ANALYSE = "Analyse IA"
 
+# Répertoire de la note d'exposition aux vulnérabilités. SÉPARÉ de « Analyse IA »
+# à dessein : son contenu est calculé en Python à partir de l'inventaire Wazuh,
+# il n'est ni produit ni relu par le modèle. Les mélanger ferait porter à des
+# faits l'avertissement « verdict produit par un LLM » du rapport — et
+# inversement donnerait au récit du modèle l'autorité d'une mesure.
+DIR_EXPOSITION = "Exposition"
+TITRE_EXPOSITION = "Exposition aux vulnérabilités"
+
 # Tag posé sur les évènements de timeline créés par le soc-agent : c'est à ça
 # qu'on les reconnaît pour les remplacer au rafraîchissement.
 TAG_AUTO = "soc-agent"
@@ -408,8 +416,9 @@ def _note_est_degradee(case, case_id: int, note_id: int) -> bool:
         return False
 
 
-def _poser_note(case, case_id: int, titre: str, contenu: str) -> None:
-    """Crée ou MET À JOUR la note d'analyse dans le répertoire « Analyse IA ».
+def _poser_note(case, case_id: int, titre: str, contenu: str,
+                repertoire: str = DIR_ANALYSE) -> None:
+    """Crée ou MET À JOUR une note dans le répertoire demandé.
 
     Au rafraîchissement d'un case, on remplace le contenu de la note existante
     plutôt que d'en empiler une deuxième : le dossier reste lisible.
@@ -426,7 +435,7 @@ def _poser_note(case, case_id: int, titre: str, contenu: str) -> None:
     note_id = None
     try:
         for d in case.list_notes_directories(cid=case_id).get_data() or []:
-            if d.get("name") == DIR_ANALYSE:
+            if d.get("name") == repertoire:
                 dir_id = d["id"]
                 for n in d.get("notes") or []:
                     if n.get("title") == titre:
@@ -447,7 +456,7 @@ def _poser_note(case, case_id: int, titre: str, contenu: str) -> None:
         except Exception as e:  # noqa: BLE001
             log.debug("maj note %s : %s", note_id, e)
     if dir_id is None:
-        rd = case.add_notes_directory(directory_name=DIR_ANALYSE, cid=case_id)
+        rd = case.add_notes_directory(directory_name=repertoire, cid=case_id)
         dir_id = rd.get_data()["id"] if rd.is_success() else None
     case.add_note(note_title=titre, note_content=contenu,
                   directory_id=dir_id, cid=case_id)
@@ -1801,6 +1810,255 @@ def _section_cases_lies(lies: list[dict]) -> str:
     return "\n".join(lignes) + "\n"
 
 
+# --------------------------------------------------------------------------
+# Exposition aux vulnérabilités de la machine touchée
+# --------------------------------------------------------------------------
+#
+# Pourquoi cette section existe : un case dit ce que l'attaquant a FAIT, jamais
+# ce qu'il aurait pu faire. Or la même intrusion sur un hôte à jour et sur un
+# hôte qui traîne quatorze CVE critiques n'appelle pas la même suite — dans le
+# second cas, la remédiation de l'incident ne referme pas la porte. L'analyste
+# avait l'information (dashboard VOC) mais devait aller la chercher, sur la
+# bonne machine, en croisant lui-même avec la priorité de l'asset.
+#
+# Trois règles de rédaction, tenues strictement :
+#
+#  1. Ce qui est CERTAIN et ce qui est PROBABLE ne se mélangent pas. Une CVE
+#     citée dans une commande de l'attaquant est un fait ; une CVE critique
+#     ouverte sur une machine où l'on voit du T1068 est une piste. Les deux
+#     apparaissent, sous des titres différents, avec la nuance écrite.
+#  2. « Aucune vulnérabilité connue » et « jamais inventoriée » sont deux
+#     affirmations opposées. La seconde est un angle mort et doit être dite —
+#     c'est la même leçon que la ligne « télémétrie disponible » des rapports.
+#  3. Rien de tout cela ne part au modèle en clair. Seul un résumé chiffré, sans
+#     nom d'hôte ni de paquet, lui est fourni comme métadonnée de confiance.
+
+def _lien_cve(cve: str) -> str:
+    return f"https://nvd.nist.gov/vuln/detail/{cve}"
+
+
+def _table_cve(lignes: list[dict], avec_age: bool = True) -> list[str]:
+    """Table Markdown de vulnérabilités. Colonnes stables d'un bloc à l'autre
+    pour que l'analyste ne relise pas l'en-tête à chaque section."""
+    tete = ["| CVE | Sévérité | CVSS | Paquet | Version |"
+            + (" Ouverte depuis |" if avec_age else ""),
+            "|:---|:---|---:|:---|:---|" + ("---:|" if avec_age else "")]
+    for v in lignes:
+        age = f" {v['age_jours']:.0f} j |" if avec_age else ""
+        tete.append(
+            f"| [{v['cve']}]({_lien_cve(v['cve'])}) "
+            f"| {(v['severite'] or 'non classée').capitalize()} "
+            f"| {v['score_base'] if v['score_base'] is not None else '—'} "
+            f"| `{v['paquet']}` | {v['version'] or '—'} |{age}")
+    return tete
+
+
+def _note_exposition(conn, incident: dict, alertes: list[dict]) -> str:
+    """Note « Exposition aux vulnérabilités » de la machine du case.
+
+    Construite en Python à partir du journal VOC (`soc_agent.vulns`) : valeurs
+    réelles, aucun appel au modèle. Rend toujours une note — y compris quand la
+    machine n'a jamais été inventoriée, cas où l'absence de donnée EST
+    l'information.
+    """
+    from . import vulns   # import différé : vulns importe assets, pas iris.
+
+    agent_id = str(incident["agent_id"])
+    expo = vulns.exposition(conn, agent_id)
+    lien = vulns.lien_incident(conn, agent_id, alertes, expo)
+
+    lignes = [f"# {TITRE_EXPOSITION}", "",
+              f"Machine **{incident.get('agent_name') or agent_id}** "
+              f"(agent {agent_id}), "
+              f"priorité **P{expo['priorite']}** "
+              f"({expo['role'] or 'rôle non déclaré'}).", ""]
+
+    if not expo["couverte"]:
+        lignes += [
+            "> ⚠️ **Cette machine n'a jamais été inventoriée** par le module "
+            "Vulnerability Detection de Wazuh. Il n'y a donc aucune donnée de "
+            "vulnérabilité à son sujet — ce qui n'est **pas** la même chose que "
+            "« aucune vulnérabilité ». Causes usuelles : système d'exploitation "
+            "absent du feed CTI (BSD, appliance), ou `syscollector` muet sur "
+            "l'agent.",
+            "",
+            "Vérifier avec `python -m soc_agent.vulns --agent "
+            f"{agent_id}` et l'inventaire de paquets côté API Wazuh "
+            "(`/syscollector/<agent>/packages`).",
+        ]
+        return "\n".join(lignes) + "\n"
+
+    # --- Score et répartition ---------------------------------------------
+    sev_lisible = {"critical": "Critical", "high": "High", "medium": "Medium",
+                   "low": "Low", "": "non classée"}
+    repartition = ", ".join(
+        f"**{n}** {sev_lisible.get(s, s)}"
+        for s, n in sorted(expo["par_severite"].items(),
+                           key=lambda kv: -vulns.poids(kv[0])))
+
+    lignes += [
+        f"| | |", "|---|---|",
+        f"| **Score d'exposition** | **{expo['score']}/100** — "
+        f"exposition {expo['niveau']} |",
+        f"| **Vulnérabilités ouvertes** | {expo['total']} ({repartition}) |",
+        f"| **Hors délai de correction** | {expo['hors_sla_total']} |",
+        f"| **Plus ancienne ouverte** | {expo['plus_ancienne_jours']:.0f} jours |",
+        (f"| **Corrigées sur 90 jours** | {expo['corrigees_90j']} "
+         f"(délai moyen {expo['mttr_jours']} j) |"
+         if expo["mttr_jours"] is not None
+         else f"| **Corrigées sur 90 jours** | {expo['corrigees_90j']} |"),
+        "",
+        # Le score est log-compressé et pondéré : sans cette phrase, un lecteur
+        # le prendrait pour un pourcentage de machines vulnérables ou pour une
+        # note d'audit. Il faut aussi dire qu'il sature, sinon deux machines à
+        # 100 passeraient pour équivalentes.
+        f"Le score agrège les vulnérabilités ouvertes pondérées par leur "
+        f"sévérité (charge {expo['charge']}), multipliées par le facteur de "
+        f"priorité de l'asset (×{expo['facteur_priorite']}), sur une échelle "
+        f"logarithmique. Il sert à **classer** les machines entre elles, pas à "
+        f"mesurer un risque absolu : au-delà du plafond il sature, et ce sont "
+        f"alors les compteurs ci-dessus qui départagent.",
+        "",
+    ]
+
+    # --- Lien avec CE case ------------------------------------------------
+    if lien["confirmees"]:
+        lignes += [
+            "## Vulnérabilités citées dans l'incident",
+            "",
+            "Ces CVE apparaissent **littéralement** dans les évènements du case "
+            "(ligne de commande, nom de fichier, requête) **et** sont ouvertes "
+            "sur cette machine. C'est le seul rapprochement certain entre "
+            "l'incident et l'exposition : ce que l'attaquant visait était "
+            "effectivement présent ici.",
+            "",
+        ] + _table_cve(lien["confirmees"]) + [
+            "",
+            "**Conséquence directe** : remédier l'incident ne suffit pas. Tant "
+            "que ces paquets ne sont pas corrigés, le même accès reste "
+            "reproductible.",
+            "",
+        ]
+
+    if lien["citees_non_ouvertes"]:
+        lignes += [
+            "## Vulnérabilités citées mais non ouvertes ici",
+            "",
+            "CVE mentionnées dans les évènements du case, mais absentes de "
+            "l'inventaire de cette machine : tentative contre une version non "
+            "vulnérable, reconnaissance à l'aveugle, ou vulnérabilité déjà "
+            "corrigée depuis. C'est une information sur la MÉTHODE de "
+            "l'attaquant, pas sur l'exposition de l'hôte.",
+            "",
+            ", ".join(f"[{c}]({_lien_cve(c)})"
+                      for c in lien["citees_non_ouvertes"]),
+            "",
+        ]
+
+    if lien["vecteurs_possibles"]:
+        lignes += [
+            "## Vecteurs possibles (hypothèse, non démontrée)",
+            "",
+            f"L'incident porte une ou des techniques d'exploitation "
+            f"({', '.join(lien['techniques_exploit'])}) et cette machine a des "
+            f"vulnérabilités graves ouvertes. **Aucun élément du case ne relie "
+            f"ces CVE à l'attaque** : elles sont listées parce qu'un analyste "
+            f"qui cherche par où l'accès a été obtenu doit les avoir sous les "
+            f"yeux, pas parce qu'elles ont été exploitées.",
+            "",
+        ] + _table_cve(lien["vecteurs_possibles"]) + [""]
+
+    # --- Retard de correction ---------------------------------------------
+    if expo["hors_sla"]:
+        top = expo["hors_sla"][:config.VOC_MAX_CVE_RAPPORT]
+        lignes += [
+            "## Vulnérabilités hors délai",
+            "",
+            f"{expo['hors_sla_total']} vulnérabilité(s) ouverte(s) au-delà du "
+            f"délai attendu pour leur sévérité sur un asset P{expo['priorite']}"
+            + (f" — les {len(top)} plus en retard :" if len(top) < expo['hors_sla_total']
+               else " :"),
+            "",
+            "| CVE | Sévérité | Paquet | Ouverte depuis | Délai | Retard |",
+            "|:---|:---|:---|---:|---:|---:|",
+        ] + [
+            f"| [{v['cve']}]({_lien_cve(v['cve'])}) "
+            f"| {(v['severite'] or 'non classée').capitalize()} "
+            f"| `{v['paquet']}` | {v['age_jours']:.0f} j "
+            f"| {v['sla_jours']} j | **+{v['retard_jours']:.0f} j** |"
+            for v in top
+        ] + [""]
+
+    # --- Repli : rien de spécifique au case -------------------------------
+    if not (lien["confirmees"] or lien["vecteurs_possibles"]
+            or expo["hors_sla"]):
+        lignes += [
+            "## Pires vulnérabilités ouvertes",
+            "",
+            "Aucune CVE n'est citée dans les évènements de ce case et aucune "
+            "vulnérabilité n'est hors délai : **rien ne rattache cet incident à "
+            "l'exposition de la machine**. Le contexte reste utile pour évaluer "
+            "ce qu'une compromission d'ici permettrait ensuite.",
+            "",
+        ] + _table_cve(expo["pires"]) + [""]
+
+    lignes += [
+        "---",
+        "",
+        f"Source : module Vulnerability Detection de Wazuh, journalisé par "
+        f"`soc_agent.vulns` (index `{config.VOC_INDEX_PREFIX}-*`, dashboard "
+        f"VOC). Les délais de correction sont des objectifs de service internes "
+        f"définis par sévérité et priorité d'asset, pas une norme externe. Le "
+        f"feed indique ce que les distributions publient : il ne dit **rien** "
+        f"de l'exploitabilité réelle ni de l'exposition réseau du service "
+        f"concerné.",
+    ]
+    return "\n".join(lignes) + "\n"
+
+
+def _poser_exposition(case, case_id: int, conn, incident: dict,
+                      alertes: list[dict]) -> None:
+    """Pose la note d'exposition. Best-effort : le VOC est un enrichissement,
+    son indisponibilité ne doit jamais empêcher un case de s'ouvrir."""
+    try:
+        _poser_note(case, case_id, TITRE_EXPOSITION,
+                    _note_exposition(conn, incident, alertes),
+                    repertoire=DIR_EXPOSITION)
+    except Exception as e:  # noqa: BLE001
+        log.warning("note d'exposition case #%s : %s", case_id, e)
+
+
+def _resume_exposition(conn, agent_id: str, alertes: list[dict]) -> str:
+    """Ligne d'exposition destinée au MODÈLE, en métadonnée de confiance.
+
+    Volontairement chiffrée et anonyme : ni nom d'hôte, ni nom de paquet, ni
+    version. Les identifiants CVE, eux, passent — ce sont des références
+    publiques, et c'est justement l'information qui permet au modèle de relier
+    une commande d'exploitation à une vulnérabilité réellement présente. Sans
+    cette ligne, le rapport écrivait « aucun élément ne permet de savoir si la
+    machine était vulnérable » alors que le SOC le savait.
+    """
+    try:
+        from . import vulns
+        expo = vulns.exposition(conn, str(agent_id))
+        if not expo["couverte"]:
+            return ("exposition aux vulnérabilités : machine JAMAIS "
+                    "inventoriée (aucune donnée — ne pas conclure qu'elle est "
+                    "à jour)")
+        lien = vulns.lien_incident(conn, str(agent_id), alertes, expo)
+        bout = (f"exposition aux vulnérabilités : score {expo['score']}/100 "
+                f"({expo['niveau']}), {expo['total']} ouvertes dont "
+                f"{expo['critiques']} critical et {expo['elevees']} high, "
+                f"{expo['hors_sla_total']} hors délai")
+        if lien["confirmees"]:
+            bout += (" ; CVE citées dans l'incident ET ouvertes sur cet hôte : "
+                     + ", ".join(v["cve"] for v in lien["confirmees"]))
+        return bout
+    except Exception as e:  # noqa: BLE001
+        log.debug("résumé d'exposition agent %s : %s", agent_id, e)
+        return "exposition aux vulnérabilités : non disponible"
+
+
 def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict],
              iocs: list[tuple[str, str, str]] | None = None) -> str:
     """Rapport d'analyse d'un vrai positif. Appelle le LLM pour le récit.
@@ -1820,10 +2078,15 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict],
     # Métadonnée SOC de confiance (agent_id + noms de groupes, rien de sensible) :
     # dit au modèle quels capteurs existaient, pour ancrer la section couverture.
     telemetrie = _capteurs_actifs(conn, incident["agent_id"])
+    # Seconde métadonnée de confiance : l'exposition de l'hôte, en chiffres et
+    # en CVE (aucun nom d'hôte ni de paquet — cf. `_resume_exposition`). Elle
+    # évite au rapport de conclure « impossible de savoir si la machine était
+    # vulnérable » alors que le SOC a l'inventaire.
+    exposition = _resume_exposition(conn, incident["agent_id"], alertes)
     utilisateur = (f"=== DEBUT INCIDENT (données non fiables) ===\n{corps}\n"
                    "=== FIN INCIDENT ===\n\n"
-                   f"Métadonnée SOC de confiance (non issue des logs) :\n"
-                   f"{telemetrie}\n\nRédige le rapport.")
+                   f"Métadonnées SOC de confiance (non issues des logs) :\n"
+                   f"{telemetrie}\n{exposition}\n\nRédige le rapport.")
 
     try:
         # Scan de fuite sur les seules données incident : le prompt système
@@ -2484,6 +2747,12 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     titre = "Analyse — Faux positif" if fp else "Rapport d'analyse"
     _poser_note(case, case_id, titre, contenu)
 
+    # Exposition aux vulnérabilités de la machine touchée. Posée aussi sur les
+    # FAUX POSITIFS : le verdict porte sur l'évènement, pas sur l'état de
+    # l'hôte, et une machine hors délai de correction le reste que l'alerte du
+    # jour ait été fondée ou non.
+    _poser_exposition(case, case_id, conn, incident, alertes)
+
     # Timeline : la kill chain, évènement par règle (TP seulement — un FP n'a
     # pas de chronologie d'attaque à reconstituer).
     # Relu APRÈS la remédiation : mitigate y a posé les comptes visés comme
@@ -2587,6 +2856,11 @@ def rafraichir_case(conn, incident: dict, triage: dict) -> int:
     else:
         log.info("#%s rapport non régénéré : verdict inchangé depuis la note "
                  "en place (économie de l'appel LLM report)", incident["id"])
+
+    # Toujours régénérée, elle : elle ne coûte aucun appel au modèle, et
+    # l'exposition de la machine bouge indépendamment du verdict (un patch
+    # appliqué entre deux salves doit se voir dans le case).
+    _poser_exposition(case, case_id, conn, incident, alertes)
 
     if not fp:
         _reconstruire_timeline(case, case_id, alertes, incident["agent_id"],
