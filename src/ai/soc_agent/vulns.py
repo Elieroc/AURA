@@ -355,6 +355,11 @@ def exposition(conn, agent_id: str) -> dict:
 
     return {
         "agent_id": str(agent_id),
+        # Nom résolu ici et non chez l'appelant : la CLI, l'export vers
+        # l'indexer et la note IRIS doivent désigner la machine de la même
+        # façon. La CMDB fait foi (elle suit les renommages du manager), le nom
+        # figé dans le journal ne sert que de repli.
+        "agent_name": _nom_agent(conn, str(agent_id)),
         "couverte": bool(lignes) or _deja_scanne(conn, str(agent_id)),
         "priorite": prio["priorite"],
         "role": prio["role"],
@@ -374,6 +379,17 @@ def exposition(conn, agent_id: str) -> dict:
         "corrigees_90j": corrigees["n"],
         "mttr_jours": round(corrigees["mttr"], 1) if corrigees["mttr"] else None,
     }
+
+
+def _nom_agent(conn, agent_id: str) -> str | None:
+    ligne = conn.execute(
+        "SELECT coalesce(a.nom, v.agent_name) AS nom "
+        "  FROM (SELECT %s::text AS id) x "
+        "  LEFT JOIN assets a ON a.agent_id = x.id "
+        "  LEFT JOIN LATERAL (SELECT agent_name FROM vulnerabilites "
+        "                      WHERE agent_id = x.id LIMIT 1) v ON true",
+        (agent_id,)).fetchone()
+    return ligne["nom"] if ligne else None
 
 
 def _deja_scanne(conn, agent_id: str) -> bool:
@@ -640,11 +656,6 @@ def exporter(conn, scan: dict, simulation: bool = False) -> dict:
     """Écrit les séries VOC dans l'indexer. Idempotent (`_id` déterministe)."""
     maintenant = datetime.now(timezone.utc)
     expos = exposition_parc(conn)
-    noms = {r["agent_id"]: r["nom"] for r in conn.execute(
-        "SELECT agent_id, nom FROM assets")}
-    for e in expos:
-        e["agent_name"] = noms.get(e["agent_id"])
-
     lignes: list[str] = []
     resume = {"voc_asset": 0, "voc_parc": 0, "voc_vuln": 0}
 
