@@ -526,8 +526,22 @@ WATCHDOG_SILENCE_MINUTES = int(os.environ.get("WATCHDOG_SILENCE_MINUTES", "10"))
 # jours entre midi et 23 h : une alarme permanente qui apprend à ignorer le
 # watchdog, ce qui coûte plus cher que le trou qu'elle prétend couvrir.
 #
-# 840 min = 12 h de cycle + 2 h de marge : un syscheckd réellement figé (le cas
-# bookstack/journald) est encore vu, au scan planifié suivant.
+# 840 min (12 h de cycle + 2 h) était encore trop court, et le 2026-08-12 l'a
+# montré : case #212 ouvert sur `admin` pour un capteur parfaitement sain. Le
+# scan tournait à l'heure (dernier le 2026-08-11 23:12, 2004 fichiers suivis),
+# et la dernière MODIFICATION datait du 2026-08-10 — un `update-ca-certificates`.
+# Il ne s'était simplement rien passé sur cette machine depuis.
+#
+# Écart maximal réellement observé entre deux évènements syscheck, sur 30 jours :
+#
+#     wazuh.manager  52 h        debian2  19 h
+#     admin          29 h        debian3  17 h
+#
+# 4320 min (3 j) passe au-dessus du maximum mesuré avec de la marge. C'est un
+# pansement assumé : le bon signal pour ce capteur n'est pas l'alerte (qui
+# dépend d'un changement) mais le SCAN lui-même, que l'API Wazuh expose
+# (`/syscheck/<agent>/last_scan`). Tant qu'on ne le lit pas, un syscheckd
+# réellement figé reste invisible jusqu'à trois jours.
 #
 # sshd relève du même raisonnement, mesuré le 2026-08-11 sur 7 jours : écart
 # médian entre deux événements 0,2 min, mais p95 à 254 min et maximum à 63 h.
@@ -541,7 +555,7 @@ WATCHDOG_SILENCE_MINUTES = int(os.environ.get("WATCHDOG_SILENCE_MINUTES", "10"))
 # session ou un scan. Un lecteur journald réellement figé finit donc par sortir,
 # sans noyer l'analyste d'ici là.
 WATCHDOG_SILENCE_PAR_CAPTEUR = {
-    "syscheck": int(os.environ.get("WATCHDOG_SILENCE_SYSCHECK", "840")),
+    "syscheck": int(os.environ.get("WATCHDOG_SILENCE_SYSCHECK", "4320")),
     "sshd": int(os.environ.get("WATCHDOG_SILENCE_SSHD", "1440")),
 }
 

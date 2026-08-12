@@ -33,7 +33,7 @@ def test_capteurs_evenementiels_ont_un_seuil_propre():
     Au seuil de 10 min, toute machine au repos serait déclarée en panne."""
     par = config.WATCHDOG_SILENCE_PAR_CAPTEUR
     assert par["sshd"] > config.WATCHDOG_SILENCE_MINUTES * 100
-    assert par["syscheck"] > config.WATCHDOG_SILENCE_MINUTES * 50
+    assert par["syscheck"] > config.WATCHDOG_SILENCE_MINUTES * 300
     # Les capteurs continus, eux, ne doivent PAS avoir de dérogation.
     assert "suricata" not in par and "audit" not in par
 
