@@ -247,6 +247,9 @@ def liens(base, event_id, valeur):
 def signaler_peremption(motif, alerte):
     """Alerte sur une CTI qui ne se met plus à jour — au plus une fois par heure.
 
+    `motif` est en ANGLAIS : il ressort tel quel dans la description de la
+    règle 100956, elle-même en anglais comme tout le ruleset.
+
     Un cache figé ne produit aucune erreur : il continue de répondre, avec des
     IOC de plus en plus faux. C'est exactement le mode de panne « capteur muet »
     qui a coûté deux heures d'aveuglement au SOC le 2026-07-26 (cf. règles
@@ -300,7 +303,7 @@ def main():
     try:
         conn = ouvrir_cache()
     except sqlite3.Error:
-        signaler_peremption("cache d'IOC illisible ou absent", alerte)
+        signaler_peremption("indicator cache missing or unreadable", alerte)
         return
 
     try:
@@ -308,8 +311,8 @@ def main():
         age = age_cache(conn)
         if age is None or age > PEREMPTION_HEURES:
             signaler_peremption(
-                f"cache d'IOC périmé ({age:.0f} h)" if age is not None
-                else "cache d'IOC sans horodatage de synchronisation", alerte)
+                f"indicator cache stale ({age:.0f} h old)" if age is not None
+                else "indicator cache has no synchronisation timestamp", alerte)
 
         meilleur = None
         total = 0
