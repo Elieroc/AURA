@@ -540,3 +540,46 @@ def test_description_porte_la_priorite_a_la_mise_a_jour():
     for maj in (False, True):
         d = iris._description(inc, "true_positive", maj=maj)
         assert "asset P1 (dc)" in d and "14/15" in d
+
+
+class _SessionFactice:
+    """Capture l'appel HTTP au lieu de le faire."""
+
+    def __init__(self):
+        self.appels = []
+
+    def pi_get(self, uri):
+        class R:
+            @staticmethod
+            def get_data():
+                return [{"severity_id": 5, "severity_name": "High"},
+                        {"severity_id": 1, "severity_name": "Medium"}]
+        return R()
+
+    def pi_post(self, uri, data=None, **kw):
+        self.appels.append((uri, data))
+
+        class R:
+            @staticmethod
+            def is_success():
+                return True
+        return R()
+
+
+class _CaseFactice:
+    def __init__(self):
+        self._s = _SessionFactice()
+
+
+def test_severite_posee_avec_le_bon_champ(monkeypatch):
+    # `case_severity_id` est ACCEPTÉ par IRIS, répond « updated » et ne change
+    # rien : seul `severity_id` écrit réellement. Aucun endpoint ne relit la
+    # valeur, donc rien d'autre que ce test ne rattraperait la régression.
+    monkeypatch.setattr(iris, "_SEVERITES_ID", None)
+    c = _CaseFactice()
+    nom = iris._poser_severite(
+        c, 42, {"severite": 14, "max_level": 12}, {"verdict": "true_positive"})
+    assert nom == iris.SEV_HIGH
+    uri, data = c._s.appels[0]
+    assert uri == "/manage/cases/update/42"
+    assert data == {"severity_id": 5}

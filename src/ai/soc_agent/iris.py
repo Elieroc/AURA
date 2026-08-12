@@ -69,6 +69,20 @@ CLASSIF_DEFAUT = CLASSIF_INTRUSION
 SEV_INFO, SEV_LOW, SEV_MEDIUM = "Informational", "Low", "Medium"
 SEV_HIGH, SEV_CRITICAL = "High", "Critical"
 
+# Nom EXACT du champ attendu par `/manage/cases/update/<id>`. `case_severity_id`
+# — le nom qu'on devine d'après `case_classification_id` — est accepté, répond
+# « updated »… et ne change rien. Vérifié en base : seul `severity_id` écrit
+# réellement `cases.severity_id`.
+#
+# Aucun endpoint de l'API ne RELIT la sévérité (ni `/manage/cases/<id>`, ni
+# `/manage/cases/list`, ni `/case/summary`) : un renommage de ce champ dans une
+# version future d'IRIS repasserait donc inaperçu côté code. Le seul contrôle
+# possible est en base :
+#
+#   docker exec iris-db psql -U postgres -d iris_db \
+#     -c "select case_id, severity_id from cases order by case_id desc limit 5"
+CHAMP_SEVERITE = "severity_id"
+
 # Correspondance sévérité effective (échelle Wazuh 1-15, cf. assets.severite)
 # -> nom IRIS. Bornes basses inclusives, lues de haut en bas.
 #
@@ -161,7 +175,7 @@ def _poser_severite(case, case_id: int, incident: dict, triage: dict) -> str | N
         return None
     try:
         r = case._s.pi_post(f"/manage/cases/update/{case_id}",
-                            data={"case_severity_id": sid})
+                            data={CHAMP_SEVERITE: sid})
         if not r.is_success():
             log.warning("sévérité non posée sur le case #%s : %s", case_id,
                         r.get_msg())

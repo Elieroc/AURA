@@ -152,7 +152,19 @@ Deux correctifs par-dessus le barème :
   appliquer la décision qu'on vient de refuser — ce qu'une injection cherche
   justement à obtenir.
 
-**Piège : les ids de l'échelle IRIS ne suivent pas l'ordre de gravité** —
+**Piège 1 : le champ qui marche est `severity_id`.** `case_severity_id` — le
+nom qu'on déduit de `case_classification_id` — est accepté par l'API, répond
+« updated », et ne change rien. Et aucun endpoint ne RELIT la sévérité
+(`/manage/cases/<id>`, `/manage/cases/list`, `/case/summary` : aucun ne la
+renvoie), donc l'échec est totalement muet. Le seul contrôle possible est en
+base :
+
+```bash
+docker exec iris-db psql -U postgres -d iris_db \
+  -c "select case_id, severity_id from cases order by case_id desc limit 5"
+```
+
+**Piège 2 : les ids de l'échelle IRIS ne suivent pas l'ordre de gravité** —
 `3`=Informational, `4`=Low, `1`=Medium, `5`=High, `6`=Critical, `2`=Unspecified.
 Une correspondance écrite sur les ids serait silencieusement fausse. Le code
 raisonne sur les **noms** et résout l'id à l'exécution
