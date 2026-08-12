@@ -94,6 +94,14 @@ services:
       - ./src/wazuh/config/wazuh_cluster/alerts-pipeline.json:/usr/share/filebeat/module/wazuh/alerts/ingest/pipeline.json
       - ./src/wazuh/integrations/custom-abuseipdb:/var/ossec/integrations/custom-abuseipdb
       - ./src/wazuh/integrations/custom-abuseipdb.py:/var/ossec/integrations/custom-abuseipdb.py
+      - ./src/wazuh/integrations/custom-misp:/var/ossec/integrations/custom-misp
+      - ./src/wazuh/integrations/custom-misp.py:/var/ossec/integrations/custom-misp.py
+      # Cache d'IOC produit par soc-agent-cti, en LECTURE SEULE : le manager
+      # consomme du renseignement, il n'en produit pas. Le montage est un
+      # volume et non un bind mount vers l'hôte parce que les deux conteneurs
+      # tournent avec des uid différents et que l'écriture est atomique
+      # (rename) côté producteur.
+      - cti_ioc:/var/ossec/integrations/cti:ro
 
   wazuh.indexer:
     image: wazuh/wazuh-indexer:4.9.2
@@ -596,6 +604,156 @@ services:
     networks:
       - shuffle
 
+  # ===================== MISP (CTI) =====================
+  # UI : https://127.0.0.1:8444 (MISP_BIND_ADDR / MISP_HTTPS_PORT).
+  # Voir docs/CTI.md pour le rôle exact de chaque pièce.
+  #
+  # MISP est la MÉMOIRE du renseignement : événements, campagnes, tags,
+  # corrélations. Il n'est PAS dans le chemin de détection — c'est
+  # `soc-agent-cti` qui en extrait un cache d'IOC que l'intégration
+  # custom-misp du manager interroge en local. Conséquence voulue : MISP peut
+  # être arrêté, redémarré ou lent sans qu'une seule alerte Wazuh en pâtisse.
+  #
+  # Bind loopback, comme IRIS et Shuffle. Une instance MISP dit ce que le SOC
+  # sait chercher — donc, en creux, ce qu'il ne cherche pas. Sa clé d'API
+  # (MISP_KEY) vaut lecture ET écriture sur tout le renseignement.
+  misp-db:
+    image: mariadb:10.11
+    container_name: misp-db
+    restart: unless-stopped
+    command: >
+      --innodb-buffer-pool-size=${MISP_INNODB_BUFFER_POOL_SIZE:-512M}
+      --innodb-change-buffering=none
+      --innodb-io-capacity=1000
+      --innodb-log-file-size=600M
+      --innodb-read-io-threads=16
+      --innodb-write-io-threads=4
+    environment:
+      - MYSQL_DATABASE=${MISP_DB_NAME:-misp}
+      - MYSQL_USER=${MISP_DB_USER:-misp}
+      - MYSQL_PASSWORD=${MISP_DB_PASSWORD:?MISP_DB_PASSWORD requis, cf. .env.example}
+      - MYSQL_ROOT_PASSWORD=${MISP_DB_ROOT_PASSWORD:?MISP_DB_ROOT_PASSWORD requis, cf. .env.example}
+    volumes:
+      - ./db/misp-mariadb:/var/lib/mysql
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin --user=root --password=$$MYSQL_ROOT_PASSWORD status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - misp
+
+  misp-redis:
+    image: valkey/valkey:7.2
+    container_name: misp-redis
+    restart: unless-stopped
+    command: ["--requirepass", "${MISP_REDIS_PASSWORD:?MISP_REDIS_PASSWORD requis, cf. .env.example}"]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a $$VALKEY_PASSWORD ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      - VALKEY_PASSWORD=${MISP_REDIS_PASSWORD}
+    networks:
+      - misp
+
+  misp-core:
+    image: ghcr.io/misp/misp-docker/misp-core:${MISP_CORE_TAG:-v2.5.44}
+    container_name: misp-core
+    restart: unless-stopped
+    depends_on:
+      misp-db:
+        condition: service_healthy
+      misp-redis:
+        condition: service_healthy
+    environment:
+      # BASE_URL doit être l'URL par laquelle on ATTEINT MISP : c'est elle que
+      # MISP met dans ses liens, ses cookies et ses redirections. Un décalage
+      # avec le port publié ci-dessous casse l'authentification de l'UI sans
+      # message clair.
+      - BASE_URL=${MISP_URL:-https://127.0.0.1:8444}
+      - ADMIN_EMAIL=${MISP_ADMIN_EMAIL:-admin@aura.local}
+      - ADMIN_PASSWORD=${MISP_ADMIN_PASSWORD:?MISP_ADMIN_PASSWORD requis, cf. .env.example}
+      - ADMIN_ORG=${MISP_ADMIN_ORG:-AURA}
+      # Clé d'API posée par nous et non tirée au sort par MISP : c'est la même
+      # valeur que MISP_KEY côté soc-agent-cti. Sans ça, il faudrait aller la
+      # chercher à la main dans l'UI après chaque recréation du conteneur.
+      - ADMIN_KEY=${MISP_KEY:?MISP_KEY requis (40 caractères), cf. .env.example}
+      - AUTOGEN_ADMIN_KEY=false
+      - GPG_PASSPHRASE=${MISP_GPG_PASSPHRASE:?MISP_GPG_PASSPHRASE requis, cf. .env.example}
+      - ENCRYPTION_KEY=${MISP_ENCRYPTION_KEY:?MISP_ENCRYPTION_KEY requis, cf. .env.example}
+      - DISABLE_PRINTING_PLAINTEXT_CREDENTIALS=true
+      - ENABLE_BACKGROUND_UPDATES=true
+      - DISABLE_IPV6=true
+      - CRON_USER_ID=1
+      # Les feeds sont tirés par MISP toutes les heures. Le cache d'IOC de
+      # Wazuh est, lui, reconstruit à la même cadence par soc-agent-cti :
+      # inutile de descendre plus bas, les sources amont publient au mieux
+      # toutes les 6 h (Data-Shield) ou à la journée (CERT-FR, CIRCL).
+      - FETCH_FEED_INTERVAL=3600
+      - CACHE_FEED_INTERVAL=3600
+      - MYSQL_HOST=misp-db
+      - MYSQL_USER=${MISP_DB_USER:-misp}
+      - MYSQL_PASSWORD=${MISP_DB_PASSWORD}
+      - MYSQL_DATABASE=${MISP_DB_NAME:-misp}
+      - REDIS_HOST=misp-redis
+      - REDIS_PASSWORD=${MISP_REDIS_PASSWORD}
+      - PHP_MEMORY_LIMIT=${MISP_PHP_MEMORY_LIMIT:-2048M}
+      - TZ=${TZ:-Europe/Paris}
+    ports:
+      - "${MISP_BIND_ADDR:-127.0.0.1}:${MISP_HTTPS_PORT:-8444}:443"
+    volumes:
+      - misp_config:/var/www/MISP/app/Config
+      - misp_logs:/var/www/MISP/app/tmp/logs
+      - misp_files:/var/www/MISP/app/files
+      - misp_ssl:/etc/nginx/certs
+      - misp_gnupg:/var/www/MISP/.gnupg
+    healthcheck:
+      test: ["CMD-SHELL", "curl -ks https://localhost/users/heartbeat > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    networks:
+      - misp
+
+  # Modules d'enrichissement MISP (expansion à la demande depuis l'UI :
+  # whois, passive DNS, réputation...). Rien du pipeline automatique n'en
+  # dépend — c'est un outil d'analyste.
+  misp-modules:
+    image: ghcr.io/misp/misp-docker/misp-modules:${MISP_MODULES_TAG:-v3.0.9}
+    container_name: misp-modules
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-Europe/Paris}
+    mem_limit: 1g
+    networks:
+      - misp
+
+  # Pont CTI : déclare les feeds dans MISP au démarrage (idempotent), puis
+  # reconstruit toutes les heures le cache d'IOC lu par l'intégration
+  # custom-misp du manager (cf. src/ai/soc_agent/cti.py).
+  #
+  # `|| true` sur le bootstrap : MISP met plusieurs minutes à finir ses
+  # migrations au tout premier démarrage. Échouer là-dessus laisserait le
+  # conteneur en boucle de redémarrage alors que la synchronisation suivante
+  # aurait très bien fonctionné.
+  soc-agent-cti:
+    <<: *soc-agent
+    container_name: soc-agent-cti
+    depends_on:
+      misp-core:
+        condition: service_healthy
+    volumes:
+      - cti_ioc:/var/lib/aura-cti
+    command: >
+      sh -c "python -m soc_agent.cti --feeds || true;
+             while true; do python -m soc_agent.cti; sleep 3600; done"
+
 volumes:
   # Noms épinglés (`name:`) plutôt que laissés au préfixe de projet Compose
   # implicite : avant la fusion, chaque stack tournait dans son propre projet
@@ -647,6 +805,22 @@ volumes:
     name: shuffle_shuffle-apps
   shuffle-files:
     name: shuffle_shuffle-files
+  # --- MISP / CTI (hors base de données) ---
+  misp_config:
+    name: misp_config
+  misp_logs:
+    name: misp_logs
+  misp_files:
+    name: misp_files
+  misp_ssl:
+    name: misp_ssl
+  misp_gnupg:
+    name: misp_gnupg
+  # Cache d'IOC : écrit par soc-agent-cti, monté en LECTURE SEULE sur le
+  # manager. C'est le seul canal entre la CTI et la détection, et il est à sens
+  # unique — le manager ne peut pas altérer le renseignement.
+  cti_ioc:
+    name: aura_cti_ioc
 
 networks:
   # iris_frontend accueillera aussi le soc-agent : il parle à iris-app:8000
@@ -658,3 +832,7 @@ networks:
   shuffle:
     name: shuffle
     driver: bridge
+  # MISP ne parle qu'à sa base et à son redis. Le soc-agent l'atteint par le
+  # port publié sur la loopback (network_mode: host), pas par ce réseau.
+  misp:
+    name: misp

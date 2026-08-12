@@ -7,6 +7,7 @@ démarrage, pas passer silencieusement sur une valeur de repli.
 import ipaddress
 import os
 import sys
+from pathlib import Path
 from urllib.parse import urlparse
 
 
@@ -972,6 +973,52 @@ UEBA_MEMOIRE_JOURS = int(os.environ.get("UEBA_MEMOIRE_JOURS", "90"))
 # donc son verdict VP/FP, le case IRIS est créé avec toutes les actions
 # proposées, mais rien n'est exécuté tant que ce drapeau est à false.
 UEBA_MITIGATE = os.environ.get("UEBA_MITIGATE", "false").lower() == "true"
+
+
+# --- CTI / MISP -------------------------------------------------------------
+#
+# MISP tient le renseignement ; le cache SQLite tient la DÉTECTION. Les deux
+# sont volontairement séparés : l'intégration Wazuh qui juge chaque alerte ne
+# doit dépendre ni de la disponibilité de MISP, ni de sa latence, ni d'un quota
+# d'API. Elle lit un fichier local. Si MISP tombe, la détection continue sur le
+# dernier état connu — et la règle 100956 signale la péremption.
+MISP_URL = os.environ.get("MISP_URL", "https://127.0.0.1:8444")
+MISP_KEY = os.environ.get("MISP_KEY", "")
+MISP_VERIFY_TLS = os.environ.get("MISP_VERIFY_TLS", "false").lower() == "true"
+
+# Emplacement du cache d'IOC produit par cti.py et lu par l'intégration
+# custom-misp du manager. Même volume docker des deux côtés (cf.
+# docker-compose.yml, volume `cti_ioc`) : écrit ici, monté en lecture seule
+# sur /var/ossec/integrations/cti côté manager.
+CTI_CACHE = os.environ.get("CTI_CACHE", "/var/lib/aura-cti/ioc.db")
+
+# Catalogue des feeds. Fichier plutôt que variables d'environnement : une
+# entrée porte une URL, un format, des tags et un commentaire — illisible en
+# .env, et c'est de la configuration de contenu, pas de déploiement.
+CTI_CATALOGUE = os.environ.get(
+    "CTI_CATALOGUE", str(Path(__file__).parent / "cti_feeds.yaml"))
+
+# Profondeur de l'extraction MISP. 90 jours : au-delà, un IOC de C2 n'a plus
+# de valeur de détection (l'infrastructure a tourné) mais garde son coût de
+# faux positif — une IP de cloud recyclée redevient légitime.
+CTI_FENETRE = os.environ.get("CTI_FENETRE", "90d")
+
+# Types d'attributs MISP retenus. Tout le reste (fichiers, clés de registre,
+# mutex, adresses mail...) n'a pas de champ correspondant dans une alerte Wazuh
+# de ce parc : l'ingérer gonflerait le cache sans jamais matcher.
+CTI_TYPES_MISP = [t.strip() for t in os.environ.get(
+    "CTI_TYPES_MISP",
+    "ip-src,ip-dst,domain,hostname,url,md5,sha1,sha256").split(",") if t.strip()]
+
+# Garde-fou de volume, appliqué à l'extraction MISP comme à chaque blocklist.
+# Un feed qui déraille (mauvaise URL, page d'erreur HTML parsée en IOC) doit
+# faire échouer la synchronisation, pas remplir le cache de déchets.
+CTI_MAX_IOC = int(os.environ.get("CTI_MAX_IOC", "1000000"))
+
+# Âge à partir duquel le cache est déclaré périmé (règle 100956). 24 h : les
+# feeds les plus rapides tournent en 6 h, donc quatre cycles manqués. En
+# dessous, on alerterait sur un simple retard de job.
+CTI_PEREMPTION_HEURES = int(os.environ.get("CTI_PEREMPTION_HEURES", "24"))
 
 
 # --- Infrastructure du SOC lui-même ----------------------------------------

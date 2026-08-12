@@ -1,0 +1,23 @@
+<!-- Aura-SOC - rule 100952 (level 14). Domain: misp,threat_intel,cti,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="misp,threat_intel,cti,">
+
+  <!-- Curated intelligence matched on an OUTBOUND indicator: one of our own
+       machines resolved, requested or connected to known malicious
+       infrastructure (C2, malware distribution, phishing).
+
+       Level 14, the highest of this pack: inbound traffic from a bad IP means
+       someone tried, outbound traffic to one means something on our side is
+       already running and calling home. -->
+
+  <rule id="100952" level="14">
+    <if_sid>100950</if_sid>
+    <field name="misp.confiance" type="pcre2">^curated$</field>
+    <field name="misp.direction" type="pcre2">^sortant$</field>
+    <description>CTI - outbound contact to known malicious infrastructure: $(misp.ioc) ($(misp.type)) from agent $(misp.agent) (source $(misp.source), event "$(misp.evenement)")</description>
+    <mitre>
+      <id>T1071</id>
+    </mitre>
+  </rule>
+
+</group>

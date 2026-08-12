@@ -1,0 +1,23 @@
+<!-- Aura-SOC - rule 100955 (level 13). Domain: misp,threat_intel,cti,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="misp,threat_intel,cti,">
+
+  <!-- File hash matched against curated intelligence. Sources: FIM
+       (syscheck.*_after), VirusTotal enrichment, Sysmon hash fields.
+
+       Direction is "artefact", so this rule cannot collide with 100951/100952
+       (which require entrant/sortant). Level 13: a known malicious binary
+       sitting on disk is a confirmed compromise, but unlike 100952 it does not
+       prove the payload ran. -->
+
+  <rule id="100955" level="13">
+    <if_sid>100950</if_sid>
+    <field name="misp.type" type="pcre2">^hash$</field>
+    <field name="misp.confiance" type="pcre2">^curated$</field>
+    <description>CTI - known malicious file hash on $(misp.agent): $(misp.ioc) (source $(misp.source), event "$(misp.evenement)")</description>
+    <mitre>
+      <id>T1105</id>
+    </mitre>
+  </rule>
+
+</group>

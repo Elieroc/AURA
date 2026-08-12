@@ -1,0 +1,19 @@
+<!-- Aura-SOC - rule 100954 (level 5). Domain: misp,threat_intel,cti,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="misp,threat_intel,cti,">
+
+  <!-- Tor exit node. Provenance, not maliciousness: alerting on it as an
+       attack would flag every privacy-conscious user. Kept at level 5 so it
+       stays searchable and shows up as context on a real incident, without
+       ever seeding one by itself. -->
+
+  <rule id="100954" level="5">
+    <if_sid>100953</if_sid>
+    <field name="misp.tags" type="pcre2">anonymisation:tor</field>
+    <description>CTI - traffic involving a Tor exit node: $(misp.ioc) ($(misp.direction))</description>
+    <mitre>
+      <id>T1090.003</id>
+    </mitre>
+  </rule>
+
+</group>

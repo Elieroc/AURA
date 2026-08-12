@@ -18,10 +18,16 @@ XDR autonome piloté par IA. Détection moderne avec Wazuh, enrichissement threa
    Agents Wazuh ────────► │        Wazuh Manager        │
    (endpoints)    1514    │  analyse, règles, alertes   │
                           │                             │
-                          │  Intégrations :             │
-                          │   • VirusTotal (FIM/hash)   │
-                          │   • AbuseIPDB (réput. IP)   │
-                          └──────────────┬──────────────┘
+                          │  Intégrations :             │      ┌──────────────┐
+                          │   • VirusTotal (FIM/hash)   │◄─────┤  cache IOC   │
+                          │   • AbuseIPDB (réput. IP)   │      │  (SQLite)    │
+                          │   • MISP (IOC, CTI)         │      └──────▲───────┘
+                          └──────────────┬──────────────┘             │
+                                         │              ┌─────────────┴────────────┐
+                                         │              │  MISP + soc-agent-cti    │
+                                         │              │  CERT-FR, CIRCL,         │
+                                         │              │  abuse.ch, Data-Shield   │
+                                         │              └──────────────────────────┘
                                          │ filebeat
                           ┌──────────────▼──────────────┐
                           │        Wazuh Indexer        │
@@ -53,6 +59,7 @@ XDR autonome piloté par IA. Détection moderne avec Wazuh, enrichissement threa
 | [`src/shuffle/`](src/shuffle/) | SOAR — orchestration des remédiations (isolation, kill) | ✅ Testé E2E |
 | [`src/iris/`](src/iris/) | DFIR-IRIS — case management, un case par incident trié | ✅ Boucle fermée |
 | [`src/iris/mcp/`](src/iris/mcp/) | Serveur MCP IRIS — investigation interactive | ✅ Connecté |
+| [`src/ai/soc_agent/cti.py`](src/ai/soc_agent/cti.py) | CTI — MISP + feeds, cache d'IOC, détection dans Wazuh (règles 100950-100956) | 🆕 À déployer |
 
 ## Quick start
 
@@ -63,7 +70,7 @@ Prérequis : Docker + Docker Compose, `vm.max_map_count=262144`. Un seul
 git clone <dépôt> AURA && cd AURA
 sysctl -w vm.max_map_count=262144
 cp .env.example .env    # remplir mots de passe + clés API
-mkdir -p db/{socagent-postgres,iris-postgres,shuffle-opensearch,wazuh-indexer}
+mkdir -p db/{socagent-postgres,iris-postgres,shuffle-opensearch,wazuh-indexer,misp-mariadb}
 docker compose -f src/wazuh/generate-indexer-certs.yml run --rm generator
 ./src/iris/scripts/generate-certs.sh
 docker compose up -d
@@ -90,6 +97,7 @@ schéma Postgres soc-agent, active response) : [`docs/INSTALL.md`](docs/INSTALL.
 | [`docs/TRAINING.md`](docs/TRAINING.md) | mode training : apprendre le bruit ambiant du SI avant de laisser le SOC agir |
 | [`docs/UEBA.md`](docs/UEBA.md) | moteur comportemental : faire remonter les alertes LOW/MEDIUM qui le méritent, sans noyer le LLM |
 | [`docs/CMDB.md`](docs/CMDB.md) | priorité des assets (P1-P4) : un incident sur le contrôleur de domaine ne vaut pas un incident sur un poste de test |
+| [`docs/CTI.md`](docs/CTI.md) | volet renseignement : MISP, feeds (CERT-FR, CIRCL, abuse.ch, Data-Shield…), et détection des IOC dans Wazuh |
 | [`docs/VOC.md`](docs/VOC.md) | gestion des vulnérabilités : l'index d'état de Wazuh est destructif, ce module en fait un historique (burn-down, MTTR, SLA) et l'injecte dans les cases IRIS |
 | [`docs/REMEDIATION.md`](docs/REMEDIATION.md) | remédiation autonome de bout en bout + catalogue de toutes les active responses |
 | [`docs/MCP.md`](docs/MCP.md) | serveur MCP : administrer AURA depuis n'importe quel client IA (relaie Wazuh et IRIS) |

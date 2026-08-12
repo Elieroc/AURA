@@ -494,6 +494,30 @@
     <alert_format>json</alert_format>
   </integration>
 
+  <!-- CTI / MISP : confronte les IOC portés par chaque alerte (IP, domaine,
+       URL, empreinte) au cache local produit par soc-agent-cti, et réinjecte
+       un événement enrichi qui matche les règles 100950-100956.
+       Voir docs/CTI.md.
+
+       Filtré par NIVEAU et non par groupe, contrairement à AbuseIPDB : un IOC
+       peut apparaître dans n'importe quelle famille d'alerte (DNS, proxy,
+       Suricata, FIM, Sysmon, web). Filtrer par groupe reviendrait à décider à
+       l'avance par où passe l'attaquant.
+
+       Le coût est maîtrisé côté script : il sort immédiatement quand l'alerte
+       ne porte aucun indicateur exploitable, et ne fait aucun appel réseau.
+       Monter <level> à 6 ou 7 est le premier réglage à envisager si
+       wazuh-integratord prend du retard sur un parc très bavard.
+
+       api_key n'est pas utilisé (ce script ne parle à aucune API) mais reste
+       exigé par le parseur pour une intégration custom. -->
+  <integration>
+    <name>custom-misp</name>
+    <api_key>unused</api_key>
+    <level>3</level>
+    <alert_format>json</alert_format>
+  </integration>
+
 </ossec_config>
 
 <ossec_config>

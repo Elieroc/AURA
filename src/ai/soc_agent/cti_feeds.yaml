@@ -1,0 +1,145 @@
+# Catalogue CTI d'Aura-SOC — source de vérité unique.
+#
+# Deux familles, traitées différemment PARCE QU'ELLES N'ONT PAS LA MÊME NATURE :
+#
+#   misp_feeds : renseignement CURÉ (quelques milliers d'IOC, contextualisés,
+#     rattachés à un événement, à une campagne, à un acteur). Ingéré dans MISP
+#     comme des événements, donc corrélable, taggable, consultable. Ce sont
+#     eux qui justifient un niveau >= 12 : un IOC CERT-FR qui matche est un
+#     incident, pas une statistique.
+#
+#   blocklists : réputation de MASSE (100 000 à 300 000 IP, sans contexte,
+#     tournantes). Elles ne passent PAS par la base MISP : 300 000 attributs
+#     réécrits toutes les six heures dans MariaDB ruinent l'instance pour zéro
+#     gain analytique — aucun de ces IOC ne porte d'événement à corréler. Elles
+#     sont tirées directement par cti.py dans le cache de lookup, et déclarées
+#     à MISP en `cache_seulement` (cache Redis) pour rester interrogeables
+#     depuis l'UI. Elles matchent au niveau 10 : hors du pipeline d'incident
+#     (MIN_LEVEL=12), visibles au dashboard. Une IP de scanner qui frappe le SSH
+#     exposé n'est pas un incident, c'est le bruit de fond d'internet.
+#
+# Vérifié joignable le 2026-08-12. Un feed mort ne fait pas d'erreur : il fait
+# une CTI qui vieillit en silence — d'où le contrôle de fraîcheur de cti.py et
+# la règle 100956.
+
+misp_feeds:
+  # --- Demandé : le feed public du CERT-FR (TLP:CLEAR). Peu volumineux, très
+  # ciblé, et c'est le seul feed de cette liste qui parle des campagnes visant
+  # spécifiquement des organisations françaises.
+  - nom: CERT-FR OSINT
+    url: https://misp.cert.ssi.gouv.fr/feed-misp/
+    fournisseur: CERT-FR / ANSSI
+    format: misp
+    active: true
+    tags: [cti:certfr, tlp:clear]
+
+  # --- Le feed OSINT historique de MISP, maintenu par le CIRCL. C'est la
+  # référence de fait : rapports APT, campagnes, malware, avec le contexte.
+  - nom: CIRCL OSINT Feed
+    url: https://www.circl.lu/doc/misp/feed-osint/
+    fournisseur: CIRCL
+    format: misp
+    active: true
+    tags: [cti:circl, tlp:clear]
+
+  # --- Botvrij.eu : IOC extraits de rapports publics, faible taux de faux
+  # positif, complémentaire du CIRCL (recouvrement partiel seulement).
+  - nom: Botvrij.eu OSINT
+    url: https://www.botvrij.eu/data/feed-osint/
+    fournisseur: Botvrij.eu
+    format: misp
+    active: true
+    tags: [cti:botvrij, tlp:clear]
+
+  # --- ThreatFox (abuse.ch) : IOC de C2 en activité, avec la famille de
+  # malware. Le plus utile des feeds « chauds » : un match ici veut dire
+  # « cette machine parle à un C2 connu », c'est-à-dire déjà compromise.
+  - nom: ThreatFox (abuse.ch)
+    url: https://threatfox.abuse.ch/downloads/misp/
+    fournisseur: abuse.ch
+    format: misp
+    active: true
+    tags: [cti:threatfox, malware:c2]
+
+  # --- URLhaus (abuse.ch) : URL de distribution de malware. Match sur une URL
+  # vue dans un log proxy/web = téléchargement de charge utile.
+  - nom: URLhaus (abuse.ch)
+    url: https://urlhaus.abuse.ch/downloads/misp/
+    fournisseur: abuse.ch
+    format: misp
+    active: true
+    tags: [cti:urlhaus, malware:distribution]
+
+blocklists:
+  # --- Demandé : Data-Shield IPv4 (duggytuxy). Fenêtre glissante de 15 jours,
+  # rafraîchie toutes les 6 h. Deux jeux :
+  #   prod_*          -> scanners/attaquants visant les applis web
+  #   prod_critical_* -> ciblant DMZ, API et infra exposée
+  # Les fichiers `prod_data-shield_*.txt` et `prod_critical_data-shield_*.txt`
+  # sont les listes complètes (~100 000 IP chacune) ; les variantes aa/ab/ac
+  # sont les mêmes découpées en tranches de 30 000 pour les pare-feux qui
+  # plafonnent. On prend les listes complètes : pas de découpage nécessaire ici.
+  - nom: data-shield
+    fournisseur: duggytuxy
+    type: ip
+    urls:
+      - https://raw.githubusercontent.com/duggytuxy/Data-Shield_IPv4_Blocklist/main/prod_data-shield_ipv4_blocklist.txt
+      - https://raw.githubusercontent.com/duggytuxy/Data-Shield_IPv4_Blocklist/main/prod_critical_data-shield_ipv4_blocklist.txt
+    categorie: Network activity
+    commentaire: Scanner / attaquant vu sur des cibles web et infra exposee
+    tags: [cti:data-shield, reputation:scanner]
+
+  # --- blocklist.de : IP ayant attaqué (SSH, mail, web) un capteur du réseau
+  # fail2ban mondial. Recouvre en partie data-shield, mais avec une fenêtre
+  # plus courte : bon signal de fraîcheur.
+  - nom: blocklist.de
+    fournisseur: blocklist.de
+    type: ip
+    urls: [https://lists.blocklist.de/lists/all.txt]
+    categorie: Network activity
+    commentaire: IP ayant attaque un capteur fail2ban (SSH, mail, web)
+    tags: [cti:blocklist-de, reputation:bruteforce]
+
+  # --- CINS Army (Sentinel IPS) : IP à mauvaise réputation confirmée par de
+  # multiples capteurs, seuil de confiance élevé, peu de bruit.
+  - nom: cins-army
+    fournisseur: CINS Score
+    type: ip
+    urls: [https://cinsscore.com/list/ci-badguys.txt]
+    categorie: Network activity
+    commentaire: Mauvaise reputation confirmee par capteurs multiples (CINS)
+    tags: [cti:cins, reputation:malicious]
+
+  # --- Nœuds de sortie Tor. NE PAS confondre avec de la malveillance : c'est
+  # un attribut de provenance. Retombe volontairement au niveau 5 (règle
+  # 100954) — utile en contexte d'investigation, inutile en alerte.
+  - nom: tor-exit
+    fournisseur: Tor Project
+    type: ip
+    urls: [https://check.torproject.org/torbulkexitlist]
+    categorie: Network activity
+    commentaire: Noeud de sortie Tor (provenance, pas malveillance)
+    tags: [cti:tor, anonymisation:tor]
+
+  # --- OpenPhish (flux gratuit) : URL de phishing actives. Volume modéré,
+  # rotation rapide.
+  - nom: openphish
+    fournisseur: OpenPhish
+    type: url
+    urls: [https://openphish.com/feed.txt]
+    categorie: Payload delivery
+    commentaire: URL de phishing active (flux communautaire OpenPhish)
+    tags: [cti:openphish, phishing]
+
+# --- Écartés délibérément, pour ne pas laisser croire à une omission ---
+#
+# firehol_level1 / Spamhaus DROP : excellents, mais publiés en CIDR. Le cache de
+#   lookup fait une égalité exacte sur la valeur, il ne sait pas dire « cette IP
+#   est dans ce /24 ». Les intégrer donnerait une liste chargée qui ne matche
+#   jamais — pire qu'absente. Leur place est une CDB list Wazuh
+#   (`lookup="address_match_key"`, qui gère le CIDR) : cf. docs/CTI.md.
+#
+# Feodo Tracker : le blocklist n'a plus bougé depuis le 2026-03-04 (vérifié le
+#   2026-08-12). Un feed figé donne une fausse impression de couverture.
+#
+# DigitalSide Threat-Intel : injoignable au 2026-08-12.

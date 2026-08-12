@@ -1,0 +1,20 @@
+<!-- Aura-SOC - rule 100951 (level 12). Domain: misp,threat_intel,cti,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="misp,threat_intel,cti,">
+
+  <!-- Curated intelligence matched on an INBOUND indicator: a host listed by
+       CERT-FR / CIRCL / abuse.ch contacted us. Level 12 because these feeds
+       flag campaign infrastructure, not scanners - the same IP hitting us is
+       the one seen in a published intrusion. -->
+
+  <rule id="100951" level="12">
+    <if_sid>100950</if_sid>
+    <field name="misp.confiance" type="pcre2">^curated$</field>
+    <field name="misp.direction" type="pcre2">^entrant$</field>
+    <description>CTI - inbound contact from a known malicious indicator: $(misp.ioc) (source $(misp.source), event "$(misp.evenement)", triggered on rule $(misp.source_alert_rule_id))</description>
+    <mitre>
+      <id>T1595</id>
+    </mitre>
+  </rule>
+
+</group>

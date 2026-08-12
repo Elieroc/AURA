@@ -83,6 +83,30 @@ Règles locales Aura-SOC -->
 
 Règles : 100621, 100622, 100623, 100624
 
+### `misp,threat_intel,cti,`
+
+Règles : 100950, 100951, 100952, 100953, 100954, 100955, 100956
+
+```
+CTI - correspondance d'indicateurs MISP (cf. docs/CTI.md)
+
+     Le niveau ne vient JAMAIS de l'indicateur lui-même, mais de deux champs
+     posés par l'intégration :
+      - misp.confiance : `curated` (renseignement contextualisé : CERT-FR,
+        CIRCL, Botvrij, ThreatFox, URLhaus) -> incident, niveau 12+ ;
+        `bulk` (listes de réputation, 100 000+ IP tournantes, sans contexte)
+        -> niveau 10, une marche SOUS MIN_LEVEL, sinon le pipeline IA se noie
+        dans le bruit de fond d'internet ;
+      - misp.direction : `sortant` (une de NOS machines a joint une
+        infrastructure malveillante = elle est déjà compromise) prime sur
+        `entrant` (quelqu'un a essayé), d'où 14 contre 12.
+
+     Les règles filles sont rendues mutuellement exclusives par ces champs,
+     jamais par l'ordre des fichiers (cf. « Règle de conduite » ci-dessus).
+     100956 est une règle d'AUTO-SURVEILLANCE : cache d'IOC absent ou périmé,
+     c'est-à-dire une CTI qui répond encore mais avec du renseignement mort.
+```
+
 ### `threat_hunting,linux,`
 
 Règles : 100625, 100629, 100626, 100630, 100632, 100631, 100633, 100634, 100636, 100635

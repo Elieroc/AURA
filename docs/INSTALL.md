@@ -41,7 +41,7 @@ Bases de données (bind mounts vers `db/`, gitignoré) et certificats à génér
 une fois :
 
 ```bash
-mkdir -p db/{socagent-postgres,iris-postgres,shuffle-opensearch,wazuh-indexer}
+mkdir -p db/{socagent-postgres,iris-postgres,shuffle-opensearch,wazuh-indexer,misp-mariadb}
 docker compose -f src/wazuh/generate-indexer-certs.yml run --rm generator
 ./src/iris/scripts/generate-certs.sh
 ```
@@ -84,6 +84,17 @@ curl -sk -u admin:$INDEXER_PASSWORD -X POST \
   "https://localhost/api/saved_objects/_import?overwrite=true" \
   -H 'osd-xsrf: true' --form file=@src/wazuh/dashboards/soc-ai-dashboards.ndjson
 ```
+
+### CTI / MISP
+
+Le volet renseignement (MISP + feeds + détection des IOC dans Wazuh) a sa
+propre procédure : [`docs/CTI.md`](CTI.md). Deux points qui se paient cher
+s'ils sont oubliés :
+
+- le bloc `<integration>custom-misp</integration>` doit être repris de
+  `wazuh_manager.conf.example` dans le `wazuh_manager.conf` déployé — sans lui,
+  le cache d'IOC est rempli et n'est jamais lu, **sans aucune erreur** ;
+- `mkdir -p db/misp-mariadb` avant le premier `up`, comme les autres bases.
 
 ## 2. DFIR-IRIS
 

@@ -1,0 +1,24 @@
+<!-- Aura-SOC - rule 100956 (level 12). Domain: soc_selfcheck,misp,threat_intel,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="soc_selfcheck,misp,threat_intel,cti,">
+
+  <!-- CTI blind spot: the indicator cache is missing, unreadable or older than
+       CTI_PEREMPTION_HEURES.
+
+       Same failure mode as a muted sensor (rules 100800+): nothing errors out,
+       lookups keep answering, and they answer with intelligence that no longer
+       matches reality. An absence cannot be correlated, so it has to be
+       reported positively - here by the integration itself, at most once an
+       hour. Level 12 so the case reaches the pipeline: a SOC that believes it
+       has CTI and does not is worse off than one that knows it has none. -->
+
+  <rule id="100956" level="12">
+    <if_sid>100950</if_sid>
+    <field name="misp.erreur">\.+</field>
+    <description>SOC tampering: CTI indicator cache unusable - $(misp.erreur)</description>
+    <mitre>
+      <id>T1562.001</id>
+    </mitre>
+  </rule>
+
+</group>

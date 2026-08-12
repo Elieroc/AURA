@@ -1,0 +1,42 @@
+<!-- Aura-SOC - rule 100950 (level 3). Domain: misp,threat_intel,cti,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="misp,threat_intel,cti,">
+
+  <!-- ==========================================================================
+       CTI - MISP indicator matching (100950-100959)
+
+       Data path: `python -m soc_agent.cti` mirrors MISP attributes and bulk
+       reputation lists into a local SQLite cache; the `custom-misp` integration
+       looks up every indicator carried by an alert (IP, domain, URL, file hash)
+       in that cache and re-injects an enriched event here. See docs/CTI.md.
+
+       Severity is driven by two fields, never by the indicator itself:
+
+         misp.confiance  curated -> contextualised intelligence (CERT-FR, CIRCL,
+                                    Botvrij, ThreatFox, URLhaus). A match is an
+                                    incident: level 12+.
+                         bulk    -> mass reputation lists (100k+ rotating IPs,
+                                    no context). A match is background noise
+                                    from the internet: level 10, deliberately
+                                    below the incident pipeline (MIN_LEVEL=12).
+
+         misp.direction  entrant -> a flagged host talked to us. Common, cheap.
+                         sortant -> one of OUR hosts talked to a flagged
+                                    destination. That host is likely already
+                                    compromised - the expensive case.
+                         artefact -> a file hash on one of our machines.
+
+       Rules below are mutually exclusive by these fields (see rules/README.md:
+       never rely on file order to arbitrate between siblings).
+       ========================================================================== -->
+
+  <!-- CTI lookup produced a match (any source, any direction) -->
+
+  <rule id="100950" level="3">
+    <decoded_as>json</decoded_as>
+    <field name="integration">custom-misp</field>
+    <description>CTI - MISP indicator match: $(misp.ioc) ($(misp.type), source $(misp.source))</description>
+    <options>no_full_log</options>
+  </rule>
+
+</group>
