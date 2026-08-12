@@ -284,3 +284,25 @@ def test_date_rss_formats_reels():
     assert ca._date_rss("Tue, 12 Aug 2026 10:30:00 +0000").year == 2026
     assert ca._date_rss("2026-08-12T10:30:00Z").month == 8
     assert ca._date_rss("n'importe quoi") is None
+
+
+def test_amorcage_ne_grille_pas_les_flux_rss(monkeypatch):
+    # L'amorçage n'existe que pour les sources SANS date (Malpedia). Marquer un
+    # flux RSS au passage reviendrait à condamner ses articles récents — ceux
+    # qu'on veut justement traiter à la première vraie passe. Constaté en prod
+    # le 2026-08-12 : 40 articles perdus au premier amorçage.
+    monkeypatch.setattr(ca, "entrees_rss",
+                        lambda source, depuis: [{"url": "https://neuf", "titre": "t",
+                                                 "publie": None, "contenu": "",
+                                                 "contexte": ""}])
+    rss = ca.collecter({"nom": "thehackernews", "type": "rss"}, set(),
+                       datetime.now(timezone.utc), 10, True, True)
+    assert rss == []
+
+    monkeypatch.setattr(ca, "entrees_malpedia",
+                        lambda source, deja: [{"url": "https://rapport", "titre": "",
+                                               "publie": None, "contenu": "",
+                                               "contexte": "Emotet"}])
+    malpedia = ca.collecter({"nom": "malpedia", "type": "malpedia_references"},
+                            set(), datetime.now(timezone.utc), 10, True, True)
+    assert [r["motif"] for r in malpedia] == ["amorçage"]

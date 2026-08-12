@@ -714,8 +714,22 @@ def traiter(article: dict, source: dict, simulation: bool = False) -> dict:
     return resultat
 
 
+# Sources qui n'ont ni date ni flux de nouveautés : c'est le curseur des URL
+# vues qui en tient lieu, donc elles DOIVENT être amorcées avant la première
+# passe. Les flux RSS, eux, sont déjà bornés par leur fenêtre de fraîcheur.
+TYPES_A_AMORCER = {"malpedia_references"}
+
+
 def collecter(source: dict, deja: set[str], depuis: datetime,
               maximum: int, amorcage: bool, simulation: bool) -> list[dict]:
+    if amorcage and source.get("type") not in TYPES_A_AMORCER:
+        # Ne PAS marquer les flux RSS pendant un amorçage : ce serait griller
+        # les articles récents, qui sont précisément ceux qu'on veut traiter à
+        # la première vraie passe. L'amorçage n'existe que pour les sources sans
+        # date (cf. TYPES_A_AMORCER).
+        log.info("%s : rien à amorcer (source datée)", source["nom"])
+        return []
+
     if source.get("type") == "malpedia_references":
         entrees = entrees_malpedia(source, deja)
     else:
