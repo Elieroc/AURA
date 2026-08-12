@@ -159,7 +159,7 @@ STATUTS_REMEDIES = ("exécuté", "confirmé", "sans_effet")
 # vide. L'`_id` déterministe fait que le réexport le corrige en place.
 SQL_KPI = f"""
     SELECT i.id, i.agent_name, i.max_level, i.alert_count, i.status,
-           i.first_seen, i.created_at,
+           i.priorite, i.severite, i.first_seen, i.created_at,
            (SELECT min(t.created_at) FROM triages t
              WHERE t.incident_id = i.id) AS triage_at,
            (SELECT min(m.executed_at) FROM mitigations m
@@ -223,6 +223,11 @@ def _doc_kpi(k: dict) -> dict:
             "max_level": k["max_level"],
             "alert_count": k["alert_count"],
             "status": k["status"],
+            # Priorité de l'asset : un MTTD moyen ne veut rien dire tant qu'il
+            # mélange le contrôleur de domaine et les postes de test. C'est le
+            # MTTD des P1 qui se défend devant un auditeur.
+            "priorite": k["priorite"],
+            "severite": k["severite"],
         },
     }
 

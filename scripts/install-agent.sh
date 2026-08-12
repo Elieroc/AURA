@@ -13,10 +13,16 @@
 # lui donner sudo/SSH reviendrait à élever les privilèges des daemons.
 #
 # Usage (en root sur la machine cible) :
-#   ./install-agent.sh -m <MANAGER_IP> -k "<CLE_PUBLIQUE_SSH>" [-n <AGENT_NAME>] [-v <VERSION>]
+#   ./install-agent.sh -m <MANAGER_IP> -k "<CLE_PUBLIQUE_SSH>" [-n <AGENT_NAME>] \
+#                      [-g <GROUPE>] [-v <VERSION>]
+#
+# -g déclare le RÔLE de la machine sous forme de groupe Wazuh (role-dc,
+# role-web, role-firewall…). C'est ce qui donne sa priorité P1-P4 à l'asset,
+# donc l'ordre dans lequel ses incidents sont analysés. Sans -g, la machine est
+# traitée en P4, c'est-à-dire en fin de file.
 #
 # Exemple :
-#   ./install-agent.sh -m 10.0.1.5 -k "ssh-ed25519 AAAA... soc" -n endpoint-01
+#   ./install-agent.sh -m 10.0.1.5 -k "ssh-ed25519 AAAA... soc" -n endpoint-01 -g role-endpoint
 
 set -euo pipefail
 
@@ -24,15 +30,17 @@ WAZUH_VERSION="4.9.2"
 AGENT_NAME="$(hostname)"
 MANAGER_IP=""
 SSH_PUBKEY=""
+AGENT_GROUP=""
 ADMIN_USER="wazuh-admin"
 
 usage() { grep '^#' "$0" | sed 's/^# \?//'; exit 1; }
 
-while getopts "m:k:n:v:h" opt; do
+while getopts "m:k:n:g:v:h" opt; do
   case "$opt" in
     m) MANAGER_IP="$OPTARG" ;;
     k) SSH_PUBKEY="$OPTARG" ;;
     n) AGENT_NAME="$OPTARG" ;;
+    g) AGENT_GROUP="$OPTARG" ;;
     v) WAZUH_VERSION="$OPTARG" ;;
     *) usage ;;
   esac
@@ -57,6 +65,13 @@ echo "[2/6] Agent Wazuh ${WAZUH_VERSION} -> manager ${MANAGER_IP}"
 if dpkg -s wazuh-agent >/dev/null 2>&1; then
   echo "  déjà installé ($(dpkg -s wazuh-agent | awk '/^Version/{print $2}')), skip"
 else
+  # WAZUH_AGENT_GROUP porte le rôle de la machine (role-dc, role-web…) : le
+  # groupe est demandé À L'ENRÔLEMENT, donc le manager la classe dès sa
+  # première connexion. Le déclarer après coup marche aussi (API /agents/
+  # {id}/group/{g}), mais tout incident survenu entre-temps naît en P4.
+  # if/fi et non `[ … ] && …` : sous `set -e`, un test faux en fin de ligne
+  # ferait sortir le script avec le code 1.
+  if [ -n "$AGENT_GROUP" ]; then export WAZUH_AGENT_GROUP="$AGENT_GROUP"; fi
   WAZUH_MANAGER="$MANAGER_IP" WAZUH_AGENT_NAME="$AGENT_NAME" \
     apt-get install -y -qq "wazuh-agent=${WAZUH_VERSION}-1" >/dev/null
   apt-mark hold wazuh-agent >/dev/null   # bloque l'upgrade auto (doit suivre le manager)

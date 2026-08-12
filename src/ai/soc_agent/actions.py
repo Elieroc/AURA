@@ -79,6 +79,13 @@ def actions_fort_impact(actions: list[str]) -> list[str]:
 # sont les niveaux « attaque avérée » : ransomware, destruction de masse,
 # compromission confirmée. Une règle qui tire à 14+ a exigé plusieurs
 # corrélations côté Wazuh — la classer en faux positif demande un humain.
+#
+# Défaut historique, conservé pour les assets sans priorité connue et pour les
+# appels qui ne passent pas de priorité (tests, rejeu d'incidents antérieurs à
+# la CMDB). Sur un asset priorisé, c'est `config.CLOTURE_INTERDITE_PAR_PRIORITE`
+# qui s'applique : le seuil DESCEND quand l'asset compte (12 sur un contrôleur
+# de domaine). Le coût d'un faux négatif y est sans commune mesure avec celui
+# d'un case de plus à lire.
 NIVEAU_CLOTURE_INTERDITE = 14
 
 # Confinements moins invasifs que l'isolation. Tant que l'un d'eux s'applique,
@@ -92,9 +99,23 @@ CONFINEMENT_MOINS_INVASIF = (
 )
 
 
+def seuil_cloture(priorite: int | None) -> int:
+    """Niveau au-delà duquel la clôture automatique est refusée, selon l'asset.
+
+    Import local : `actions` est un module pur (aucune I/O, aucune base) et doit
+    le rester pour être testable seul ; `config` ne lit que l'environnement.
+    """
+    from . import config
+    if priorite is None:
+        return NIVEAU_CLOTURE_INTERDITE
+    return config.CLOTURE_INTERDITE_PAR_PRIORITE.get(
+        int(priorite), NIVEAU_CLOTURE_INTERDITE)
+
+
 def appliquer_garde_fous(verdict: str, actions: list[str], max_level: int,
                          injection_suspectee: bool,
                          compromission_active: bool = False,
+                         priorite: int | None = None,
                          ) -> tuple[list[str], list[str]]:
     """Barrière déterministe entre la sortie du modèle et une action réelle.
 
@@ -109,6 +130,8 @@ def appliquer_garde_fous(verdict: str, actions: list[str], max_level: int,
     1. Un incident de niveau >= 14 ne peut PAS être clos automatiquement,
        quoi qu'en dise le modèle. C'est exactement le scénario qu'une
        injection cherche à provoquer : faire refermer une intrusion en silence.
+       Le seuil DESCEND sur un asset prioritaire (`priorite`, cf.
+       `seuil_cloture`) : 12 sur un contrôleur de domaine ou un pare-feu.
     2. Un incident où des motifs d'injection ont été repérés ne peut pas être
        clos non plus — le verdict rendu sur un contexte manipulé ne vaut rien.
     3. L'isolation d'un hôte est un DERNIER RECOURS : elle ne part que si aucun
@@ -128,10 +151,11 @@ def appliquer_garde_fous(verdict: str, actions: list[str], max_level: int,
     motifs: list[str] = []
 
     if verdict == "false_positive":
-        if max_level >= NIVEAU_CLOTURE_INTERDITE:
+        seuil = seuil_cloture(priorite)
+        if max_level >= seuil:
             motifs.append(
-                f"clôture refusée : niveau {max_level} >= "
-                f"{NIVEAU_CLOTURE_INTERDITE}")
+                f"clôture refusée : niveau {max_level} >= {seuil}"
+                + (f" (asset P{priorite})" if priorite else ""))
         if injection_suspectee:
             motifs.append(
                 "clôture refusée : motifs d'injection dans les données")

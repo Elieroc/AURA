@@ -27,6 +27,7 @@ def aura_enroll_agent(
     winrm_user: str | None = None,
     winrm_password: str | None = None,
     sans_sysmon: bool = False,
+    role: str | None = None,
     confirmer: bool = False,
 ) -> dict:
     """Installe un agent Wazuh complet sur une machine. MODIFIE LA MACHINE.
@@ -64,6 +65,15 @@ def aura_enroll_agent(
         winrm_password: mot de passe associé.
         sans_sysmon: Windows seulement — sauter l'installation de Sysmon
             (hôte sans accès Internet).
+        role: rôle de la machine, qui fixe sa PRIORITÉ (P1-P4) dans le SOC :
+            `dc`, `firewall`, `soc`, `hypervisor`, `pki`, `backup` (P1) ;
+            `web`, `db`, `mail`, `proxy`, `dns`, `vpn`, `fileserver` (P2) ;
+            `serveur`, `admin` (P3) ; `endpoint`, `lab` (P4). L'agent est rangé
+            dans le groupe Wazuh `role-<role>`, qui est la source de vérité.
+            **Sans rôle, la machine est traitée en P4** — ses incidents passent
+            en fin de file et sa sévérité est minorée d'un niveau. À déclarer
+            même approximativement : un rôle discutable vaut mieux qu'un asset
+            critique invisible.
         confirmer: doit valoir `true` pour agir. À `false` (défaut), l'outil
             rend le plan sans rien toucher.
     """
@@ -79,7 +89,7 @@ def aura_enroll_agent(
         return {"erreur": "winrm_user et winrm_password sont requis pour "
                           "Windows."}
 
-    plan = _plan(systeme, hote, nom_agent or hote, manager, sans_sysmon)
+    plan = _plan(systeme, hote, nom_agent or hote, manager, sans_sysmon, role)
     if not confirmer:
         return {"execute": False, "plan": plan,
                 "raison": "confirmer=false — la machine n'a pas été touchée."}
@@ -87,11 +97,11 @@ def aura_enroll_agent(
     try:
         if systeme == "linux":
             resultat = enrolement.enroler_linux(hote, nom_agent, ssh_user,
-                                                manager)
+                                                manager, role)
         else:
             resultat = enrolement.enroler_windows(
                 hote, nom_agent, winrm_user, winrm_password, manager,
-                sans_sysmon)
+                sans_sysmon, role)
     except enrolement.ErreurEnrolement as e:
         # Un enrôlement peut échouer à mi-chemin. Le dire avec l'étape fautive
         # vaut mieux qu'une trace : la machine est peut-être à moitié
@@ -108,7 +118,13 @@ def aura_enroll_agent(
 
 
 def _plan(systeme: str, hote: str, nom: str, manager: str,
-          sans_sysmon: bool) -> list[str]:
+          sans_sysmon: bool, role: str | None = None) -> list[str]:
+    classement = (
+        f"Ranger l'agent dans le groupe role-{role} et l'inscrire dans la CMDB."
+        if role else
+        f"AUCUN rôle déclaré : la machine sera traitée en "
+        f"P{soc_config.PRIORITE_DEFAUT} (fin de file d'analyse, sévérité "
+        f"minorée). Passer `role` pour la classer.")
     if systeme == "linux":
         return [
             f"Copier les recettes d'AURA sur {hote} (SSH par clé).",
@@ -118,6 +134,7 @@ def _plan(systeme: str, hote: str, nom: str, manager: str,
             "Créer /etc/ld.so.preload s'il manque, pour le rendre surveillable.",
             "Poser les scripts d'active response.",
             "Créer le compte wazuh-admin (sudo sans mot de passe, SSH par clé).",
+            classement,
             "Vérifier sur la machine, et signaler si un redémarrage est requis.",
         ]
     return [
@@ -129,6 +146,7 @@ def _plan(systeme: str, hote: str, nom: str, manager: str,
         "Abonner l'agent aux canaux Sysmon et PowerShell Operational.",
         "Pousser les scripts d'active response Windows/AD, compiler le "
         "wrapper et le recopier sous le nom de chaque action.",
+        classement,
         "Vérifier sur la machine.",
     ]
 

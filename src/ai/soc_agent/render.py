@@ -22,6 +22,16 @@ MAX_REGLES = 6
 MAX_OBJETS = 5
 MAX_IPS = 3
 
+# Ce que « P1 » signifie, en clair. Un chiffre nu n'apprend rien au modèle : il
+# lui faut la CONSÉQUENCE d'une compromission pour la peser dans son verdict.
+ECHELLE_PRIORITE = {
+    1: "compromission = perte du domaine, du réseau ou de la capacité de "
+       "détection ; aucun doute ne se referme tout seul",
+    2: "service exposé ou porteur de données, pivot classique",
+    3: "serveur interne sans exposition ni donnée sensible",
+    4: "poste client, machine de laboratoire ou rôle non déclaré",
+}
+
 
 def _tronquer(valeurs: list[str], maxi: int) -> str:
     """Liste bornée, avec mention explicite de ce qui est masqué.
@@ -122,6 +132,19 @@ def rendre(incident: dict, alertes: list[dict], max_regles: int = MAX_REGLES) ->
         f"volume           : {incident['alert_count']} alertes, "
         f"niveau max {incident['max_level']}/15",
     ]
+
+    # Criticité de la machine. Le niveau Wazuh décrit ce que la règle a vu ;
+    # celui-ci décrit ce qu'on perd. Le même `net user /add` est une routine
+    # d'admin sur un poste de test et un backdoor de domaine sur un DC — sans
+    # cette ligne, le modèle n'a aucun moyen de faire la différence. Les rôles
+    # sont explicités plutôt que codés : « P1 » seul ne veut rien dire pour lui.
+    priorite = incident.get("priorite")
+    if priorite:
+        role = incident.get("asset_role")
+        lignes.append(
+            f"criticité asset  : P{priorite}"
+            + (f" — {role}" if role else " — rôle non déclaré")
+            + f" ({ECHELLE_PRIORITE.get(int(priorite), '')})")
 
     tactiques = incident.get("mitre_tactics") or []
     if tactiques:

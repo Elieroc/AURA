@@ -84,7 +84,7 @@ erreur de démarrage, pas un trou silencieux.
 
 `aura_incidents_list` · `aura_incident_get` · `aura_alerts_search` ·
 `aura_triage_history` · `aura_mitigations_list` · `aura_whitelist_list` ·
-`aura_ueba_state` · `aura_funnel_report` · `aura_metrics`
+`aura_ueba_state` · `aura_funnel_report` · `aura_metrics` · `aura_assets_list`
 
 `aura_incident_get` rend le texte **exact** soumis au LLM : un verdict se juge
 sur pièces, pas sur son résumé.
@@ -101,7 +101,8 @@ montre ce qu'il en reste. C'est la question à poser avant d'agir.
 
 `aura_run_cycle` · `aura_triage_incident` · `aura_iris_case_sync` ·
 `aura_ar_reconcile` · `aura_mitigate_execute` · `aura_isolate` ·
-`aura_unisolate` · `aura_whitelist_apply` · `aura_rule_tuning_apply`
+`aura_unisolate` · `aura_whitelist_apply` · `aura_rule_tuning_apply` ·
+`aura_asset_set`
 
 Tous en dry-run par défaut (`appliquer` / `confirmer` à `false`). Sans
 confirmation, l'outil rend ce qui serait fait **et pourquoi ce serait refusé**.
@@ -138,8 +139,9 @@ lire. Les champs concernés sont balisés `<untrusted>`.
 **Ce balisage n'est pas une protection.** Les tests du pipeline montrent que le
 modèle se laisse retourner 3 fois sur 4 par une injection bien placée. La
 barrière réelle est déterministe et vit dans `soc_agent.actions` : pas de
-clôture automatique au-dessus du niveau 14, pas de clôture quand un motif
-d'injection est repéré, isolation rétrogradée s'il existe un confinement moins
+clôture automatique au-dessus du niveau 14 — 12 sur un asset P1 —, pas de
+clôture quand un motif d'injection est repéré, isolation rétrogradée s'il
+existe un confinement moins
 invasif. Elle s'applique quel que soit l'appelant, y compris ce serveur.
 
 ## Enrôlement d'un agent
@@ -150,11 +152,18 @@ d'active response, et la déclaration côté manager. Il manque toujours un de c
 étages sur une machine qui « a pourtant l'agent ».
 
 ```
-aura_enroll_agent(hote="10.0.1.42", systeme="linux", nom_agent="web01")
 aura_enroll_agent(hote="10.0.1.42", systeme="linux", nom_agent="web01",
-                  confirmer=true)
+                  role="web")
+aura_enroll_agent(hote="10.0.1.42", systeme="linux", nom_agent="web01",
+                  role="web", confirmer=true)
 aura_agent_health(hote="10.0.1.42", systeme="linux", nom_agent="web01")
 ```
+
+`role` fixe la **priorité** de la machine (P1-P4, cf.
+[`CMDB.md`](CMDB.md)) : l'ordre dans lequel ses incidents sont analysés, leur
+sévérité, et le seuil au-delà duquel le modèle n'a plus le droit de les
+refermer. **Omis, l'asset est classé P4** — donc en fin de file.
+`aura_assets_list(dette_seulement=true)` liste ce qui a été enrôlé sans rôle.
 
 `surveille` est la seule réponse qui compte : le manager voit-il cet agent
 `active`, et la machine porte-t-elle bien **sa propre** identité ? Une machine

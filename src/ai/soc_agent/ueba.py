@@ -51,7 +51,7 @@ from datetime import datetime, timedelta, timezone
 import psycopg
 from psycopg.rows import dict_row
 
-from . import config
+from . import assets, config
 
 # --- Traits observés ---------------------------------------------------------
 #
@@ -694,7 +694,14 @@ def evaluer(simulation: bool = False) -> list[dict]:
                 "score": round(score, 2), "motifs": motifs,
                 "alert_ids": [a["id"] for a in groupe],
             })
-        signaux.sort(key=lambda s: -s["score"])
+        # Budget très serré (UEBA_BUDGET_PAR_CYCLE = 2) : l'ordre décide de ce
+        # qui devient un incident aujourd'hui. À score suffisant, l'asset le
+        # plus critique passe d'abord — le plancher reste le seul juge de
+        # l'éligibilité, la priorité n'arbitre qu'entre signaux déjà éligibles.
+        for s in signaux:
+            s["priorite"] = assets.priorite_agent(
+                conn, s["agent_id"])["priorite"]
+        signaux.sort(key=lambda s: (s["priorite"], -s["score"]))
 
         # Les signaux non promus sont recalculés à chaque passage : on efface
         # les « en attente » du tour précédent plutôt que de les mettre à jour,

@@ -20,7 +20,7 @@ from datetime import timedelta
 import psycopg
 from psycopg.rows import dict_row
 
-from . import config
+from . import assets, config
 
 # Groupes présents sur la moitié des règles Wazuh : les retenir comme point
 # commun fusionnerait des alertes sans aucun rapport entre elles.
@@ -146,7 +146,7 @@ def point_commun(a: dict, b: dict) -> tuple[str, bool] | None:
 
 
 SELECT_NON_RATTACHEES = """
-SELECT id, ts, agent_id, agent_name, rule_id, rule_level, rule_desc,
+SELECT id, ts, agent_id, agent_name, container, rule_id, rule_level, rule_desc,
        rule_groups, mitre_tactics, srcip, srcuser, entity, audit_uid,
        ueba_seed, ueba_score, ueba_traits, ueba_signal_id
   FROM alerts
@@ -160,7 +160,7 @@ SELECT id, ts, agent_id, agent_name, rule_id, rule_level, rule_desc,
 # agrégats, mis à jour en Python au rattachement.
 SELECT_INCIDENTS_OUVRABLES = """
 SELECT id, agent_id, first_seen, last_seen, alert_count, max_level,
-       rule_ids, mitre_tactics, entities
+       rule_ids, mitre_tactics, entities, priorite
   FROM incidents
  WHERE agent_id = ANY(%s) AND last_seen >= %s
  ORDER BY last_seen DESC
@@ -175,8 +175,8 @@ SELECT id, ts, agent_id, rule_id, rule_level, rule_groups, mitre_tactics,
 INSERT_INCIDENT = """
 INSERT INTO incidents (agent_id, agent_name, first_seen, last_seen,
                        alert_count, max_level, rule_ids, mitre_tactics, entities,
-                       ueba, ueba_score, ueba_motifs)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ueba, ueba_score, ueba_motifs, priorite, severite)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 RETURNING id
 """
 
@@ -431,15 +431,21 @@ def _appliquer_ajouts(conn, incs_par_id: dict[int, dict],
                       | {a["entity"] for a in nouvelles if a["entity"]})[:50]
         new_max = max([inc["max_level"]] + [a["rule_level"] for a in nouvelles])
         signal = _signal_decisif(anciennes_rules, nouvelles, inc["max_level"])
+        # La priorité de l'incident ne bouge PAS (elle est celle de l'asset au
+        # moment de l'ouverture, cf. schema.sql) ; la sévérité, si — elle suit
+        # le niveau max. Priorité absente sur les incidents antérieurs à la
+        # CMDB : on retombe sur le défaut plutôt que d'écrire NULL.
+        priorite = inc.get("priorite") or config.PRIORITE_DEFAUT
         conn.execute(
             "UPDATE incidents SET last_seen = %s, first_seen = %s, "
             "alert_count = alert_count + %s, max_level = %s, rule_ids = %s, "
-            "mitre_tactics = %s, entities = %s, "
+            "mitre_tactics = %s, entities = %s, severite = %s, "
             "needs_refresh = needs_refresh OR %s WHERE id = %s",
             (max([inc["last_seen"]] + [a["ts"] for a in nouvelles]),
              min([inc["first_seen"]] + [a["ts"] for a in nouvelles]),
              len(nouvelles), new_max,
-             rules, tacs, ents, signal, iid))
+             rules, tacs, ents, assets.severite(new_max, priorite),
+             signal, iid))
 
 
 def correler(min_level: int, attach_min_level: int | None = None) -> tuple[int, int]:
@@ -532,19 +538,30 @@ def correler(min_level: int, attach_min_level: int | None = None) -> tuple[int, 
                       f"{config.UEBA_SCORE_PLANCHER:.0f}) — pas d'incident")
                 continue
 
+            # Priorité de l'asset touché. Le conteneur d'origine prime sur
+            # l'agent quand l'alerte vient d'un capteur d'hôte : c'est le LXC
+            # qui est la vraie machine, pas l'hyperviseur qui l'observe (cf.
+            # assets.priorite_agent).
+            niveau_max = max(a["rule_level"] for a in groupe)
+            conteneur = next((a.get("container") for a in groupe
+                              if a.get("container")), None)
+            prio = assets.priorite_agent(conn, groupe[0]["agent_id"], conteneur)
+
             inc_id = conn.execute(INSERT_INCIDENT, (
                 groupe[0]["agent_id"],
                 groupe[0]["agent_name"],
                 min(a["ts"] for a in groupe),
                 max(a["ts"] for a in groupe),
                 len(groupe),
-                max(a["rule_level"] for a in groupe),
+                niveau_max,
                 sorted({a["rule_id"] for a in groupe}),
                 tactiques,
                 entites[:50],   # bornage : un ransomware touche des milliers de fichiers
                 bool(ueba_alertes),
                 round(score_ueba, 2) or None,
                 json.dumps(motifs, ensure_ascii=False) if motifs else None,
+                prio["priorite"],
+                assets.severite(niveau_max, prio["priorite"]),
             )).fetchone()["id"]
 
             conn.execute(

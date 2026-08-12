@@ -4,6 +4,7 @@ Tous en `aura:read`. Ils lisent la base `socagent` en transaction read-only
 (voir `db.lecture`) : une erreur de requête ne peut pas muter un incident.
 """
 
+from soc_agent import config as soc_config
 from soc_agent import evaluate, label, report, training, ueba, whitelist
 
 from .. import auth, sortie
@@ -15,7 +16,8 @@ from ..serveur import enregistrer
 # poids de la réponse alors que la liste sert à choisir sur quoi zoomer.
 SELECT_INCIDENTS = """
     SELECT i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
-           i.alert_count, i.max_level, i.status, i.iris_case_id,
+           i.alert_count, i.max_level, i.priorite, i.severite, i.status,
+           i.iris_case_id,
            i.needs_refresh, i.ueba, i.ueba_score, i.mitre_tactics,
            t.verdict, t.confidence, t.created_at AS triage_at
       FROM incidents i
@@ -30,7 +32,12 @@ SELECT_INCIDENTS = """
        AND (%(verdict)s::text IS NULL OR t.verdict = %(verdict)s)
        AND (%(depuis_heures)s::int IS NULL
             OR i.last_seen >= now() - make_interval(hours => %(depuis_heures)s))
-     ORDER BY i.max_level DESC, i.last_seen DESC
+     -- Même ordre que la file de triage : l'asset le plus critique d'abord,
+     -- puis la sévérité effective. Un analyste qui ouvre cette liste doit voir
+     -- ce que le pipeline a traité en premier, sinon les deux vues racontent
+     -- deux histoires différentes du même parc.
+     ORDER BY COALESCE(i.priorite, %(prio_defaut)s),
+              COALESCE(i.severite, i.max_level) DESC, i.last_seen DESC
      LIMIT %(limite)s OFFSET %(offset)s
 """
 
@@ -84,7 +91,9 @@ def aura_incidents_list(
     with base() as conn:
         total = conn.execute(COUNT_INCIDENTS, filtres).fetchone()["n"]
         lignes = conn.execute(
-            SELECT_INCIDENTS, {**filtres, "limite": limite, "offset": offset}
+            SELECT_INCIDENTS,
+            {**filtres, "limite": limite, "offset": offset,
+             "prio_defaut": soc_config.PRIORITE_DEFAUT},
         ).fetchall()
     return sortie.page([dict(r) for r in lignes], total, limite, offset)
 

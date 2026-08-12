@@ -82,14 +82,19 @@ DIR_ANALYSE = "Analyse IA"
 TAG_AUTO = "soc-agent"
 
 
-def _taguer(case, case_id: int, agent_name: str | None) -> None:
+def _taguer(case, case_id: int, agent_name: str | None,
+            *extras: str | None) -> None:
     """Ajoute le hostname de la machine touchée aux tags du case (union).
 
     Un analyste retrouve ainsi tous les cases d'une même machine par le tag.
     Union avec l'existant : on n'écrase pas les tags posés à la main. add_case
     n'accepte pas de tags — d'où le update_case juste après la création.
+
+    `extras` : tags supplémentaires (priorité de l'asset, « P1 »…), ignorés
+    quand ils sont vides.
     """
-    if not agent_name:
+    nouveaux = {t for t in (agent_name, *extras) if t}
+    if not nouveaux:
         return
     tags: set[str] = set()
     try:
@@ -99,9 +104,9 @@ def _taguer(case, case_id: int, agent_name: str | None) -> None:
             tags = {t.strip() for t in brut.split(",") if t.strip()}
     except Exception as e:  # noqa: BLE001 — le tag ne bloque pas le case
         log.debug("lecture tags case #%s : %s", case_id, e)
-    if agent_name in tags:
+    if nouveaux <= tags:
         return
-    tags.add(agent_name)
+    tags |= nouveaux
     try:
         case.update_case(case_id=case_id, case_tags=sorted(tags))
     except Exception as e:  # noqa: BLE001
@@ -2224,9 +2229,19 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
         raise RuntimeError(f"client IRIS échoué : {e}") from e
 
     nom = _nommer_case(conn, incident, triage, alertes)
+    # Priorité de l'asset dans la DESCRIPTION et dans un TAG : l'API legacy
+    # d'IRIS ne prend pas de sévérité à la création du case (cf. add_case), et
+    # l'analyste doit pouvoir trier sa file sur ce critère. Le tag `P1` est
+    # filtrable côté IRIS, la description reste lisible sans filtre.
+    priorite = incident.get("priorite")
     desc = (f"Incident #{incident['id']} corrélé par le soc-agent, "
             f"{incident['alert_count']} alertes, niveau max "
-            f"{incident['max_level']}/15. Verdict IA : {verdict}.")
+            f"{incident['max_level']}/15")
+    if priorite:
+        role = incident.get("asset_role") or "rôle non déclaré"
+        desc += (f", asset P{priorite} ({role}), sévérité effective "
+                 f"{incident.get('severite') or incident['max_level']}/15")
+    desc += f". Verdict IA : {verdict}."
 
     log.debug("  appel add_case (nom=%s, cust=%s)", nom[:50], config.IRIS_CUSTOMER)
     r = case.add_case(
@@ -2252,8 +2267,10 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
         (case_id, "fp_classe" if fp else "case_ouvert", incident["id"]))
     conn.commit()
 
-    # Tag = hostname de la machine touchée (add_case ne prend pas de tags).
-    _taguer(case, case_id, incident.get("agent_name"))
+    # Tags = hostname de la machine touchée + priorité de l'asset (add_case ne
+    # prend pas de tags, d'où l'update juste après la création).
+    _taguer(case, case_id, incident.get("agent_name"),
+            f"P{priorite}" if priorite else None)
 
     # IOC (best-effort : un type inconnu ne doit pas faire échouer le case) et
     # asset « machine touchée ». Les ids récupérés servent à lier la timeline :
@@ -2438,10 +2455,12 @@ _SELECT_BASE = """
 SELECT DISTINCT ON (i.id)
        i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
        i.alert_count, i.max_level, i.mitre_tactics, i.entities, i.iris_case_id,
-       i.ueba, i.ueba_score, i.ueba_motifs,
+       i.ueba, i.ueba_score, i.ueba_motifs, i.priorite, i.severite,
+       a.role AS asset_role,
        t.verdict, t.confidence, t.mitre, t.actions, t.reason
   FROM incidents i
   JOIN triages t ON t.incident_id = i.id
+  LEFT JOIN assets a ON a.agent_id = i.agent_id
  WHERE {filtre}
    AND (%(un_seul)s::bigint IS NULL OR i.id = %(un_seul)s)
  ORDER BY i.id, t.created_at DESC

@@ -453,6 +453,80 @@ ISOLATION_REFUS_SI_ROLE_INCONNU = os.environ.get(
     "ISOLATION_REFUS_SI_ROLE_INCONNU", "true").lower() == "true"
 
 
+# --- CMDB : rôle et priorité des assets (assets.py) -------------------------
+#
+# Toutes les machines ne se valent pas. Le même comportement — un binaire inédit
+# qui s'exécute, un compte créé — n'a pas la même portée sur un contrôleur de
+# domaine et sur un poste de test. Le pipeline ne connaissait jusqu'ici que
+# `rule_level`, qui décrit la RÈGLE et pas la MACHINE : un niveau 12 sur le DC et
+# un niveau 12 sur un poste jetable arrivaient dans la même file, dans le même
+# ordre, avec les mêmes garde-fous.
+#
+# Le rôle est porté par les groupes Wazuh (mécanisme d'inventaire natif, déjà
+# utilisé par ISOLATION_GROUPES_INTERDITS), préfixés pour ne pas collisionner
+# avec les groupes de configuration : `role-dc`, `role-firewall`…
+CMDB_GROUPE_PREFIXE = os.environ.get("CMDB_GROUPE_PREFIXE", "role-")
+
+# Rôle -> priorité (1 = le plus critique). Le classement suit ce qu'on perd si
+# la machine tombe :
+#
+#  P1 — la compromission fait perdre le domaine (dc), le réseau (firewall), la
+#       capacité de détection (soc), tout ce qui est hébergé (hypervisor), la
+#       confiance (pki) ou la capacité de restauration (backup).
+#  P2 — service exposé ou porteur de données : pivot classique d'une intrusion.
+#  P3 — serveur interne sans exposition ni donnée sensible.
+#  P4 — poste client, lab, machine éphémère, et tout rôle non déclaré.
+PRIORITE_ROLES: dict[str, int] = {
+    "dc": 1, "firewall": 1, "soc": 1, "hypervisor": 1, "pki": 1, "backup": 1,
+    "web": 2, "db": 2, "mail": 2, "proxy": 2, "dns": 2, "vpn": 2,
+    "fileserver": 2,
+    "serveur": 3, "admin": 3,
+    "endpoint": 4, "lab": 4,
+}
+# Surcharge/ajout par déploiement : PRIORITE_ROLES="nas=1,jellyfin=3".
+for _paire in os.environ.get("PRIORITE_ROLES", "").split(","):
+    if "=" in _paire:
+        _role, _p = _paire.split("=", 1)
+        try:
+            PRIORITE_ROLES[_role.strip().lower()] = int(_p)
+        except ValueError:
+            sys.exit(f"PRIORITE_ROLES : priorité invalide dans « {_paire} »")
+
+# Priorité d'une machine dont le rôle n'est PAS déclaré (aucun groupe `role-`,
+# agent absent de la CMDB, API injoignable). P4 : décision opérateur — un asset
+# non déclaré ne prend pas la place d'un asset critique dans la file.
+#
+# Le revers est réel : une machine importante mais jamais déclarée est traitée
+# comme un poste jetable. C'est pourquoi la source de la priorité est TRACÉE
+# (`assets.priorite_source = 'defaut'`) et remontée par le rapport de couverture
+# — la dette d'inventaire doit être visible, pas devinée.
+PRIORITE_DEFAUT = int(os.environ.get("PRIORITE_DEFAUT", "4"))
+
+# Décalage appliqué au niveau Wazuh pour obtenir la sévérité EFFECTIVE de
+# l'incident, par priorité (P1..P4). `max_level` n'est jamais modifié : il
+# décrit ce que la règle a vu, et tout le reste du pipeline (corrélation, UEBA,
+# RULES_COMPROMISSION_HOTE) s'appuie dessus. La sévérité est une seconde
+# grandeur, qui ajoute « sur quoi ».
+SEVERITE_BONUS_PRIORITE = {
+    p + 1: int(v) for p, v in enumerate(
+        os.environ.get("SEVERITE_BONUS_PRIORITE", "2,1,0,-1").split(","))}
+
+# Niveau à partir duquel une clôture automatique en faux positif est interdite,
+# PAR PRIORITÉ (cf. actions.appliquer_garde_fous). Sur un asset P1, on ne laisse
+# pas le modèle refermer un incident de niveau 12 : le coût d'un faux négatif y
+# est sans commune mesure avec celui d'un case à lire.
+CLOTURE_INTERDITE_PAR_PRIORITE = {
+    p + 1: int(v) for p, v in enumerate(
+        os.environ.get("CLOTURE_INTERDITE_PAR_PRIORITE", "12,13,14,14").split(","))}
+
+# Priorité forcée pour un agent CAPTEUR (AGENTS_CAPTEURS). Sa télémétrie décrit
+# l'activité d'AUTRES machines : le pare-feu qui porte Suricata est bien un
+# asset P1, mais les alertes qu'il REMONTE parlent des postes du LAN. Sans ce
+# rabattement, chaque scan vu par l'IDS deviendrait un incident P1 et noierait la
+# file — la priorisation dégraderait le tri au lieu de l'améliorer.
+PRIORITE_CAPTEUR = int(os.environ.get("PRIORITE_CAPTEUR", "3"))
+
+
 # --- Corrélation ------------------------------------------------------------
 #
 # Deux alertes du même agent séparées de moins de CORRELATION_GAP_MINUTES et

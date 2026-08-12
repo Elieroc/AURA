@@ -82,8 +82,12 @@ def _valider(brut: dict) -> dict:
 SELECT_INCIDENTS = """
 SELECT i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
        i.alert_count, i.max_level, i.rule_ids, i.mitre_tactics, i.entities,
-       i.ueba, i.ueba_score, i.ueba_motifs
+       i.ueba, i.ueba_score, i.ueba_motifs,
+       COALESCE(i.priorite, %(prio_defaut)s) AS priorite,
+       COALESCE(i.severite, i.max_level) AS severite,
+       a.role AS asset_role
   FROM incidents i
+  LEFT JOIN assets a ON a.agent_id = i.agent_id
  WHERE (%(tous)s
         OR NOT EXISTS (SELECT 1 FROM triages t WHERE t.incident_id = i.id)
         -- incident enrichi depuis son dernier triage, MAIS pas indéfiniment :
@@ -99,7 +103,12 @@ SELECT i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
    -- viennent d'alertes 3-11). Sans la seconde clause, tout ce que le moteur
    -- comportemental remonte serait silencieusement écarté du triage.
    AND (i.max_level >= %(min_level)s OR i.ueba)
- ORDER BY i.ueba, i.max_level DESC, i.first_seen DESC
+ -- Le lot est PLAFONNÉ (limite_triage) : l'ordre décide de ce qui est analysé
+ -- maintenant et de ce qui attend le cycle suivant. La priorité de l'asset
+ -- passe donc avant le niveau de la règle — un niveau 12 sur le contrôleur de
+ -- domaine doit sortir avant un niveau 14 sur un poste de test.
+ ORDER BY i.ueba, COALESCE(i.priorite, %(prio_defaut)s),
+          COALESCE(i.severite, i.max_level) DESC, i.first_seen DESC
  LIMIT %(limite)s
 """
 
@@ -192,6 +201,7 @@ def trier(limite: int, un_seul: int | None, tous: bool,
             "tous": tous, "un_seul": un_seul,
             "min_level": config.MIN_LEVEL, "limite": limite,
             "refresh_ttl": config.INCIDENT_REFRESH_TTL_HOURS,
+            "prio_defaut": config.PRIORITE_DEFAUT,
         }).fetchall()
 
         if not incidents:
@@ -280,7 +290,7 @@ def trier(limite: int, un_seul: int | None, tous: bool,
                 set(inc["rule_ids"] or []) & config.RULES_COMPROMISSION_HOTE)
             actions, garde_fous = appliquer_garde_fous(
                 verdict["verdict"], actions, inc["max_level"], bool(injections),
-                compromission_active)
+                compromission_active, inc.get("priorite"))
 
             conn.execute(INSERT_TRIAGE, {
                 "incoherences": incoherences,

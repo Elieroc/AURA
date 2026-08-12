@@ -512,3 +512,54 @@ CREATE UNIQUE INDEX IF NOT EXISTS capteur_pannes_une_seule_ouverte
     ON capteur_pannes (agent_id, capteur) WHERE statut = 'ouverte';
 CREATE INDEX IF NOT EXISTS capteur_pannes_recentes
     ON capteur_pannes (detectee_a DESC);
+
+-- ---------------------------------------------------------------------------
+-- CMDB : priorité des assets (cf. assets.py)
+-- ---------------------------------------------------------------------------
+--
+-- Miroir interrogeable de ce que le manager Wazuh sait de chaque machine, plus
+-- ce que lui seul ne sait pas : à quel point elle compte. Sans cette table, le
+-- pipeline ne dispose que de `rule_level` — une propriété de la RÈGLE, pas de la
+-- machine — et traite un contrôleur de domaine comme un poste de test.
+--
+-- La source de vérité reste les groupes Wazuh préfixés `role-` : cette table est
+-- reconstruisible par `python -m soc_agent.assets --sync`. Une seule chose n'y
+-- est pas reconstruisible, et c'est pourquoi `priorite_source` existe : la
+-- priorité posée à la main par un opérateur (`operateur`), que la
+-- synchronisation ne doit jamais écraser.
+CREATE TABLE IF NOT EXISTS assets (
+    agent_id        text PRIMARY KEY,
+    nom             text,
+    ip              text,
+    os              text,
+    groupes         text[] NOT NULL DEFAULT '{}',
+    -- Rôle déclaré (dc, firewall, web…). NULL = jamais déclaré, la priorité
+    -- retombe alors sur PRIORITE_DEFAUT.
+    role            text,
+    priorite        smallint NOT NULL DEFAULT 4 CHECK (priorite BETWEEN 1 AND 4),
+    -- 'groupe' (déduite des groupes Wazuh) | 'operateur' (posée à la main,
+    -- jamais écrasée) | 'defaut' (aucun rôle déclaré — dette d'inventaire).
+    priorite_source text NOT NULL DEFAULT 'defaut',
+    notes           text,
+    vu_a            timestamptz,
+    maj_a           timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS assets_priorite ON assets (priorite);
+-- Résolution par nom : les alertes d'un agent CAPTEUR portent le conteneur
+-- d'origine (alerts.container), qu'on résout par son nom d'agent.
+CREATE INDEX IF NOT EXISTS assets_nom ON assets (nom);
+
+-- Priorité de l'asset touché, et sévérité EFFECTIVE de l'incident.
+--
+-- Colonnes distinctes de `max_level`, qui n'est PAS modifié : il décrit ce que
+-- la règle Wazuh a vu, et la corrélation, UEBA, les seuils de compromission et
+-- le garde-fou de clôture s'appuient dessus. Décaler `max_level` selon l'asset
+-- changerait silencieusement le sens de tous ces seuils. La sévérité est une
+-- seconde grandeur : « à quel point ça tire » x « sur quoi ».
+--
+-- Figées à la création de l'incident plutôt que calculées à la lecture : la
+-- priorité d'une machine change (reclassement, changement de rôle), et un
+-- incident doit rester lisible avec le contexte qui était le sien.
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS priorite smallint;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS severite smallint;
+CREATE INDEX IF NOT EXISTS incidents_priorite ON incidents (priorite, severite DESC);

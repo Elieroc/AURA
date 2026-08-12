@@ -131,6 +131,12 @@
           },
           "status": {
             "type": "keyword"
+          },
+          "priorite": {
+            "type": "integer"
+          },
+          "severite": {
+            "type": "integer"
           }
         }
       },

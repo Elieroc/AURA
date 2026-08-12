@@ -142,8 +142,136 @@ def cle_publique() -> str:
     return r.stdout.strip()
 
 
+# --------------------------------------------------------------------------
+# Rôle et priorité de l'asset (CMDB)
+# --------------------------------------------------------------------------
+
+# Un nom de groupe Wazuh, et un segment d'URL de l'API : liste blanche stricte,
+# comme partout ailleurs dans ce module.
+_RE_ROLE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+
+
+def _priorite_defaut() -> int:
+    from soc_agent import config as soc_config  # noqa: PLC0415
+    return soc_config.PRIORITE_DEFAUT
+
+
+def _groupe_du_role(role: str) -> str:
+    from soc_agent import config as soc_config  # noqa: PLC0415
+    return f"{soc_config.CMDB_GROUPE_PREFIXE}{role}"
+
+
+def _api(chemin: str, methode: str = "GET", corps: dict | None = None) -> dict:
+    """Appel authentifié à l'API Wazuh. Lève sur échec, sauf 4xx explicités."""
+    import json  # noqa: PLC0415
+    import ssl  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+
+    from soc_agent import config as soc_config  # noqa: PLC0415
+
+    ctx = ssl._create_unverified_context()
+    base = soc_config.WAZUH_API_URL.rstrip("/")
+    creds = base64.b64encode(
+        f"{soc_config.WAZUH_API_USER}:"
+        f"{soc_config.WAZUH_API_PASSWORD}".encode()).decode()
+    auth = urllib.request.Request(
+        f"{base}/security/user/authenticate",
+        headers={"Authorization": f"Basic {creds}"})
+    with urllib.request.urlopen(auth, context=ctx, timeout=20) as r:
+        jeton = json.loads(r.read())["data"]["token"]
+
+    requete = urllib.request.Request(
+        f"{base}{chemin}", method=methode,
+        data=json.dumps(corps).encode() if corps is not None else None,
+        headers={"Authorization": f"Bearer {jeton}",
+                 "Content-Type": "application/json"})
+    with urllib.request.urlopen(requete, context=ctx, timeout=30) as r:
+        return json.loads(r.read() or b"{}")
+
+
+def _creer_groupe(groupe: str) -> None:
+    """Crée le groupe s'il n'existe pas. Un groupe déjà là n'est pas une erreur."""
+    import urllib.error  # noqa: PLC0415
+    try:
+        _api("/groups", "POST", {"group_id": groupe})
+    except urllib.error.HTTPError as e:
+        # 400 « group already exists » : c'est le cas nominal au deuxième
+        # enrôlement d'un même rôle. Toute autre erreur remonte.
+        if e.code != 400:
+            raise ErreurEnrolement(
+                f"création du groupe {groupe} refusée par l'API Wazuh "
+                f"({e.code}) : {e.read()[:300]!r}") from e
+
+
+def _affecter_groupe(agent_id: str, groupe: str) -> None:
+    import urllib.error  # noqa: PLC0415
+    try:
+        _api(f"/agents/{agent_id}/group/{groupe}", "PUT")
+    except urllib.error.HTTPError as e:
+        raise ErreurEnrolement(
+            f"affectation de l'agent {agent_id} au groupe {groupe} refusée "
+            f"({e.code}) : {e.read()[:300]!r}") from e
+
+
+def declarer_role(nom_agent: str, role: str | None) -> dict:
+    """Range l'agent dans son groupe `role-…` et l'inscrit dans la CMDB.
+
+    C'est ici que se décide la PRIORITÉ de la machine (P1-P4), donc l'ordre dans
+    lequel ses incidents seront analysés et la sévérité qu'ils porteront. Le
+    groupe Wazuh est la source de vérité (inventaire natif, survit au
+    redéploiement de la stack) ; la table `assets` n'en est qu'un miroir
+    interrogeable, reconstruit par `soc_agent.assets --sync`.
+
+    Sans rôle déclaré, la machine retombe sur `PRIORITE_DEFAUT` (P4) : ses
+    incidents passent après ceux des assets déclarés. C'est un choix assumé —
+    ce qui n'est pas déclaré ne prend pas la place de ce qui l'est — dont le
+    revers est réel : une machine importante jamais déclarée est traitée comme
+    un poste jetable. D'où la trace `priorite_source = 'defaut'` et le rapport
+    `soc_agent.assets --couverture`, qui rend cette dette visible.
+    """
+    from soc_agent import assets as soc_assets  # noqa: PLC0415
+
+    etat = etat_sur_le_manager(nom_agent)
+    if not etat.get("connu"):
+        return {"etape": "role", "ok": False, "role": role,
+                "motif": "agent inconnu du manager : rôle non déclarable "
+                         "(l'enrôlement n'a pas abouti)"}
+    agent_id = etat["agent_id"]
+
+    if not role:
+        # Inscription quand même : un asset connu et sans rôle est une dette
+        # d'inventaire VISIBLE, alors qu'un asset absent de la table est un
+        # angle mort. Il sera de toute façon revu au prochain --sync.
+        soc_assets.definir(agent_id, priorite=_priorite_defaut(),
+                           source="defaut",
+                           notes="enrôlé sans rôle déclaré")
+        return {"etape": "role", "ok": True, "role": None,
+                "agent_id": agent_id, "priorite": _priorite_defaut(),
+                "avertissement":
+                    f"aucun rôle déclaré : la machine est traitée en "
+                    f"P{_priorite_defaut()} (fin de file). La déclarer avec "
+                    f"aura_asset_set dès que son usage est connu."}
+
+    from soc_agent import config as soc_config  # noqa: PLC0415
+    role = _valider(role.lower(), _RE_ROLE, "role", "dc, web, firewall")
+    if role not in soc_config.PRIORITE_ROLES:
+        # Vérifié AVANT de toucher au manager : un rôle inconnu n'a pas de
+        # priorité, donc créer son groupe ne servirait qu'à faire croire à une
+        # déclaration alors que la machine resterait en P4.
+        raise ErreurEnrolement(
+            f"rôle inconnu : « {role} ». Rôles connus : "
+            f"{', '.join(sorted(soc_config.PRIORITE_ROLES))}. En ajouter un "
+            f"via PRIORITE_ROLES (ex. PRIORITE_ROLES=\"nas=1\").")
+    groupe = _groupe_du_role(role)
+    _creer_groupe(groupe)
+    _affecter_groupe(agent_id, groupe)
+    ligne = soc_assets.definir(agent_id, role=role, source="groupe")
+    return {"etape": "role", "ok": True, "role": role, "groupe": groupe,
+            "agent_id": agent_id, "priorite": ligne["priorite"]}
+
+
 def enroler_linux(hote: str, nom_agent: str | None, utilisateur: str,
-                  manager: str) -> dict:
+                  manager: str, role: str | None = None) -> dict:
     """Pose l'agent, auditd et les scripts d'active response sur un hôte Linux."""
     hote = _valider(hote, _RE_HOTE, "hote", "192.168.10.12 ou srv-web.lab")
     utilisateur = _valider(utilisateur, _RE_UTILISATEUR, "ssh_user", "root")
@@ -183,6 +311,7 @@ def enroler_linux(hote: str, nom_agent: str | None, utilisateur: str,
     etapes.append({"etape": "install-agent.sh", "ok": True, "sortie": sortie})
 
     etapes.append(assurer_identite(hote, utilisateur, nom, manager))
+    etapes.append(declarer_role(nom, role))
     return {"etapes": etapes,
             "verification": verifier_linux(hote, utilisateur, nom)}
 
@@ -445,7 +574,7 @@ def deployer_ar_windows(hote: str, utilisateur: str, motdepasse: str) -> dict:
 
 def enroler_windows(hote: str, nom_agent: str | None, utilisateur: str,
                     motdepasse: str, manager: str,
-                    sans_sysmon: bool = False) -> dict:
+                    sans_sysmon: bool = False, role: str | None = None) -> dict:
     """Pose l'agent Windows, sa télémétrie complète, puis l'active response."""
     # `options` est concaténé dans un script PowerShell exécuté sur la cible :
     # même exigence que côté Linux.
@@ -474,6 +603,7 @@ def enroler_windows(hote: str, nom_agent: str | None, utilisateur: str,
     return {
         "installation": sortie[-4000:],
         "active_response": ar,
+        "role": declarer_role(nom, role),
         "verification": verifier_windows(hote, utilisateur, motdepasse),
     }
 

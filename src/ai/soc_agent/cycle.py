@@ -18,8 +18,8 @@ import sys
 
 import psycopg
 
-from . import (config, correlate, ingest, iris, training, triage, ueba, vt,
-               watchdog, whitelist)
+from . import (assets, config, correlate, ingest, iris, training, triage, ueba,
+               vt, watchdog, whitelist)
 
 # Journalisé sur stderr -> capté par `docker compose logs` du conteneur.
 logging.basicConfig(
@@ -49,6 +49,17 @@ def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
             return 0
 
         try:
+            # CMDB d'abord : la corrélation fige la priorité de l'asset dans
+            # l'incident qu'elle ouvre. Une machine enrôlée entre deux cycles
+            # doit donc être connue AVANT, sinon son premier incident — souvent
+            # le plus intéressant — naît en P4 par défaut et le reste.
+            # Best-effort : une API Wazuh injoignable ne coûte pas un cycle.
+            try:
+                r = assets.synchroniser()
+                log.info("cmdb : %d assets (%d créés)", r["vus"], r["crees"])
+            except Exception as e:  # noqa: BLE001
+                log.warning("synchronisation CMDB sautée : %s", e)
+
             n = ingest.ingerer(depuis, taille_lot)
             log.info("ingest : %d alertes traitées", n)
 

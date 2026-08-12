@@ -25,6 +25,7 @@ def aura_simulate_decision(
     max_level: int,
     injection_suspectee: bool = False,
     compromission_active: bool = False,
+    priorite: int | None = None,
 ) -> dict:
     """Que deviendrait ce verdict après les garde-fous déterministes ?
 
@@ -32,7 +33,8 @@ def aura_simulate_decision(
     l'ouverture ou la clôture du dossier, puis applique trois invariants que
     rien ne contourne :
 
-    1. pas de clôture automatique si le niveau atteint 14 ;
+    1. pas de clôture automatique si le niveau atteint 14 — seuil abaissé sur
+       un asset prioritaire (12 sur un P1) ;
     2. pas de clôture si un motif d'injection a été repéré dans les logs —
        le modèle se laisse retourner par une injection 3 fois sur 4 ;
     3. l'isolation d'hôte est rétrogradée s'il existe un confinement moins
@@ -48,18 +50,22 @@ def aura_simulate_decision(
         injection_suspectee: un motif d'injection a été repéré dans les logs.
         compromission_active: une règle de post-exploitation a matché
             (webshell qui exécute, reverse shell, rootkit, persistance root).
+        priorite: priorité de l'asset touché (1 à 4). Elle décide du seuil de
+            clôture : sur un P1, le modèle ne peut plus refermer dès le niveau
+            12. Absente = seuil historique (14).
     """
     deduites = soc_actions.deduire(verdict, actions_proposees)
     finales, garde_fous = soc_actions.appliquer_garde_fous(
         verdict, deduites, max_level, injection_suspectee,
-        compromission_active)
+        compromission_active, priorite)
     return {
         "actions_proposees": actions_proposees,
         "apres_deduction": deduites,
         "actions_finales": finales,
         "garde_fous_declenches": garde_fous,
         "actions_fort_impact": soc_actions.actions_fort_impact(finales),
-        "niveau_cloture_interdite": soc_actions.NIVEAU_CLOTURE_INTERDITE,
+        "priorite": priorite,
+        "niveau_cloture_interdite": soc_actions.seuil_cloture(priorite),
     }
 
 
