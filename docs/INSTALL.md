@@ -37,13 +37,11 @@ $EDITOR src/wazuh/config/wazuh_cluster/wazuh_manager.conf   # CHANGEME_VT_API_KE
 $EDITOR src/wazuh/config/wazuh_dashboard/wazuh.yml           # CHANGEME_API_PASSWORD = WAZUH_API_PASSWORD
 ```
 
-Bases de données (bind mounts vers `db/`, gitignoré) et certificats à générer
-une fois :
+Certificats de l'indexer Wazuh, à générer une fois (outil upstream, hors du
+compose racine) :
 
 ```bash
-mkdir -p db/{socagent-postgres,iris-postgres,shuffle-opensearch,wazuh-indexer,misp-mariadb}
 docker compose -f src/wazuh/generate-indexer-certs.yml run --rm generator
-./src/iris/scripts/generate-certs.sh
 ```
 
 Puis tout démarrer :
@@ -51,6 +49,25 @@ Puis tout démarrer :
 ```bash
 docker compose up -d
 ```
+
+Deux services à passe unique tournent avant les autres au premier `up`, et il
+n'y a donc plus ni `mkdir` ni script de certificats à lancer soi-même :
+
+- **`aura-init`** crée les cinq répertoires de données sous `db/` et donne
+  `1000:1000` aux deux dossiers OpenSearch (`wazuh-indexer`,
+  `shuffle-opensearch`), qui tournent en uid 1000 sans chown leur data dir.
+  Postgres et MariaDB, eux, s'en chargent seuls. Détail par dossier :
+  [`db/README.md`](../db/README.md). À noter : ces répertoires doivent rester
+  **vides** avant le premier démarrage — `initdb` refuse un data dir non vide,
+  d'où l'absence de `.gitkeep`.
+- **`iris-certs`** génère la PKI de DFIR-IRIS (CA racine + certificat serveur)
+  en appelant `src/iris/scripts/generate-certs.sh` dans un conteneur. Idempotent :
+  il sort immédiatement si `iris_cert.pem` existe. C'est aussi ce qui a fait
+  disparaître le `sudo` : la clé serveur doit appartenir à l'uid 33 (nginx), ce
+  qui est gratuit quand on est déjà root dans un conteneur.
+
+Le script reste utilisable à la main sur l'hôte (il redemande alors le sudo pour
+ce seul chown), notamment pour régénérer : `./src/iris/scripts/generate-certs.sh --force`.
 
 ## 1. Wazuh
 
@@ -93,12 +110,12 @@ s'ils sont oubliés :
 
 - le bloc `<integration>custom-misp</integration>` doit être repris de
   `wazuh_manager.conf.example` dans le `wazuh_manager.conf` déployé — sans lui,
-  le cache d'IOC est rempli et n'est jamais lu, **sans aucune erreur** ;
-- `mkdir -p db/misp-mariadb` avant le premier `up`, comme les autres bases.
+  le cache d'IOC est rempli et n'est jamais lu, **sans aucune erreur**.
 
 ## 2. DFIR-IRIS
 
-Certificats déjà générés à l'étape 0 (`./src/iris/scripts/generate-certs.sh`).
+Certificats générés automatiquement au premier `up` par le service `iris-certs`
+(cf. étape 0).
 
 ```bash
 docker compose logs iris-app | grep "IRIS IS READY"

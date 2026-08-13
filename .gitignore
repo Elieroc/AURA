@@ -20,7 +20,9 @@ src/wazuh/config/wazuh_indexer_ssl_certs/*
 # Bases de données du projet (Postgres soc-agent/IRIS, OpenSearch Shuffle/Wazuh) :
 # bind mounts hôte, jamais versionnées.
 /db/*
-!/db/*/.gitkeep
+# Seule exception : la doc du dossier. Surtout pas de .gitkeep dans les
+# sous-dossiers — initdb refuse un data dir non vide, cf. db/README.md.
+!/db/README.md
 
 __pycache__/
 *.pyc

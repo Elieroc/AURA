@@ -254,7 +254,7 @@ incident ouvert par une autre règle (`ATTACH_MIN_LEVEL=3`).
 
 ```bash
 # 1. Renseigner la section MISP / CTI du .env (MISP_KEY : openssl rand -hex 20)
-mkdir -p db/misp-mariadb
+#    db/misp-mariadb est créé par le service aura-init, dont misp-db dépend.
 docker compose up -d misp-db misp-redis misp-core misp-modules
 
 # 2. Premier démarrage : MISP applique ses migrations (plusieurs minutes).

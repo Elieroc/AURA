@@ -24,11 +24,21 @@ FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
 
 # SERVER_NAME doit correspondre à celui du .env, sinon le SAN ne couvre pas le
-# nom utilisé et le navigateur refuse le certificat.
-SERVER_NAME="iris.soc.local"
-if [[ -f "${ROOT_ENV}" ]]; then
-    SERVER_NAME="$(grep -E '^SERVER_NAME=' "${ROOT_ENV}" | cut -d= -f2- || echo "iris.soc.local")"
+# nom utilisé et le navigateur refuse le certificat. Une valeur déjà présente
+# dans l'environnement gagne : c'est ainsi que le service iris-certs du compose
+# la passe, sans avoir à monter le .env dans le conteneur.
+if [[ -z "${SERVER_NAME:-}" ]]; then
+    SERVER_NAME="iris.soc.local"
+    if [[ -f "${ROOT_ENV}" ]]; then
+        SERVER_NAME="$(grep -E '^SERVER_NAME=' "${ROOT_ENV}" | cut -d= -f2- || echo "iris.soc.local")"
+    fi
 fi
+
+# Le chown de la clé serveur vers l'uid de nginx demande le root. Sur l'hôte
+# c'est sudo ; dans le conteneur iris-certs on est déjà root, et sudo n'y
+# existe même pas.
+SUDO=""
+[[ "$(id -u)" -ne 0 ]] && SUDO="sudo"
 
 if [[ -f "${WEB_DIR}/iris_cert.pem" && "${FORCE}" -eq 0 ]]; then
     echo "Certificats déjà présents dans ${WEB_DIR} — rien à faire."
@@ -40,7 +50,7 @@ mkdir -p "${CA_DIR}" "${WEB_DIR}"
 
 # La clé serveur appartient à l'uid 33 (cf. plus bas), donc on ne peut pas
 # l'écraser sans sudo.
-[[ "${FORCE}" -eq 1 && -f "${WEB_DIR}/iris_key.pem" ]] && sudo rm -f "${WEB_DIR}/iris_key.pem"
+[[ "${FORCE}" -eq 1 && -f "${WEB_DIR}/iris_key.pem" ]] && ${SUDO} rm -f "${WEB_DIR}/iris_key.pem"
 
 echo "==> CA racine (10 ans)"
 openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
@@ -73,8 +83,8 @@ chmod 644 "${CA_DIR}/irisRootCACert.pem" "${WEB_DIR}/iris_cert.pem"
 # world-readable rendrait la clé TLS lisible par n'importe quel compte de
 # l'hôte. D'où le sudo — seul endroit du script qui en a besoin.
 chmod 640 "${WEB_DIR}/iris_key.pem"
-echo "==> chown de la clé serveur vers l'uid nginx du conteneur (sudo)"
-sudo chown 33:33 "${WEB_DIR}/iris_key.pem"
+echo "==> chown de la clé serveur vers l'uid nginx du conteneur${SUDO:+ (sudo)}"
+${SUDO} chown 33:33 "${WEB_DIR}/iris_key.pem"
 
 echo
 echo "Terminé :"

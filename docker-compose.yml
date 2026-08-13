@@ -3,9 +3,10 @@
 # démarrent ensemble. Le serveur MCP Wazuh (mcp/) reste hors dépôt et hors de
 # ce fichier — déploiement séparé, voir mcp/README.md.
 #
-# Bases de données (Postgres soc-agent/IRIS, OpenSearch Shuffle/Wazuh) en bind
-# mount vers ./db/ (gitignored) : `mkdir -p db/{socagent-postgres,iris-postgres,shuffle-opensearch,wazuh-indexer}`
-# avant le premier `up`. Tout le reste (wazuh_etc, wazuh_logs, iris_downloads,
+# Bases de données (Postgres soc-agent/IRIS, OpenSearch Shuffle/Wazuh, MariaDB
+# MISP) en bind mount vers ./db/ (gitignored). Rien à créer à la main : le
+# service aura-init s'en charge au premier `up`, et iris-certs génère la PKI de
+# DFIR-IRIS dans la foulée. Tout le reste (wazuh_etc, wazuh_logs, iris_downloads,
 # shuffle-apps, certs...) reste en named volumes docker ou bind mounts de
 # config, inchangé par rapport aux 4 anciens stacks séparés.
 
@@ -27,6 +28,51 @@ x-soc-agent: &soc-agent
       condition: service_healthy
 
 services:
+  # ===================== INIT (une passe, avant tout le reste) =====================
+  # Crée les répertoires de données sous ./db/ et leur donne le bon
+  # propriétaire. Ce que docker fait tout seul ne suffit pas : un bind mount
+  # dont la source manque est bien créé par le démon, mais en root:root, et
+  # wazuh.indexer comme shuffle-opensearch tournent en uid 1000 sans jamais
+  # chown leur data dir — ils échouent sur AccessDeniedException. Postgres et
+  # MariaDB, eux, démarrent root et chownent : ils n'ont besoin que du dossier.
+  #
+  # Pourquoi pas des .gitkeep versionnés à la place : initdb REFUSE un data dir
+  # non vide ("directory exists but is not empty"), donc le moindre fichier
+  # versionné dans db/socagent-postgres casse le premier démarrage. Le
+  # répertoire doit rester vide jusqu'à l'initialisation — d'où ce service
+  # plutôt qu'un fichier témoin. La doc de chaque dossier est dans db/README.md.
+  aura-init:
+    image: alpine:3.21
+    container_name: aura-init
+    restart: "no"
+    volumes:
+      - ./db:/db
+    # chown non récursif : seul le dossier de tête est concerné, ce qu'il y a
+    # dedans appartient déjà à l'uid du moteur. Un -R sur un index de plusieurs
+    # dizaines de Go coûterait des minutes à chaque `up`.
+    # Une seule ligne : un scalaire replié (`>`) garde les retours des lignes
+    # plus indentées, et sh reçoit alors un chemin comme commande (exit 127).
+    command: ["sh", "-c", "mkdir -p /db/socagent-postgres /db/iris-postgres /db/shuffle-opensearch /db/wazuh-indexer /db/misp-mariadb && chown 1000:1000 /db/shuffle-opensearch /db/wazuh-indexer"]
+
+  # PKI locale de DFIR-IRIS, générée dans un conteneur au premier `up`.
+  # Idempotent : le script sort immédiatement si le certificat existe déjà, donc
+  # apk n'est même pas appelé aux démarrages suivants (pas de réseau requis).
+  #
+  # En conteneur plutôt que sur l'hôte pour deux raisons : plus aucune étape
+  # manuelle avant le premier `up`, et plus de sudo — la clé serveur doit
+  # appartenir à l'uid 33 (www-data, celui de nginx dans iris-nginx), ce qui est
+  # gratuit ici puisqu'on est déjà root dans le conteneur.
+  iris-certs:
+    image: alpine:3.21
+    container_name: iris-certs
+    restart: "no"
+    environment:
+      - SERVER_NAME=${SERVER_NAME:-iris.soc.local}
+    volumes:
+      - ./src/iris/scripts:/iris/scripts:ro
+      - ./src/iris/certificates:/iris/certificates
+    command: ["sh", "-c", "[ -f /iris/certificates/web_certificates/iris_cert.pem ] || { apk add --no-cache bash openssl >/dev/null && bash /iris/scripts/generate-certs.sh; }"]
+
   # ===================== WAZUH =====================
   # Wazuh App Copyright (C) 2017, Wazuh Inc. (License GPLv2)
   wazuh.manager:
@@ -123,6 +169,9 @@ services:
     image: wazuh/wazuh-indexer:4.9.2
     hostname: wazuh.indexer
     restart: always
+    depends_on:
+      aura-init:
+        condition: service_completed_successfully
     # Bind loopback : l'indexer contient TOUTES les alertes du parc, c'est-à-dire
     # la cartographie de ce que le SOC voit et de ce qu'il ne voit pas. Rien n'a
     # besoin du port publié : le manager et le dashboard joignent l'indexer par
@@ -211,6 +260,9 @@ services:
     image: postgres:16-alpine
     container_name: socagent-db
     restart: unless-stopped
+    depends_on:
+      aura-init:
+        condition: service_completed_successfully
     environment:
       - POSTGRES_USER=${PGUSER:-socagent}
       - POSTGRES_PASSWORD=${PGPASSWORD:?PGPASSWORD requis, cf. .env.example}
@@ -432,6 +484,9 @@ services:
     image: ghcr.io/dfir-iris/iriswebapp_db:${IRIS_VERSION:-v2.4.27}
     container_name: iris-db
     restart: unless-stopped
+    depends_on:
+      aura-init:
+        condition: service_completed_successfully
     environment:
       - POSTGRES_USER
       - POSTGRES_PASSWORD
@@ -510,7 +565,11 @@ services:
     container_name: iris-nginx
     restart: unless-stopped
     depends_on:
-      - iris-app
+      iris-app:
+        condition: service_started
+      # nginx meurt au démarrage si le certificat n'est pas encore là.
+      iris-certs:
+        condition: service_completed_successfully
     environment:
       - IRIS_UPSTREAM_SERVER
       - IRIS_UPSTREAM_PORT
@@ -636,6 +695,9 @@ services:
     container_name: shuffle-opensearch
     hostname: shuffle-opensearch
     restart: unless-stopped
+    depends_on:
+      aura-init:
+        condition: service_completed_successfully
     environment:
       - discovery.type=single-node
       - cluster.name=shuffle-cluster
@@ -679,6 +741,9 @@ services:
     image: mariadb:10.11
     container_name: misp-db
     restart: unless-stopped
+    depends_on:
+      aura-init:
+        condition: service_completed_successfully
     command: >
       --innodb-buffer-pool-size=${MISP_INNODB_BUFFER_POOL_SIZE:-512M}
       --innodb-change-buffering=none
