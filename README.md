@@ -7,6 +7,10 @@
 
 <p align="center"><strong>A</strong>utonomous <strong>U</strong>eba <strong>R</strong>esponse <strong>A</strong>nalysis - <strong>SOC</strong></p>
 
+<p align="center">
+  <a href="https://github.com/Elieroc/AURA/releases/latest"><img src="https://img.shields.io/github/v/release/Elieroc/AURA?label=version&color=ff2d3d" alt="Dernière version"></a>
+</p>
+
 ---
 
 XDR autonome piloté par IA. Détection moderne avec Wazuh, enrichissement threat intel, triage, whitelisting et remédiation automatique pilotés par un LLM - pas de validation humaine nécessaire. Parce que votre SOC mérite d'être à la hauteur de l'ère de l'intelligence artificielle et des exigences actuelles.
