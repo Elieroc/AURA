@@ -37,7 +37,7 @@ Prérequis : Docker + Docker Compose, `vm.max_map_count=262144`. Un seul
 `.env` et un seul `docker-compose.yml` à la racine pilotent toute la stack.
 
 ```bash
-git clone <dépôt> AURA && cd AURA
+git clone https://github.com/Elieroc/AURA/ && cd AURA
 sysctl -w vm.max_map_count=262144
 cp .env.example .env    # remplir mots de passe + clés API
 mkdir -p db/{socagent-postgres,iris-postgres,shuffle-opensearch,wazuh-indexer,misp-mariadb}
