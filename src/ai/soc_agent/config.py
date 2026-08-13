@@ -634,12 +634,31 @@ WATCHDOG_SILENCE_PAR_CAPTEUR = {
     "sshd": int(os.environ.get("WATCHDOG_SILENCE_SSHD", "1440")),
 }
 
-# Ouvrir un case IRIS quand une panne est constatée. Un capteur muet est un
-# angle mort du SOC lui-même : il mérite un dossier traçable, pas seulement une
-# ligne de log que personne ne lit. Un case par panne (agent + capteur), fermé
-# automatiquement au rétablissement.
-WATCHDOG_CASE_IRIS = os.environ.get(
-    "WATCHDOG_CASE_IRIS", "true").lower() == "true"
+# Où atterrit une panne dans IRIS : `alert` | `case` | `off`.
+#
+# Un capteur muet est un angle mort du SOC lui-même : il mérite une trace que
+# quelqu'un doit acquitter, pas seulement une ligne de log que personne ne lit.
+# Reste à savoir OÙ.
+#
+# `case` était le premier choix, et c'était le mauvais : un case est un dossier
+# d'investigation, avec ses notes, sa timeline, ses IOC. Une panne de capteur
+# n'a rien à investiguer — elle a un état (muette / rétablie) et un geste
+# (acquitter, ou aller réparer). Les cases de panne se mélangeaient aux cases
+# d'incident dans la même file, où ils diluaient ce qui compte.
+#
+# `alert` (défaut depuis le 2026-08-13) les range dans l'onglet Alerts, qui
+# porte exactement ce cycle de vie (New / Assigned / Closed) et laisse le
+# bouton « Escalate to case » à l'analyste : c'est LUI qui décide qu'une panne
+# mérite un dossier, ce que le canal `case` décidait à sa place.
+#
+# `case` reste disponible, et les pannes ouvertes AVANT une bascule se ferment
+# dans leur canal d'origine (cf. watchdog.surveiller).
+WATCHDOG_IRIS_CANAL = os.environ.get("WATCHDOG_IRIS_CANAL", "alert").lower()
+# Rétrocompatibilité : `WATCHDOG_CASE_IRIS=false` coupait toute trace IRIS.
+if os.environ.get("WATCHDOG_CASE_IRIS", "true").lower() != "true":
+    WATCHDOG_IRIS_CANAL = "off"
+if WATCHDOG_IRIS_CANAL not in ("alert", "case", "off"):
+    WATCHDOG_IRIS_CANAL = "alert"
 
 # Retard d'ingestion au-delà duquel le watchdog se tait plutôt que de crier.
 #

@@ -26,11 +26,17 @@ silence est l'état normal. Les valeurs sont calées sur la distribution réelle
 des écarts entre événements, mesurée en base (cf. config).
 
     python -m soc_agent.watchdog            # liste les capteurs muets
-    python -m soc_agent.watchdog --surveiller   # + ouvre/ferme les cases IRIS
+    python -m soc_agent.watchdog --surveiller   # + ouvre/ferme les traces IRIS
 
 La panne est un ÉTAT, suivi dans `capteur_pannes` : ouverture unique par
-(agent, capteur) garantie par un index unique partiel, case IRIS créé une seule
-fois, fermé automatiquement quand le capteur reparle.
+(agent, capteur) garantie par un index unique partiel, trace IRIS créée une
+seule fois, refermée automatiquement quand le capteur reparle.
+
+Cette trace est une ALERTE IRIS, pas un case (cf. WATCHDOG_IRIS_CANAL). Un case
+est un dossier d'investigation ; une panne de capteur n'a rien à investiguer,
+elle a un état et un geste — l'onglet Alerts porte exactement ce cycle de vie,
+et laisse à l'analyste le bouton « Escalate to case » quand il juge que ça
+mérite un dossier. Le canal `case`, historique, reste disponible.
 """
 
 import argparse
@@ -185,9 +191,182 @@ def _note_panne(m: dict, minutes: int) -> str:
         "manager : ses capteurs d'authentification se taisent par construction, "
         "sans panne réelle.",
         "",
-        "*Dossier ouvert automatiquement par le watchdog AURA. Il se ferme seul "
-        "dès que le capteur réémet.*",
+        "*Ouvert automatiquement par le watchdog AURA. Se referme seul dès que "
+        "le capteur réémet.*",
     ])
+
+
+# --------------------------------------------------------------------------
+# Canal ALERTE (défaut) — cf. config.WATCHDOG_IRIS_CANAL
+# --------------------------------------------------------------------------
+#
+# `alert_source` : c'est par là qu'on filtre l'onglet Alerts pour ne voir que
+# la santé des capteurs. Valeur stable, jamais dérivée du capteur.
+SOURCE_ALERTE = "AURA watchdog"
+
+# Statuts d'alerte IRIS. MÊME PIÈGE que la sévérité des cases (cf. iris.py) :
+# les ids ne suivent aucun ordre logique — relevé sur l'IRIS de prod le
+# 2026-08-13, New=2 mais Unspecified=1, Closed=6, Merged=7, Escalated=8. Toute
+# valeur écrite en dur ici serait juste par hasard, donc on résout par NOM et
+# ce dictionnaire n'est qu'un repli journalisé.
+_STATUTS_REPLI = {"unspecified": 1, "new": 2, "assigned": 3, "in progress": 4,
+                  "pending": 5, "closed": 6, "merged": 7, "escalated": 8}
+_STATUTS_ID: dict[str, int] | None = None
+
+# Statuts qui signifient qu'un HUMAIN a pris la main : il a jugé que la panne
+# méritait un dossier et l'a escaladée. Le watchdog ne repasse pas derrière lui
+# pour forcer « Closed » au rétablissement — il se contente d'écrire que le
+# capteur réémet. C'est la différence de fond avec le canal `case`, où la
+# clôture automatique écrasait le geste de l'analyste.
+STATUTS_HUMAINS = {"escalated", "merged"}
+
+# Types d'asset IRIS (`/manage/asset-type/list`, relevé le 2026-08-13). L'asset
+# sert à deux choses : regrouper les alertes d'une même machine, et suivre
+# celle-ci dans le case si l'analyste escalade.
+ASSET_LINUX_SERVEUR, ASSET_FIREWALL = 3, 2
+ASSET_WIN_POSTE, ASSET_WIN_SERVEUR = 9, 10
+
+
+def _type_asset(os_txt: str | None) -> int:
+    """Type IRIS déduit de l'OS connu par la CMDB. Best-effort assumé : se
+    tromper de pictogramme ne coûte rien, ne pas créer l'asset ferait perdre le
+    regroupement par machine."""
+    o = (os_txt or "").lower()
+    if "pfsense" in o or "freebsd" in o or "opnsense" in o:
+        return ASSET_FIREWALL
+    if "windows" in o:
+        return ASSET_WIN_SERVEUR if "server" in o else ASSET_WIN_POSTE
+    return ASSET_LINUX_SERVEUR
+
+
+def _alerte():
+    from dfir_iris_client.alert import Alert
+    from dfir_iris_client.session import ClientSession
+    return Alert(ClientSession(apikey=config.IRIS_API_KEY,
+                               host=config.IRIS_URL,
+                               ssl_verify=config.IRIS_VERIFY_TLS))
+
+
+def _id_statut(alerte, nom: str) -> int:
+    global _STATUTS_ID
+    if _STATUTS_ID is None:
+        try:
+            liste = alerte._s.pi_get("/manage/alert-status/list").get_data()
+            _STATUTS_ID = {str(s["status_name"]).lower(): s["status_id"]
+                           for s in liste}
+        except Exception as e:  # noqa: BLE001
+            log.warning("liste des statuts d'alerte IRIS illisible (%s) : "
+                        "repli sur les ids par défaut", e)
+            _STATUTS_ID = dict(_STATUTS_REPLI)
+    return _STATUTS_ID.get(nom.lower()) or _STATUTS_REPLI[nom.lower()]
+
+
+def _severite_panne(capteur: str) -> str:
+    """Un capteur CONTINU muet est une perte de visibilité immédiate et
+    certaine ; un capteur ÉVÉNEMENTIEL, dont le silence est l'état normal, sort
+    sur un seuil de plusieurs heures et se trompe plus souvent (cf. le seuil
+    syscheck dans config). La sévérité dit cette différence de confiance."""
+    return ("Medium" if capteur in config.WATCHDOG_SILENCE_PAR_CAPTEUR
+            else "High")
+
+
+def _ouvrir_alerte(m: dict, minutes: int) -> int | None:
+    """Alerte IRIS pour une panne. Best-effort, comme le canal `case`.
+
+    Une alerte n'a pas de notes : tout le diagnostic tient dans la description,
+    qui est rendue en markdown par l'onglet Alerts.
+    """
+    alerte = _alerte()
+    nom_agent = m["agent_name"] or m["agent_id"]
+    tags = ["aura", "capteur-muet", m["capteur"]]
+    if m["agent_name"]:
+        tags.append(m["agent_name"])
+    r = alerte.add_alert({
+        "alert_title": f"[CAPTEUR MUET] {m['capteur']} sur {nom_agent}",
+        "alert_description": _note_panne(m, minutes),
+        "alert_source": SOURCE_ALERTE,
+        # Ce que le watchdog reconnaît comme « sa » ligne pour ce couple
+        # (agent, capteur) : l'idempotence est garantie en base par l'index
+        # partiel, cette référence sert à retrouver l'alerte côté IRIS.
+        "alert_source_ref": f"capteur-{m['agent_id']}-{m['capteur']}",
+        # Début RÉEL de la panne (dernier événement vu), pas l'instant de
+        # détection : c'est ce que l'analyste doit lire dans la timeline.
+        "alert_source_event_time": m["dernier"].strftime("%Y-%m-%dT%H:%M:%S"),
+        "alert_severity_id": _id_severite_alerte(alerte,
+                                                 _severite_panne(m["capteur"])),
+        "alert_status_id": _id_statut(alerte, "New"),
+        "alert_customer_id": config.IRIS_CUSTOMER,
+        "alert_classification_id": CLASSIF_PANNE,
+        "alert_tags": ",".join(tags),
+        "alert_assets": [{"asset_name": nom_agent,
+                          "asset_type_id": _type_asset(m.get("os"))}],
+    })
+    if not r.is_success():
+        log.error("alerte panne %s/%s : %s", m["agent_id"], m["capteur"],
+                  r.get_msg())
+        return None
+    return r.get_data()["alert_id"]
+
+
+def _id_severite_alerte(alerte, nom: str) -> int:
+    """Même échelle que les cases, donc même résolution par nom : `iris.py`
+    sait déjà lire `/manage/severities/list` et retomber sur ses ids."""
+    from .iris import _SEVERITES_REPLI, _id_severite
+    return _id_severite(alerte, nom) or _SEVERITES_REPLI[nom.lower()]
+
+
+def _fermer_alerte(alert_id: int, p: dict, minutes: int) -> None:
+    """Rétablissement : on complète la description et on referme.
+
+    Sauf si un humain a escaladé l'alerte — dans ce cas le dossier qu'il a
+    ouvert lui appartient, on l'informe sans toucher au statut.
+    """
+    alerte = _alerte()
+    lu = alerte.get_alert(alert_id)
+    if not lu.is_success():
+        # Alerte supprimée à la main, par exemple. On ne peut plus rien écrire
+        # dessus, mais la panne est bien rétablie : ne pas propager l'échec.
+        log.warning("alerte %s illisible (%s) : panne marquée rétablie sans "
+                    "mise à jour IRIS", alert_id, lu.get_msg())
+        return
+    data = lu.get_data()
+    statut = str((data.get("status") or {}).get("status_name") or "").lower()
+    corps = "\n".join([
+        data.get("alert_description") or "",
+        "",
+        "---",
+        "",
+        "## Capteur rétabli",
+        "",
+        f"Le capteur **{p['capteur']}** de "
+        f"**{p['agent_name'] or p['agent_id']}** réémet.",
+        "",
+        f"- Panne détectée le {p['detectee_a']:%Y-%m-%d %H:%M} UTC",
+        f"- Dernier événement avant la panne : "
+        f"{p['dernier_event']:%Y-%m-%d %H:%M} UTC",
+        f"- Durée totale du silence : {_duree(minutes)}",
+        "",
+        "**Les événements de la période de silence sont définitivement "
+        "perdus** si le capteur ne tamponnait pas : ce qui s'est produit sur "
+        "cet hôte pendant la panne n'a jamais été analysé.",
+        "",
+    ])
+    maj = {"alert_description": corps}
+    if statut in STATUTS_HUMAINS:
+        log.info("alerte %s en statut « %s » : rétablissement noté, statut "
+                 "laissé à l'analyste", alert_id, statut)
+        corps += "*Rétablissement constaté par le watchdog AURA. Le statut de "
+        corps += "cette alerte est laissé tel quel : elle a été escaladée.*"
+        maj["alert_description"] = corps
+    else:
+        maj["alert_status_id"] = _id_statut(alerte, "Closed")
+        maj["alert_description"] = corps + (
+            "*Clôturée automatiquement par le watchdog AURA.*")
+    r = alerte.update_alert(alert_id, maj)
+    if not r.is_success():
+        # Remonté à l'appelant : la panne reste OUVERTE en base et sera
+        # retentée, exactement comme pour un case (cf. surveiller).
+        raise RuntimeError(f"update_alert {alert_id} : {r.get_msg()}")
 
 
 def _ouvrir_case(m: dict, minutes: int) -> int | None:
@@ -249,6 +428,7 @@ def surveiller() -> dict:
     passages concurrents ne peuvent pas ouvrir deux cases.
     """
     ouvertes, fermees = [], []
+    canal = config.WATCHDOG_IRIS_CANAL
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         horizon, retard = horizon_ingestion(conn)
         # Ingestion à l'arrêt : tous les capteurs vont paraître muets au même
@@ -264,6 +444,10 @@ def surveiller() -> dict:
 
         muets = capteurs_muets(conn)
         vus = {(m["agent_id"], m["capteur"]) for m in muets}
+        # OS connu de la CMDB, pour typer l'asset IRIS. Une seule requête, et
+        # son absence n'empêche rien : `_type_asset` a un défaut.
+        oses = {a["agent_id"]: a["os"] for a in conn.execute(
+            "SELECT agent_id, os FROM assets").fetchall()}
 
         for m in muets:
             minutes = _minutes(m["dernier"], m["horizon"])
@@ -286,41 +470,60 @@ def surveiller() -> dict:
             conn.commit()
             if not r:
                 continue  # panne déjà ouverte : rien à refaire
-            case_id = None
-            if config.WATCHDOG_CASE_IRIS:
+            trace_id, colonne = None, None
+            if canal != "off":
+                colonne = ("iris_alert_id" if canal == "alert"
+                           else "iris_case_id")
                 try:
-                    case_id = _ouvrir_case(m, minutes)
+                    trace_id = (_ouvrir_alerte({**m, "os": oses.get(m["agent_id"])},
+                                               minutes)
+                                if canal == "alert"
+                                else _ouvrir_case(m, minutes))
                 except Exception as e:  # noqa: BLE001 — IRIS ne bloque pas
-                    log.warning("case panne non créé (%s/%s) : %s",
-                                m["agent_id"], m["capteur"], e)
-            if case_id:
+                    log.warning("trace IRIS (%s) non créée (%s/%s) : %s",
+                                canal, m["agent_id"], m["capteur"], e)
+            if trace_id:
                 conn.execute(
-                    "UPDATE capteur_pannes SET iris_case_id=%s WHERE id=%s",
-                    (case_id, r["id"]))
+                    f"UPDATE capteur_pannes SET {colonne}=%s WHERE id=%s",
+                    (trace_id, r["id"]))
                 conn.commit()
-            log.error("PANNE OUVERTE : %s sur %s — case IRIS %s",
-                      m["capteur"], m["agent_name"] or m["agent_id"],
-                      case_id or "non créé")
-            ouvertes.append({**m, "iris_case_id": case_id})
+            log.error("PANNE OUVERTE : %s sur %s — %s IRIS %s",
+                      m["capteur"], m["agent_name"] or m["agent_id"], canal,
+                      trace_id or "non créée")
+            ouvertes.append({**m, "iris_case_id": trace_id if canal == "case"
+                             else None,
+                             "iris_alert_id": trace_id if canal == "alert"
+                             else None})
 
         for p in conn.execute(
                 "SELECT * FROM capteur_pannes WHERE statut='ouverte'").fetchall():
             if (p["agent_id"], p["capteur"]) in vus:
                 continue
             minutes = _minutes(p["dernier_event"], horizon)
-            if p["iris_case_id"] and config.WATCHDOG_CASE_IRIS:
-                try:
+            # On ferme dans le canal où la panne a été OUVERTE, lu sur la ligne
+            # et jamais sur la configuration courante : basculer `case` ->
+            # `alert` ne doit pas abandonner les cases déjà ouverts.
+            #
+            # `off` ne tente rien : c'est le réglage qu'on pose justement quand
+            # IRIS est indisponible, et échouer ici bloquerait le passage en
+            # « rétablie » pour toujours.
+            try:
+                if canal == "off":
+                    pass
+                elif p["iris_alert_id"]:
+                    _fermer_alerte(p["iris_alert_id"], p, minutes)
+                elif p["iris_case_id"]:
                     _fermer_case(p["iris_case_id"], p, minutes)
-                except Exception as e:  # noqa: BLE001
-                    # On laisse la panne OUVERTE en base pour retenter au tour
-                    # suivant. La marquer rétablie ici alors que le dossier
-                    # reste ouvert dans IRIS laisserait un case fantôme que
-                    # plus rien ne referme — arrivé le 2026-08-12, IRIS
-                    # OOM-killé pile au moment où debian2 réémettait.
-                    log.warning("clôture case %s impossible (%s) — panne "
-                                "laissée ouverte, nouvelle tentative au "
-                                "prochain passage", p["iris_case_id"], e)
-                    continue
+            except Exception as e:  # noqa: BLE001
+                # On laisse la panne OUVERTE en base pour retenter au tour
+                # suivant. La marquer rétablie ici alors que le dossier
+                # reste ouvert dans IRIS laisserait un case fantôme que
+                # plus rien ne referme — arrivé le 2026-08-12, IRIS
+                # OOM-killé pile au moment où debian2 réémettait.
+                log.warning("clôture IRIS impossible (%s) — panne %s laissée "
+                            "ouverte, nouvelle tentative au prochain passage",
+                            e, p["id"])
+                continue
             conn.execute(
                 "UPDATE capteur_pannes SET statut='retablie', retablie_a=now() "
                 "WHERE id=%s", (p["id"],))

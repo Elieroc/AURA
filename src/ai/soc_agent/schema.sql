@@ -512,6 +512,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS capteur_pannes_une_seule_ouverte
     ON capteur_pannes (agent_id, capteur) WHERE statut = 'ouverte';
 CREATE INDEX IF NOT EXISTS capteur_pannes_recentes
     ON capteur_pannes (detectee_a DESC);
+-- Canal ALERTE (WATCHDOG_IRIS_CANAL=alert, défaut depuis le 2026-08-13) : une
+-- panne de capteur n'est pas une investigation, c'est un état à acquitter. Elle
+-- vit dans l'onglet Alerts d'IRIS, qui porte un cycle de vie natif et laisse
+-- l'analyste escalader en case s'il juge que ça mérite un dossier.
+--
+-- Colonne SÉPARÉE de `iris_case_id`, pas un renommage : les pannes ouvertes
+-- avant la bascule pointent de vrais cases, et se ferment dans leur canal
+-- d'origine (cf. watchdog.surveiller, qui choisit sur l'id stocké et non sur la
+-- configuration courante).
+ALTER TABLE capteur_pannes ADD COLUMN IF NOT EXISTS iris_alert_id bigint;
 
 -- ---------------------------------------------------------------------------
 -- CMDB : priorité des assets (cf. assets.py)

@@ -85,3 +85,170 @@ def test_seuil_retard_ingestion_couvre_plusieurs_cycles():
     """Le garde-fou anti-aveuglement ne doit pas se déclencher sur un cycle en
     retard : 300 s de cadence, il faut plusieurs cycles manqués."""
     assert config.WATCHDOG_RETARD_INGEST_MAX >= 25
+
+
+# ---------------------------------------------------------------------------
+# Canal ALERTE (onglet Alerts d'IRIS)
+# ---------------------------------------------------------------------------
+
+
+class _Reponse:
+    def __init__(self, data, ok=True, msg=""):
+        self._data, self._ok, self._msg = data, ok, msg
+
+    def is_success(self):
+        return self._ok
+
+    def get_data(self):
+        return self._data
+
+    def get_msg(self):
+        return self._msg
+
+
+class _AlerteFactice:
+    """Le strict nécessaire de `dfir_iris_client.alert.Alert` : ce qui est
+    testé ici est le PAYLOAD qu'on envoie et la décision de refermer, pas le
+    client IRIS."""
+
+    def __init__(self, statut="New", description="# Panne de capteur"):
+        self.ajoutees, self.majs = [], []
+        self._statut, self._description = statut, description
+
+    def add_alert(self, data):
+        self.ajoutees.append(data)
+        return _Reponse({"alert_id": 77})
+
+    def get_alert(self, alert_id):
+        return _Reponse({"alert_description": self._description,
+                         "status": {"status_name": self._statut}})
+
+    def update_alert(self, alert_id, data):
+        self.majs.append((alert_id, data))
+        return _Reponse({"alert_id": alert_id})
+
+
+def _panne(capteur="suricata", statut="ouverte"):
+    return {"id": 3, "agent_id": "008", "agent_name": "home-r-pf01",
+            "capteur": capteur, "statut": statut,
+            "detectee_a": datetime.now(timezone.utc) - timedelta(hours=2),
+            "dernier_event": datetime.now(timezone.utc) - timedelta(hours=3)}
+
+
+def test_canal_par_defaut_est_l_alerte():
+    """Une panne de capteur est un état à acquitter, pas une investigation :
+    elle vit dans l'onglet Alerts, où l'analyste garde le choix d'escalader."""
+    assert config.WATCHDOG_IRIS_CANAL == "alert"
+
+
+def test_statuts_alerte_resolus_par_nom(monkeypatch):
+    """Les ids de statut IRIS ne suivent aucun ordre logique (New=2 mais
+    Unspecified=1, Closed=6) : les écrire en dur serait juste par hasard."""
+    from soc_agent import watchdog
+    monkeypatch.setattr(watchdog, "_STATUTS_ID", None)
+
+    class _Session:
+        def pi_get(self, uri):
+            assert uri == "/manage/alert-status/list"
+            return _Reponse([{"status_id": 42, "status_name": "Closed"},
+                             {"status_id": 2, "status_name": "New"}])
+
+    class _Alerte:
+        _s = _Session()
+
+    # L'id vient du SERVEUR, pas de la table de repli (qui dit 6).
+    assert watchdog._id_statut(_Alerte(), "Closed") == 42
+
+
+def test_statuts_alerte_replient_si_iris_muet(monkeypatch):
+    from soc_agent import watchdog
+    monkeypatch.setattr(watchdog, "_STATUTS_ID", None)
+
+    class _Alerte:
+        class _s:
+            @staticmethod
+            def pi_get(uri):
+                raise RuntimeError("IRIS injoignable")
+
+    assert watchdog._id_statut(_Alerte(), "New") == 2
+
+
+def test_alerte_porte_source_reference_et_asset(monkeypatch):
+    """La source filtre l'onglet, la référence identifie le couple
+    (agent, capteur), l'asset regroupe les alertes d'une même machine et la
+    suit si l'analyste escalade en case."""
+    from soc_agent import watchdog
+    faux = _AlerteFactice()
+    monkeypatch.setattr(watchdog, "_alerte", lambda: faux)
+    monkeypatch.setattr(watchdog, "_id_statut", lambda a, n: 2)
+    monkeypatch.setattr(watchdog, "_id_severite_alerte", lambda a, n: 5)
+
+    assert watchdog._ouvrir_alerte({**_muet(), "os": "pfSense 2.7"}, 42) == 77
+    envoye = faux.ajoutees[0]
+    assert envoye["alert_source"] == watchdog.SOURCE_ALERTE
+    assert envoye["alert_source_ref"] == "capteur-008-suricata"
+    assert envoye["alert_classification_id"] == watchdog.CLASSIF_PANNE
+    assert "détection réseau" in envoye["alert_description"]
+    assert (envoye["alert_assets"][0]["asset_type_id"]
+            == watchdog.ASSET_FIREWALL)
+
+
+def test_severite_distingue_capteur_continu_et_evenementiel():
+    """Un capteur continu muet est une perte de visibilité certaine ; un
+    capteur événementiel sort sur un seuil de plusieurs heures et se trompe
+    plus souvent."""
+    from soc_agent.watchdog import _severite_panne
+    assert _severite_panne("suricata") == "High"
+    assert _severite_panne("syscheck") == "Medium"
+
+
+def test_type_asset_par_defaut_ne_bloque_pas():
+    from soc_agent.watchdog import (ASSET_LINUX_SERVEUR, ASSET_WIN_SERVEUR,
+                                    _type_asset)
+    assert _type_asset(None) == ASSET_LINUX_SERVEUR
+    assert _type_asset("Microsoft Windows Server 2022") == ASSET_WIN_SERVEUR
+
+
+def test_retablissement_referme_l_alerte(monkeypatch):
+    from soc_agent import watchdog
+    faux = _AlerteFactice(statut="New")
+    monkeypatch.setattr(watchdog, "_alerte", lambda: faux)
+    monkeypatch.setattr(watchdog, "_id_statut", lambda a, n: 6)
+
+    watchdog._fermer_alerte(77, _panne(), 180)
+    _, maj = faux.majs[0]
+    assert maj["alert_status_id"] == 6
+    assert "Capteur rétabli" in maj["alert_description"]
+    # La description d'origine est conservée : le diagnostic ne doit pas
+    # disparaître au rétablissement.
+    assert "# Panne de capteur" in maj["alert_description"]
+
+
+def test_alerte_escaladee_par_un_humain_nest_pas_refermee(monkeypatch):
+    """L'analyste a jugé que la panne méritait un dossier : le watchdog
+    l'informe du rétablissement, il ne referme pas à sa place. C'est ce que le
+    canal `case` faisait mal."""
+    from soc_agent import watchdog
+    faux = _AlerteFactice(statut="Escalated")
+    monkeypatch.setattr(watchdog, "_alerte", lambda: faux)
+    monkeypatch.setattr(watchdog, "_id_statut", lambda a, n: 6)
+
+    watchdog._fermer_alerte(77, _panne(), 180)
+    _, maj = faux.majs[0]
+    assert "alert_status_id" not in maj
+    assert "Capteur rétabli" in maj["alert_description"]
+
+
+def test_echec_de_cloture_remonte(monkeypatch):
+    """La panne doit rester OUVERTE en base pour être retentée : la marquer
+    rétablie laisserait une alerte fantôme que plus rien ne referme."""
+    import pytest
+
+    from soc_agent import watchdog
+    faux = _AlerteFactice()
+    faux.update_alert = lambda i, d: _Reponse(None, ok=False, msg="boom")
+    monkeypatch.setattr(watchdog, "_alerte", lambda: faux)
+    monkeypatch.setattr(watchdog, "_id_statut", lambda a, n: 6)
+
+    with pytest.raises(RuntimeError):
+        watchdog._fermer_alerte(77, _panne(), 180)

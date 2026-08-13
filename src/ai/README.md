@@ -405,6 +405,37 @@ guise de rapport.
 > serait recréé au cycle suivant. La commande le signale ; en fonctionnement
 > normal (cycle), `--recommencer` n'est pas utilisé.
 
+### Capteurs muets → **alertes** IRIS, pas cases (`soc_agent.watchdog`)
+
+Une règle de corrélation ne détecte jamais une ABSENCE. Le watchdog compare, en
+base, chaque groupe de règles établi sur 7 jours à son dernier événement : un
+capteur qui parlait et se tait sort en panne (service `soc-agent-watchdog`,
+toutes les 2 min).
+
+Ces pannes vont dans l'onglet **Alerts** d'IRIS, pas dans la file des cases —
+`WATCHDOG_IRIS_CANAL=alert|case|off` (défaut `alert`).
+
+Un case est un dossier d'investigation : notes, timeline, IOC. Une panne de
+capteur n'a rien à investiguer, elle a un état (muette / rétablie) et un geste
+(acquitter, ou aller réparer) — et mélangée aux cases d'incident, elle diluait
+ce qui compte. L'onglet Alerts porte exactement ce cycle de vie, et le bouton
+« Escalate to case » rend à l'**analyste** la décision qu'un case ouvert
+d'office prenait à sa place.
+
+Conséquences pratiques :
+
+- filtrer l'onglet sur `alert_source = AURA watchdog` ne montre que la santé des
+  capteurs ; `alert_source_ref = capteur-<agent>-<capteur>` identifie la ligne ;
+- sévérité **High** pour un capteur continu (audit, suricata — sa panne est une
+  perte de visibilité certaine), **Medium** pour un capteur événementiel (sshd,
+  syscheck — seuil de plusieurs heures, plus faillible) ;
+- au rétablissement, l'alerte est complétée puis refermée — **sauf** si un
+  analyste l'a escaladée ou fusionnée : le watchdog note alors le
+  rétablissement sans toucher au statut ;
+- `capteur_pannes.iris_alert_id` garde le lien, à côté de `iris_case_id`. Une
+  panne se referme dans le canal où elle a été **ouverte** : basculer la
+  configuration n'abandonne pas les cases déjà ouverts.
+
 ### Sortir du mode shadow
 
 `evaluate.py` refuse de conclure sous 30 incidents labellisés : un « 100 % »
