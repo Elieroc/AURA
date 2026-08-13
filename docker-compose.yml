@@ -586,6 +586,20 @@ services:
       - SHUFFLE_DEFAULT_USERNAME=${SHUFFLE_DEFAULT_USERNAME}
       - SHUFFLE_DEFAULT_PASSWORD=${SHUFFLE_DEFAULT_PASSWORD}
       - SHUFFLE_DEFAULT_APIKEY=${SHUFFLE_DEFAULT_APIKEY}
+      # Healthcheck d'exploitation de Shuffle : une passe par heure qui exécute
+      # un VRAI workflow de test, donc qui crée des conteneurs et retélécharge
+      # ses images d'app à chaque fois. Mesuré sur les 18 jours précédant
+      # l'incident du 2026-08-13 : 393 passes, 19 661 conteneurs créés et
+      # détruits (~50 par passe), et 96 % de cette rotation tombe sur les 7
+      # minutes de l'heure où le healthcheck se déclenche — la corrélation est
+      # exacte, minute par minute, entre l'index platform_health et les fins de
+      # scope systemd. Pendant le même temps, les workflows réellement utiles
+      # totalisaient 12 exécutions. C'est ce qui a saturé l'I/O de l'hôte.
+      #
+      # Ce qu'on perd : le tableau de bord /health et l'index platform_health.
+      # Sur une instance à deux workflows déclenchés par webhook, l'échec se
+      # verrait de toute façon dans les cases IRIS non remédiées.
+      - SHUFFLE_HEALTHCHECK_DISABLED=true
     depends_on:
       - shuffle-opensearch
     networks:
