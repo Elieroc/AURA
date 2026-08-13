@@ -55,9 +55,12 @@ secrets sortis vers `.env`, intégrations threat intel VirusTotal + AbuseIPDB.
      `logstash`, `readall`, `snapshotrestore`) : leurs hachages d'origine
      correspondent à des mots de passe publiquement documentés, et deux d'entre
      eux donnent la lecture de tous les index — donc de toutes les alertes.
-3. Générer les certificats SSL : `docker compose -f src/wazuh/generate-indexer-certs.yml run --rm generator`
-4. `docker compose up -d` (toute la stack AURA — Wazuh + soc-agent + IRIS + Shuffle)
-5. Dashboard : https://localhost — `admin` / `INDEXER_PASSWORD`
+3. `docker compose up -d` (toute la stack AURA — Wazuh + soc-agent + IRIS + Shuffle).
+   Les certificats SSL sont générés au passage par le service `wazuh-certs`, dont
+   manager, indexer et dashboard dépendent. Pour un appel manuel (régénération
+   après avoir vidé `config/wazuh_indexer_ssl_certs/`) :
+   `docker compose -f src/wazuh/generate-indexer-certs.yml run --rm generator`
+4. Dashboard : https://localhost — `admin` / `INDEXER_PASSWORD`
 
 ## Intégrations threat intel
 

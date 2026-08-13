@@ -4,9 +4,10 @@
 # ce fichier — déploiement séparé, voir mcp/README.md.
 #
 # Bases de données (Postgres soc-agent/IRIS, OpenSearch Shuffle/Wazuh, MariaDB
-# MISP) en bind mount vers ./db/ (gitignored). Rien à créer à la main : le
-# service aura-init s'en charge au premier `up`, et iris-certs génère la PKI de
-# DFIR-IRIS dans la foulée. Tout le reste (wazuh_etc, wazuh_logs, iris_downloads,
+# MISP) en bind mount vers ./db/ (gitignored). Rien à créer à la main : trois
+# services à passe unique s'en chargent au premier `up` — aura-init (les
+# répertoires de données), wazuh-certs et iris-certs (les deux PKI). Tous
+# idempotents. Tout le reste (wazuh_etc, wazuh_logs, iris_downloads,
 # shuffle-apps, certs...) reste en named volumes docker ou bind mounts de
 # config, inchangé par rapport aux 4 anciens stacks séparés.
 
@@ -73,12 +74,39 @@ services:
       - ./src/iris/certificates:/iris/certificates
     command: ["sh", "-c", "[ -f /iris/certificates/web_certificates/iris_cert.pem ] || { apk add --no-cache bash openssl >/dev/null && bash /iris/scripts/generate-certs.sh; }"]
 
+  # PKI de la stack Wazuh (root CA + un certificat par noeud, d'après
+  # src/wazuh/config/certs.yml), avec l'outil upstream. Remplace le
+  # `docker compose -f src/wazuh/generate-indexer-certs.yml run --rm generator`
+  # qu'il fallait lancer avant le premier `up` — ce fichier reste là pour un
+  # appel manuel, mais n'est plus une étape obligatoire.
+  #
+  # L'entrypoint upstream pose lui-même les droits (400) et les propriétaires
+  # (1000 pour indexer/dashboard, 999 pour le manager), d'où l'absence de chown
+  # ici, contrairement à aura-init.
+  #
+  # Le garde `[ -f root-ca.pem ]` n'est pas cosmétique : l'entrypoint régénère
+  # sans prévenir, et une CA neuve invalide d'un coup les certificats déjà
+  # distribués — manager, indexer et dashboard ne se reconnaissent plus. Pour
+  # régénérer volontairement, vider src/wazuh/config/wazuh_indexer_ssl_certs/.
+  wazuh-certs:
+    image: wazuh/wazuh-certs-generator:0.0.2
+    container_name: wazuh-certs
+    hostname: wazuh-certs-generator
+    restart: "no"
+    entrypoint: ["sh", "-c", "[ -f /certificates/root-ca.pem ] || /entrypoint.sh"]
+    volumes:
+      - ./src/wazuh/config/wazuh_indexer_ssl_certs/:/certificates/
+      - ./src/wazuh/config/certs.yml:/config/certs.yml
+
   # ===================== WAZUH =====================
   # Wazuh App Copyright (C) 2017, Wazuh Inc. (License GPLv2)
   wazuh.manager:
     image: wazuh/wazuh-manager:4.9.2
     hostname: wazuh.manager
     restart: always
+    depends_on:
+      wazuh-certs:
+        condition: service_completed_successfully
     # Plafonds mémoire (ici et sur les autres services) : aucun conteneur n'en
     # avait, donc un seul emballement pouvait emporter l'hôte entier — c'est ce
     # qui est arrivé le 2026-08-13, load 203 sur une machine à 8 Go utilisés,
@@ -172,6 +200,10 @@ services:
     depends_on:
       aura-init:
         condition: service_completed_successfully
+      # Sans ce garde, docker crée un RÉPERTOIRE à la place de chaque fichier
+      # de certificat manquant, et l'indexer démarre sur une PKI fantôme.
+      wazuh-certs:
+        condition: service_completed_successfully
     # Bind loopback : l'indexer contient TOUTES les alertes du parc, c'est-à-dire
     # la cartographie de ce que le SOC voit et de ce qu'il ne voit pas. Rien n'a
     # besoin du port publié : le manager et le dashboard joignent l'indexer par
@@ -234,7 +266,10 @@ services:
       - wazuh-dashboard-config:/usr/share/wazuh-dashboard/data/wazuh/config
       - wazuh-dashboard-custom:/usr/share/wazuh-dashboard/plugins/wazuh/public/assets/custom
     depends_on:
-      - wazuh.indexer
+      wazuh.indexer:
+        condition: service_started
+      wazuh-certs:
+        condition: service_completed_successfully
     links:
       - wazuh.indexer:wazuh.indexer
       - wazuh.manager:wazuh.manager

@@ -40,14 +40,14 @@ Prérequis : Docker + Docker Compose, `vm.max_map_count=262144`. Un seul
 git clone https://github.com/Elieroc/AURA/ && cd AURA
 sysctl -w vm.max_map_count=262144
 cp .env.example .env    # remplir mots de passe + clés API
-docker compose -f src/wazuh/generate-indexer-certs.yml run --rm generator
 docker compose up -d
 ```
 
-Les répertoires de données (`db/`, cf. [`db/README.md`](db/README.md)) et la PKI
-de DFIR-IRIS sont créés au premier `up` par les services `aura-init` et
-`iris-certs` — rien à préparer à la main. Seuls les certificats de l'indexer
-Wazuh gardent leur étape dédiée : ils viennent de l'outil upstream.
+Rien à préparer à la main : trois services à passe unique tournent avant les
+autres au premier `up` — `aura-init` (répertoires de données sous `db/`, cf.
+[`db/README.md`](db/README.md)), `wazuh-certs` (PKI du manager, de l'indexer et
+du dashboard) et `iris-certs` (PKI de DFIR-IRIS). Tous idempotents : aux
+démarrages suivants ils sortent immédiatement.
 
 Dashboard Wazuh : https://localhost — `admin` / `INDEXER_PASSWORD` du `.env`.
 Détail complet (configs à copier depuis les `.example`, étapes par stack,

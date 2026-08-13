@@ -37,20 +37,13 @@ $EDITOR src/wazuh/config/wazuh_cluster/wazuh_manager.conf   # CHANGEME_VT_API_KE
 $EDITOR src/wazuh/config/wazuh_dashboard/wazuh.yml           # CHANGEME_API_PASSWORD = WAZUH_API_PASSWORD
 ```
 
-Certificats de l'indexer Wazuh, à générer une fois (outil upstream, hors du
-compose racine) :
-
-```bash
-docker compose -f src/wazuh/generate-indexer-certs.yml run --rm generator
-```
-
 Puis tout démarrer :
 
 ```bash
 docker compose up -d
 ```
 
-Deux services à passe unique tournent avant les autres au premier `up`, et il
+Trois services à passe unique tournent avant les autres au premier `up`, et il
 n'y a donc plus ni `mkdir` ni script de certificats à lancer soi-même :
 
 - **`aura-init`** crée les cinq répertoires de données sous `db/` et donne
@@ -60,6 +53,18 @@ n'y a donc plus ni `mkdir` ni script de certificats à lancer soi-même :
   [`db/README.md`](../db/README.md). À noter : ces répertoires doivent rester
   **vides** avant le premier démarrage — `initdb` refuse un data dir non vide,
   d'où l'absence de `.gitkeep`.
+- **`wazuh-certs`** génère la PKI de la stack Wazuh (CA racine + un certificat
+  par nœud décrit dans `src/wazuh/config/certs.yml`) avec l'outil upstream, qui
+  pose lui-même les droits (400) et les propriétaires (uid 1000 pour
+  indexer/dashboard, 999 pour le manager). Il ne tourne que si
+  `root-ca.pem` manque : l'entrypoint upstream régénère sans prévenir, et une CA
+  neuve invalide d'un coup tous les certificats déjà distribués. Pour régénérer
+  volontairement, vider `src/wazuh/config/wazuh_indexer_ssl_certs/` — ou passer
+  par `docker compose -f src/wazuh/generate-indexer-certs.yml run --rm generator`,
+  qui reste disponible pour un appel manuel. `wazuh.manager`, `wazuh.indexer` et
+  `wazuh.dashboard` en dépendent : sans ce garde, docker créerait un
+  **répertoire** à la place de chaque fichier de certificat manquant, et la
+  stack démarrerait sur une PKI fantôme.
 - **`iris-certs`** génère la PKI de DFIR-IRIS (CA racine + certificat serveur)
   en appelant `src/iris/scripts/generate-certs.sh` dans un conteneur. Idempotent :
   il sort immédiatement si `iris_cert.pem` existe. C'est aussi ce qui a fait
