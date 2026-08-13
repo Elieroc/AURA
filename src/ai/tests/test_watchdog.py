@@ -218,7 +218,7 @@ def test_retablissement_referme_l_alerte(monkeypatch):
     watchdog._fermer_alerte(77, _panne(), 180)
     _, maj = faux.majs[0]
     assert maj["alert_status_id"] == 6
-    assert "Capteur rétabli" in maj["alert_description"]
+    assert "CAPTEUR RÉTABLI" in maj["alert_description"]
     # La description d'origine est conservée : le diagnostic ne doit pas
     # disparaître au rétablissement.
     assert "# Panne de capteur" in maj["alert_description"]
@@ -236,7 +236,7 @@ def test_alerte_escaladee_par_un_humain_nest_pas_refermee(monkeypatch):
     watchdog._fermer_alerte(77, _panne(), 180)
     _, maj = faux.majs[0]
     assert "alert_status_id" not in maj
-    assert "Capteur rétabli" in maj["alert_description"]
+    assert "CAPTEUR RÉTABLI" in maj["alert_description"]
 
 
 def test_echec_de_cloture_remonte(monkeypatch):
@@ -252,3 +252,40 @@ def test_echec_de_cloture_remonte(monkeypatch):
 
     with pytest.raises(RuntimeError):
         watchdog._fermer_alerte(77, _panne(), 180)
+
+
+def test_description_d_alerte_est_en_texte_brut(monkeypatch):
+    """L'onglet Alerts d'IRIS ne rend PAS le markdown (vérifié le 2026-08-13 :
+    dièses, astérisques, backticks et tuyaux affichés littéralement). Un
+    tableau markdown y devient six lignes de ferraille là où l'analyste
+    cherche l'heure du dernier événement."""
+    from soc_agent import watchdog
+    faux = _AlerteFactice()
+    monkeypatch.setattr(watchdog, "_alerte", lambda: faux)
+    monkeypatch.setattr(watchdog, "_id_statut", lambda a, n: 2)
+    monkeypatch.setattr(watchdog, "_id_severite_alerte", lambda a, n: 5)
+
+    watchdog._ouvrir_alerte({**_muet(), "os": "Debian 12"}, 42)
+    desc = faux.ajoutees[0]["alert_description"]
+    for scorie in ("**", "|---|", "`", "# "):
+        assert scorie not in desc, scorie
+    # Le contenu, lui, ne change pas d'un rendu à l'autre.
+    assert "Dernier événement" in desc and "42 min" in desc
+    assert "détection réseau" in desc
+
+
+def test_note_de_case_reste_en_markdown():
+    """Les NOTES de case, elles, sont bien rendues : on ne dégrade pas le
+    dossier d'investigation pour aligner sur la limite de l'onglet Alerts."""
+    note = _note_panne(_muet(), 42)
+    assert note.startswith("# Panne de capteur")
+    assert "|---|---|" in note
+
+
+def test_rendu_brut_aligne_les_faits():
+    """Sans tableau, l'alignement est la seule chose qui rend ces six lignes
+    lisibles en un coup d'œil."""
+    brut = _note_panne(_muet(), 42, markdown=False)
+    colonnes = {ligne.index(":") for ligne in brut.splitlines()
+                if ligne.startswith("  ") and ":" in ligne}
+    assert len(colonnes) == 1

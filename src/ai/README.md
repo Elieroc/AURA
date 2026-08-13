@@ -432,6 +432,10 @@ Conséquences pratiques :
 - au rétablissement, l'alerte est complétée puis refermée — **sauf** si un
   analyste l'a escaladée ou fusionnée : le watchdog note alors le
   rétablissement sans toucher au statut ;
+- la description d'alerte est écrite en **texte brut** : contrairement aux
+  notes de case, l'onglet Alerts ne rend pas le markdown (dièses, astérisques,
+  backticks et tableaux s'affichent littéralement). `_note_panne(..., markdown=)`
+  rend le même contenu dans les deux dialectes ;
 - `capteur_pannes.iris_alert_id` garde le lien, à côté de `iris_case_id`. Une
   panne se referme dans le canal où elle a été **ouverte** : basculer la
   configuration n'abandonne pas les cases déjà ouverts.

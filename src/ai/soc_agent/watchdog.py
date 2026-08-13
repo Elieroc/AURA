@@ -154,46 +154,85 @@ def _duree(minutes: int) -> str:
     return f"{minutes // 1440} j {(minutes % 1440) // 60} h"
 
 
-def _note_panne(m: dict, minutes: int) -> str:
+def _note_panne(m: dict, minutes: int, markdown: bool = True) -> str:
+    """Le diagnostic de la panne, dans le seul dialecte que la destination sait
+    rendre.
+
+    Les NOTES de case sont rendues en markdown par IRIS ; les DESCRIPTIONS
+    D'ALERTE ne le sont pas — vérifié sur l'onglet Alerts le 2026-08-13, où
+    `# titre`, `**gras**`, les backticks et les tableaux s'affichaient
+    littéralement, tuyaux et dièses compris. Un tableau markdown y devient six
+    lignes de ferraille au milieu du texte utile, exactement là où l'analyste
+    cherche l'heure du dernier événement.
+
+    D'où deux rendus du MÊME contenu, et pas deux contenus : ce qui doit être
+    lu ne dépend pas de l'onglet où on le lit.
+    """
     portee = _PORTEE.get(m["capteur"], "les règles adossées à ce capteur")
+    agent = m["agent_name"] or m["agent_id"]
+
+    def t(titre: str, niveau: int = 1) -> str:      # titre
+        return f"{'#' * niveau} {titre}" if markdown else titre.upper()
+
+    def g(txt: str) -> str:                          # emphase
+        return f"**{txt}**" if markdown else txt
+
+    def c(txt: str) -> str:                          # littéral (code)
+        return f"`{txt}`" if markdown else txt
+
+    faits = [
+        ("Capteur", c(m["capteur"])),
+        ("Agent", f"{m['agent_name'] or '?'} ({c(m['agent_id'])})"),
+        ("Dernier événement", f"{m['dernier']:%Y-%m-%d %H:%M:%S} UTC"),
+        ("Silence", _duree(minutes)),
+        ("Seuil de panne", f"{m['seuil']} min"),
+        ("Volume de référence",
+         f"{m['volume']} événements sur {config.WATCHDOG_REF_HEURES} h"),
+    ]
+    if markdown:
+        tableau = ["| | |", "|---|---|"] + [f"| {k} | {v} |" for k, v in faits]
+    else:
+        # Alignement à la main : sans tableau, c'est la seule chose qui rend
+        # ces six lignes lisibles en un coup d'œil.
+        large = max(len(k) for k, _ in faits)
+        tableau = [f"  {k.ljust(large)} : {v}" for k, v in faits]
+
     return "\n".join([
-        "# Panne de capteur",
+        t("Panne de capteur"),
         "",
-        f"Le capteur **{m['capteur']}** de **{m['agent_name'] or m['agent_id']}** "
-        f"(agent {m['agent_id']}) n'émet plus depuis **{_duree(minutes)}**.",
+        f"Le capteur {g(m['capteur'])} de {g(agent)} (agent {m['agent_id']}) "
+        f"n'émet plus depuis {g(_duree(minutes))}.",
         "",
-        "| | |",
-        "|---|---|",
-        f"| Capteur | `{m['capteur']}` |",
-        f"| Agent | {m['agent_name'] or '?'} (`{m['agent_id']}`) |",
-        f"| Dernier événement | {m['dernier']:%Y-%m-%d %H:%M:%S} UTC |",
-        f"| Silence | {_duree(minutes)} |",
-        f"| Seuil de panne | {m['seuil']} min |",
-        f"| Volume de référence | {m['volume']} événements sur "
-        f"{config.WATCHDOG_REF_HEURES} h |",
+        *tableau,
         "",
-        "## Ce qui n'est plus détecté",
+        t("Ce qui n'est plus détecté", 2),
         "",
         f"Tant que ce capteur est muet, {portee} ne peut plus se déclencher sur "
         "cet hôte. Aucune alerte ne le signalera : une règle de corrélation ne "
         "détecte pas une absence.",
         "",
-        "## Pistes",
+        t("Pistes", 2),
         "",
-        "1. L'agent est-il réellement connecté, et **émet-il** ? Un agent "
-        "`active` dont le collecteur est figé est indiscernable d'un agent sain.",
-        "2. `wazuh-control status` sur l'hôte, puis vérifier qu'il n'y a pas "
-        "**plusieurs** processus `wazuh-logcollector` empilés : un redémarrage "
-        "ne tue pas un collecteur bloqué, il en ajoute un.",
-        "3. Le capteur sous-jacent tourne-t-il ? (`auditctl -s` pour audit, "
-        "l'instance Suricata pour le réseau, le lecteur journald pour sshd)",
-        "4. L'hôte est-il **isolé** ? Une machine confinée n'accepte plus que le "
-        "manager : ses capteurs d'authentification se taisent par construction, "
-        "sans panne réelle.",
+        f"1. L'agent est-il réellement connecté, et {g('émet-il')} ? Un agent "
+        f"{c('active')} dont le collecteur est figé est indiscernable d'un "
+        "agent sain.",
+        f"2. {c('wazuh-control status')} sur l'hôte, puis vérifier qu'il n'y a "
+        f"pas {g('plusieurs')} processus {c('wazuh-logcollector')} empilés : "
+        "un redémarrage ne tue pas un collecteur bloqué, il en ajoute un.",
+        f"3. Le capteur sous-jacent tourne-t-il ? ({c('auditctl -s')} pour "
+        "audit, l'instance Suricata pour le réseau, le lecteur journald pour "
+        "sshd)",
+        f"4. L'hôte est-il {g('isolé')} ? Une machine confinée n'accepte plus "
+        "que le manager : ses capteurs d'authentification se taisent par "
+        "construction, sans panne réelle.",
         "",
-        "*Ouvert automatiquement par le watchdog AURA. Se referme seul dès que "
-        "le capteur réémet.*",
+        _italique("Ouvert automatiquement par le watchdog AURA. Se referme "
+                  "seul dès que le capteur réémet.", markdown),
     ])
+
+
+def _italique(txt: str, markdown: bool) -> str:
+    return f"*{txt}*" if markdown else f"-- {txt}"
 
 
 # --------------------------------------------------------------------------
@@ -274,7 +313,7 @@ def _ouvrir_alerte(m: dict, minutes: int) -> int | None:
     """Alerte IRIS pour une panne. Best-effort, comme le canal `case`.
 
     Une alerte n'a pas de notes : tout le diagnostic tient dans la description,
-    qui est rendue en markdown par l'onglet Alerts.
+    que l'onglet Alerts affiche en TEXTE BRUT (cf. `_note_panne`).
     """
     alerte = _alerte()
     nom_agent = m["agent_name"] or m["agent_id"]
@@ -283,7 +322,7 @@ def _ouvrir_alerte(m: dict, minutes: int) -> int | None:
         tags.append(m["agent_name"])
     r = alerte.add_alert({
         "alert_title": f"[CAPTEUR MUET] {m['capteur']} sur {nom_agent}",
-        "alert_description": _note_panne(m, minutes),
+        "alert_description": _note_panne(m, minutes, markdown=False),
         "alert_source": SOURCE_ALERTE,
         # Ce que le watchdog reconnaît comme « sa » ligne pour ce couple
         # (agent, capteur) : l'idempotence est garantie en base par l'index
@@ -331,37 +370,39 @@ def _fermer_alerte(alert_id: int, p: dict, minutes: int) -> None:
         return
     data = lu.get_data()
     statut = str((data.get("status") or {}).get("status_name") or "").lower()
+    # Texte brut, comme la description d'ouverture : l'onglet Alerts ne rend
+    # pas le markdown.
     corps = "\n".join([
         data.get("alert_description") or "",
         "",
-        "---",
+        "-" * 60,
         "",
-        "## Capteur rétabli",
+        "CAPTEUR RÉTABLI",
         "",
-        f"Le capteur **{p['capteur']}** de "
-        f"**{p['agent_name'] or p['agent_id']}** réémet.",
+        f"Le capteur {p['capteur']} de {p['agent_name'] or p['agent_id']} "
+        "réémet.",
         "",
-        f"- Panne détectée le {p['detectee_a']:%Y-%m-%d %H:%M} UTC",
-        f"- Dernier événement avant la panne : "
+        f"  Panne détectée le       : {p['detectee_a']:%Y-%m-%d %H:%M} UTC",
+        f"  Dernier événement avant : "
         f"{p['dernier_event']:%Y-%m-%d %H:%M} UTC",
-        f"- Durée totale du silence : {_duree(minutes)}",
+        f"  Durée totale du silence : {_duree(minutes)}",
         "",
-        "**Les événements de la période de silence sont définitivement "
-        "perdus** si le capteur ne tamponnait pas : ce qui s'est produit sur "
-        "cet hôte pendant la panne n'a jamais été analysé.",
+        "Les événements de la période de silence sont définitivement perdus "
+        "si le capteur ne tamponnait pas : ce qui s'est produit sur cet hôte "
+        "pendant la panne n'a jamais été analysé.",
         "",
     ])
     maj = {"alert_description": corps}
     if statut in STATUTS_HUMAINS:
         log.info("alerte %s en statut « %s » : rétablissement noté, statut "
                  "laissé à l'analyste", alert_id, statut)
-        corps += "*Rétablissement constaté par le watchdog AURA. Le statut de "
-        corps += "cette alerte est laissé tel quel : elle a été escaladée.*"
-        maj["alert_description"] = corps
+        maj["alert_description"] = corps + (
+            "-- Rétablissement constaté par le watchdog AURA. Le statut de "
+            "cette alerte est laissé tel quel : elle a été escaladée.")
     else:
         maj["alert_status_id"] = _id_statut(alerte, "Closed")
         maj["alert_description"] = corps + (
-            "*Clôturée automatiquement par le watchdog AURA.*")
+            "-- Clôturée automatiquement par le watchdog AURA.")
     r = alerte.update_alert(alert_id, maj)
     if not r.is_success():
         # Remonté à l'appelant : la panne reste OUVERTE en base et sera
