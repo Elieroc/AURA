@@ -17,7 +17,7 @@ XDR autonome piloté par IA. Détection moderne avec Wazuh, enrichissement threa
   <img src="assets/aura-architecture.png" alt="Architecture d'AURA : les endpoints alimentent le Wazuh Manager enrichi par les IOC de MISP, les alertes partent dans l'indexer où soc-agent les ingère, les corrèle et les fait trancher par l'API DeepSeek, puis ouvre un case DFIR-IRIS, repousse règles et exceptions vers le manager et déclenche via Shuffle une remédiation qui redescend sur les endpoints" width="100%">
 </p>
 
-Source du schéma (HTML/SVG autoportant, zoomable) : [`docs/architecture.html`](docs/architecture.html).
+Source du schéma (HTML/SVG autoportant, zoomable) : [`assets/architecture.html`](assets/architecture.html).
 
 ## Components
 
