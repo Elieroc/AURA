@@ -43,15 +43,8 @@ cp .env.example .env    # remplir mots de passe + clés API
 docker compose up -d
 ```
 
-Rien à préparer à la main : trois services à passe unique tournent avant les
-autres au premier `up` — `aura-init` (répertoires de données sous `db/`, cf.
-[`db/README.md`](db/README.md)), `wazuh-certs` (PKI du manager, de l'indexer et
-du dashboard) et `iris-certs` (PKI de DFIR-IRIS). Tous idempotents : aux
-démarrages suivants ils sortent immédiatement.
-
-Dashboard Wazuh : https://localhost — `admin` / `INDEXER_PASSWORD` du `.env`.
-Détail complet (configs à copier depuis les `.example`, étapes par stack,
-schéma Postgres soc-agent, active response) : [`docs/INSTALL.md`](docs/INSTALL.md).
+Dashboard Wazuh : https://localhost - `admin` / `INDEXER_PASSWORD` du `.env`.
+Interface DFIR-IRIS : https://localhost:8443 - `administrator` / `IRIS_ADM_PASSWORD` du `.env`.
 
 ## Ressources
 
@@ -93,5 +86,5 @@ AURA/
 └── src/                 # les 4 stacks buildables : ai/ · iris/ · shuffle/ · wazuh/
 ```
 
-`mcp/` (serveur MCP Wazuh) reste hors dépôt et hors de ce compose — déploiement
+`mcp/` (serveur MCP Wazuh) reste hors dépôt et hors de ce compose : déploiement
 séparé, voir `mcp/README.md`.
