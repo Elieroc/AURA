@@ -21,8 +21,6 @@
   <img src="assets/aura-architecture.png" alt="Architecture d'AURA : les endpoints alimentent le Wazuh Manager enrichi par les IOC de MISP, les alertes partent dans l'indexer où soc-agent les ingère, les corrèle et les fait trancher par l'API DeepSeek, puis ouvre un case DFIR-IRIS, repousse règles et exceptions vers le manager et déclenche via Shuffle une remédiation qui redescend sur les endpoints" width="100%">
 </p>
 
-Source du schéma (HTML/SVG autoportant, zoomable) : [`assets/architecture.html`](assets/architecture.html).
-
 ## Components
 
 | Composant | Rôle | État |
@@ -47,8 +45,9 @@ cp .env.example .env    # remplir mots de passe + clés API
 docker compose up -d
 ```
 
-Dashboard Wazuh : https://localhost - `admin` / `INDEXER_PASSWORD` du `.env`.
-Interface DFIR-IRIS : https://localhost:8443 - `administrator` / `IRIS_ADM_PASSWORD` du `.env`.
+- Dashboard Wazuh : https://localhost - `admin` / `INDEXER_PASSWORD` du `.env`.
+
+- Interface DFIR-IRIS : https://localhost:8443 - `administrator` / `IRIS_ADM_PASSWORD` du `.env`.
 
 ## Ressources
 
