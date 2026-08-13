@@ -17,6 +17,11 @@ x-soc-agent: &soc-agent
   env_file: .env
   network_mode: host
   restart: unless-stopped
+  # Onze conteneurs partagent cette ancre, donc onze plafonds. Le plus gourmand
+  # observé en fonctionnement est soc-agent-cycle, ~350 Mo (ingest + UEBA +
+  # corrélation sur ~20 000 alertes par passe) ; 1 Go laisse la marge d'un
+  # rattrapage après arrêt prolongé, où une seule passe traite tout l'arriéré.
+  mem_limit: 1g
   depends_on:
     soc-agent-db:
       condition: service_healthy
@@ -28,6 +33,17 @@ services:
     image: wazuh/wazuh-manager:4.9.2
     hostname: wazuh.manager
     restart: always
+    # Plafonds mémoire (ici et sur les autres services) : aucun conteneur n'en
+    # avait, donc un seul emballement pouvait emporter l'hôte entier — c'est ce
+    # qui est arrivé le 2026-08-13, load 203 sur une machine à 8 Go utilisés,
+    # saturation d'I/O plutôt que de RAM, mais rien ne bornait quoi que ce soit.
+    # Ce sont des PLAFONDS, pas des réservations : leur somme dépasse
+    # volontairement les 32 Go de l'hôte (usage réel constaté : ~9 Go). Le but
+    # est qu'un service qui dérape se fasse OOM-killer seul au lieu de faire
+    # tomber le SOC. Chaque valeur = pic observé arrondi au palier supérieur.
+    #
+    # Manager : analysisd + remoted + filebeat pour 16 agents, ~1 Go observé.
+    mem_limit: 3g
     ulimits:
       memlock:
         soft: -1
@@ -116,6 +132,11 @@ services:
       - "127.0.0.1:9200:9200"
     environment:
       - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+    # 1 Go de heap JVM, mais l'indexer mmap ses segments Lucene : ces pages
+    # comptent dans le cgroup tout en étant récupérables. Un plafond serré
+    # ferait donc OOM-killer un processus en bonne santé. 4 Go pour ~2 Go
+    # observés sur 181 shards — c'est la brique dont dépend tout le reste.
+    mem_limit: 4g
     ulimits:
       memlock:
         soft: -1
@@ -137,6 +158,8 @@ services:
     image: wazuh/wazuh-dashboard:4.9.2
     hostname: wazuh.dashboard
     restart: always
+    # Node.js, ~220 Mo observés. 1 Go absorbe une génération de rapport lourde.
+    mem_limit: 1g
     ports:
       - 443:5601
     environment:
@@ -316,6 +339,7 @@ services:
     env_file: .env
     network_mode: host
     restart: unless-stopped
+    mem_limit: 512m
     depends_on:
       soc-agent-db:
         condition: service_healthy
@@ -355,6 +379,7 @@ services:
     image: wazuh-main-server:4.2.1
     container_name: wazuh-mcp
     restart: unless-stopped
+    mem_limit: 512m
     ports:
       - "127.0.0.1:${WAZUH_MCP_PORT:-3000}:3000"
     environment:
@@ -519,6 +544,8 @@ services:
     container_name: shuffle-frontend
     hostname: shuffle-frontend
     restart: unless-stopped
+    # nginx servant un build statique.
+    mem_limit: 256m
     ports:
       - "${SHUFFLE_BIND_ADDR:-127.0.0.1}:3001:80"
     environment:
@@ -533,6 +560,7 @@ services:
     container_name: shuffle-backend
     hostname: shuffle-backend
     restart: unless-stopped
+    mem_limit: 1g
     ports:
       - "${SHUFFLE_BIND_ADDR:-127.0.0.1}:5001:5001"
     volumes:
@@ -562,6 +590,11 @@ services:
     container_name: shuffle-orborus
     hostname: shuffle-orborus
     restart: unless-stopped
+    # Orborus lui-même est un ordonnanceur léger : il ne fait qu'appeler le
+    # démon Docker. Les workers qu'il lance sont des conteneurs SŒURS, pas des
+    # enfants — ce plafond ne les borne donc pas (SHUFFLE_ORBORUS_EXECUTION_
+    # CONCURRENCY=5 est leur seule limite).
+    mem_limit: 512m
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
@@ -592,6 +625,11 @@ services:
       - DISABLE_INSTALL_DEMO_CONFIG=true
       - DISABLE_SECURITY_PLUGIN=true
       - cluster.routing.allocation.disk.threshold_enabled=false
+    # Même raisonnement que wazuh.indexer (heap 1 Go + segments mmap), mais
+    # cette instance ne porte que l'état des workflows Shuffle : 3 Go pour
+    # ~1,8 Go observés. C'était le 2e plus gros lecteur disque de l'hôte
+    # (28 To lus en 17 jours), à surveiller.
+    mem_limit: 3g
     ulimits:
       memlock:
         soft: -1
@@ -665,6 +703,11 @@ services:
     image: ghcr.io/misp/misp-docker/misp-core:${MISP_CORE_TAG:-v2.5.44}
     container_name: misp-core
     restart: unless-stopped
+    # DOIT rester au-dessus de PHP_MEMORY_LIMIT (2048M plus bas), qui est un
+    # plafond PAR PROCESSUS php-fpm : un plafond de conteneur inférieur ferait
+    # OOM-killer un worker que PHP considère encore dans ses droits. 3 Go pour
+    # ~1,2 Go observés, apache + php-fpm + les crons de feeds compris.
+    mem_limit: 3g
     depends_on:
       misp-db:
         condition: service_healthy
