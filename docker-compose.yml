@@ -312,8 +312,14 @@ services:
   #
   # Cadence HORAIRE et non à la minute : charger un changement de règle exige
   # un redémarrage du manager. Il n'y a rien d'urgent à calmer une règle.
+  # Exception au plafond de l'ancre : cette passe charge en mémoire les alertes
+  # servant de contre-exemples pour prouver chaque règle générée. 1 Go observé
+  # en régime courant, 1,8 Go de pic avant l'incident du 2026-08-13 — le
+  # plafond commun de 1 Go la faisait travailler au ras du mur (1003 Mo d'anon,
+  # donc non récupérable : le prochain palier était l'OOM-kill).
   soc-agent-rule-tuning:
     <<: *soc-agent
+    mem_limit: 2560m
     container_name: soc-agent-rule-tuning
     volumes:
       - ${WAZUH_RULES_DIR:-./src/wazuh/config/wazuh_cluster/rules}:/wazuh-rules
@@ -796,6 +802,10 @@ services:
   # aurait très bien fonctionné.
   soc-agent-cti:
     <<: *soc-agent
+    # 910 Mo de pic avant l'incident (reconstruction du cache d'IOC : tous les
+    # feeds MISP sont normalisés en mémoire avant l'écriture atomique). Trop
+    # près du plafond commun de 1 Go pour le laisser.
+    mem_limit: 1536m
     container_name: soc-agent-cti
     depends_on:
       misp-core:
