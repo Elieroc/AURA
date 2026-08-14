@@ -489,6 +489,15 @@ Les deux postes qui mordraient réellement à plus grande échelle, dans l'ordre
   pas de quoi s'écrire, parce qu'un disque plein arrête tout le SOC.
 - **Une chaîne en échec ne laisse pas son fichier.** Un fichier tronqué qui monte
   dans S3 se fait passer pour une archive valide jusqu'au jour où on en a besoin.
+- **L'export pagine par `scroll`, pas par `point_in_time`.** `_shard_doc` a été
+  ajouté dans Elasticsearch 7.12, après le fork d'OpenSearch, et n'y a jamais été
+  porté : un PIT se crée bien, mais la recherche qui s'appuie dessus est rejetée
+  (`No mapping found for [_shard_doc] in order to sort on`). Constaté sur
+  l'indexer de prod au premier passage réel, sur les dix lots. Sans critère de
+  tri **total**, `search_after` est inutilisable — un tri sur `@timestamp` seul
+  saute ou duplique les documents de la même milliseconde, et `_id` n'est pas
+  triable. Ne pas « moderniser » ce point sans vérifier sur la version
+  d'OpenSearch réellement déployée.
 - **`ARCHIVE_DELAI_JOURS` n'est pas de la prudence décorative.** Le rattrapage des
   alertes indexées en retard écrit encore dans les index de la veille. Archiver le
   1er au matin fige une copie incomplète, qui se croira complète.

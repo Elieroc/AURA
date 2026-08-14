@@ -190,7 +190,7 @@ def lots_a_archiver(conn, aujourdhui: date | None = None) -> list[dict]:
 
 
 # --------------------------------------------------------------------------
-# Export : PIT + search_after, avec repli sur le scroll
+# Export : pagination par scroll (cf. `pages` pour le pourquoi)
 # --------------------------------------------------------------------------
 
 def _corps_recherche(taille: int) -> dict:
@@ -200,50 +200,29 @@ def _corps_recherche(taille: int) -> dict:
     return corps
 
 
-def _pages_pit(indices: list[str], taille: int):
-    """Pagination par point-in-time, triée sur `_shard_doc`.
+def pages(indices: list[str], taille: int | None = None):
+    """Pagination de l'export par l'API scroll.
 
-    `_shard_doc` est le seul critère de tri à la fois total et stable : un tri
-    sur `@timestamp` seul ne l'est pas (deux alertes à la même milliseconde
-    peuvent être sautées ou dupliquées d'une page à l'autre), et `_id` n'est pas
-    triable en OpenSearch. Sans PIT, `_shard_doc` n'existe pas — d'où le repli.
+    Pourquoi le scroll et pas `point_in_time` + `search_after`, qui est la
+    méthode recommandée partout : **`_shard_doc` n'existe pas dans OpenSearch.**
+    Ce champ de tri a été ajouté dans Elasticsearch 7.12, après le fork
+    d'OpenSearch, et n'y a jamais été porté. Un PIT s'y crée donc très bien, mais
+    la recherche qui s'appuie dessus est rejetée :
+
+        query_shard_exception: No mapping found for [_shard_doc] in order to
+        sort on
+
+    C'est exactement ce qu'a répondu l'indexer de prod (OpenSearch 2.x) au
+    premier passage réel, sur les dix lots. Et sans critère de tri **total**, le
+    `search_after` n'est pas utilisable : un tri sur `@timestamp` seul saute ou
+    duplique les documents partagés par la même milliseconde, et `_id` n'est pas
+    triable. Il ne reste que le scroll.
+
+    Le scroll est déprécié côté Elasticsearch, pas côté OpenSearch, et son
+    inconvénient (il retient un contexte de recherche) est sans portée ici :
+    l'export est un tir unique sur des index qui ne reçoivent plus rien.
     """
-    csv = ",".join(indices)
-    r = _indexer("POST", f"/{csv}/_search/point_in_time?keep_alive=10m")
-    if r.status_code in (400, 404, 405, 501):
-        raise NotImplementedError(f"PIT indisponible ({r.status_code})")
-    if not r.ok:
-        raise RuntimeError(f"PIT refusé ({r.status_code}) : {r.text}")
-    pit = r.json()["pit_id"]
-    try:
-        after = None
-        while True:
-            corps = _corps_recherche(taille)
-            corps["pit"] = {"id": pit, "keep_alive": "10m"}
-            corps["sort"] = [{"_shard_doc": "asc"}]
-            corps["track_total_hits"] = False
-            if after:
-                corps["search_after"] = after
-            r = _indexer("POST", "/_search", corps)
-            if not r.ok:
-                raise RuntimeError(f"recherche PIT refusée ({r.status_code}) : "
-                                   f"{r.text}")
-            hits = r.json()["hits"]["hits"]
-            if not hits:
-                return
-            yield hits
-            after = hits[-1]["sort"]
-    finally:
-        # Un PIT non libéré retient des segments sur disque, et le disque est la
-        # panne qui arrête tout le SOC. Best-effort, mais jamais oublié.
-        try:
-            _indexer("DELETE", "/_search/point_in_time", {"pit_id": [pit]})
-        except Exception as e:                                    # noqa: BLE001
-            log.warning("PIT non libéré : %s", e)
-
-
-def _pages_scroll(indices: list[str], taille: int):
-    """Repli : API scroll. Dépréciée mais universellement disponible."""
+    taille = taille or config.ARCHIVE_TAILLE_LOT
     csv = ",".join(indices)
     r = _indexer("POST", f"/{csv}/_search?scroll=10m", _corps_recherche(taille))
     if not r.ok:
@@ -261,22 +240,18 @@ def _pages_scroll(indices: list[str], taille: int):
             if not r.ok:
                 raise RuntimeError(f"scroll refusé ({r.status_code}) : {r.text}")
             doc = r.json()
+            # L'id de scroll PEUT changer d'un appel à l'autre : réutiliser le
+            # premier indéfiniment marche jusqu'au jour où il ne marche plus.
             sid = doc.get("_scroll_id") or sid
     finally:
+        # Un contexte de scroll non libéré retient des segments sur disque, et le
+        # disque plein est la panne qui arrête tout le SOC. Best-effort, mais
+        # jamais oublié.
         if sid:
             try:
                 _indexer("DELETE", "/_search/scroll", {"scroll_id": [sid]})
             except Exception as e:                                # noqa: BLE001
                 log.warning("scroll non libéré : %s", e)
-
-
-def pages(indices: list[str], taille: int | None = None):
-    taille = taille or config.ARCHIVE_TAILLE_LOT
-    try:
-        yield from _pages_pit(indices, taille)
-    except NotImplementedError as e:
-        log.info("%s : repli sur l'API scroll", e)
-        yield from _pages_scroll(indices, taille)
 
 
 # --------------------------------------------------------------------------
