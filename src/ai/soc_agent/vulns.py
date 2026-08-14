@@ -606,7 +606,7 @@ def _fleet_doc(conn, expos: list[dict], scan: dict, maintenant: datetime) -> dic
         "SELECT DISTINCT agent_id FROM vulnerabilities")}
     total_assets = conn.execute(
         "SELECT count(*) AS n FROM assets").fetchone()["n"]
-    total_of = lambda key: total_of(e["par_severite"].get(key, 0) for e in expos)  # noqa: E731
+    total_of = lambda key: sum(e["par_severite"].get(key, 0) for e in expos)  # noqa: E731
     return {
         "@timestamp": maintenant.isoformat(),
         "timestamp": maintenant.isoformat(),
@@ -618,16 +618,16 @@ def _fleet_doc(conn, expos: list[dict], scan: dict, maintenant: datetime) -> dic
             "couverture_pct": (round(100 * scan["agents_seen"] / total_assets, 1)
                                if total_assets else None),
             "machines_muettes": len(scan["silent_agents"]),
-            "ouvertes": total_of(e["total"] for e in expos),
+            "ouvertes": sum(e["total"] for e in expos),
             "critical": total_of("critical"),
             "high": total_of("high"),
             "medium": total_of("medium"),
             "low": total_of("low"),
-            "hors_sla_total": total_of(e["hors_sla_total"] for e in expos),
+            "hors_sla_total": sum(e["hors_sla_total"] for e in expos),
             "new_count": scan["new_count"],
             "fixed_count": scan["fixed_count"],
             "score_max": max((e["score"] for e in expos), default=0),
-            "score_moyen": (round(total_of(e["score"] for e in expos) / len(expos), 1)
+            "score_moyen": (round(sum(e["score"] for e in expos) / len(expos), 1)
                             if expos else 0),
         },
     }

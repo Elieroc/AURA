@@ -13,7 +13,7 @@ Champs attendus :
   THUNDER », « CRIMSON STORM », « NIGHTFALL », « IRON SENTINEL », « BROKEN
   HORIZON ». Évocateur mais neutre : ne PAS y mettre de nom de machine, d'IP,
   de compte ni d'autre donnée de l'incident. Varie d'un incident à l'autre.
-- `titre` : un titre court (≤ 60 caractères), en français, factuel, qui résume
+- `title` : un titre court (≤ 60 caractères), en français, factuel, qui résume
   l'incident d'après les alertes et le verdict (ex. « Reverse shell et
   persistance sur serveur web »). Pas de nom de code, pas de préfixe.
 

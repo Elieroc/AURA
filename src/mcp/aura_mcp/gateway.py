@@ -144,7 +144,7 @@ class Upstream:
                                                   RELAY_CAP)}
 
 
-def upstreams() -> items[Upstream]:
+def upstreams() -> list[Upstream]:
     """Les serveurs amont configurés. Vide = gateway désactivé."""
     items = []
     if WAZUH_URL:
