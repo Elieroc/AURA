@@ -31,6 +31,7 @@ import urllib3
 from psycopg.rows import dict_row
 
 from . import config, correlate
+from . import alertes as alertes_mod
 from .anonymize import Anonymiseur, anonymiser, rehydrater, verifier_fuite
 from .llm import completion
 from .render import rendre
@@ -2196,48 +2197,10 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict],
     return "\n".join(lignes)
 
 
-_COLONNES_ALERTE = ("id, ts, rule_id, rule_level, rule_desc, rule_groups, "
-                    "mitre_ids, mitre_tactics, srcip, srcuser, entity, raw")
-
-
 def _alertes(conn, incident_id: int) -> list[dict]:
-    """Alertes d'un incident, BORNÉES à `config.INCIDENT_MAX_ALERTES`.
-
-    Un incident de flood en aligne des dizaines de milliers (126 508 sur un
-    incident pfSense le 2026-08-14). Les charger toutes — `raw` compris, donc le
-    JSON entier de chaque alerte — se paie trois fois : la mémoire du cycle, la
-    timeline, et une pièce Evidence par alerte.
-
-    On garde les plus ANCIENNES et les plus RÉCENTES à parts égales. Le début
-    porte la graine de l'incident (ce qui a déclenché la corrélation, ce que lit
-    le triage) et la fin porte l'état courant ; c'est le milieu d'une salve
-    répétitive qui n'apprend rien. Prendre « les N dernières » perdrait le début
-    de l'attaque, qui est précisément ce qu'un analyste cherche.
-
-    Le compte réel n'est jamais tronqué : il vit dans `incidents.alert_count`.
-    """
-    n = conn.execute("SELECT count(*) c FROM alerts WHERE incident_id = %s",
-                     (incident_id,)).fetchone()["c"]
-    plafond = config.INCIDENT_MAX_ALERTES
-    if n <= plafond:
-        return conn.execute(
-            f"SELECT {_COLONNES_ALERTE} FROM alerts WHERE incident_id = %s "
-            "ORDER BY ts", (incident_id,)).fetchall()
-    moitie = plafond // 2
-    log.warning("incident #%s : %d alertes, chargement borné à %d "
-                "(%d plus anciennes + %d plus récentes)",
-                incident_id, n, plafond, moitie, plafond - moitie)
-    return conn.execute(
-        f"(SELECT {_COLONNES_ALERTE} FROM alerts WHERE incident_id = %(i)s "
-        f" ORDER BY ts ASC LIMIT %(debut)s)"
-        # UNION ALL, pas UNION : les deux moitiés sont disjointes par
-        # construction (on n'entre ici que si n > plafond), et dédupliquer
-        # imposerait un tri sur le `raw` jsonb entier de chaque ligne.
-        " UNION ALL "
-        f"(SELECT {_COLONNES_ALERTE} FROM alerts WHERE incident_id = %(i)s "
-        f" ORDER BY ts DESC LIMIT %(fin)s)"
-        " ORDER BY ts",
-        {"i": incident_id, "debut": moitie, "fin": plafond - moitie}).fetchall()
+    """Alertes d'un incident, bornées (cf. `alertes.charger_bornees`)."""
+    return alertes_mod.charger_bornees(conn, incident_id,
+                                       alertes_mod.COLONNES_RAPPORT, "case IRIS")
 
 
 def _traits(conn, incident_id: int) -> list[dict]:

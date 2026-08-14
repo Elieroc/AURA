@@ -43,6 +43,7 @@ import requests
 import urllib3
 from psycopg.rows import dict_row
 
+from . import alertes as alertes_mod
 from . import config
 from .anonymize import COMPTES_GENERIQUES
 from .iris import (LIBELLE_ACTION, _client, _iocs, _ip_interne,
@@ -1272,9 +1273,11 @@ def executer(incident_id: int) -> list[dict]:
                   f"{', '.join(triage['injection_motifs'])}. Aucune exécution.")
             return []
 
-        alertes = conn.execute(
-            "SELECT agent_id, agent_name, srcip, srcuser, entity, raw "
-            "FROM alerts WHERE incident_id = %s", (incident_id,)).fetchall()
+        # Borné : cette requête ramenait les 102 869 alertes de l'incident
+        # #2555 avec leur `raw` et faisait OOM-killer le cycle à chaque
+        # passe (cf. alertes.py).
+        alertes = alertes_mod.charger_bornees(
+            conn, incident_id, alertes_mod.COLONNES_CIBLAGE, "remédiation")
 
         remed = [a for a in triage["actions"] if a in REMEDIATIONS]
 

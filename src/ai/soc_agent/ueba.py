@@ -51,6 +51,7 @@ from datetime import datetime, timedelta, timezone
 import psycopg
 from psycopg.rows import dict_row
 
+from . import alertes as alertes_mod
 from . import assets, config
 
 # --- Traits observés ---------------------------------------------------------
@@ -746,10 +747,10 @@ def marquer_tp(incident_id: int) -> int:
     """
     n = 0
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-        alertes = conn.execute(
-            "SELECT id, ts, agent_id, agent_name, rule_id, srcip, srcuser, "
-            "       entity, raw FROM alerts WHERE incident_id = %s",
-            (incident_id,)).fetchall()
+        # Borné : `marquer_tp` est appelé à la création du case, donc aussi
+        # sur les incidents de flood (cf. alertes.py).
+        alertes = alertes_mod.charger_bornees(
+            conn, incident_id, alertes_mod.COLONNES_UEBA, "ueba marquer_tp")
         cles = {t for a in alertes for t in traits(a)}
         for scope, key, trait, valeur in cles:
             n += conn.execute(

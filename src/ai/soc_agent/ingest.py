@@ -361,17 +361,26 @@ def reappliquer_filtre() -> tuple[int, int]:
     vus = supprimees = 0
     with psycopg.connect(config.PG_DSN, row_factory=psycopg.rows.dict_row) as conn:
         filtre = noise.charger_avec_db(conn)
-        lignes = conn.execute("SELECT id, raw FROM alerts").fetchall()
-        for ligne in lignes:
-            vus += 1
-            raison = filtre.raison_suppression(ligne["raw"])
-            if raison:
-                supprimees += 1
-            conn.execute(
-                "UPDATE alerts SET suppressed = %s, suppress_reason = %s "
-                "WHERE id = %s",
-                (raison is not None, raison, ligne["id"]))
-        conn.commit()
+        # Par LOTS, jamais la table entière : `raw` est le JSON complet de
+        # chaque alerte, et cette requête ne porte aucun filtre — sur la base de
+        # prod (plusieurs centaines de milliers d'alertes, cf. alertes.py) elle
+        # tenait la base entière en mémoire avant la première ligne traitée.
+        # Les ids seuls sont légers ; le `raw` ne vient qu'au lot courant.
+        ids = [r["id"] for r in conn.execute("SELECT id FROM alerts").fetchall()]
+        for depart in range(0, len(ids), 2000):
+            lot = ids[depart:depart + 2000]
+            lignes = conn.execute(
+                "SELECT id, raw FROM alerts WHERE id = ANY(%s)", (lot,)).fetchall()
+            for ligne in lignes:
+                vus += 1
+                raison = filtre.raison_suppression(ligne["raw"])
+                if raison:
+                    supprimees += 1
+                conn.execute(
+                    "UPDATE alerts SET suppressed = %s, suppress_reason = %s "
+                    "WHERE id = %s",
+                    (raison is not None, raison, ligne["id"]))
+            conn.commit()
     return supprimees, vus
 
 

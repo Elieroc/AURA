@@ -16,6 +16,7 @@ from pathlib import Path
 import psycopg
 from psycopg.rows import dict_row
 
+from . import alertes as alertes_mod
 from . import config
 from .actions import appliquer_garde_fous, deduire, actions_fort_impact
 from .anonymize import (Anonymiseur, FuiteError, anonymiser, rehydrater,
@@ -114,10 +115,10 @@ SELECT i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
  LIMIT %(limite)s
 """
 
-SELECT_ALERTES = """
-SELECT id, ts, rule_id, rule_level, rule_desc, srcip, srcuser, entity, raw
-  FROM alerts WHERE incident_id = %s ORDER BY ts
-"""
+# Le chargement passe par `alertes.charger_bornees` : un incident de flood
+# neuf (103 251 alertes pour #2854) tuait le triage avant tout appel au modèle.
+# Aucune perte pour la décision — `render.rendre` ne montre de toute façon au
+# modèle qu'un extrait borné par le nombre de règles.
 
 
 def construire_prompt(incident: dict, alertes: list[dict]) -> tuple[str, str]:
@@ -211,7 +212,8 @@ def trier(limite: int, un_seul: int | None, tous: bool,
             return resultats
 
         for inc in incidents:
-            alertes = conn.execute(SELECT_ALERTES, (inc["id"],)).fetchall()
+            alertes = alertes_mod.charger_bornees(
+                conn, inc["id"], alertes_mod.COLONNES_TRIAGE, "triage")
 
             # Pseudonymisation AVANT toute construction de prompt : rien de
             # sensible ne doit atteindre le cloud. Jetons stables entre passages
