@@ -12,7 +12,7 @@ import json
 import os
 import shutil
 import subprocess
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -192,7 +192,13 @@ def test_export_chiffre_puis_relu(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "ARCHIVE_ZSTD_NIVEAU", 3)
     monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
-    monkeypatch.setattr(archive, "pages", lambda idx, taille=None: iter([docs]))
+    # `controle` accepté et RENSEIGNÉ : c'est ce que fait le vrai `pages`, et
+    # l'export vérifie désormais le compte annoncé contre le compte écrit.
+    monkeypatch.setattr(archive, "pages",
+                        lambda idx, taille=None, controle=None: (
+                            controle.update(attendu=len(docs))
+                            if controle is not None else None,
+                            iter([docs]))[1])
 
     objet = tmp_path / "archive.ndjson.zst.age"
     m = archive.exporter({"indices": ["wazuh-firewall-2026.08.14"],
@@ -218,8 +224,9 @@ def test_destinataire_invalide_ne_laisse_pas_de_fichier(tmp_path, monkeypatch):
     jusqu'au jour où on en a besoin."""
     monkeypatch.setattr(archive, "destinataires", lambda: ["age1pasunecle"])
     monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
-    monkeypatch.setattr(archive, "pages", lambda idx, taille=None: iter(
-        [[{"_index": "i", "_id": "1", "_source": {}}]]))
+    monkeypatch.setattr(archive, "pages",
+                        lambda idx, taille=None, controle=None: iter(
+                            [[{"_index": "i", "_id": "1", "_source": {}}]]))
     objet = tmp_path / "archive.ndjson.zst.age"
     with pytest.raises(RuntimeError):
         archive.exporter({"indices": ["i"], "octets": 1}, objet)
@@ -528,3 +535,200 @@ def test_erreur_de_table_absente_remonte_telle_quelle(monkeypatch):
         RuntimeError('relation "archives_s3" does not exist')))
     with pytest.raises(RuntimeError, match="archives_s3"):
         archive.tourner()
+
+
+# --------------------------------------------------------------------------
+# Intégrité : un export partiel ne doit JAMAIS devenir une archive
+# --------------------------------------------------------------------------
+
+class _Reponse:
+    def __init__(self, corps, ok=True, status=200):
+        self._corps, self.ok, self.status_code = corps, ok, status
+        self.text = json.dumps(corps)
+
+    def json(self):
+        return self._corps
+
+
+def _page(hits, failed=0, total_shards=3, timed_out=False, total=None,
+          scroll="s1"):
+    return {
+        "_scroll_id": scroll,
+        "timed_out": timed_out,
+        "_shards": {"total": total_shards, "successful": total_shards - failed,
+                    "skipped": 0, "failed": failed,
+                    "failures": [{"index": "wazuh-web-2026.03.01",
+                                  "reason": {"reason": "shard indisponible"}}]
+                    if failed else []},
+        "hits": {"total": {"value": total if total is not None else len(hits),
+                           "relation": "eq"},
+                 "hits": hits},
+    }
+
+
+def _hit(n):
+    return {"_index": "wazuh-web-2026.03.01", "_id": f"i{n}", "_source": {"n": n}}
+
+
+def test_shard_en_echec_refuse_des_la_premiere_page(monkeypatch):
+    """OpenSearch répond HTTP 200 avec des résultats PARTIELS quand un shard
+    tombe : l'échec est dans `_shards.failed`, pas dans le code HTTP. Sans ce
+    contrôle, l'archive enregistre son propre compte tronqué comme référence et
+    tout le reste (manifeste, SHA-256, drill, adoption) est d'accord avec elle."""
+    monkeypatch.setattr(archive, "_indexer",
+                        lambda *a, **k: _Reponse(_page([_hit(0)], failed=1)))
+    with pytest.raises(RuntimeError, match="export partiel refusé"):
+        list(archive.pages(["wazuh-web-2026.03.01"]))
+
+
+def test_shard_en_echec_refuse_en_COURS_de_scroll(monkeypatch):
+    """Un scroll dure plusieurs minutes : un shard peut tomber APRÈS la première
+    page, et la page concernée revient simplement plus courte."""
+    reponses = [_Reponse(_page([_hit(0)], total=2)),
+                _Reponse(_page([_hit(1)], failed=1, total=2))]
+    monkeypatch.setattr(archive, "_indexer",
+                        lambda *a, **k: reponses.pop(0) if reponses
+                        else _Reponse(_page([])))
+    with pytest.raises(RuntimeError, match="export partiel refusé"):
+        list(archive.pages(["wazuh-web-2026.03.01"]))
+
+
+def test_recherche_expiree_refusee(monkeypatch):
+    monkeypatch.setattr(archive, "_indexer",
+                        lambda *a, **k: _Reponse(_page([_hit(0)], timed_out=True)))
+    with pytest.raises(RuntimeError, match="recherche expirée"):
+        list(archive.pages(["wazuh-web-2026.03.01"]))
+
+
+def test_total_exact_demande_a_l_indexer(monkeypatch):
+    """Sans `track_total_hits`, OpenSearch plafonne le total à 10 000 et rend
+    `relation: gte` : on prendrait un plafond pour un total, et la vérification
+    de complétude validerait n'importe quel export de plus de 10 000 documents."""
+    assert archive._corps_recherche(500)["track_total_hits"] is True
+    controle = {}
+    reponses = [_Reponse(_page([_hit(0)], total=4200)), _Reponse(_page([]))]
+    monkeypatch.setattr(archive, "_indexer",
+                        lambda *a, **k: reponses.pop(0) if reponses
+                        else _Reponse(_page([])))
+    list(archive.pages(["wazuh-web-2026.03.01"], controle=controle))
+    assert controle == {"attendu": 4200, "relation": "eq"}
+
+
+@pytest.mark.skipif(not _OUTILS, reason="zstd/age absents de cet environnement")
+def test_export_tronque_refuse_et_fichier_supprime(tmp_path, monkeypatch):
+    """Le scroll s'arrête avant la fin : moins de documents écrits qu'annoncés.
+    L'archive doit être REFUSÉE et le fichier supprimé — c'est exactement le cas
+    qui produisait une copie tronquée se croyant complète."""
+    _keyfile(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "ARCHIVE_ZSTD_NIVEAU", 3)
+    monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
+
+    def _pages(indices, taille=None, controle=None):
+        if controle is not None:
+            controle["attendu"] = 1000      # l'indexer en annonce 1000...
+        yield [_hit(n) for n in range(10)]  # ...on n'en reçoit que 10
+    monkeypatch.setattr(archive, "pages", _pages)
+
+    objet = tmp_path / "a.ndjson.zst.age"
+    with pytest.raises(RuntimeError, match="export INCOMPLET refusé"):
+        archive.exporter({"indices": ["i"], "octets": 1,
+                          "index_base": "wazuh-web", "periode": "2026-03"}, objet)
+    assert not objet.exists(), "le fichier tronqué a été conservé"
+
+
+@pytest.mark.skipif(not _OUTILS, reason="zstd/age absents de cet environnement")
+def test_export_complet_accepte(tmp_path, monkeypatch):
+    """Le cas nominal doit continuer de passer : autant de documents qu'annoncé."""
+    _keyfile(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "ARCHIVE_ZSTD_NIVEAU", 3)
+    monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
+
+    def _pages(indices, taille=None, controle=None):
+        if controle is not None:
+            controle["attendu"] = 10
+        yield [_hit(n) for n in range(10)]
+    monkeypatch.setattr(archive, "pages", _pages)
+
+    m = archive.exporter({"indices": ["i"], "octets": 1,
+                          "index_base": "wazuh-web", "periode": "2026-03"},
+                         tmp_path / "a.age")
+    assert m["documents"] == 10
+
+
+@pytest.mark.skipif(not _OUTILS, reason="zstd/age absents de cet environnement")
+def test_surplus_accepte_car_sans_perte(tmp_path, monkeypatch):
+    """Écrit en PLUS qu'annoncé n'est pas une perte : au pire un doublon. On
+    conserve et on journalise, plutôt que de jeter une archive valide."""
+    _keyfile(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "ARCHIVE_ZSTD_NIVEAU", 3)
+    monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
+
+    def _pages(indices, taille=None, controle=None):
+        if controle is not None:
+            controle["attendu"] = 5
+        yield [_hit(n) for n in range(10)]
+    monkeypatch.setattr(archive, "pages", _pages)
+
+    m = archive.exporter({"indices": ["i"], "octets": 1,
+                          "index_base": "wazuh-web", "periode": "2026-03"},
+                         tmp_path / "a.age")
+    assert m["documents"] == 10
+
+
+# --------------------------------------------------------------------------
+# Ménage des résidus d'un passage tué (SIGKILL : aucun `finally` ne tourne)
+# --------------------------------------------------------------------------
+
+def test_balayage_supprime_les_residus_vieux_pas_les_recents(tmp_path, monkeypatch):
+    import os as _os
+    monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
+    vieux = tmp_path / "aura-archive-abandonne"
+    vieux.mkdir()
+    (vieux / "objet").write_bytes(b"x" * 4096)
+    _os.utime(vieux, (0, 0))                       # laissé il y a longtemps
+    recent = tmp_path / "aura-drill-en-cours"      # peut appartenir à un drill
+    recent.mkdir()
+    etranger = tmp_path / "autre-chose"            # pas à nous
+    etranger.mkdir()
+
+    r = archive.balayer_temporaires(age_heures=2)
+    assert r["repertoires"] == 1 and r["octets"] >= 4096
+    assert not vieux.exists()
+    assert recent.exists() and etranger.exists()
+
+
+def test_multiparts_inacheves_avortes_sauf_les_recents():
+    """Les parties d'un multipart interrompu sont FACTURÉES et n'apparaissent
+    dans aucun list_objects. Mais un upload récent peut être en cours."""
+    from datetime import timedelta as _td
+    maintenant = datetime.now(timezone.utc)
+    avortes = []
+
+    class _S3:
+        @staticmethod
+        def list_multipart_uploads(Bucket):
+            return {"Uploads": [
+                {"Key": "v1/a.age", "UploadId": "u1",
+                 "Initiated": maintenant - _td(days=3)},
+                {"Key": "v1/b.age", "UploadId": "u2",
+                 "Initiated": maintenant - _td(minutes=5)},
+            ]}
+
+        @staticmethod
+        def abort_multipart_upload(Bucket, Key, UploadId):
+            avortes.append(Key)
+
+    r = archive.avorter_multiparts(_S3(), age_heures=24)
+    assert r["avortes"] == ["v1/a.age"] and r["en_cours_ignores"] == 1
+    assert avortes == ["v1/a.age"]
+
+
+def test_multiparts_non_listables_ne_bloquent_pas():
+    """Une clé applicative sans le droit de lister ne doit pas empêcher
+    d'archiver : ne pas archiver du tout est une bien pire réponse."""
+    class _S3:
+        @staticmethod
+        def list_multipart_uploads(Bucket):
+            raise Exception("AccessDenied")
+
+    assert "indéterminé" in archive.avorter_multiparts(_S3())["etat"]

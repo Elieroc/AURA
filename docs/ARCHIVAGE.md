@@ -274,6 +274,74 @@ lui-même est fait par `soc-agent-archive` à sa cadence. Un export de plusieurs
 centaines de mégaoctets n'a rien à faire dans un passage qui tourne toutes les
 deux minutes.
 
+## Ce qui se passe si le passage est tué
+
+Tout le nettoyage du module vit dans des `finally`, et un `finally` ne s'exécute
+**pas** sur `SIGKILL` (OOM killer, `docker kill`, coupure). Il faut donc savoir ce
+que chaque instant laisse derrière lui.
+
+**L'unité atomique est le lot (index set × mois), pas l'octet.** Il n'y a aucun
+point de reprise à l'intérieur d'un export : un passage tué au milieu d'un mois
+le refait entièrement au passage suivant. C'est un choix — un mois se réexporte
+en secondes à quelques minutes, et un checkpoint intra-lot coûterait plus de
+complexité qu'il n'économise de temps.
+
+| Tué pendant… | État laissé | Passage suivant |
+|---|---|---|
+| l'export | répertoire de travail orphelin ; **rien dans S3** | refait le lot |
+| le téléversement | objet incomplet, parties multipart orphelines | refait, écrase |
+| après l'objet, avant le manifeste | objet sans manifeste | réarchive (nouvelle version) |
+| après objet + manifeste, avant l'`INSERT` | tout dans S3, rien en base | **`_adopter` reprend** sans re-téléverser |
+| après l'`INSERT` | terminé | rien |
+
+Le verrou consultatif est de **session** : un `SIGKILL` tue la connexion Postgres
+et le serveur libère le verrou. Pas de blocage résiduel.
+
+Les deux résidus invisibles sont balayés au début de chaque passage :
+`balayer_temporaires()` supprime les répertoires `aura-*` de plus de deux heures,
+et `avorter_multiparts()` avorte les téléversements inachevés de plus de 24 h —
+dont les parties sont **facturées et absentes d'un `list_objects`**. Les deux ont
+un seuil d'âge parce que le verrou n'interdit pas un `--drill` lancé à la main
+pendant qu'un passage tourne.
+
+## Ce qui garantit qu'une archive est complète
+
+Le mode de défaillance à craindre n'est pas la panne franche, c'est l'archive
+tronquée **qui se croit complète** : si l'export s'arrête à mi-course et que le
+manifeste enregistre son propre compte tronqué, le SHA-256 correspond, le drill
+passe au vert et l'adoption valide. Tout est cohérent avec soi-même, et il manque
+des alertes que plus rien ne réclamera.
+
+Deux contrôles ferment ce trou, tous deux dans le chemin d'export :
+
+1. **`_shards.failed` sur chaque page.** OpenSearch répond `HTTP 200` avec des
+   résultats **partiels** quand un shard tombe ou expire : l'échec est dans le
+   corps, pas dans le code HTTP. Un seul shard en échec annule le lot.
+   Le contrôle est refait à **chaque page** — un scroll dure des minutes, un
+   shard peut tomber après la première.
+2. **Le compte écrit contre le compte annoncé.** Le total vient de
+   `hits.total` du **même instantané de scroll** que les pages, donc un écart ne
+   peut pas venir d'une écriture concurrente : il ne peut venir que d'un export
+   interrompu. Moins que prévu = refus et suppression du fichier. Plus que prévu
+   = conservé et journalisé (un surplus n'est pas une perte).
+
+   `track_total_hits: true` est indispensable ici : sans lui OpenSearch plafonne
+   le total à 10 000 et rend `relation: gte`, un plafond qu'on prendrait pour un
+   total — la vérification validerait alors n'importe quel export de plus de
+   10 000 documents.
+
+Le reste de la chaîne, dans l'ordre où il agit :
+
+- codes de sortie de `zstd` et `age` contrôlés ; en cas d'échec le fichier est
+  **supprimé**, donc un tronqué ne monte jamais dans S3 ;
+- `HEAD` après téléversement : taille comparée à celle attendue ;
+- la ligne en base n'est écrite qu'**après** que l'objet et le manifeste ont été
+  relus côté S3 ;
+- chiffrement AEAD : un bit retourné dans le stockage fait **échouer** le
+  déchiffrement, il ne corrompt pas en silence ;
+- drill : retéléchargement, déchiffrement, recomptage contre le manifeste ;
+- isolation par lot : un mois qui échoue n'emporte pas les autres.
+
 ## Le drill de restauration
 
 Une archive non testée est une croyance, pas une copie.

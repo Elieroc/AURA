@@ -64,6 +64,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -197,10 +198,44 @@ def _corps_recherche(taille: int) -> dict:
     corps: dict = {"size": taille, "query": {"match_all": {}}}
     if config.ARCHIVE_CHAMPS_EXCLUS:
         corps["_source"] = {"excludes": config.ARCHIVE_CHAMPS_EXCLUS}
+    # Compte EXACT et non plafonné. Sans ce réglage, OpenSearch s'arrête de
+    # compter à 10 000 et rend `{"value": 10000, "relation": "gte"}` : un
+    # plafond qu'on prendrait pour un total, donc une vérification de complétude
+    # qui validerait n'importe quel export de plus de 10 000 documents.
+    corps["track_total_hits"] = True
     return corps
 
 
-def pages(indices: list[str], taille: int | None = None):
+def _verifier_shards(doc: dict, indices: list[str]) -> None:
+    """Refuse un résultat PARTIEL. C'est la vérification qui manquait.
+
+    OpenSearch répond `HTTP 200` avec des résultats partiels quand un shard
+    tombe ou dépasse son délai : l'échec est dans `_shards.failed`, pas dans le
+    code HTTP. Sans ce contrôle, un shard indisponible pendant l'export produit
+    une archive tronquée qui enregistre SON PROPRE compte tronqué comme
+    référence — le manifeste, le SHA-256, le drill et l'adoption sont alors tous
+    d'accord entre eux, et il manque des alertes que plus rien ne réclamera.
+
+    C'est le pire mode de défaillance possible pour un archivage : silencieux et
+    auto-confirmé. D'où un échec franc du lot, quitte à le refaire demain.
+    """
+    shards = doc.get("_shards") or {}
+    rates = shards.get("failed") or 0
+    if rates or doc.get("timed_out"):
+        motifs = "; ".join(
+            f"{e.get('index', '?')}: {e.get('reason', {}).get('reason', e)}"
+            for e in (shards.get("failures") or [])[:3]) or "aucun détail fourni"
+        raise RuntimeError(
+            f"export partiel refusé sur {','.join(indices[:3])}"
+            f"{'…' if len(indices) > 3 else ''} : {rates} shard(s) en échec sur "
+            f"{shards.get('total', '?')}"
+            f"{', recherche expirée' if doc.get('timed_out') else ''} — {motifs}. "
+            "Un export partiel produirait une archive tronquée qui se croirait "
+            "complète. Lot abandonné, il sera repris au prochain passage.")
+
+
+def pages(indices: list[str], taille: int | None = None,
+          controle: dict | None = None):
     """Pagination de l'export par l'API scroll.
 
     Pourquoi le scroll et pas `point_in_time` + `search_after`, qui est la
@@ -221,6 +256,12 @@ def pages(indices: list[str], taille: int | None = None):
     Le scroll est déprécié côté Elasticsearch, pas côté OpenSearch, et son
     inconvénient (il retient un contexte de recherche) est sans portée ici :
     l'export est un tir unique sur des index qui ne reçoivent plus rien.
+
+    `controle` reçoit `attendu`, le total EXACT du même instantané de recherche
+    que les pages. Le comparer au nombre de documents réellement écrits est ce
+    qui prouve la complétude, et le prendre ICI plutôt que dans `_cat/indices`
+    supprime toute course : c'est le même contexte de scroll, donc le même
+    ensemble de documents.
     """
     taille = taille or config.ARCHIVE_TAILLE_LOT
     csv = ",".join(indices)
@@ -228,6 +269,11 @@ def pages(indices: list[str], taille: int | None = None):
     if not r.ok:
         raise RuntimeError(f"scroll refusé ({r.status_code}) : {r.text}")
     doc = r.json()
+    _verifier_shards(doc, indices)
+    if controle is not None:
+        total = (doc.get("hits") or {}).get("total") or {}
+        controle["attendu"] = total.get("value")
+        controle["relation"] = total.get("relation")
     sid = doc.get("_scroll_id")
     try:
         while True:
@@ -240,6 +286,10 @@ def pages(indices: list[str], taille: int | None = None):
             if not r.ok:
                 raise RuntimeError(f"scroll refusé ({r.status_code}) : {r.text}")
             doc = r.json()
+            # Sur CHAQUE page : un shard peut tomber au milieu d'un scroll de
+            # plusieurs minutes, et la page concernée revient simplement plus
+            # courte, sans erreur HTTP.
+            _verifier_shards(doc, indices)
             # L'id de scroll PEUT changer d'un appel à l'autre : réutiliser le
             # premier indéfiniment marche jusqu'au jour où il ne marche plus.
             sid = doc.get("_scroll_id") or sid
@@ -343,6 +393,7 @@ def exporter(lot: dict, destination: Path) -> dict:
 
     sha_clair = hashlib.sha256()
     octets_clair = documents = 0
+    controle: dict = {}
 
     with destination.open("wb") as sortie:
         zstd = subprocess.Popen(
@@ -356,7 +407,7 @@ def exporter(lot: dict, destination: Path) -> dict:
         # et la chaîne se bloque à la fermeture.
         zstd.stdout.close()
         try:
-            for page in pages(lot["indices"]):
+            for page in pages(lot["indices"], controle=controle):
                 for hit in page:
                     ligne = (json.dumps(
                         {"_index": hit["_index"], "_id": hit["_id"],
@@ -387,6 +438,32 @@ def exporter(lot: dict, destination: Path) -> dict:
             f"chaîne de traitement en échec (zstd={code_zstd}, age={code_age}) : "
             + (zstd.stderr.read() or b"").decode(errors="replace")
             + (age.stderr.read() or b"").decode(errors="replace"))
+
+    # CONTRÔLE DE COMPLÉTUDE. Le compte vient du même instantané de scroll que
+    # les pages, donc un écart ne peut pas venir d'une écriture concurrente : il
+    # ne peut venir que d'un export qui s'est arrêté avant la fin.
+    #
+    # Écrit en MOINS = archive tronquée : refus, et suppression du fichier. Ce
+    # cas est celui qui rendait le trou indétectable, puisque le manifeste aurait
+    # enregistré le compte tronqué comme référence et que tout le reste (SHA-256,
+    # drill, adoption) se compare au manifeste.
+    #
+    # Écrit en PLUS n'est pas une erreur : le scroll rend ce qu'il a, et un
+    # surplus signifierait au pire un doublon, pas une perte. On le journalise.
+    attendu = controle.get("attendu")
+    if attendu is not None and documents < attendu:
+        destination.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"export INCOMPLET refusé : {documents} documents écrits pour "
+            f"{attendu} annoncés par l'indexer "
+            f"({lot['index_base']}/{lot['periode']}). Le fichier a été supprimé "
+            "— l'archiver aurait produit une copie tronquée qui se croit "
+            "complète. Lot repris au prochain passage.")
+    if attendu is not None and documents > attendu:
+        log.warning("export %s/%s : %d documents écrits pour %d annoncés — "
+                    "surplus conservé (aucune perte), à surveiller si ça se "
+                    "répète", lot["index_base"], lot["periode"], documents,
+                    attendu)
 
     return {"documents": documents, "octets_clair": octets_clair,
             "sha256_clair": sha_clair.hexdigest(),
@@ -607,6 +684,84 @@ def archiver(conn, s3, lot: dict) -> dict:
                 "etat": "archivée", "cle": cle, **metriques}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------
+# Ménage des résidus d'un passage tué
+# --------------------------------------------------------------------------
+#
+# Tout le nettoyage du module vit dans des `finally`, et un `finally` ne
+# s'exécute PAS sur SIGKILL (OOM killer, `docker kill`, coupure de courant).
+# Chaque mort violente laisse donc deux traces, aucune des deux visible :
+#
+#  - un répertoire de travail dans ARCHIVE_TMP_DIR. Sur ce SOC, l'accumulation
+#    silencieuse sur disque est précisément ce qui a rempli 92 Go sans que
+#    personne le voie (cf. docs/RETENTION.md) ;
+#  - un téléversement multipart inachevé côté S3 : ses parties sont FACTURÉES et
+#    n'apparaissent dans aucun `list_objects`.
+#
+# Les deux sont balayés au début de chaque passage, avec un seuil d'âge : le
+# verrou consultatif interdit deux passages d'archivage simultanés, mais pas un
+# `--drill` lancé à la main pendant qu'un passage tourne.
+
+PREFIXES_TMP = ("aura-archive-", "aura-drill-", "aura-clecheck-")
+
+
+def balayer_temporaires(age_heures: int = 2) -> dict:
+    """Supprime les répertoires de travail abandonnés par un passage tué."""
+    base = Path(config.ARCHIVE_TMP_DIR)
+    limite = time.time() - age_heures * 3600
+    n = octets = 0
+    for chemin in base.glob("*"):
+        if not chemin.is_dir() or not chemin.name.startswith(PREFIXES_TMP):
+            continue
+        try:
+            if chemin.stat().st_mtime >= limite:
+                continue          # peut appartenir à un drill en cours
+            octets += sum(f.stat().st_size for f in chemin.rglob("*")
+                          if f.is_file())
+            shutil.rmtree(chemin, ignore_errors=True)
+            n += 1
+        except OSError as e:
+            log.debug("résidu %s non supprimé : %s", chemin, e)
+    if n:
+        log.warning("%d répertoire(s) de travail d'archivage abandonné(s) "
+                    "supprimé(s) (%.1f Mo) — signe qu'un passage a été tué sans "
+                    "pouvoir se nettoyer", n, octets / 1048576)
+    return {"repertoires": n, "octets": octets}
+
+
+def avorter_multiparts(s3, age_heures: int = 24) -> dict:
+    """Avorte les téléversements multipart inachevés du bucket.
+
+    Best-effort : si la clé applicative n'a pas le droit de les lister ou de les
+    avorter, on le dit et on continue. Ne pas archiver du tout serait une bien
+    plus mauvaise réponse à un défaut de facturation.
+    """
+    limite = datetime.now(timezone.utc) - timedelta(hours=age_heures)
+    avortes, ignores = [], 0
+    try:
+        reponse = s3.list_multipart_uploads(Bucket=config.ARCHIVE_S3_BUCKET)
+    except Exception as e:                                        # noqa: BLE001
+        log.info("multiparts inachevés non listables (%s) : contrôle sauté. "
+                 "Poser une règle de cycle de vie côté B2 est de toute façon "
+                 "la bonne réponse.", e)
+        return {"etat": f"indéterminé : {e}"[:200]}
+    for u in reponse.get("Uploads") or []:
+        if u.get("Initiated") and u["Initiated"] > limite:
+            ignores += 1          # peut être en cours
+            continue
+        try:
+            s3.abort_multipart_upload(Bucket=config.ARCHIVE_S3_BUCKET,
+                                      Key=u["Key"], UploadId=u["UploadId"])
+            avortes.append(u["Key"])
+        except Exception as e:                                    # noqa: BLE001
+            log.warning("multipart %s non avorté : %s", u["Key"], e)
+    if avortes:
+        log.warning("%d téléversement(s) multipart inachevé(s) avorté(s) : %s — "
+                    "leurs parties étaient facturées et invisibles d'un "
+                    "list_objects", len(avortes), ", ".join(avortes[:5]))
+    return {"avortes": avortes, "en_cours_ignores": ignores}
 
 
 # --------------------------------------------------------------------------
@@ -1082,6 +1237,11 @@ def tourner(dry_run: bool = False) -> dict:
             log.info("archivage : passage déjà en cours, on saute ce tour")
             return {"etat": "verrouillé"}
         try:
+            # Ménage AVANT tout : ce qu'un passage tué a laissé derrière lui ne
+            # doit pas s'accumuler d'un jour sur l'autre. Pas en `--plan`, qui
+            # doit pouvoir être lancé sans rien modifier nulle part.
+            if not dry_run:
+                bilan["menage_local"] = balayer_temporaires()
             lots = lots_a_archiver(conn)
             bilan["a_faire"] = [f"{l['index_base']}/{l['periode']}" for l in lots]
             if dry_run:
@@ -1090,6 +1250,7 @@ def tourner(dry_run: bool = False) -> dict:
                 return bilan
 
             s3 = _s3()
+            bilan["menage_s3"] = avorter_multiparts(s3)
             for lot in lots:
                 try:
                     bilan["archivees"].append(archiver(conn, s3, lot))
