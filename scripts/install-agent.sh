@@ -1,27 +1,28 @@
 #!/usr/bin/env bash
 #
-# Installation d'un agent Wazuh + user d'administration distante.
+# Installs a Wazuh agent + remote administration user.
 #
-# 1. Installe wazuh-agent (repo apt officiel, version épinglée) enrôlé sur le manager.
-# 2. Installe et configure auditd (règle execve + localfile Wazuh) pour la détection
-#    d'exécution de binaire depuis /tmp, /var/tmp, /dev/shm (règle locale 100625).
-# 3. Crée un user "wazuh-admin" avec sudo NOPASSWD, accessible uniquement en SSH
-#    par clé depuis le serveur Wazuh (mot de passe verrouillé).
+# 1. Installs wazuh-agent (official apt repo, pinned version) enrolled on the manager.
+# 2. Installs and configures auditd (execve rule + Wazuh localfile) for
+#    detecting binary execution from /tmp, /var/tmp, /dev/shm (local rule 100625).
+# 3. Creates a "wazuh-admin" user with sudo NOPASSWD, reachable only via SSH
+#    key from the Wazuh server (password locked).
 #
-# NB : le user s'appelle "wazuh-admin" et non "wazuh" — le paquet wazuh-agent crée
-# déjà un user système "wazuh" (nologin) utilisé par les daemons de l'agent ;
-# lui donner sudo/SSH reviendrait à élever les privilèges des daemons.
+# NB: the user is named "wazuh-admin", not "wazuh" - the wazuh-agent package
+# already creates a system user "wazuh" (nologin) used by the agent's
+# daemons; giving it sudo/SSH would amount to elevating the daemons'
+# privileges.
 #
-# Usage (en root sur la machine cible) :
-#   ./install-agent.sh -m <MANAGER_IP> -k "<CLE_PUBLIQUE_SSH>" [-n <AGENT_NAME>] \
-#                      [-g <GROUPE>] [-v <VERSION>]
+# Usage (as root on the target machine):
+#   ./install-agent.sh -m <MANAGER_IP> -k "<SSH_PUBLIC_KEY>" [-n <AGENT_NAME>] \
+#                      [-g <GROUP>] [-v <VERSION>]
 #
-# -g déclare le RÔLE de la machine sous forme de groupe Wazuh (role-dc,
-# role-web, role-firewall…). C'est ce qui donne sa priorité P1-P4 à l'asset,
-# donc l'ordre dans lequel ses incidents sont analysés. Sans -g, la machine est
-# traitée en P4, c'est-à-dire en fin de file.
+# -g declares the machine's ROLE as a Wazuh group (role-dc, role-web,
+# role-firewall...). This is what gives the asset its P1-P4 priority, hence
+# the order in which its incidents get analyzed. Without -g, the machine is
+# treated as P4, i.e. at the back of the queue.
 #
-# Exemple :
+# Example:
 #   ./install-agent.sh -m 10.0.1.5 -k "ssh-ed25519 AAAA... soc" -n endpoint-01 -g role-endpoint
 
 set -euo pipefail
@@ -46,12 +47,12 @@ while getopts "m:k:n:g:v:h" opt; do
   esac
 done
 
-[ -z "$MANAGER_IP" ] && { echo "ERREUR: -m MANAGER_IP requis"; usage; }
-[ -z "$SSH_PUBKEY" ] && { echo "ERREUR: -k CLE_PUBLIQUE_SSH requise"; usage; }
-[ "$(id -u)" -ne 0 ] && { echo "ERREUR: à lancer en root"; exit 1; }
-command -v apt-get >/dev/null || { echo "ERREUR: apt requis (Debian/Ubuntu uniquement)"; exit 1; }
+[ -z "$MANAGER_IP" ] && { echo "ERROR: -m MANAGER_IP required"; usage; }
+[ -z "$SSH_PUBKEY" ] && { echo "ERROR: -k SSH_PUBLIC_KEY required"; usage; }
+[ "$(id -u)" -ne 0 ] && { echo "ERROR: must be run as root"; exit 1; }
+command -v apt-get >/dev/null || { echo "ERROR: apt required (Debian/Ubuntu only)"; exit 1; }
 
-echo "[1/6] Dépôt Wazuh"
+echo "[1/6] Wazuh repository"
 apt-get update -qq
 apt-get install -y -qq gnupg curl sudo openssh-server >/dev/null
 if [ ! -f /usr/share/keyrings/wazuh.gpg ]; then
@@ -61,62 +62,63 @@ if [ ! -f /usr/share/keyrings/wazuh.gpg ]; then
   apt-get update -qq
 fi
 
-echo "[2/6] Agent Wazuh ${WAZUH_VERSION} -> manager ${MANAGER_IP}"
+echo "[2/6] Wazuh agent ${WAZUH_VERSION} -> manager ${MANAGER_IP}"
 if dpkg -s wazuh-agent >/dev/null 2>&1; then
-  echo "  déjà installé ($(dpkg -s wazuh-agent | awk '/^Version/{print $2}')), skip"
+  echo "  already installed ($(dpkg -s wazuh-agent | awk '/^Version/{print $2}')), skip"
 else
-  # WAZUH_AGENT_GROUP porte le rôle de la machine (role-dc, role-web…) : le
-  # groupe est demandé À L'ENRÔLEMENT, donc le manager la classe dès sa
-  # première connexion. Le déclarer après coup marche aussi (API /agents/
-  # {id}/group/{g}), mais tout incident survenu entre-temps naît en P4.
-  # if/fi et non `[ … ] && …` : sous `set -e`, un test faux en fin de ligne
-  # ferait sortir le script avec le code 1.
+  # WAZUH_AGENT_GROUP carries the machine's role (role-dc, role-web...): the
+  # group is requested AT ENROLLMENT, so the manager classifies it from its
+  # first connection. Declaring it afterward also works (API /agents/
+  # {id}/group/{g}), but any incident occurring in the meantime is born P4.
+  # if/fi and not `[ ... ] && ...`: under `set -e`, a false test at the end
+  # of a line would exit the script with code 1.
   if [ -n "$AGENT_GROUP" ]; then export WAZUH_AGENT_GROUP="$AGENT_GROUP"; fi
   WAZUH_MANAGER="$MANAGER_IP" WAZUH_AGENT_NAME="$AGENT_NAME" \
     apt-get install -y -qq "wazuh-agent=${WAZUH_VERSION}-1" >/dev/null
-  apt-mark hold wazuh-agent >/dev/null   # bloque l'upgrade auto (doit suivre le manager)
+  apt-mark hold wazuh-agent >/dev/null   # blocks auto-upgrade (must follow the manager)
 fi
 systemctl daemon-reload
 systemctl enable --now wazuh-agent >/dev/null 2>&1
 
-echo "[3/6] auditd (socle de détection des règles Wazuh 1006xx/1007xx)"
+echo "[3/6] auditd (detection base for Wazuh rules 1006xx/1007xx)"
 apt-get install -y -qq auditd audispd-plugins >/dev/null
-# Le jeu de règles est versionné dans src/wazuh/config/agent/zz-audit-wazuh.rules.
-# Le préfixe `zz-` est OBLIGATOIRE : augenrules concatène rules.d/*.rules en
-# collation C, et le audit.rules de Debian commence par `-D` (purge). Un fichier
-# nommé `audit-wazuh.rules` est chargé AVANT ce `-D` et se fait effacer
-# silencieusement — c'est ce qui a laissé l'agent sans audit execve.
+# The rule set is versioned in src/wazuh/config/agent/zz-audit-wazuh.rules.
+# The `zz-` prefix is MANDATORY: augenrules concatenates rules.d/*.rules in
+# C collation, and Debian's audit.rules starts with `-D` (purge). A file
+# named `audit-wazuh.rules` is loaded BEFORE this `-D` and gets silently
+# wiped out - this is what left the agent without execve auditing.
 AUDIT_RULES_SRC="$(dirname "$0")/../src/wazuh/config/agent/zz-audit-wazuh.rules"
 if [ -f "$AUDIT_RULES_SRC" ]; then
   install -m 640 -o root -g root "$AUDIT_RULES_SRC" /etc/audit/rules.d/zz-audit-wazuh.rules
 else
-  echo "  ERREUR: $AUDIT_RULES_SRC introuvable" >&2; exit 1
+  echo "  ERROR: $AUDIT_RULES_SRC not found" >&2; exit 1
 fi
-rm -f /etc/audit/rules.d/audit-wazuh.rules   # ancien nom, chargé trop tôt
+rm -f /etc/audit/rules.d/audit-wazuh.rules   # old name, loaded too early
 
-# /etc/ld.so.preload doit EXISTER pour être surveillable. inotify (FIM) comme les
-# watches auditd ciblent un inode : sur un chemin absent, rien n'est armé et la
-# CRÉATION du fichier — c'est-à-dire précisément l'action du rootkit userland —
-# passe inaperçue. Un fichier vide est sans effet pour glibc.
+# /etc/ld.so.preload must EXIST to be watchable. inotify (FIM) as well as
+# auditd watches target an inode: on an absent path, nothing is armed and
+# the CREATION of the file - precisely the userland rootkit's action - goes
+# unnoticed. An empty file has no effect on glibc.
 [ -e /etc/ld.so.preload ] || { : > /etc/ld.so.preload; chmod 644 /etc/ld.so.preload; }
 
-# Le jeu de règles se termine par `-e 2` (configuration immuable). Si l'audit est
-# déjà verrouillé par un chargement précédent, `augenrules --load` échoue et il
-# faut redémarrer — on le signale au lieu d'échouer en silence.
+# The rule set ends with `-e 2` (immutable configuration). If audit is
+# already locked by a previous load, `augenrules --load` fails and a
+# restart is needed - we flag it instead of failing silently.
 if ! augenrules --load >/dev/null 2>&1; then
-  echo "  AVERTISSEMENT: règles audit non rechargées (audit probablement en -e 2)."
-  echo "                 Redémarrer la machine pour appliquer la nouvelle version."
+  echo "  WARNING: audit rules not reloaded (audit is probably at -e 2)."
+  echo "           Reboot the machine to apply the new version."
 fi
 systemctl enable --now auditd >/dev/null 2>&1
 
-# Autorise les <localfile><command> poussés par l'agent.conf partagé du manager.
-# Sans ce réglage (défaut 0), Wazuh IGNORE silencieusement toute commande venant
-# d'une configuration distante — c'est ce qui porte le heartbeat de l'audit noyau
-# (règles 100801/100802). Pas d'élargissement de la surface de confiance : le
-# canal active-response donne déjà au manager l'exécution root sur l'agent.
+# Allows the <localfile><command> pushed by the manager's shared agent.conf.
+# Without this setting (default 0), Wazuh SILENTLY IGNORES any command
+# coming from a remote configuration - this is what carries the kernel
+# audit heartbeat (rules 100801/100802). No widening of the trust surface:
+# the active-response channel already gives the manager root execution on
+# the agent.
 LIO="/var/ossec/etc/local_internal_options.conf"
 grep -q "^logcollector.remote_commands=1" "$LIO" 2>/dev/null || \
-  printf '# Aura-SOC : autorise les <localfile><command> poussés par agent.conf\nlogcollector.remote_commands=1\n' >> "$LIO"
+  printf '# Aura-SOC: allows the <localfile><command> pushed by agent.conf\nlogcollector.remote_commands=1\n' >> "$LIO"
 
 OSSEC_CONF="/var/ossec/etc/ossec.conf"
 if ! grep -q "log_format>audit<" "$OSSEC_CONF" 2>/dev/null; then
@@ -132,29 +134,30 @@ PYEOF
   systemctl restart wazuh-agent >/dev/null 2>&1
 fi
 
-echo "[4/6] Scripts active-response (remédiation)"
-# Sans ces scripts sur l'agent, TOUTE remédiation échoue en SILENCE : l'ar.conf
-# poussé par le manager déclare bien firewall-drop.sh & consorts, l'API Wazuh
-# répond 200 (elle ne fait que transmettre), et rien ne se passe côté agent —
-# le seul indice est l'absence de ligne dans son active-responses.log.
-# Les binaires natifs livrés par le paquet ne remplacent pas ces scripts : ils
-# lisent la cible dans l'alerte (alert.data.srcip / dstuser) et échouent sur
-# tout appel piloté par extra_args (cf. src/wazuh/active-response/README).
+echo "[4/6] Active-response scripts (remediation)"
+# Without these scripts on the agent, EVERY remediation fails SILENTLY: the
+# ar.conf pushed by the manager does declare firewall-drop.sh and friends,
+# the Wazuh API replies 200 (it only forwards), and nothing happens on the
+# agent side - the only clue is the absence of a line in its
+# active-responses.log. The native binaries shipped with the package do not
+# replace these scripts: they read the target from the alert
+# (alert.data.srcip / dstuser) and fail on any call driven by extra_args
+# (see src/wazuh/active-response/README).
 AR_SRC="$(dirname "$0")/../src/wazuh/active-response"
 if [ -d "$AR_SRC" ]; then
   for f in "$AR_SRC"/*.sh; do
     install -m 750 -o root -g wazuh "$f" "/var/ossec/active-response/bin/$(basename "$f")"
   done
-  echo "  $(ls -1 "$AR_SRC"/*.sh | wc -l) script(s) déployé(s)"
+  echo "  $(ls -1 "$AR_SRC"/*.sh | wc -l) script(s) deployed"
 else
-  echo "  ERREUR: $AR_SRC introuvable" >&2; exit 1
+  echo "  ERROR: $AR_SRC not found" >&2; exit 1
 fi
 
-echo "[5/6] User ${ADMIN_USER} (sudo, SSH par clé uniquement)"
+echo "[5/6] User ${ADMIN_USER} (sudo, SSH key only)"
 if ! id "$ADMIN_USER" >/dev/null 2>&1; then
   useradd -m -s /bin/bash "$ADMIN_USER"
 fi
-passwd -l "$ADMIN_USER" >/dev/null            # pas d'auth par mot de passe
+passwd -l "$ADMIN_USER" >/dev/null            # no password auth
 install -d -m 700 -o "$ADMIN_USER" -g "$ADMIN_USER" "/home/${ADMIN_USER}/.ssh"
 AUTH_KEYS="/home/${ADMIN_USER}/.ssh/authorized_keys"
 touch "$AUTH_KEYS"
@@ -162,22 +165,22 @@ grep -qF "$SSH_PUBKEY" "$AUTH_KEYS" || echo "$SSH_PUBKEY" >> "$AUTH_KEYS"
 chown "$ADMIN_USER:$ADMIN_USER" "$AUTH_KEYS"
 chmod 600 "$AUTH_KEYS"
 
-# sudo sans mot de passe : requis pour les actions de mitigation automatisées
+# passwordless sudo: required for automated mitigation actions
 echo "${ADMIN_USER} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/${ADMIN_USER}"
 chmod 440 "/etc/sudoers.d/${ADMIN_USER}"
-visudo -cf "/etc/sudoers.d/${ADMIN_USER}" >/dev/null || { echo "ERREUR sudoers"; rm -f "/etc/sudoers.d/${ADMIN_USER}"; exit 1; }
+visudo -cf "/etc/sudoers.d/${ADMIN_USER}" >/dev/null || { echo "sudoers ERROR"; rm -f "/etc/sudoers.d/${ADMIN_USER}"; exit 1; }
 
-echo "[6/6] Vérifications"
-systemctl is-active wazuh-agent >/dev/null && echo "  agent: actif" || echo "  agent: INACTIF"
-systemctl is-active auditd >/dev/null && echo "  auditd: actif" || echo "  auditd: INACTIF"
-auditctl -l 2>/dev/null | grep -q "execveat" && echo "  règles audit: chargées ($(auditctl -l | wc -l))" || echo "  règles audit: ABSENTES"
+echo "[6/6] Checks"
+systemctl is-active wazuh-agent >/dev/null && echo "  agent: active" || echo "  agent: INACTIVE"
+systemctl is-active auditd >/dev/null && echo "  auditd: active" || echo "  auditd: INACTIVE"
+auditctl -l 2>/dev/null | grep -q "execveat" && echo "  audit rules: loaded ($(auditctl -l | wc -l))" || echo "  audit rules: MISSING"
 [ "$(auditctl -s 2>/dev/null | awk '/^enabled/{print $2}')" = "1" ] \
-  && echo "  audit noyau: activé" \
-  || echo "  audit noyau: DÉSACTIVÉ (enabled != 1) — aucune règle 1006xx ne peut se déclencher"
-sudo -u "$ADMIN_USER" sudo -n true 2>/dev/null && echo "  sudo ${ADMIN_USER}: OK" || echo "  sudo ${ADMIN_USER}: ECHEC"
+  && echo "  kernel audit: enabled" \
+  || echo "  kernel audit: DISABLED (enabled != 1) - no 1006xx rule can trigger"
+sudo -u "$ADMIN_USER" sudo -n true 2>/dev/null && echo "  sudo ${ADMIN_USER}: OK" || echo "  sudo ${ADMIN_USER}: FAILED"
 [ -x /var/ossec/active-response/bin/firewall-drop.sh ] \
-  && echo "  active-response: scripts Aura-SOC présents" \
-  || echo "  active-response: SCRIPTS ABSENTS — toute remédiation échouera en silence"
+  && echo "  active-response: Aura-SOC scripts present" \
+  || echo "  active-response: SCRIPTS MISSING - every remediation will fail silently"
 echo
-echo "Terminé. Test depuis le serveur Wazuh :"
-echo "  ssh -i <clé_privée> ${ADMIN_USER}@$(hostname -I | awk '{print $1}') 'sudo -n whoami'"
+echo "Done. Test from the Wazuh server:"
+echo "  ssh -i <private_key> ${ADMIN_USER}@$(hostname -I | awk '{print $1}') 'sudo -n whoami'"

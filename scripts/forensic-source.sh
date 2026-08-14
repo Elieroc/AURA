@@ -1,52 +1,51 @@
 #!/bin/sh
-# Source de collecte forensique — s'exécute SUR L'AGENT (machine suspecte).
+# Forensic collection source - runs ON THE AGENT (suspect machine).
 #
-# Déployé en /usr/local/sbin/forensic-source.sh et appelé UNIQUEMENT comme
-# forced command SSH depuis l'hôte manager :
+# Deployed at /usr/local/sbin/forensic-source.sh and called ONLY as an SSH
+# forced command from the manager host:
 #
-#   authorized_keys de l'agent :
+#   agent's authorized_keys:
 #     command="sudo /usr/local/sbin/forensic-source.sh",no-port-forwarding,\
 #     no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA... manager-forensic
 #
 # ---------------------------------------------------------------------------
-# POURQUOI CE SENS (agent -> manager, jamais l'inverse)
+# WHY THIS DIRECTION (agent -> manager, never the reverse)
 #
-# La première version poussait les preuves depuis l'agent vers le serveur de
-# dépôt, ce qui imposait de stocker une CLÉ PRIVÉE sur la machine suspecte. Un
-# attaquant root y lisait la clé, et gagnait un accès en écriture au dépôt de
-# preuves : de quoi altérer les preuves des autres incidents, ou s'en servir
-# comme rebond. Le sens est donc inversé — ici l'agent ne détient qu'une clé
-# PUBLIQUE dans authorized_keys, et n'a d'accès sortant vers rien.
+# The first version pushed evidence from the agent to the repository server,
+# which required storing a PRIVATE KEY on the suspect machine. A root
+# attacker there could read the key and gain write access to the evidence
+# repository: enough to tamper with other incidents' evidence, or use it as
+# a pivot. The direction is therefore reversed - here the agent only holds a
+# PUBLIC key in authorized_keys, and has no outbound access to anything.
 #
-# Ce script est la surface d'attaque restante côté agent : il ne prend AUCUN
-# argument de l'appelant hors des trois mots-clés ci-dessous, n'interprète
-# jamais SSH_ORIGINAL_COMMAND comme une commande, et n'écrit rien nulle part.
-# Il ne fait que produire des octets sur stdout.
+# This script is the remaining attack surface on the agent side: it takes NO
+# argument from the caller besides the three keywords below, never
+# interprets SSH_ORIGINAL_COMMAND as a command, and writes nothing anywhere.
+# It only produces bytes on stdout.
 #
-# Il tourne en root (lecture de /dev/mem et du disque brut) : toute évolution
-# doit garder cette propriété — aucun chemin, aucun nom de fichier, aucune
-# option ne vient de l'extérieur.
+# It runs as root (reading /dev/mem and the raw disk): any change must keep
+# this property - no path, no file name, no option comes from the outside.
 # ---------------------------------------------------------------------------
 
 set -u
 
 AVML="/usr/local/sbin/avml"
 
-# Le mot-clé arrive dans SSH_ORIGINAL_COMMAND parce que la forced command
-# écrase la commande demandée. On ne l'exécute pas : on le compare à une liste
-# fermée. Toute autre valeur est refusée.
+# The keyword arrives in SSH_ORIGINAL_COMMAND because the forced command
+# overrides the requested command. We do not execute it: we compare it to a
+# closed list. Any other value is rejected.
 REQUEST="${SSH_ORIGINAL_COMMAND:-}"
 
-# stderr part dans le canal SSH et remonte au manager : c'est le seul retour
-# d'erreur exploitable, stdout étant réservé aux octets de preuve.
+# stderr goes out through the SSH channel and reaches the manager: it is the
+# only usable error return, since stdout is reserved for evidence bytes.
 fail() {
     echo "forensic-source: $1" >&2
     exit 1
 }
 
 resolve_disk() {
-    # Disque ENTIER, pas la partition racine : table de partitions, secteur
-    # d'amorçage et espace inter-partitions sont des caches classiques.
+    # WHOLE disk, not the root partition: the partition table, the boot
+    # sector and the inter-partition space are classic hiding spots.
     _src=$(findmnt -no SOURCE / 2>/dev/null)
     [ -n "$_src" ] || return 1
     _parent=$(lsblk -no PKNAME "$_src" 2>/dev/null | head -1 | tr -d ' ')
@@ -59,32 +58,32 @@ resolve_disk() {
 
 case "$REQUEST" in
     ram)
-        [ -x "$AVML" ] || fail "AVML absent ($AVML), capture RAM impossible"
-        # AVML écrit dans un fichier, pas sur stdout : on passe par un FIFO pour
-        # rester en flux. Écrire la RAM dans un fichier local est exclu — sur
-        # disque ça écrase l'espace non alloué (donc les fichiers supprimés
-        # récupérables), en tmpfs ça consomme la RAM qu'on essaie de capturer.
+        [ -x "$AVML" ] || fail "AVML missing ($AVML), RAM capture impossible"
+        # AVML writes to a file, not to stdout: we go through a FIFO to stay
+        # in a stream. Writing RAM to a local file is out of the question -
+        # on disk it overwrites unallocated space (i.e. recoverable deleted
+        # files), on tmpfs it consumes the very RAM we are trying to capture.
         FIFO="/tmp/.fsrc-ram-$$"
         rm -f "$FIFO"
-        mkfifo -m 600 "$FIFO" || fail "création du FIFO impossible"
+        mkfifo -m 600 "$FIFO" || fail "could not create FIFO"
         "$AVML" --compress false "$FIFO" >&2 2>/dev/null &
         AVML_PID=$!
         cat "$FIFO"
         wait "$AVML_PID" 2>/dev/null
         AVML_RC=$?
         rm -f "$FIFO"
-        [ "$AVML_RC" -eq 0 ] || fail "AVML a échoué (code $AVML_RC)"
+        [ "$AVML_RC" -eq 0 ] || fail "AVML failed (code $AVML_RC)"
         ;;
     disk)
-        DISK=$(resolve_disk) || fail "périphérique disque introuvable"
-        [ -b "$DISK" ] || fail "$DISK n'est pas un périphérique bloc"
-        # conv=noerror,sync : un secteur illisible ne doit pas interrompre la
-        # copie ; il est remplacé par des zéros et les offsets restent justes.
+        DISK=$(resolve_disk) || fail "disk device not found"
+        [ -b "$DISK" ] || fail "$DISK is not a block device"
+        # conv=noerror,sync: an unreadable sector must not interrupt the
+        # copy; it is replaced with zeros and the offsets stay correct.
         dd if="$DISK" bs=4M conv=noerror,sync 2>/dev/null
         ;;
     meta)
-        # État de la machine au moment de la collecte (chain of custody).
-        # Uniquement des lectures, aucun paramètre extérieur.
+        # State of the machine at collection time (chain of custody).
+        # Reads only, no external parameter.
         printf '{\n'
         printf '  "hostname": "%s",\n' "$(hostname)"
         printf '  "collected_at_utc": "%s",\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -97,6 +96,6 @@ case "$REQUEST" in
         printf '}\n'
         ;;
     *)
-        fail "requête refusée: '$REQUEST' (attendu: ram, disk ou meta)"
+        fail "request refused: '$REQUEST' (expected: ram, disk or meta)"
         ;;
 esac

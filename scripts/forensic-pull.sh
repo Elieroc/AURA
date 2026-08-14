@@ -1,51 +1,51 @@
 #!/bin/sh
-# Collecte forensique — s'exécute SUR L'HÔTE MANAGER (pas sur la machine suspecte).
+# Forensic collection - runs ON THE MANAGER HOST (not on the suspect machine).
 #
 #   forensic-pull.sh <agent_host> [ram|disk|full]
 #
-# Tire les preuves de l'agent (SSH, forced command forensic-source.sh) et les
-# pousse vers le serveur de dépôt, en un seul tuyau. Les octets transitent par
-# la mémoire du manager, ils n'atterrissent JAMAIS sur son disque : le manager
-# est un relais, pas un lieu de stockage de preuves.
+# Pulls the evidence from the agent (SSH, forced command forensic-source.sh)
+# and pushes it to the evidence server, in a single pipe. The bytes transit
+# through the manager's memory, they NEVER land on its disk: the manager is a
+# relay, not an evidence storage location.
 #
-# Appelé par Shuffle via `run_ssh_command`, lui-même restreint par forced
-# command côté manager (cf. shuffle/README.md).
+# Called by Shuffle via `run_ssh_command`, itself restricted by a forced
+# command on the manager side (see shuffle/README.md).
 #
 # ---------------------------------------------------------------------------
-# SENS DU FLUX : le manager tire, l'agent ne pousse rien
+# DIRECTION OF THE FLOW: the manager pulls, the agent pushes nothing
 #
-# Version précédente : l'agent poussait vers le dépôt, donc une clé privée
-# dormait sur la machine suspecte. Root sur l'agent = lecture de la clé =
-# écriture dans le dépôt de preuves (altération des autres incidents, rebond).
+# Previous version: the agent pushed to the repository, so a private key sat
+# on the suspect machine. Root on the agent = read the key = write to the
+# evidence repository (tampering with other incidents, pivoting).
 #
-# Ici les trois clés vivent hors de la machine suspecte :
-#   K1  Shuffle  -> manager   (forced command: ce script)
+# Here the three keys live off the suspect machine:
+#   K1  Shuffle  -> manager   (forced command: this script)
 #   K2  manager  -> agent     (forced command: forensic-source.sh)
-#   K3  manager  -> dépôt     (compte dédié, écriture seule)
-# L'agent ne détient qu'une clé publique et n'a aucun accès sortant.
+#   K3  manager  -> repository (dedicated account, write-only)
+# The agent only holds a public key and has no outbound access.
 #
-# Contrepartie assumée : le manager détient une clé VERS l'agent. C'est le sens
-# d'administration habituel, et la forced command la borne à trois mots-clés
-# qui ne produisent que des octets. Mais lire un disque brut, c'est lire tout le
-# disque : cette clé reste un secret de premier ordre.
+# Accepted trade-off: the manager holds a key TOWARD the agent. This is the
+# usual administration direction, and the forced command bounds it to three
+# keywords that only produce bytes. But reading a raw disk means reading the
+# whole disk: this key remains a first-order secret.
 #
 # ---------------------------------------------------------------------------
-# ISOLATION RÉSEAU : rien à faire
+# NETWORK ISOLATION: nothing to do
 #
-# host-isolate.sh laisse déjà passer le SSH ENTRANT depuis le manager (input:
-# `ip saddr $MANAGER_IP tcp dport 22 accept`) et les réponses sortantes (output:
-# `ct state established,related accept`). Le flux de preuves emprunte cette
-# connexion établie. La version « push » devait au contraire percer un trou
-# dans l'isolation pour sortir — ce bricolage disparaît.
+# host-isolate.sh already lets INBOUND SSH from the manager through (input:
+# `ip saddr $MANAGER_IP tcp dport 22 accept`) and the outbound replies
+# (output: `ct state established,related accept`). The evidence flow rides
+# this established connection. The "push" version instead had to punch a
+# hole in the isolation to get out - that workaround disappears.
 #
-# ORDRE DE VOLATILITÉ (RFC 3227) : RAM avant disque. Une image disque fait
-# tourner la machine assez longtemps pour écraser une partie de la mémoire.
+# ORDER OF VOLATILITY (RFC 3227): RAM before disk. A disk image keeps the
+# machine running long enough to overwrite part of the memory.
 # ---------------------------------------------------------------------------
 
 set -u
 
 # --- Configuration ----------------------------------------------------------
-# Défauts définis AVANT le source, pour que `set -u` tienne si la conf manque.
+# Defaults defined BEFORE the source, so that `set -u` holds if the conf is missing.
 AGENT_SSH_USER="forensic"
 AGENT_SSH_KEY="/etc/soc-ai/forensic_agent_ed25519"
 AGENT_KNOWN_HOSTS="/etc/soc-ai/known_hosts_agents"
@@ -71,9 +71,9 @@ log() {
 SSH_AGENT_OPTS="-i $AGENT_SSH_KEY -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$AGENT_KNOWN_HOSTS -o BatchMode=yes -o ConnectTimeout=15"
 SSH_EVID_OPTS="-i $EVIDENCE_SSH_KEY -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$EVIDENCE_KNOWN_HOSTS -o BatchMode=yes -o ConnectTimeout=15"
 
-# StrictHostKeyChecking=yes + known_hosts épinglés des deux côtés : sans ça, un
-# MITM sur le réseau d'un agent compromis se ferait passer pour l'agent (et
-# fabriquerait les preuves) ou pour le dépôt (et les récupérerait).
+# StrictHostKeyChecking=yes + pinned known_hosts on both sides: without this,
+# a MITM on a compromised agent's network could impersonate the agent (and
+# fabricate the evidence) or the repository (and collect it).
 
 ssh_agent() {
     # shellcheck disable=SC2086
@@ -86,7 +86,7 @@ ssh_evidence() {
 }
 
 # ===========================================================================
-# MODE WORKER : la collecte réelle
+# WORKER MODE: the actual collection
 # ===========================================================================
 if [ "${1:-}" = "--worker" ]; then
     AGENT_HOST="$2"
@@ -98,29 +98,29 @@ if [ "${1:-}" = "--worker" ]; then
     trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT INT TERM
 
     if ! ssh_evidence "mkdir -p '$REMOTE_DIR'" 2>/dev/null; then
-        log "ERREUR: dépôt ${EVIDENCE_USER}@${EVIDENCE_HOST} injoignable, collecte $CASE_ID abandonnée"
+        log "ERROR: repository ${EVIDENCE_USER}@${EVIDENCE_HOST} unreachable, collection $CASE_ID aborted"
         exit 1
     fi
-    log "collecte $CASE_ID démarrée (agent: $AGENT_HOST, périmètre: $SCOPE) -> ${EVIDENCE_USER}@${EVIDENCE_HOST}:$REMOTE_DIR"
+    log "collection $CASE_ID started (agent: $AGENT_HOST, scope: $SCOPE) -> ${EVIDENCE_USER}@${EVIDENCE_HOST}:$REMOTE_DIR"
 
-    # --- Manifeste (chain of custody) --------------------------------------
-    # Écrit en premier : si la suite échoue, on garde la trace de ce qui a été
-    # tenté, sur quelle machine et dans quel état.
+    # --- Manifest (chain of custody) ----------------------------------------
+    # Written first: if the rest fails, we keep the trace of what was
+    # attempted, on which machine and in what state.
     META=$(ssh_agent meta 2>/dev/null)
     if [ -z "$META" ]; then
-        log "ERREUR: agent $AGENT_HOST injoignable ou forced command absente, collecte abandonnée"
+        log "ERROR: agent $AGENT_HOST unreachable or forced command missing, collection aborted"
         exit 1
     fi
     printf '%s\n' "$META" | ssh_evidence "cat > '$REMOTE_DIR/manifest.json'"
 
-    # --- Un flux = un fichier + son hash ------------------------------------
-    # Le sha256 est calculé au vol sur le flux reçu, via FIFO : une seconde
-    # lecture du disque de l'agent donnerait un hash différent (le support bouge
-    # sous la lecture) et ne prouverait rien. Le hash atteste donc le transfert,
-    # pas un état figé du support.
+    # --- One stream = one file + its hash -----------------------------------
+    # The sha256 is computed on the fly on the received stream, via FIFO: a
+    # second read of the agent's disk would give a different hash (the
+    # medium moves under the read) and would prove nothing. The hash thus
+    # attests to the transfer, not a frozen state of the medium.
     pull_stream() {
-        _kw="$1"          # mot-clé envoyé à la forced command (ram|disk)
-        _name="$2"        # nom du fichier déposé (sans .gz)
+        _kw="$1"          # keyword sent to the forced command (ram|disk)
+        _name="$2"        # name of the file dropped (without .gz)
         _fifo="/tmp/.fpull-$$-$_kw"
 
         rm -f "$_fifo"
@@ -128,8 +128,8 @@ if [ "${1:-}" = "--worker" ]; then
         ( sha256sum < "$_fifo" | cut -d' ' -f1 > "${_fifo}.sha" ) &
         _hashpid=$!
 
-        # gzip -1 : le goulot est le réseau, pas le CPU ; -1 suffit à écraser
-        # les grandes plages de zéros d'une image disque.
+        # gzip -1: the bottleneck is the network, not the CPU; -1 is enough
+        # to crush the large runs of zeros in a disk image.
         ssh_agent "$_kw" | tee "$_fifo" | gzip -1 | ssh_evidence "cat > '$REMOTE_DIR/${_name}.gz'"
         _rc=$?
 
@@ -141,73 +141,73 @@ if [ "${1:-}" = "--worker" ]; then
             return 1
         fi
         echo "$_hash  $_name" | ssh_evidence "cat > '$REMOTE_DIR/${_name}.sha256'"
-        log "$_name déposé (sha256 du flux: $_hash)"
+        log "$_name deposited (stream sha256: $_hash)"
         return 0
     }
 
-    # === 1. RAM (avant le disque : ordre de volatilité) ====================
+    # === 1. RAM (before disk: order of volatility) =========================
     if [ "$SCOPE" = "ram" ] || [ "$SCOPE" = "full" ]; then
         if pull_stream ram memory.lime; then
-            log "RAM capturée"
+            log "RAM captured"
         else
-            log "ERREUR: échec de la capture RAM (voir stderr de l'agent)"
+            log "ERROR: RAM capture failed (see agent stderr)"
         fi
     fi
 
-    # === 2. Image disque ===================================================
+    # === 2. Disk image ======================================================
     if [ "$SCOPE" = "disk" ] || [ "$SCOPE" = "full" ]; then
         if pull_stream disk disk.raw; then
-            log "image disque déposée"
+            log "disk image deposited"
         else
-            log "ERREUR: échec de l'image disque"
+            log "ERROR: disk image failed"
         fi
     fi
 
-    log "collecte $CASE_ID terminée"
+    log "collection $CASE_ID finished"
     exit 0
 fi
 
 # ===========================================================================
-# MODE APPEL : validation, verrou, détachement
+# CALL MODE: validation, lock, detach
 # ===========================================================================
-# Appelé par Shuffle en forced command : les arguments arrivent dans
-# SSH_ORIGINAL_COMMAND. En appel direct (manuel), ils arrivent en $@.
+# Called by Shuffle as a forced command: the arguments arrive in
+# SSH_ORIGINAL_COMMAND. In direct (manual) invocation, they arrive in $@.
 if [ $# -eq 0 ] && [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
-    # Découpage sur les espaces uniquement, jamais d'évaluation shell : la
-    # chaîne vient de Shuffle et ne doit pas pouvoir devenir une commande.
+    # Split on spaces only, never a shell eval: the string comes from
+    # Shuffle and must never be able to become a command.
     set -- $SSH_ORIGINAL_COMMAND
 fi
 
 AGENT_HOST="${1:-}"
 SCOPE="${2:-full}"
 
-# Liste fermée de caractères : un nom d'hôte ou une IP, rien qui puisse
-# s'échapper vers le shell distant.
+# Closed character set: a hostname or an IP, nothing that could escape into
+# the remote shell.
 case "$AGENT_HOST" in
-    '') log "ERREUR: hôte de l'agent manquant (usage: forensic-pull.sh <agent_host> [ram|disk|full])"; exit 1 ;;
-    *[!a-zA-Z0-9.:_-]*) log "ERREUR: hôte invalide '$AGENT_HOST' (caractères refusés)"; exit 1 ;;
+    '') log "ERROR: missing agent host (usage: forensic-pull.sh <agent_host> [ram|disk|full])"; exit 1 ;;
+    *[!a-zA-Z0-9.:_-]*) log "ERROR: invalid host '$AGENT_HOST' (rejected characters)"; exit 1 ;;
 esac
 
 case "$SCOPE" in
     ram|disk|full) ;;
-    *) log "ERREUR: périmètre invalide '$SCOPE' (attendu: ram, disk ou full)"; exit 1 ;;
+    *) log "ERROR: invalid scope '$SCOPE' (expected: ram, disk or full)"; exit 1 ;;
 esac
 
-# Verrou par agent : deux collectes simultanées sur la même machine se
-# disputeraient la bande passante et fausseraient les deux captures.
+# Per-agent lock: two simultaneous collections on the same machine would
+# fight over bandwidth and corrupt both captures.
 LOCK_DIR="${LOCK_ROOT}/forensic-pull-${AGENT_HOST}.lock"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    log "REFUS: une collecte est déjà en cours sur $AGENT_HOST (verrou $LOCK_DIR)"
+    log "REFUSED: a collection is already in progress on $AGENT_HOST (lock $LOCK_DIR)"
     exit 1
 fi
 
 CASE_ID="${AGENT_HOST}-$(date -u '+%Y%m%dT%H%M%SZ')"
 
-# Détachement : une image disque dure des minutes à des heures, alors que
-# l'appel SSH de Shuffle attend la fin de la commande. On rend la main tout de
-# suite avec l'identifiant de collecte ; le suivi se fait dans $LOG_FILE.
+# Detach: a disk image takes minutes to hours, while Shuffle's SSH call waits
+# for the command to end. We return control right away with the collection
+# ID; follow-up happens in $LOG_FILE.
 setsid "$0" --worker "$AGENT_HOST" "$SCOPE" "$CASE_ID" </dev/null >/dev/null 2>&1 &
 
-log "collecte $CASE_ID lancée en arrière-plan (agent: $AGENT_HOST, périmètre: $SCOPE)"
+log "collection $CASE_ID launched in the background (agent: $AGENT_HOST, scope: $SCOPE)"
 echo "case_id=$CASE_ID"
 exit 0

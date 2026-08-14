@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Insère les commandes d'active response Windows/AD dans wazuh_manager.conf.
+"""Inserts the Windows/AD active-response commands into wazuh_manager.conf.
 
-Ce fichier est gitignoré (il porte les clés d'API VirusTotal / AbuseIPDB) : il
-ne peut pas être déployé par `git pull` et doit être édité sur place. On insère
-donc les blocs manquants aux ancres, sans réécrire le reste — la copie de prod
-contient des réglages absents d'ailleurs (allowed-ips du scanner YARITRUST).
+This file is gitignored (it carries the VirusTotal / AbuseIPDB API keys): it
+cannot be deployed via `git pull` and must be edited in place. So we insert
+the missing blocks at anchors, without rewriting the rest - the production
+copy contains settings absent elsewhere (allowed-ips of the YARITRUST scanner).
 
-Idempotent : ne fait rien si `win-kill-process` est déjà déclaré.
+Idempotent: does nothing if `win-kill-process` is already declared.
 """
 import shutil
 import sys
@@ -24,26 +24,26 @@ ACTIONS = [
 
 HEADER = """
   <!--
-    ===== Active response Windows / Active Directory =====
+    ===== Windows / Active Directory active response =====
 
-    Ces onze commandes manquaient, et c'est ce qui rendait TOUTE la remediation
-    Windows inoperante. Le manager genere `shared\\ar.conf` a partir des blocs
-    <command> + <active-response> ci-dessous et le pousse aux agents ; l'execd
-    de l'agent refuse toute commande absente de ce fichier, sans rien
-    journaliser. L'API repond pourtant 200 (elle se contente de transmettre) et
-    le soc-agent enregistrait donc la remediation comme partie.
+    These eleven commands were missing, and that is what made ALL Windows
+    remediation inoperative. The manager generates `shared\\ar.conf` from the
+    <command> + <active-response> blocks below and pushes it to the agents;
+    the agent's execd refuses any command absent from this file, without
+    logging anything. The API still replies 200 (it only forwards) so
+    soc-agent recorded the remediation as having run.
 
-    Consequence mesuree sur un exercice purple-team : des dizaines d'actions
-    Windows dans la meme journee - dont la desactivation d'un compte cree par
-    l'attaquant et la mise en quarantaine de mimikatz - n'ont strictement rien
-    execute. Verifie ensuite sur le controleur de domaine :
-    le compte toujours actif, `active-responses.log` sans une seule ligne
-    de nos scripts. Le diagnostic initial (« refusees par la safelist du
-    script ») etait faux : elles n'ont jamais atteint le script.
+    Consequence measured during a purple-team exercise: dozens of Windows
+    actions on the same day - including disabling an account created by the
+    attacker and quarantining mimikatz - executed strictly nothing. Checked
+    afterward on the domain controller: the account still active,
+    `active-responses.log` without a single line from our scripts. The
+    initial diagnosis ("rejected by the script's safelist") was wrong: they
+    never reached the script.
 
-    Les blocs vivaient dans src/wazuh/active-response/windows/register-commands.xml,
-    qui documentait deja ce piege, mais n'avaient jamais ete reportes ici. Ce
-    fichier etant gitignore (cles d'API), ils y sont poses par
+    The blocks lived in src/wazuh/active-response/windows/register-commands.xml,
+    which already documented this trap, but had never been carried over here.
+    Since this file is gitignored (API keys), they are placed here by
     scripts/patch-manager-ar-windows.py.
   -->
 """
@@ -67,10 +67,10 @@ AR = """  <active-response>
 
 src = open(PATH, encoding="utf-8").read()
 if "win-kill-process" in src:
-    print("deja present, rien a faire")
+    print("already present, nothing to do")
     sys.exit(0)
 
-# Ancre 1 : juste apres le bloc <command> de host-allow.
+# Anchor 1: right after the <command> block of host-allow.
 cmd_anchor = """  <command>
     <name>host-allow</name>
     <executable>host-allow.sh</executable>
@@ -78,12 +78,12 @@ cmd_anchor = """  <command>
   </command>
 """
 if cmd_anchor not in src:
-    sys.exit("ancre <command> host-allow introuvable - fichier inattendu")
+    sys.exit("host-allow <command> anchor not found - unexpected file")
 src = src.replace(
     cmd_anchor,
     cmd_anchor + HEADER + "".join(CMD.format(n=n) for n in ACTIONS), 1)
 
-# Ancre 2 : juste apres le bloc <active-response> de host-allow.
+# Anchor 2: right after the <active-response> block of host-allow.
 ar_anchor = """  <active-response>
     <disabled>no</disabled>
     <command>host-allow</command>
@@ -92,19 +92,18 @@ ar_anchor = """  <active-response>
   </active-response>
 """
 if ar_anchor not in src:
-    sys.exit("ancre <active-response> host-allow introuvable - fichier inattendu")
+    sys.exit("host-allow <active-response> anchor not found - unexpected file")
 src = src.replace(
     ar_anchor,
-    ar_anchor + "\n  <!-- Windows / AD. Meme regle inexistante 999999 : aucun "
-    "declenchement\n       automatique, seul l'appel API (soc-agent, MCP) "
-    "execute l'action. -->\n"
+    ar_anchor + "\n  <!-- Windows / AD. Same nonexistent rule 999999: no "
+    "automatic\n       trigger, only the API call (soc-agent, MCP) "
+    "executes the action. -->\n"
     + "".join(AR.format(n=n) for n in ACTIONS), 1)
 
-# Validation AVANT d'ecrire : un fichier casse ici empeche le manager de
-# demarrer. Les commentaires sont retires avant l'analyse, parce que la conf de
-# prod en contient un avec « --remote » : illegal en XML strict, tolere par le
-# parseur de Wazuh. On valide la structure des balises, pas la typographie des
-# commentaires.
+# Validate BEFORE writing: a broken file here prevents the manager from
+# starting. Comments are stripped before parsing, because the production
+# conf contains one with "--remote": illegal in strict XML, tolerated by
+# Wazuh's parser. We validate the tag structure, not comment typography.
 import re
 import xml.etree.ElementTree as ET
 
@@ -112,9 +111,9 @@ without_comments = re.sub(r"<!--.*?-->", "", src, flags=re.DOTALL)
 try:
     ET.fromstring("<root>" + without_comments + "</root>")
 except ET.ParseError as e:
-    sys.exit(f"XML invalide apres insertion, rien ecrit : {e}")
+    sys.exit(f"invalid XML after insertion, nothing written: {e}")
 
 shutil.copy2(PATH, f"{PATH}.bak.{int(time.time())}")
 open(PATH, "w", encoding="utf-8").write(src)
-print(f"{len(ACTIONS)} commandes + {len(ACTIONS)} active-response inserees, "
-      "structure XML validee")
+print(f"{len(ACTIONS)} commands + {len(ACTIONS)} active-response inserted, "
+      "XML structure validated")

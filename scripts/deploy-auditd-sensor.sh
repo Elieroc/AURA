@@ -1,60 +1,63 @@
 #!/usr/bin/env bash
 #
-# Déploie le CAPTEUR auditd sur un agent Wazuh DÉJÀ ENRÔLÉ.
+# Deploys the auditd SENSOR to an ALREADY ENROLLED Wazuh agent.
 #
-# Pourquoi ce script existe séparément de install-agent.sh : des agents peuvent
-# avoir été enrôlés SANS auditd. Un déploiement l'a vécu : auditd absent sur
-# toute la flotte (0 event execve/auditd, cf. `alerts`), donc les ~15 règles
-# comportementales 1006xx/1007xx (reverse shell, fileless, énumération privesc,
-# credential access, suid, cve, exploit) n'avaient JAMAIS de télémétrie — elles
-# étaient validées au logtest mais mortes en prod.
+# Why this script exists separately from install-agent.sh: agents may have
+# been enrolled WITHOUT auditd. One deployment lived through it: auditd
+# absent across the whole fleet (0 execve/auditd events, see `alerts`), so
+# the ~15 behavioral 1006xx/1007xx rules (reverse shell, fileless, privesc
+# enumeration, credential access, suid, cve, exploit) NEVER had any
+# telemetry - they were validated at logtest but dead in production.
 #
-# Ce script est l'extrait auditd de install-agent.sh, rendu idempotent et sans
-# l'enrôlement / le user d'admin / les scripts AR (déjà en place sur un agent vivant).
+# This script is the auditd excerpt from install-agent.sh, made idempotent
+# and without the enrollment / admin user / AR scripts (already in place on
+# a live agent).
 #
-# Usage (en root sur la machine cible, avec zz-audit-wazuh.rules dans le même dossier
-# OU dans ../src/wazuh/config/agent/) :
+# Usage (as root on the target machine, with zz-audit-wazuh.rules in the same
+# folder OR in ../src/wazuh/config/agent/):
 #   ./deploy-auditd-sensor.sh
 #
-# REBOOT : `-e 2` (dernière ligne des règles) rend la config d'audit immuable. Au
-# PREMIER chargement `augenrules --load` réussit à chaud. S'il échoue (audit déjà
-# verrouillé) OU si systemd-journald tient le socket netlink audit, le script le
-# signale et un REBOOT est requis pour activer le capteur. Rien d'autre ne casse.
+# REBOOT: `-e 2` (last line of the rules) makes the audit config immutable.
+# On the FIRST load, `augenrules --load` succeeds live. If it fails (audit
+# already locked) OR if systemd-journald holds the audit netlink socket, the
+# script flags it and a REBOOT is required to activate the sensor. Nothing
+# else breaks.
 set -euo pipefail
 
 log() { printf '%s\n' "$*"; }
 
-[ "$(id -u)" = "0" ] || { echo "ERREUR: exécuter en root" >&2; exit 1; }
+[ "$(id -u)" = "0" ] || { echo "ERROR: must run as root" >&2; exit 1; }
 
-# Localise le jeu de règles (à côté du script, ou dans l'arbo repo)
+# Locates the rule set (next to the script, or in the repo tree)
 HERE="$(cd "$(dirname "$0")" && pwd)"
 for c in "$HERE/zz-audit-wazuh.rules" "$HERE/../src/wazuh/config/agent/zz-audit-wazuh.rules"; do
   [ -f "$c" ] && { RULES_SRC="$c"; break; }
 done
-[ -n "${RULES_SRC:-}" ] || { echo "ERREUR: zz-audit-wazuh.rules introuvable" >&2; exit 1; }
+[ -n "${RULES_SRC:-}" ] || { echo "ERROR: zz-audit-wazuh.rules not found" >&2; exit 1; }
 
-log "[1/5] Paquet auditd"
+log "[1/5] auditd package"
 if ! command -v auditctl >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get install -y -qq auditd audispd-plugins >/dev/null
 fi
 
-log "[2/5] Règles auditd -> /etc/audit/rules.d/zz-audit-wazuh.rules"
-# Préfixe zz- OBLIGATOIRE : augenrules concatène en collation C et audit.rules Debian
-# commence par -D (purge). Un nom < zz- se ferait effacer au chargement suivant.
+log "[2/5] auditd rules -> /etc/audit/rules.d/zz-audit-wazuh.rules"
+# zz- prefix MANDATORY: augenrules concatenates in C collation and Debian's
+# audit.rules starts with -D (purge). A name < zz- would get wiped out on
+# the next load.
 install -m 640 -o root -g root "$RULES_SRC" /etc/audit/rules.d/zz-audit-wazuh.rules
-rm -f /etc/audit/rules.d/audit-wazuh.rules   # ancien nom chargé trop tôt, si présent
+rm -f /etc/audit/rules.d/audit-wazuh.rules   # old name loaded too early, if present
 
-# /etc/ld.so.preload doit EXISTER pour être surveillable (watch sur un inode absent
-# n'arme rien ; la création par un rootkit userland passerait inaperçue).
+# /etc/ld.so.preload must EXIST to be watchable (a watch on an absent inode
+# arms nothing; creation by a userland rootkit would go unnoticed).
 [ -e /etc/ld.so.preload ] || { : > /etc/ld.so.preload; chmod 644 /etc/ld.so.preload; }
 
-log "[3/5] local_internal_options : autorise les <localfile><command> de agent.conf"
+log "[3/5] local_internal_options: allows the <localfile><command> from agent.conf"
 LIO="/var/ossec/etc/local_internal_options.conf"
 grep -q "^logcollector.remote_commands=1" "$LIO" 2>/dev/null || \
-  printf '# Aura-SOC : autorise les <localfile><command> poussés par agent.conf\nlogcollector.remote_commands=1\n' >> "$LIO"
+  printf '# Aura-SOC: allows the <localfile><command> pushed by agent.conf\nlogcollector.remote_commands=1\n' >> "$LIO"
 
-log "[4/5] ossec.conf : localfile audit.log"
+log "[4/5] ossec.conf: audit.log localfile"
 OSSEC_CONF="/var/ossec/etc/ossec.conf"
 NEED_RESTART=0
 if ! grep -q "log_format>audit<" "$OSSEC_CONF" 2>/dev/null; then
@@ -70,26 +73,26 @@ PYEOF
   NEED_RESTART=1
 fi
 
-log "[5/5] Activation auditd + chargement des règles"
+log "[5/5] auditd activation + rule loading"
 systemctl enable --now auditd >/dev/null 2>&1 || true
 REBOOT_REQUIRED=0
 if ! augenrules --load >/dev/null 2>&1; then
   REBOOT_REQUIRED=1
 fi
-# Vérifie l'état réel du noyau (le vrai juge, pas le service)
+# Checks the real kernel state (the true judge, not the service)
 ENABLED="$(auditctl -s 2>/dev/null | awk '/^enabled/{print $2}')"
 HAVE_EXECVE="$(auditctl -l 2>/dev/null | grep -c execveat || true)"
 [ "$NEED_RESTART" = "1" ] && systemctl restart wazuh-agent >/dev/null 2>&1 || true
 
 echo "---------------------------------------------"
-echo "auditd service : $(systemctl is-active auditd 2>/dev/null || echo inconnu)"
-echo "audit noyau    : enabled=${ENABLED:-?}"
-echo "règles execve  : ${HAVE_EXECVE} chargée(s)"
+echo "auditd service : $(systemctl is-active auditd 2>/dev/null || echo unknown)"
+echo "kernel audit   : enabled=${ENABLED:-?}"
+echo "execve rules   : ${HAVE_EXECVE} loaded"
 if [ "$ENABLED" = "1" ] && [ "${HAVE_EXECVE:-0}" -ge 1 ]; then
-  echo "RESULTAT       : capteur ACTIF — les règles 1006xx/1007xx voient enfin les execve."
+  echo "RESULT         : sensor ACTIVE - the 1006xx/1007xx rules finally see the execve."
 else
-  echo "RESULTAT       : capteur PAS ENCORE ACTIF."
-  echo "                 Cause probable : audit immuable (-e 2) ou journald tient le socket netlink."
-  echo "                 >>> REBOOT REQUIS pour activer le capteur. Après reboot, re-vérifier :"
+  echo "RESULT         : sensor NOT YET ACTIVE."
+  echo "                 Likely cause: immutable audit (-e 2) or journald holds the netlink socket."
+  echo "                 >>> REBOOT REQUIRED to activate the sensor. After reboot, re-check:"
   echo "                     auditctl -s | grep enabled ; auditctl -l | grep -c execveat"
 fi
