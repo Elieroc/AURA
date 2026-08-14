@@ -191,7 +191,7 @@ def _attribute(type_misp, value, event_date):
 
 
 def test_ip_dun_vieux_rapport_ecartee_mais_pas_son_hash(monkeypatch):
-    # `CTI_FENETRE` porte sur la date de MODIFICATION de l'attribut : tout ce
+    # `CTI_WINDOW` porte sur la date de MODIFICATION de l'attribut : tout ce
     # qu'un feed vient d'importer passe, y compris des IP de rapports de 2015.
     # Les garder, c'est alerter au niveau 12-14 sur l'hébergeur mutualisé qui a
     # récupéré l'adresse depuis. Un hash, lui, ne périme jamais.

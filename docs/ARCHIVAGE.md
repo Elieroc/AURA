@@ -101,7 +101,7 @@ La variante asymétrique (clé publique seule sur la prod, privée hors ligne)
 protégerait aussi de la compromission de l'hôte : un attaquant root pourrait
 écrire de nouvelles archives mais pas relire l'historique. Elle a été écartée au
 profit de l'exploitabilité. Pour la reprendre, il suffirait de retirer la partie
-privée du keyfile et de repasser le drill en `ARCHIVE_DRILL_COMPLET=false`.
+privée du keyfile et de repasser le drill en `ARCHIVE_DRILL_FULL=false`.
 
 Conséquence pratique, à traiter comme une mesure et non comme une bonne manière :
 
@@ -223,7 +223,7 @@ mais « reste-t-il de la donnée sur le point de disparaître sans copie ? ». U
 archivage en panne depuis trois jours est sans conséquence ; le même en panne
 depuis quatre-vingts jours détruit de la donnée à la prochaine rotation.
 
-Un index qui entre dans les `ARCHIVE_MARGE_JOURS` (7) précédant sa suppression
+Un index qui entre dans les `ARCHIVE_MARGIN_DAYS` (7) précédant sa suppression
 sans archive confirmée est **détaché de la politique ISM** (`_ism/remove`).
 
 Le point technique à ne pas manquer : **suspendre la pose de la politique ne
@@ -262,7 +262,7 @@ sera plus là quand on la cherchera.
 | `archivage:peril` | High | de la donnée entre dans la marge de suppression sans copie. La purge a été suspendue sur ces index |
 | `archivage:trou` | Medium | un mois manque **entre** deux mois archivés. Les index d'origine sont purgés depuis longtemps : cette donnée n'existe plus nulle part |
 | `archivage:drill` | High | une archive relue ne correspond plus à ce qui avait été écrit |
-| `archivage:drill-en-retard` | Medium | des archives n'ont pas été relues depuis `ARCHIVE_DRILL_JOURS` |
+| `archivage:drill-en-retard` | Medium | des archives n'ont pas été relues depuis `ARCHIVE_DRILL_DAYS` |
 
 `archivage:trou` est un **constat**, pas une réparation possible : la donnée
 manquante manque définitivement. L'action utile est de comprendre pourquoi
@@ -346,7 +346,7 @@ Le reste de la chaîne, dans l'ordre où il agit :
 
 Une archive non testée est une croyance, pas une copie.
 
-À chaque passage, les `ARCHIVE_DRILL_LOT` (3) archives vérifiées **le moins
+À chaque passage, les `ARCHIVE_DRILL_BATCH` (3) archives vérifiées **le moins
 récemment** sont reprises. Sélection par `verifie_a NULLS FIRST` : déterministe,
 et chaque archive finit par passer. Un tirage au sort laisserait durablement des
 trous.
@@ -367,7 +367,7 @@ docker compose -p aura exec soc-agent-archive \
   python -m soc_agent.archive --drill --lot 10
 ```
 
-`ARCHIVE_DRILL_COMPLET=false` (ou `--sans-dechiffrer`) s'arrête après (2). Utile
+`ARCHIVE_DRILL_FULL=false` (ou `--sans-dechiffrer`) s'arrête après (2). Utile
 transitoirement, si la clé est momentanément indisponible : mieux vaut un contrôle
 partiel qu'un faux échec qui ouvre un dossier `archivage:drill` en High.
 
@@ -460,7 +460,7 @@ ce qu'on y écrit est illisible :
   `suppression: POSSIBLE` si la clé applicative porte `deleteFiles`. Une clé de
   prod qui peut supprimer est un rançongiciel qui peut effacer les douze mois.
 
-Puis `ARCHIVAGE_ENABLED=true` dans le `.env` et :
+Puis `ARCHIVING_ENABLED=true` dans le `.env` et :
 
 ```bash
 cd /opt/AURA && docker compose -p aura up -d --build soc-agent-archive
@@ -470,7 +470,7 @@ Le `--build` n'est pas optionnel : le code `soc_agent` est **baké dans l'image*
 et l'image porte désormais aussi `zstd` et `age`.
 
 Les identifiants manquants font échouer le **démarrage** dès que
-`ARCHIVAGE_ENABLED=true`, pour les douze conteneurs qui partagent `config.py`.
+`ARCHIVING_ENABLED=true`, pour les douze conteneurs qui partagent `config.py`.
 C'est volontaire : un archivage qui échoue en silence est pire que pas
 d'archivage, il fait croire que la copie existe.
 
@@ -524,7 +524,7 @@ quelques **centimes par mois** chez B2 (6,95 $/To). L'egress gratuit jusqu'à 3�
 stockage rend les drills et les restaurations gratuits en pratique.
 
 Autrement dit : **le coût n'est pas le sujet ici, et n'a pas orienté les
-décisions.** C'est pourquoi `ARCHIVE_CHAMPS_EXCLUS` est **vide** par défaut —
+décisions.** C'est pourquoi `ARCHIVE_EXCLUDED_FIELDS` est **vide** par défaut —
 élaguer `_source` économiserait quelques gigaoctets par an, et une archive amputée
 ne se répare pas. À ne remplir que si la volumétrie devient un vrai problème, et
 c'est alors tracé dans le manifeste (`champs_exclus`).
@@ -566,7 +566,7 @@ Les deux postes qui mordraient réellement à plus grande échelle, dans l'ordre
   saute ou duplique les documents de la même milliseconde, et `_id` n'est pas
   triable. Ne pas « moderniser » ce point sans vérifier sur la version
   d'OpenSearch réellement déployée.
-- **`ARCHIVE_DELAI_JOURS` n'est pas de la prudence décorative.** Le rattrapage des
+- **`ARCHIVE_DELAY_DAYS` n'est pas de la prudence décorative.** Le rattrapage des
   alertes indexées en retard écrit encore dans les index de la veille. Archiver le
   1er au matin fige une copie incomplète, qui se croira complète.
 - **Un mois vide produit quand même une archive** (quelques centaines d'octets).

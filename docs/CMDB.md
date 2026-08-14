@@ -42,20 +42,20 @@ une seconde colonne : « à quel point ça tire » × « sur quoi ».
 | **P3** | `serveur`, `admin` | un serveur interne, sans exposition ni donnée sensible |
 | **P4** | `endpoint`, `lab`, **et tout rôle non déclaré** | un poste, une VM de laboratoire |
 
-Ajouter un rôle sans toucher au code : `PRIORITE_ROLES="nas=1,jellyfin=3"`.
+Ajouter un rôle sans toucher au code : `PRIORITY_ROLES="nas=1,jellyfin=3"`.
 
 Effets par priorité (`.env`, valeurs par défaut) :
 
 | | P1 | P2 | P3 | P4 |
 |---|---|---|---|---|
-| bonus de sévérité (`SEVERITE_BONUS_PRIORITE`) | +2 | +1 | 0 | −1 |
-| clôture auto interdite à partir de (`CLOTURE_INTERDITE_PAR_PRIORITE`) | 12 | 13 | 14 | 14 |
+| bonus de sévérité (`SEVERITY_BONUS_PRIORITY`) | +2 | +1 | 0 | −1 |
+| clôture auto interdite à partir de (`CLOSURE_FORBIDDEN_BY_PRIORITY`) | 12 | 13 | 14 | 14 |
 | ordre dans la file de triage | 1ᵉʳ | 2ᵉ | 3ᵉ | 4ᵉ |
 
 La **remédiation autonome n'est pas bridée sur P1** : un asset critique agit
 comme les autres. C'est un choix explicite, à réévaluer si un faux positif
 coûteux tombe sur un DC — la barrière d'isolation
-(`ISOLATION_GROUPES_INTERDITS`) reste, elle, en place et couvre déjà pare-feu,
+(`ISOLATION_FORBIDDEN_GROUPS`) reste, elle, en place et couvre déjà pare-feu,
 proxy, DNS et VPN.
 
 ## Source de vérité : les groupes Wazuh
@@ -104,8 +104,8 @@ d'enrôlement.
 pare-feu qui porte Suricata *est* un asset P1, mais les alertes qu'il remonte
 décrivent le trafic des postes du LAN. Sans garde-fou, chaque scan vu par l'IDS
 deviendrait un incident P1 et noierait la file — la priorisation dégraderait le
-tri au lieu de l'améliorer. Les agents listés dans `AGENTS_CAPTEURS` sont donc
-rabattus sur `PRIORITE_CAPTEUR` (P3), sauf quand l'alerte porte le conteneur
+tri au lieu de l'améliorer. Les agents listés dans `AGENTS_SENSORS` sont donc
+rabattus sur `PRIORITY_SENSOR` (P3), sauf quand l'alerte porte le conteneur
 d'origine (`alerts.container`) : c'est alors **ce dernier** qui est résolu, et
 la vraie machine reprend sa priorité.
 

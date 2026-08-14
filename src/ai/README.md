@@ -413,7 +413,7 @@ capteur qui parlait et se tait sort en panne (service `soc-agent-watchdog`,
 toutes les 2 min).
 
 Ces pannes vont dans l'onglet **Alerts** d'IRIS, pas dans la file des cases —
-`WATCHDOG_IRIS_CANAL=alert|case|off` (défaut `alert`).
+`WATCHDOG_IRIS_CHANNEL=alert|case|off` (défaut `alert`).
 
 Un case est un dossier d'investigation : notes, timeline, IOC. Une panne de
 capteur n'a rien à investiguer, elle a un état (muette / rétablie) et un geste
@@ -492,7 +492,7 @@ isolée. Aucune ingestion nouvelle : tout se calcule sur `alerts`/`alerts.raw`.
 
 Trois points à retenir ici :
 
-- **Ce qui borne le coût n'est pas le seuil de score mais `UEBA_BUDGET_JOUR`.**
+- **Ce qui borne le coût n'est pas le seuil de score mais `UEBA_BUDGET_PER_DAY`.**
   Le volume varie d'un facteur dix entre une journée calme et une campagne ; un
   signal non promu est réévalué au cycle suivant, rien n'est perdu.
 - **`--simulation` calibre le plancher sans dépenser un token** : `ueba_signals`

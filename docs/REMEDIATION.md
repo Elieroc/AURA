@@ -119,7 +119,7 @@ SSH depuis le manager (`scripts/forensic-*.sh`), hors du périmètre du triage.
   blocage d'IP était proposé dans le même verdict.
   **Exception** : en compromission active de l'hôte (post-exploitation avérée —
   webshell, reverse shell, rootkit, persistance root, cf.
-  `config.RULES_COMPROMISSION_HOTE`), l'isolation est **maintenue** en plus du
+  `config.RULES_COMPROMISE_HOST`), l'isolation est **maintenue** en plus du
   reste : couper une IP ne déloge pas un attaquant déjà installé.
 
 ### Étage 2 — résolution de la cible (`_cibles_par_machine`)
@@ -129,7 +129,7 @@ plusieurs machines. Chaque remédiation part donc sur **la machine où sa preuve
 été observée** (l'`agent_id` de l'alerte), jamais sur un agent global ; la table
 `mitigations` porte l'`agent_id` visé.
 
-- **Agents capteurs exclus** (`AGENTS_CAPTEURS`) : leur télémétrie décrit
+- **Agents capteurs exclus** (`AGENTS_SENSORS`) : leur télémétrie décrit
   d'autres machines, donc on ne sait pas où agir. Deux formes — capteur d'hôte
   (l'hôte Proxmox, dont l'auditd voit les execve de ses conteneurs) et capteur
   réseau (la passerelle qui porte l'IDS et le pare-feu : Suricata et filterlog
@@ -141,12 +141,12 @@ plusieurs machines. Chaque remédiation part donc sur **la machine où sa preuve
   été attribué à l'agent du pare-feu : sans cette exclusion, un `block_ip`
   calculé sur cet incident visait l'équipement qui achemine tout le réseau.
 - **Isolation seulement** (`raison_non_isolable`, trois barrières dans l'ordre) :
-  agent de `AGENTS_PROTEGES` (défaut `000`, le manager — qui n'a d'ailleurs
+  agent de `AGENTS_PROTECTED` (défaut `000`, le manager — qui n'a d'ailleurs
   aucun groupe, le mécanisme de groupes ne le couvrirait pas) ; agent d'un
-  groupe d'infrastructure (`ISOLATION_GROUPES_INTERDITS` : pare-feu, proxy, DNS,
+  groupe d'infrastructure (`ISOLATION_FORBIDDEN_GROUPS` : pare-feu, proxy, DNS,
   VPN — couper une machine qui achemine le trafic d'autrui provoque une panne
   générale au lieu de contenir un incident) ; rôle indéterminable — refus par
-  défaut (`ISOLATION_REFUS_SI_ROLE_INCONNU`).
+  défaut (`ISOLATION_REFUSE_IF_ROLE_UNKNOWN`).
 - **`block_ip`** écarte : IP invalide/loopback, IP d'un subnet du parc
   (mouvement latéral ≠ C2), et **IP d'un agent surveillé** (une victime ou un
   pivot n'est pas l'attaquant — ajouté après un exercice purple-team où
@@ -306,7 +306,7 @@ sont **figés** (`_STATUTS_FIGES`) : jamais rejoués.
 
 Une action **sans compte rendu reste `émis`** : un script qui meurt avant
 d'écrire sa ligne ne doit pas être lu comme un succès. Elle est rejouable tant
-que `MITIGATE_MAX_TENTATIVES` (3) n'est pas atteint.
+que `MITIGATE_MAX_ATTEMPTS` (3) n'est pas atteint.
 
 ## Annulation
 
@@ -335,12 +335,12 @@ docker exec soc-agent-cycle python -m soc_agent.mitigate --desisoler 003
 | Variable | Défaut | Rôle |
 |---|---|---|
 | `MITIGATE_EXECUTE` | `false` | `true` = les remédiations partent réellement. `false` = dry-run global (bac à sable), **pas** une demande de validation humaine |
-| `MITIGATE_MAX_TENTATIVES` | `3` | rejeux d'une action restée `émis` |
+| `MITIGATE_MAX_ATTEMPTS` | `3` | rejeux d'une action restée `émis` |
 | `MITIGATE_AR_GAP_SECONDS` | `1.5` | espacement des appels AR (une rafale se perd) |
 | `MITIGATE_ISOLATE_ALLOW` | *(vide)* | IP(s) restant joignables depuis un hôte isolé — à définir par déploiement |
 | `SOC_INFRA_IPS` | *(déduit)* | IP du SOC (manager, indexer, IRIS, Shuffle) : jamais un IOC, jamais une cible de blocage. Déduit des URL et de `MITIGATE_ISOLATE_ALLOW`, complétable à la main |
-| `AGENTS_PROTEGES` | `000` | jamais une cible |
-| `AGENTS_CAPTEURS` | *(vide)* | capteurs d'hôte **et de réseau** (hôte Proxmox, passerelle IDS/pare-feu) : jamais une cible (théâtre réel = machine surveillée) — id d'agents à lister par déploiement |
+| `AGENTS_PROTECTED` | `000` | jamais une cible |
+| `AGENTS_SENSORS` | *(vide)* | capteurs d'hôte **et de réseau** (hôte Proxmox, passerelle IDS/pare-feu) : jamais une cible (théâtre réel = machine surveillée) — id d'agents à lister par déploiement |
 | `AGENTS_WINDOWS` | *(vide)* | route vers les AR Windows — id d'agents à lister par déploiement |
 | `AGENTS_DC` | *(vide)* | contrôleurs de domaine : exécutent les actions AD — id d'agents à lister par déploiement |
 | `SHUFFLE_WEBHOOK_ISOLATE` / `_KILL` | — | webhooks des workflows Shuffle |

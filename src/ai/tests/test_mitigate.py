@@ -9,7 +9,7 @@ from soc_agent.mitigate import (REMEDIATIONS, REVERTERS, _targets_by_machine,
                                 _created_accounts, _task_desc, _interpret,
                                 _is_private_ip, _canceled_tasks)
 
-# RESEAUX_INTERNES est vide par défaut (aucun parc de test) : les cas qui
+# NETWORKS_INTERNAL est vide par défaut (aucun parc de test) : les cas qui
 # testent l'exclusion « IP du parc » doivent déclarer un subnet explicitement.
 _TEST_NETWORK = [ipaddress.ip_network("192.168.10.0/24")]
 

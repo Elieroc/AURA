@@ -81,7 +81,7 @@ dirait rien de plus et ferait un nom illisible dans Discover.
 **Pas de date au jour**, et c'est structurel : c'est la forme `-AAAA.MM.JJ` qui
 détermine ce que l'archivage prend. Ce nommage garantit donc à lui seul qu'on
 n'archive jamais une archive restaurée — ce qui, sous Object Lock, reviendrait à
-payer deux fois la même donnée pendant douze mois. `ARCHIVE_INDEX_EXCLUS` porte
+payer deux fois la même donnée pendant douze mois. `ARCHIVE_INDEX_EXCLUDED` porte
 `wazuh-hunting-*` en seconde barrière, celle qui tient même si le nommage change.
 
 ## Provenance
@@ -116,10 +116,10 @@ par une consigne.
 
 | Garde-fou | Défaut | Ce qu'il empêche |
 |---|---|---|
-| seuil de disque | `DISQUE_SEUIL_ALERTE` (80 %) | le hunting est du confort ; un disque plein bascule l'indexer en lecture seule et **arrête l'ingestion de tout le parc** |
+| seuil de disque | `DISK_THRESHOLD_ALERT` (80 %) | le hunting est du confort ; un disque plein bascule l'indexer en lecture seule et **arrête l'ingestion de tout le parc** |
 | `HUNTING_MAX_DOCS` | 2 000 000 | indexer une archive énorme au lieu de la filtrer en local |
 | `HUNTING_MAX_INDICES` | 10 | l'accumulation de restaurations qu'on oublie |
-| `HUNTING_MAX_GO` | 10 | le dépassement, calculé sur l'occupation **projetée** et pas sur l'actuelle |
+| `HUNTING_MAX_GB` | 10 | le dépassement, calculé sur l'occupation **projetée** et pas sur l'actuelle |
 | `aura-hunting` (ISM) | 30 jours | l'espace de travail qui reste indéfiniment |
 
 Le seuil de disque est vérifié **en premier**, avant même de regarder la taille de

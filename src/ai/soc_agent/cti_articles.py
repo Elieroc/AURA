@@ -108,13 +108,13 @@ MAX_IOC_ARTICLE = 300
 # are IDENTICAL from one batch to the next: DeepSeek serves them from its prefix
 # cache (50x cheaper, see LLM_COST_USD_PER_MTOKEN_IN_CACHE). What changes are the
 # candidates, at the end of the prompt.
-BATCH_CANDIDATES = int(os.environ.get("CTI_ARTICLES_LOT", "20"))
+BATCH_CANDIDATES = int(os.environ.get("CTI_ARTICLES_BATCH", "20"))
 MAX_TOKENS = int(os.environ.get("CTI_ARTICLES_MAX_TOKENS", "12000"))
 
 # Last-resort guardrail on the number of calls per article. What exceeds it is
 # dropped, but NEVER silently (see `arbitrate`): a silent cap would give the
 # illusion of an article fully covered.
-MAX_BATCHES = int(os.environ.get("CTI_ARTICLES_MAX_LOTS", "16"))
+MAX_BATCHES = int(os.environ.get("CTI_ARTICLES_MAX_BATCHES", "16"))
 
 # Volume of text sent to the model. Useful articles are 5 to 20 k characters;
 # past that it is comments, navigation and related articles. Truncating bounds

@@ -266,7 +266,7 @@ def _agent_ips() -> set[str]:
     (isolation, désactivation de compte), on ne blackhole pas son IP chez un
     voisin. Mesuré à un exercice purple-team : block_ip a visé l'IP d'un hôte pivot
     (une victime, pas l'attaquant), parce que son subnet n'était pas
-    dans RESEAUX_INTERNES — l'exclusion par appartenance au parc est robuste
+    dans NETWORKS_INTERNAL — l'exclusion par appartenance au parc est robuste
     quel que soit le plan d'adressage, et laisse bloquable un attaquant qui
     partagerait le même subnet sans être un agent.
 
@@ -337,17 +337,17 @@ def not_isolatable_reason(agent_id: str) -> str | None:
 
     L'isolation ne vise que les ENDPOINTS. Trois barrières, dans l'ordre :
 
-    1. agent explicitement protégé (`AGENTS_PROTEGES`, dont 000 le manager, qui
+    1. agent explicitement protégé (`AGENTS_PROTECTED`, dont 000 le manager, qui
        n'a d'ailleurs aucun groupe — le mécanisme de groupes ne le couvrirait
        pas) ;
     2. agent appartenant à un groupe d'infrastructure : pare-feu, proxy, DNS,
        VPN. Ces machines acheminent le trafic d'autrui, les couper provoque une
        panne générale au lieu de contenir un incident ;
     3. rôle indéterminable — refus par défaut (cf.
-       ISOLATION_REFUS_SI_ROLE_INCONNU).
+       ISOLATION_REFUSE_IF_ROLE_UNKNOWN).
     """
     if str(agent_id) in config.AGENTS_PROTECTED:
-        return f"agent {agent_id} protégé (AGENTS_PROTEGES)"
+        return f"agent {agent_id} protégé (AGENTS_PROTECTED)"
 
     groups = _agent_groups(str(agent_id))
     if groups is None:
@@ -356,7 +356,7 @@ def not_isolatable_reason(agent_id: str) -> str | None:
                     "illisibles) — isolation refusée par prudence")
         return None
 
-    forbidden = groups & config.ISOLATION_GROUPS_FORBIDDEN
+    forbidden = groups & config.ISOLATION_FORBIDDEN_GROUPS
     if forbidden:
         return (f"agent {agent_id} dans le groupe {', '.join(sorted(forbidden))} "
                 "— infrastructure réseau, jamais isolée")
@@ -905,7 +905,7 @@ def _targets_by_machine(action: str, incident: dict,
     partir de l'agent de l'alerte qui porte la preuve.
 
     Garde-fous « dans le doute, on n'agit pas » :
-      - jamais un agent CAPTEUR d'hôte (config.AGENTS_CAPTEURS) : sa télémétrie
+      - jamais un agent CAPTEUR d'hôte (config.AGENTS_SENSORS) : sa télémétrie
         décrit l'activité d'autres machines (conteneurs), donc on ne sait pas sur
         quelle machine agir — on s'abstient plutôt que de viser le mauvais hôte ;
       - une preuve sans agent exploitable est écartée.
@@ -1223,7 +1223,7 @@ RETURNING id
 # Statuts TERMINAUX : on connaît l'issue, on ne rejoue jamais. 'sent' n'en fait
 # PAS partie — c'est « la commande est partie », pas « elle a eu l'effet voulu ».
 # Une action restée 'sent' (aucun `ar-result` de confirmation) est retentée
-# jusqu'à MITIGATE_MAX_TENTATIVES : sans quoi un compte attaquant recréé sous un
+# jusqu'à MITIGATE_MAX_ATTEMPTS : sans quoi un compte attaquant recréé sous un
 # incident déjà ouvert n'est jamais désactivé (mesuré à l'exercice : `art-backdoor`
 # figé sur un 'sent' hérité, disable_user jamais rejoué). 'confirmed'/'no_effect'
 # sont, eux, des réponses de l'agent : terminaux.

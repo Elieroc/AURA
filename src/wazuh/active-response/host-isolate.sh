@@ -107,7 +107,7 @@ fi
 # on pourrait le dé-isoler. Le ruleset ci-dessous n'ouvre d'exception que « vers
 # le manager », ce qui ne veut rien dire quand on EST le manager.
 #
-# Doublon assumé du garde-fou Python (config.AGENTS_PROTEGES) : l'AR est aussi
+# Doublon assumé du garde-fou Python (config.AGENTS_PROTECTED) : l'AR est aussi
 # joignable par l'API Wazuh et le serveur MCP, qui ne passent pas par ce code.
 if [ -n "$MANAGER_IP" ] && command -v ip >/dev/null 2>&1 \
    && ip -o addr show 2>/dev/null | grep -qw "$MANAGER_IP"; then

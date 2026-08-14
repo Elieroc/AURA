@@ -325,7 +325,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS mitigations_uniq
 -- attaquant recréé n'est jamais désactivé (purple-team #2/#3 : `art-backdoor`
 -- figé sur un enregistrement 'sent' hérité, disable_user jamais rejoué). Mais
 -- une réémission sans borne inonderait un canal fire-and-forget qui ne confirme
--- jamais : on plafonne à MITIGATE_MAX_TENTATIVES. Le job reconcile (1 min) fait
+-- jamais : on plafonne à MITIGATE_MAX_ATTEMPTS. Le job reconcile (1 min) fait
 -- passer 'sent' -> 'confirmed'/'no_effect' bien avant le cycle suivant (5 min)
 -- quand le canal répond ; ne restent 'sent' que les actions réellement sans
 -- retour, qu'on retente jusqu'au plafond.
@@ -512,7 +512,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS sensor_outages_single_open
     ON sensor_outages (agent_id, sensor) WHERE status = 'open';
 CREATE INDEX IF NOT EXISTS sensor_outages_recent
     ON sensor_outages (detected_at DESC);
--- Canal ALERTE (WATCHDOG_IRIS_CANAL=alert, défaut depuis le 2026-08-13) : une
+-- Canal ALERTE (WATCHDOG_IRIS_CHANNEL=alert, défaut depuis le 2026-08-13) : une
 -- panne de sensor n'est pas une investigation, c'est un état à acquitter. Elle
 -- vit dans l'onglet Alerts d'IRIS, qui porte un cycle de vie natif et laisse
 -- l'analyste escalader en case s'il juge que ça mérite un dossier.
@@ -572,7 +572,7 @@ CREATE TABLE IF NOT EXISTS assets (
     os              text,
     groups         text[] NOT NULL DEFAULT '{}',
     -- Rôle déclaré (dc, firewall, web…). NULL = jamais déclaré, la priorité
-    -- retombe alors sur PRIORITE_DEFAUT.
+    -- retombe alors sur DEFAULT_PRIORITY.
     role            text,
     priority        smallint NOT NULL DEFAULT 4 CHECK (priority BETWEEN 1 AND 4),
     -- 'groupe' (déduite des groups Wazuh) | 'operateur' (posée à la main,

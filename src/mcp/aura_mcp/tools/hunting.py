@@ -110,7 +110,7 @@ def aura_hunting_restore(index_set: str, period: str,
     et de la filtrer avec `jq` plutôt que de l'indexer entière.
 
     L'index restauré est supprimé automatiquement au bout de
-    `HUNTING_RETENTION_JOURS` (30 par défaut) ; l'archive S3, elle, reste.
+    `HUNTING_RETENTION_DAYS` (30 par défaut) ; l'archive S3, elle, reste.
 
     Args:
         index_set: index set d'origine (`wazuh-firewall`), tel que rendu par

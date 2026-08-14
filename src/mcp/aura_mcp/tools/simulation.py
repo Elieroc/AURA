@@ -171,7 +171,7 @@ def aura_rule_preview(rule_id: int, parent: str, level: int,
         "rule_id": rule_id, "parent": parent, "niveau": level,
         "traduisible": xml is not None,
         "xml": xml,
-        "niveau_0_autorise": soc_config.RULE_TUNING_ALLOWED_LEVEL_0,
+        "niveau_0_autorise": soc_config.RULE_TUNING_ALLOW_LEVEL_0,
     }
 
 

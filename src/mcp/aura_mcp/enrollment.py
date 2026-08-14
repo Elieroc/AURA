@@ -222,7 +222,7 @@ def declare_role(agent_name: str, role: str | None) -> dict:
     redéploiement de la stack) ; la table `assets` n'en est qu'un miroir
     interrogeable, reconstruit par `soc_agent.assets --sync`.
 
-    Sans rôle déclaré, la machine retombe sur `PRIORITE_DEFAUT` (P4) : ses
+    Sans rôle déclaré, la machine retombe sur `DEFAULT_PRIORITY` (P4) : ses
     incidents passent après ceux des assets déclarés. C'est un choix assumé —
     ce qui n'est pas déclaré ne prend pas la place de ce qui l'est — dont le
     revers est réel : une machine importante jamais déclarée est traitée comme
@@ -261,7 +261,7 @@ def declare_role(agent_name: str, role: str | None) -> dict:
         raise EnrollmentError(
             f"rôle inconnu : « {role} ». Rôles connus : "
             f"{', '.join(sorted(soc_config.PRIORITY_ROLES))}. En ajouter un "
-            f"via PRIORITE_ROLES (ex. PRIORITE_ROLES=\"nas=1\").")
+            f"via PRIORITY_ROLES (ex. PRIORITY_ROLES=\"nas=1\").")
     group = _group_of_role(role)
     _create_group(group)
     _assign_group(agent_id, group)

@@ -43,11 +43,11 @@ Suricata et des `80730 Auditd: SELinux permission check`.
 | Écriture des journaux MISP en base coupée (`MISP.log_skip_db_logs_completely`) | réglage MISP, prod |
 | Idempotence des Evidences portée par Postgres (`iris_evidences`), plus par IRIS | `iris.py`, `schema.sql` |
 | Échec IRIS journalisé en WARNING et repère retiré (retenté), plus jamais silencieux | `iris.py` |
-| Plafond de pièces Evidence par case (`EVIDENCE_MAX_PAR_CASE`, 500) | `config.py` |
-| Chargement d'alertes borné par incident (`INCIDENT_MAX_ALERTES`, 2000) | `iris._alertes` |
+| Plafond de pièces Evidence par case (`EVIDENCE_MAX_PER_CASE`, 500) | `config.py` |
+| Chargement d'alertes borné par incident (`INCIDENT_MAX_ALERTS`, 2000) | `iris._alertes` |
 | Membres d'incident bornés aux 50 plus récents à la corrélation | `correlate.py` |
 
-`INCIDENT_MAX_ALERTES` prend les plus **anciennes** et les plus **récentes** à
+`INCIDENT_MAX_ALERTS` prend les plus **anciennes** et les plus **récentes** à
 parts égales : le début porte la graine de l'incident, la fin son état courant,
 et c'est le milieu d'une salve répétitive qui n'apprend rien. `alert_count`
 reste le compte réel, jamais tronqué.
@@ -58,9 +58,9 @@ Un passage par jour (`retention.py`) :
 
 | Cible | Défaut | Variable |
 |---|---|---|
-| `alerts` (Postgres) | 90 jours | `RETENTION_ALERTES_JOURS` |
-| Index datés de l'indexer (politique ISM) | 90 jours | `RETENTION_INDEX_JOURS` |
-| Résidus `vd_updater/tmp` | 12 heures | `RETENTION_VD_TMP_HEURES` |
+| `alerts` (Postgres) | 90 jours | `RETENTION_ALERTS_DAYS` |
+| Index datés de l'indexer (politique ISM) | 90 jours | `RETENTION_INDEX_DAYS` |
+| Résidus `vd_updater/tmp` | 12 heures | `RETENTION_VD_TMP_HOURS` |
 | Repères d'Evidence orphelins | — | — |
 
 Deux garde-fous dans la purge des alertes :
@@ -128,7 +128,7 @@ de la donnée est pire, et le garde-fou disque ouvrira son alerte de son côté.
 
 Le watchdog mesure le disque à chaque passage et ouvre une **alerte IRIS**
 (pas un case — cf. [watchdog.py](../src/ai/soc_agent/watchdog.py)) au-delà de
-`DISQUE_SEUIL_ALERTE` (80 %), en `High` au-delà de `DISQUE_SEUIL_CRITIQUE`
+`DISK_THRESHOLD_ALERT` (80 %), en `High` au-delà de `DISK_THRESHOLD_CRITICAL`
 (90 %). Elle se referme seule au retour sous le seuil.
 
 Le disque est traité comme un capteur : même table d'état, même canal, même

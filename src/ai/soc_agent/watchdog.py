@@ -748,7 +748,7 @@ def monitor() -> dict:
         # Ingestion stopped: every sensor will look silent at the same instant.
         # That is not a sensor outage, it is a pipeline outage — we say so and we
         # do not manufacture six files for a single problem.
-        if lag is not None and lag > config.WATCHDOG_LAG_INGEST_MAX:
+        if lag is not None and lag > config.WATCHDOG_INGEST_LAG_MAX:
             log.error("INGESTION LAGGING by %s (horizon %s) — sensor watch "
                       "suspended: everything would look silent.",
                       _duration(lag), horizon)

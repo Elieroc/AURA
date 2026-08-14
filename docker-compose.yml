@@ -446,7 +446,7 @@ services:
   # peut écrire de nouvelles archives, il ne peut pas relire les mois passés.
   #
   # Cadence QUOTIDIENNE pour un effet mensuel, et ce n'est pas un gaspillage :
-  #  - un mois ne devient archivable qu'une fois clos + ARCHIVE_DELAI_JOURS, donc
+  #  - un mois ne devient archivable qu'une fois clos + ARCHIVE_DELAY_DAYS, donc
   #    la plupart des passages n'ont rien à archiver et se terminent en quelques
   #    secondes ;
   #  - un passage qui échoue (S3 injoignable, clé révoquée) est retenté le

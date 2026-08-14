@@ -29,7 +29,7 @@ CACHE = os.environ.get("CTI_CACHE", "/var/ossec/integrations/cti/ioc.db")
 # Péremption du cache, et anti-répétition de l'alerte correspondante. Sans le
 # second, une CTI périmée produirait une alerte par alerte traitée — le SOC
 # noyé par son propre voyant de panne.
-EXPIRY_HOURS = int(os.environ.get("CTI_PEREMPTION_HEURES", "24"))
+EXPIRY_HOURS = int(os.environ.get("CTI_EXPIRY_HOURS", "24"))
 EXPIRY_WITNESS = "/var/ossec/tmp/custom-misp-perime"
 EXPIRY_REMINDER_S = 3600
 

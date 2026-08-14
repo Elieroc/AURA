@@ -71,7 +71,7 @@ def effective_severity(severity: str | None, score_base: float | None) -> str:
 
 
 def weight(severity: str) -> float:
-    return config.VULN_WEIGHT_SEVERITY.get(severity, 0.5)
+    return config.VULN_SEVERITY_WEIGHT.get(severity, 0.5)
 
 
 def sla_days(severity: str, priority: int) -> int | None:
@@ -86,7 +86,7 @@ def sla_days(severity: str, priority: int) -> int | None:
 def risk_score(charge: float) -> int:
     """Indice d'exposition 0-100 d'une machine, à partir de sa charge pondérée.
 
-    Log-compressé (cf. `VOC_CHARGE_MAX`). Le revers est assumé et doit être dit
+    Log-compressé (cf. `VOC_MAX_LOAD`). Le revers est assumé et doit être dit
     partout où le score est affiché : au-delà du plafond, il SATURE — deux
     machines à 100 ne sont plus comparables entre elles, seuls les compteurs
     bruts exportés à côté les départagent.
@@ -94,7 +94,7 @@ def risk_score(charge: float) -> int:
     if charge <= 0:
         return 0
     return max(0, min(100, round(
-        100 * math.log10(1 + charge) / math.log10(1 + config.VOC_CHARGE_MAX))))
+        100 * math.log10(1 + charge) / math.log10(1 + config.VOC_MAX_LOAD))))
 
 
 # Bornes de lecture du score. Purement descriptives : elles servent à écrire
@@ -322,7 +322,7 @@ def exposure(conn, agent_id: str) -> dict:
     """
     prio = assets.agent_priority(conn, str(agent_id))
     lines = [dict(r) for r in conn.execute(SQL_OPEN, (str(agent_id),))]
-    factor = config.VOC_FACTOR_PRIORITY.get(prio["priority"], 1.0)
+    factor = config.VOC_PRIORITY_FACTOR.get(prio["priority"], 1.0)
 
     by_severity: dict[str, int] = {}
     charge = 0.0

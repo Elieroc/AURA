@@ -148,13 +148,13 @@ ouverture unique, alerte IRIS, **clôture automatique** au retour à la normale.
 
 | Variable | Défaut | Effet |
 |---|---|---|
-| `ROUTAGE_ACTIF` | `true` | coupe tout le contrôle |
-| `ROUTAGE_APPLIQUER` | `true` | `false` = détecte et propose, n'écrit rien côté indexer |
-| `ROUTAGE_FENETRE_HEURES` | `24` | fenêtre d'observation |
-| `ROUTAGE_BASELINE_MIN` | `20` | volume minimum pour créer un index set |
-| `ROUTAGE_DERIVE_MIN` | `5` | volume minimum pour signaler une dérive |
-| `ROUTAGE_SILENCE_HEURES` | `48` | silence au-delà duquel une source est dite muette |
-| `ROUTAGE_MAX_NOUVEAUX_PAR_JOUR` | `2` | plafond de créations automatiques |
+| `ROUTING_ACTIVE` | `true` | coupe tout le contrôle |
+| `ROUTING_APPLY` | `true` | `false` = détecte et propose, n'écrit rien côté indexer |
+| `ROUTING_WINDOW_HOURS` | `24` | fenêtre d'observation |
+| `ROUTING_BASELINE_MIN` | `20` | volume minimum pour créer un index set |
+| `ROUTING_DRIFT_MIN` | `5` | volume minimum pour signaler une dérive |
+| `ROUTING_SILENCE_HOURS` | `48` | silence au-delà duquel une source est dite muette |
+| `ROUTING_MAX_NEW_PER_DAY` | `2` | plafond de créations automatiques |
 
 ## Arbitrage humain
 

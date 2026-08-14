@@ -55,8 +55,8 @@ def test_score_croit_avec_la_charge():
 def test_score_sature_au_plafond():
     # Propriété assumée, écrite partout où le score s'affiche : deux machines à
     # 100 ne sont plus comparables entre elles.
-    assert vulns.risk_score(config.VOC_CHARGE_MAX) == 100
-    assert vulns.risk_score(config.VOC_CHARGE_MAX * 10) == 100
+    assert vulns.risk_score(config.VOC_MAX_LOAD) == 100
+    assert vulns.risk_score(config.VOC_MAX_LOAD * 10) == 100
 
 
 def test_echelle_de_poids_tres_non_lineaire():

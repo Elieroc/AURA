@@ -553,7 +553,7 @@ for _cidr in config.NETWORKS_INTERNAL:
     try:
         _NETS_INTERNAL.append(ipaddress.ip_network(_cidr, strict=False))
     except ValueError:
-        log.warning("RESEAUX_INTERNES: cidr invalide ignoré: %r", _cidr)
+        log.warning("NETWORKS_INTERNAL: cidr invalide ignoré: %r", _cidr)
 
 
 def _ip_ioc_valid(ip: str) -> bool:
@@ -580,7 +580,7 @@ def _ip_ioc_valid(ip: str) -> bool:
 
 
 def _ip_internal(ip: str) -> bool:
-    """Vrai si l'IP appartient à un subnet du parc (cf. config.RESEAUX_INTERNES).
+    """Vrai si l'IP appartient à un subnet du parc (cf. config.NETWORKS_INTERNAL).
 
     Volontairement PAS `is_private` : un C2 peut être en RFC1918 (VPN, cloud
     privé...) — seule l'appartenance aux subnets déclarés du parc vaut
@@ -2346,7 +2346,7 @@ def _merge_campaign(conn, incident: dict) -> int | None:
     et n'agit que là où la preuve est claire.
 
     Refusé si l'incident n'a aucun marqueur d'attaquant (sans lui, rien ne prouve
-    la même campagne) ou si CAMPAGNE_GAP_HOURS = 0. Renvoie le case adopté."""
+    la même campagne) ou si CAMPAIGN_GAP_HOURS = 0. Renvoie le case adopté."""
     if config.CAMPAIGN_GAP_HOURS <= 0:
         return None
     sig = _signature_campaign(_alerts(conn, incident["id"]))
@@ -2524,7 +2524,7 @@ def _evidences(conn, case, case_id: int, incident_id: int,
     de base IRIS le 2026-08-14. On ne demande donc plus à IRIS ce qu'on a déjà
     fait : la clé primaire (incident, alerte) le dit, en transaction.
 
-    Bornée par `config.EVIDENCE_MAX_PAR_CASE` : au-delà, l'onglet Evidence
+    Bornée par `config.EVIDENCE_MAX_PER_CASE` : au-delà, l'onglet Evidence
     n'est de toute façon plus lisible, et les alertes restent intégralement
     consultables dans l'indexer via le lien Discover de la timeline.
 

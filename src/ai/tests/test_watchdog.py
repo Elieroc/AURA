@@ -85,7 +85,7 @@ def test_silence_mesure_contre_l_horizon_pas_l_horloge():
 def test_seuil_retard_ingestion_couvre_plusieurs_cycles():
     """Le garde-fou anti-aveuglement ne doit pas se déclencher sur un cycle en
     retard : 300 s de cadence, il faut plusieurs cycles manqués."""
-    assert config.WATCHDOG_LAG_INGEST_MAX >= 25
+    assert config.WATCHDOG_INGEST_LAG_MAX >= 25
 
 
 # ---------------------------------------------------------------------------

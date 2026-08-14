@@ -75,7 +75,7 @@ Un nombre par machine, de 0 à 100 :
 
 ```
 charge  = Σ poids(sévérité de chaque CVE ouverte)
-score   = 100 × log10(1 + charge × facteur_priorité) / log10(1 + VOC_CHARGE_MAX)
+score   = 100 × log10(1 + charge × facteur_priorité) / log10(1 + VOC_MAX_LOAD)
 ```
 
 | Sévérité | Poids | | Priorité | Facteur |
@@ -94,7 +94,7 @@ Deux choix à comprendre avant de lire un score :
   en écrasante majorité Low/Medium) et classerait les machines par nombre de
   paquets installés.
 - **Le score sature.** Il est log-compressé pour étaler un intervalle qui va de
-  quelques unités à plusieurs dizaines de milliers. Au-delà de `VOC_CHARGE_MAX`,
+  quelques unités à plusieurs dizaines de milliers. Au-delà de `VOC_MAX_LOAD`,
   deux machines à 100 **ne sont plus comparables** — ce sont alors les
   compteurs bruts (`voc.critical`, `voc.hors_sla_total`) qui départagent. Le
   score sert à **classer**, pas à mesurer un risque absolu.
@@ -115,7 +115,7 @@ Délai de correction attendu, en jours, par sévérité **et** priorité d'asset
 
 Ce sont des **objectifs de service internes**, pas une norme externe. Leur seule
 fonction est de rendre le retard mesurable : sans échéance, « ouverte depuis
-210 jours » n'est qu'un nombre. Réglables par `VOC_SLA_JOURS`
+210 jours » n'est qu'un nombre. Réglables par `VOC_SLA_DAYS`
 (`critical:7,14,30,60;high:15,30,60,90`).
 
 Le compteur court depuis `vulnerabilites.vue_a` — **notre** première

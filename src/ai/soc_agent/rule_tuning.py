@@ -19,7 +19,7 @@ It can do both things:
   lose the noise. That is the safe mode, and the one that answers "do not
   invalidate the rule";
 - **suppress** (level 0): no alert at all. Reserved, locked behind
-  `RULE_TUNING_ALLOWED_LEVEL_0`.
+  `RULE_TUNING_ALLOW_LEVEL_0`.
 
 The generated rules live in `RULE_TUNING_DIR`, one file per rule, with the same
 conventions as the hand-written rules (see rules/README.md). The directory is
@@ -409,10 +409,10 @@ def analyze(min_fp: int, simulation: bool) -> list[dict]:
                            "must be mounted into this container")
 
     level = config.RULE_TUNING_LEVEL
-    if level == 0 and not config.RULE_TUNING_ALLOWED_LEVEL_0:
+    if level == 0 and not config.RULE_TUNING_ALLOW_LEVEL_0:
         raise RuntimeError(
             "RULE_TUNING_LEVEL=0 (full suppression) requires "
-            "RULE_TUNING_ALLOWED_LEVEL_0=true")
+            "RULE_TUNING_ALLOW_LEVEL_0=true")
 
     decisions: list[dict] = []
     placed: list[tuple[Path, dict]] = []   # (file, verification context)

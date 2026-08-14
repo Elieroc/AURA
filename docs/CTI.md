@@ -366,16 +366,16 @@ Rappel du piège documenté dans
 peut masquer un décalage de champ. La validation qui compte se fait sur une
 alerte réelle du pipeline.
 
-## Fraîcheur : ce que `CTI_FENETRE` ne fait pas
+## Fraîcheur : ce que `CTI_WINDOW` ne fait pas
 
 Le paramètre `last` de l'API MISP filtre sur la date de **dernière
 modification** de l'attribut, pas sur l'âge du renseignement. Tout ce qu'un
 feed vient d'importer a été modifié aujourd'hui : au premier import,
-`CTI_FENETRE=90d` ne filtre quasiment rien. Mesuré à la mise en service du
+`CTI_WINDOW=90d` ne filtre quasiment rien. Mesuré à la mise en service du
 2026-08-12 — des IP publiées comme C2 en **2015** (rapport Rocket Kitten,
 via CIRCL) étaient dans le cache, prêtes à déclencher du niveau 12-14.
 
-Le vrai filtre de fraîcheur est `CTI_IP_MAX_JOURS` (365 par défaut), qui porte
+Le vrai filtre de fraîcheur est `CTI_IP_MAX_DAYS` (365 par défaut), qui porte
 sur la date de l'**événement** et ne vise **que les IP** :
 
 | Type | Périme ? | Pourquoi |
@@ -389,7 +389,7 @@ sur la date de l'**événement** et ne vise **que les IP** :
 - **Cache périmé.** Une CTI figée ne lève aucune erreur : elle répond, avec du
   renseignement de plus en plus faux. C'est le même angle mort qu'un capteur
   muet (règles 100800+), et il se traite pareil — par un signal positif. Passé
-  `CTI_PEREMPTION_HEURES` (24 h), l'intégration émet un événement qui matche la
+  `CTI_EXPIRY_HOURS` (24 h), l'intégration émet un événement qui matche la
   règle 100956, au plus une fois par heure (sinon le SOC se noie sous son
   propre voyant de panne).
 - **Divergence de normalisation.** Le cache est écrit par le soc-agent et lu

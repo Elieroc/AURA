@@ -16,7 +16,7 @@ import os
 
 import pytest
 
-os.environ.setdefault("ARCHIVAGE_ENABLED", "false")
+os.environ.setdefault("ARCHIVING_ENABLED", "false")
 
 from soc_agent import config, hunting  # noqa: E402
 
@@ -151,7 +151,7 @@ def test_plafond_d_octets_refuse_sur_le_PROJETE(monkeypatch):
     monkeypatch.setattr(config, "HUNTING_MAX_INDICES", 10)
     monkeypatch.setattr(config, "HUNTING_MAX_DOCS", 10**9)
     hunting.check_space({"documents": 1, "plain_bytes": 400}, _state(bytes=500))
-    with pytest.raises(RuntimeError, match="HUNTING_MAX_GO"):
+    with pytest.raises(RuntimeError, match="HUNTING_MAX_GB"):
         hunting.check_space({"documents": 1, "plain_bytes": 600},
                                _state(bytes=500))
 

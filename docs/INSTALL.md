@@ -23,7 +23,7 @@ $EDITOR .env                              # creds/secrets/topologie — voir tab
 Variables à éditer au minimum (les autres ont des défauts raisonnables pour un
 lab) : `INDEXER_PASSWORD`, `WAZUH_API_PASSWORD`, `WAZUH_VT_API_KEY`,
 `WAZUH_ABUSEIPDB_API_KEY`, `PGPASSWORD`, `DEEPSEEK_API_KEY`,
-`WAZUH_DASHBOARD_URL`, `RESEAUX_INTERNES`, `POSTGRES_PASSWORD`,
+`WAZUH_DASHBOARD_URL`, `NETWORKS_INTERNAL`, `POSTGRES_PASSWORD`,
 `POSTGRES_ADMIN_PASSWORD`, `IRIS_SECRET_KEY`, `IRIS_SECURITY_PASSWORD_SALT`,
 `IRIS_API_KEY`, `SHUFFLE_DEFAULT_PASSWORD`, `SHUFFLE_DEFAULT_APIKEY`. Avant
 tout test d'isolation d'agent, `WAZUH_MANAGER_IP` aussi — voir section 4.

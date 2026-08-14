@@ -195,8 +195,8 @@ def batches_to_archive(conn, today: date | None = None) -> list[dict]:
 
 def _body_search(size: int) -> dict:
     body: dict = {"size": size, "query": {"match_all": {}}}
-    if config.ARCHIVE_FIELDS_EXCLUDED:
-        body["_source"] = {"excludes": config.ARCHIVE_FIELDS_EXCLUDED}
+    if config.ARCHIVE_EXCLUDED_FIELDS:
+        body["_source"] = {"excludes": config.ARCHIVE_EXCLUDED_FIELDS}
     # EXACT and uncapped count. Without this setting OpenSearch stops counting
     # at 10,000 and returns `{"value": 10000, "relation": "gte"}`: a cap one
     # would take for a total, hence a completeness check that would validate any
@@ -262,7 +262,7 @@ def pages(indices: list[str], size: int | None = None,
     removes any race: it is the same scroll context, hence the same set of
     documents.
     """
-    size = size or config.ARCHIVE_SIZE_BATCH
+    size = size or config.ARCHIVE_BATCH_SIZE
     csv = ",".join(indices)
     r = _indexer("POST", f"/{csv}/_search?scroll=10m", _body_search(size))
     if not r.ok:
@@ -529,7 +529,7 @@ def manifest(batch: dict, metrics: dict, key: str) -> dict:
         "key": key,
         "chain": processing_chain(),
         "age_recipients": recipients(),
-        "excluded_fields": config.ARCHIVE_FIELDS_EXCLUDED,
+        "excluded_fields": config.ARCHIVE_EXCLUDED_FIELDS,
         "line_schema": "{_index, _id, _source}",
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "tool": "soc_agent.archive",
@@ -596,7 +596,7 @@ def _record(conn, batch: dict, metrics: dict, key: str,
          metrics["plain_bytes"], metrics["object_bytes"],
          metrics["sha256_plain"], metrics["sha256_encrypted"],
          processing_chain(), recipients(),
-         config.ARCHIVE_FIELDS_EXCLUDED, lock.get("ObjectLockRetainUntilDate")))
+         config.ARCHIVE_EXCLUDED_FIELDS, lock.get("ObjectLockRetainUntilDate")))
     conn.commit()
 
 
@@ -962,7 +962,7 @@ def anomalies(conn) -> list[dict]:
                 f"{len(risk)} index datés entrent dans les "
                 f"{config.ARCHIVE_MARGIN_DAYS} jours qui précèdent leur "
                 f"suppression par la politique ISM "
-                f"(RETENTION_INDEX_JOURS={config.RETENTION_INDEX_DAYS}) et "
+                f"(RETENTION_INDEX_DAYS={config.RETENTION_INDEX_DAYS}) et "
                 "aucune archive S3 ne les couvre.",
                 "", detail,
                 "" if len(risk) <= 15 else f"  … et {len(risk) - 15} autres.",
@@ -1069,7 +1069,7 @@ def anomalies(conn) -> list[dict]:
                 f"{config.ARCHIVE_DRILL_BATCH} par passage. Ce retard signifie "
                 "soit que le service ne tourne pas, soit que le lot est trop "
                 "petit pour le nombre d'archives (augmenter "
-                "ARCHIVE_DRILL_LOT).",
+                "ARCHIVE_DRILL_BATCH).",
             ]),
             "Medium", len(old)))
     return output
@@ -1185,12 +1185,12 @@ def check_bucket() -> dict:
                               "retroactively to an existing bucket: recreate the "
                               "bucket with Object Lock, or set the option back "
                               "to false.")
-    if config.ARCHIVE_OBJECT_LOCK_DAYS < config.ARCHIVE_RETENTION_MONTH * 30:
+    if config.ARCHIVE_OBJECT_LOCK_DAYS < config.ARCHIVE_RETENTION_MONTHS * 30:
         summary.setdefault("warning", "")
         summary["warning"] += (" Object Lock shorter than the intended "
                                "retention: an object will become deletable again "
                                f"before the end of the "
-                               f"{config.ARCHIVE_RETENTION_MONTH} months.")
+                               f"{config.ARCHIVE_RETENTION_MONTHS} months.")
     return summary
 
 

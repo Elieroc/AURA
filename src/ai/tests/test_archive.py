@@ -16,7 +16,7 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-os.environ.setdefault("ARCHIVAGE_ENABLED", "false")
+os.environ.setdefault("ARCHIVING_ENABLED", "false")
 
 from soc_agent import archive, config  # noqa: E402
 
@@ -290,7 +290,7 @@ def test_object_lock_pose_une_echeance(monkeypatch):
 # --------------------------------------------------------------------------
 
 def test_desactive_ne_touche_a_rien(monkeypatch):
-    """ARCHIVAGE_ENABLED=false doit être inerte SANS toucher Postgres : le
+    """ARCHIVING_ENABLED=false doit être inerte SANS toucher Postgres : le
     module est importé par le watchdog, qui tourne toutes les deux minutes chez
     tout le monde, y compris chez qui n'archive pas."""
     monkeypatch.setattr(config, "ARCHIVING_ENABLED", False)

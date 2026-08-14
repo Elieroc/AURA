@@ -109,7 +109,7 @@ Une valeur absente d'un profil **mûr** vaut le plafond `UEBA_FIRSTSEEN_BITS`
 |---|---|---|
 | aucun autre hôte | ×1 | vraiment inédit |
 | 1 à 2 autres hôtes | ×0,6 | rare |
-| ≥ `UEBA_FLOTTE_BANAL` (3) hôtes | ×0,2 | déploiement d'admin, pas intrusion |
+| ≥ `UEBA_FLEET_COMMON` (3) hôtes | ×0,2 | déploiement d'admin, pas intrusion |
 
 **C'est le principal anti-faux-positif du module.** Sans lui, chaque binaire
 poussé sur le parc ouvrirait un incident par machine.
@@ -127,7 +127,7 @@ Le critère brut « 3 techniques de 3 tactiques différentes » remonte surtout
 
 ### Ce qui cesse d'être scoré
 
-- **Habitude** — `days_seen ≥ UEBA_JOURS_HABITUEL` (5). En jours **distincts**,
+- **Habitude** — `days_seen ≥ UEBA_DAYS_USUAL` (5). En jours **distincts**,
   pas en occurrences : 500 exécutions en un seul jour est un incident, 5 sur 5
   jours est une routine.
 - **Valeur générique** — `/bin/bash`, `/bin/sh`… Le premier `bash` d'une machine
@@ -141,7 +141,7 @@ Deux plafonds, sans lesquels une valeur répétée mille fois écrase tout le re
 et le score cesse de décrire l'incident :
 
 - `UEBA_CAP_TRAIT` (14) par trait,
-- `UEBA_CAP_ALERTE` (20) par alerte.
+- `UEBA_CAP_ALERT` (20) par alerte.
 
 Au niveau du signal, seul le **meilleur score de chaque couple (trait, valeur)**
 est retenu : quarante exécutions du même binaire rare ne valent pas quarante fois
@@ -174,7 +174,7 @@ scope_key   trait     obs   distincts  ratio
 
 Un ordre de grandeur d'écart. 0,25 tombe au milieu du fossé, donc loin des deux.
 
-En dessous de `UEBA_CARDINALITE_MIN_OBS` (200), on ne conclut pas : on n'exclut
+En dessous de `UEBA_CARDINALITY_MIN_OBS` (200), on ne conclut pas : on n'exclut
 pas un trait faute de recul.
 
 ## Maturité et démarrage à froid
@@ -185,8 +185,8 @@ passage avale l'historique et le prend pour baseline.
 
 Un scope devient scorable quand il atteint **à la fois** :
 
-- `UEBA_MATURITE_JOURS` (7) jours d'ancienneté,
-- `UEBA_MATURITE_MIN_OBS` (200) observations.
+- `UEBA_MATURITY_DAYS` (7) jours d'ancienneté,
+- `UEBA_MATURITY_MIN_OBS` (200) observations.
 
 Même philosophie que le [mode training](TRAINING.md), et les deux se cumulent
 bien : la fenêtre de training amorce la baseline gratuitement.
@@ -203,7 +203,7 @@ docker exec soc-agent-cycle python -m soc_agent.ueba --etat
 entre une journée calme et une campagne : un seuil absolu donne soit zéro appel,
 soit quatre cents.
 
-Ce qui borne, c'est **`UEBA_BUDGET_JOUR`** — un nombre de promotions qu'on
+Ce qui borne, c'est **`UEBA_BUDGET_PER_DAY`** — un nombre de promotions qu'on
 décide. Chaque passage trie les signaux par score, garde ceux au-dessus du
 plancher, et n'en promeut qu'autant que le budget des 24 dernières heures le
 permet.
@@ -212,7 +212,7 @@ permet.
 recalculé au cycle suivant, et son score aura grossi s'il continue. Rien n'est
 jeté, tout est retardé.
 
-`UEBA_BUDGET_PAR_CYCLE` plafonne en plus le nombre par passage, pour qu'une
+`UEBA_BUDGET_PER_CYCLE` plafonne en plus le nombre par passage, pour qu'une
 rafale ne consomme pas le budget quotidien en cinq minutes.
 
 ## Calibrer le plancher — à zéro token
@@ -234,7 +234,7 @@ docker exec socagent-db psql -U socagent -d socagent -c \
 docker exec soc-agent-cycle python -m soc_agent.ueba --etat
 ```
 
-Même effet en laissant `UEBA_BUDGET_JOUR=0` : le moteur observe et score, mais
+Même effet en laissant `UEBA_BUDGET_PER_DAY=0` : le moteur observe et score, mais
 ne promeut rien. **C'est la posture de mise en service recommandée** — voir plus
 bas.
 
@@ -329,7 +329,7 @@ statistiquement rare**.
 
 Un profil qui ne vieillit jamais fige le comportement d'il y a six mois : un
 serveur réinstallé resterait « normal » sur ses anciens binaires. Les
-observations au-delà de `UEBA_MEMOIRE_JOURS` (90) sont supprimées et les profils
+observations au-delà de `UEBA_MEMORY_DAYS` (90) sont supprimées et les profils
 **recalculés sur ce qui reste** — jamais de décrément à l'aveugle. `seen_in_tp`
 est préservé : un trait vu dans un vrai positif ne redevient pas vierge par
 péremption.
@@ -344,7 +344,7 @@ signal de 239 alertes ressortait en **8 incidents, donc 8 triages LLM**, chacun
 amputé du contexte des autres et portant un score sans rapport avec celui du
 signal (115, puis 2,5 et 3,3 — le signal valait 161,8).
 
-Les fenêtres se correspondent déjà : `UEBA_SIGNAL_MAX_HEURES` = `MAX_INCIDENT_HOURS`
+Les fenêtres se correspondent déjà : `UEBA_SIGNAL_MAX_HOURS` = `MAX_INCIDENT_HOURS`
 = 6, et un lien fort porte jusqu'à `ENTITY_GAP_MINUTES` (360).
 
 Un incident UEBA peut en revanche être **fondu** dans un case déjà ouvert
@@ -378,26 +378,26 @@ Colonnes ajoutées :
 | variable | défaut | rôle |
 |---|---|---|
 | `UEBA_ENABLED` | `true` | interrupteur général |
-| `UEBA_MATURITE_JOURS` | `7` | ancienneté minimale d'un scope pour être scoré |
-| `UEBA_MATURITE_MIN_OBS` | `200` | observations minimales, idem |
+| `UEBA_MATURITY_DAYS` | `7` | ancienneté minimale d'un scope pour être scoré |
+| `UEBA_MATURITY_MIN_OBS` | `200` | observations minimales, idem |
 | `UEBA_FIRSTSEEN_BITS` | `12` | score plafond d'une valeur inédite |
-| `UEBA_FLOTTE_BANAL` | `3` | nb d'hôtes à partir duquel « inédit ici » est banal |
-| `UEBA_JOURS_HABITUEL` | `5` | jours distincts au-delà desquels c'est une routine |
-| `UEBA_BITS_MIN_RARETE` | `4` | plancher sous lequel un trait n'est pas un motif |
-| `UEBA_CARDINALITE_MAX` | `0.25` | ratio distincts/obs au-delà duquel le trait est muet |
-| `UEBA_CARDINALITE_MIN_OBS` | `200` | recul minimal avant de conclure sur la cardinalité |
+| `UEBA_FLEET_COMMON` | `3` | nb d'hôtes à partir duquel « inédit ici » est banal |
+| `UEBA_DAYS_USUAL` | `5` | jours distincts au-delà desquels c'est une routine |
+| `UEBA_BITS_MIN_RARITY` | `4` | plancher sous lequel un trait n'est pas un motif |
+| `UEBA_CARDINALITY_MAX` | `0.25` | ratio distincts/obs au-delà duquel le trait est muet |
+| `UEBA_CARDINALITY_MIN_OBS` | `200` | recul minimal avant de conclure sur la cardinalité |
 | `UEBA_CAP_TRAIT` | `14` | saturation par trait |
-| `UEBA_CAP_ALERTE` | `20` | saturation par alerte |
-| `UEBA_FENETRE_MINUTES` | `60` | écart max entre deux alertes d'un même signal |
-| `UEBA_SIGNAL_MAX_HEURES` | `6` | durée totale max d'un signal |
-| `UEBA_MIN_TACTIQUES` | `3` | tactiques distinctes avant tout bonus de chaîne |
-| `UEBA_BONUS_ORDRE` | `3` | bonus par étape de progression kill-chain |
-| `UEBA_SCORE_PLANCHER` | `35` | score minimal pour être promouvable |
-| `UEBA_BUDGET_JOUR` | `20` | **le garde-fou de coût** — promotions par 24 h |
-| `UEBA_BUDGET_PAR_CYCLE` | `2` | promotions par passage |
+| `UEBA_CAP_ALERT` | `20` | saturation par alerte |
+| `UEBA_WINDOW_MINUTES` | `60` | écart max entre deux alertes d'un même signal |
+| `UEBA_SIGNAL_MAX_HOURS` | `6` | durée totale max d'un signal |
+| `UEBA_MIN_TACTICS` | `3` | tactiques distinctes avant tout bonus de chaîne |
+| `UEBA_BONUS_ORDER` | `3` | bonus par étape de progression kill-chain |
+| `UEBA_SCORE_FLOOR` | `35` | score minimal pour être promouvable |
+| `UEBA_BUDGET_PER_DAY` | `20` | **le garde-fou de coût** — promotions par 24 h |
+| `UEBA_BUDGET_PER_CYCLE` | `2` | promotions par passage |
 | `UEBA_RETENTION_HOURS` | `24` | âge au-delà duquel une alerte n'est plus candidate |
-| `UEBA_LOT` | `20000` | taille du lot d'observation par passage |
-| `UEBA_MEMOIRE_JOURS` | `90` | fenêtre de la baseline |
+| `UEBA_BATCH` | `20000` | taille du lot d'observation par passage |
+| `UEBA_MEMORY_DAYS` | `90` | fenêtre de la baseline |
 | `UEBA_MITIGATE` | `false` | remédiation autonome sur incident UEBA |
 
 ## Commandes
@@ -427,10 +427,10 @@ UPDATE alerts SET ueba_vu=false, ueba_score=NULL, ueba_traits=NULL,
 
 ## Mise en service — observer avant de promouvoir
 
-**Déployer avec `UEBA_BUDGET_JOUR=0`.** Le moteur observe, score et enregistre
+**Déployer avec `UEBA_BUDGET_PER_DAY=0`.** Le moteur observe, score et enregistre
 ses signaux ; il n'en promeut aucun, donc aucun incident, aucun case, aucun
 token. Laisser tourner le temps que les profils mûrissent, puis lire la
-distribution réelle des scores et fixer `UEBA_SCORE_PLANCHER` au-dessus du bruit
+distribution réelle des scores et fixer `UEBA_SCORE_FLOOR` au-dessus du bruit
 observé.
 
 Cette phase n'est pas de la prudence rituelle : à la mise en service du
@@ -438,7 +438,7 @@ Cette phase n'est pas de la prudence rituelle : à la mise en service du
 
 | défaut | symptôme | correctif |
 |---|---|---|
-| haute cardinalité | archives LVM → signal à 1434 pts, 40× le plancher | `UEBA_CARDINALITE_MAX` |
+| haute cardinalité | archives LVM → signal à 1434 pts, 40× le plancher | `UEBA_CARDINALITY_MAX` |
 | `exe` retombait sur `entity` | clés `HKEY_*` et archives comptées comme binaires | `exe` = auditd + Sysmon seuls ; trait `fichier` séparé |
 | émiettement | 239 alertes → 8 incidents → 8 triages LLM | `ueba_signal_id` en point commun fort |
 | fuite | trait non déclaré dans `anonymize` → incident refusé fail-closed, triage UEBA muet | pseudonymisation par liste d'exclusion |
@@ -453,11 +453,11 @@ un JSON invalide (`Invalid \escape`), ce qui bloquait l'incident à chaque cycle
 ## État en production
 
 Déployé sur `/opt/AURA` le **2026-08-07**, en testing :
-`UEBA_BUDGET_JOUR=3`, `UEBA_SCORE_PLANCHER=60`, `UEBA_MITIGATE=false`.
+`UEBA_BUDGET_PER_DAY=3`, `UEBA_SCORE_FLOOR=60`, `UEBA_MITIGATE=false`.
 
 Deux limites connues :
 
-- **`UEBA_MATURITE_JOURS=2` au lieu de 7.** La stack a été réinstallée le
+- **`UEBA_MATURITY_DAYS=2` au lieu de 7.** La stack a été réinstallée le
   2026-08-05 : il n'existe que 3 jours d'historique, et l'indexer n'en a pas
   davantage. Une baseline courte fait passer pour inédit ce qui est simplement
   peu fréquent. **À remonter à 7 vers le 2026-08-19.**
