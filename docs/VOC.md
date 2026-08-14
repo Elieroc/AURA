@@ -242,7 +242,7 @@ sont deux affirmations opposées.
 docker compose -p aura run --rm soc-agent-vulns python -m soc_agent.vulns
 
 # exposition du parc, sans rien écrire
-python -m soc_agent.vulns --etat
+python -m soc_agent.vulns --state
 
 # détail d'une machine (celui qui alimente la note IRIS)
 python -m soc_agent.vulns --agent 013

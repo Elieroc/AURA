@@ -325,7 +325,7 @@ TRAINING_DAYS=7
 
 ```bash
 docker compose up -d                                          # lance toute la stack
-docker exec soc-training python -m soc_agent.training --etat
+docker exec soc-training python -m soc_agent.training --state
 docker exec soc-training python -m soc_agent.training --cloturer   # fin anticipée
 ```
 

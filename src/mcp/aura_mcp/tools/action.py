@@ -235,7 +235,7 @@ def aura_whitelist_apply(min_fp: int | None = None,
     decisions = whitelist.analyze(
         min_fp if min_fp is not None else soc_config.WHITELIST_MIN_FP,
         simulation=not apply)
-    return {"applique": apply,
+    return {"applied": apply,
             "decisions": output.jsonifiable(decisions),
             "total": len(decisions)}
 
@@ -262,7 +262,7 @@ def aura_rule_tuning_apply(min_fp: int | None = None,
     decisions = rule_tuning.analyze(
         min_fp if min_fp is not None else soc_config.WHITELIST_MIN_FP,
         simulation=not apply)
-    return {"applique": apply,
+    return {"applied": apply,
             "manager_redemarre": apply and bool(decisions),
             "decisions": output.jsonifiable(decisions),
             "total": len(decisions)}

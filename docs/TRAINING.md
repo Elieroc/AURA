@@ -148,7 +148,7 @@ décision explicite (`--demarrer`).
 
 ```bash
 # état de toutes les fenêtres (statut, dates, exceptions actives/total)
-docker exec soc-training python -m soc_agent.training --etat
+docker exec soc-training python -m soc_agent.training --state
 
 # un passage manuel (identique à la boucle du conteneur)
 docker exec soc-training python -m soc_agent.training --tick

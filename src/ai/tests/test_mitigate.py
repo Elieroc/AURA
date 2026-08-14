@@ -257,16 +257,16 @@ def test_statuts_partis_couvrent_le_cycle_de_vie():
     Le rapport IRIS du 2026-08-02 annonçait 26 quarantaines réussies qui
     avaient toutes été refusées par le script."""
     assert set(mitigate.STATUSES_GONE) == {
-        "émis", "confirmé", "sans_effet", "refusé_agent"}
+        "sent", "confirmed", "no_effect", "agent_refused"}
     # Seul un compte rendu de l'agent vaut « Done » côté IRIS.
-    assert mitigate._STATUS_TASK["confirmé"] == "Done"
-    assert mitigate._STATUS_TASK["émis"] != "Done"
-    assert mitigate._STATUS_TASK["refusé_agent"] == "Canceled"
+    assert mitigate._STATUS_TASK["confirmed"] == "Done"
+    assert mitigate._STATUS_TASK["sent"] != "Done"
+    assert mitigate._STATUS_TASK["agent_refused"] == "Canceled"
 
 
 def test_statut_ar_mappe_les_quatre_issues():
-    assert mitigate._STATUS_AR == {"applied": "confirmé", "noop": "sans_effet",
-                                   "refused": "refusé_agent", "error": "échec"}
+    assert mitigate._STATUS_AR == {"applied": "confirmed", "noop": "no_effect",
+                                   "refused": "agent_refused", "error": "failed"}
 
 
 def test_seules_les_reponses_de_l_agent_sont_figees():
@@ -283,17 +283,17 @@ def test_seules_les_reponses_de_l_agent_sont_figees():
     échouait donc depuis, en décrivant une règle que le code avait
     délibérément abandonnée.
     """
-    agent_responses = {"confirmé", "sans_effet", "refusé_agent"}
+    agent_responses = {"confirmed", "no_effect", "agent_refused"}
     assert agent_responses <= set(mitigate._STATUSES_FROZEN)
-    assert "annulé" in mitigate._STATUSES_FROZEN
+    assert "canceled" in mitigate._STATUSES_FROZEN
 
     # Les deux rejouables, pour des raisons différentes.
-    assert "émis" not in mitigate._STATUSES_FROZEN
-    assert "échec" not in mitigate._STATUSES_FROZEN
+    assert "sent" not in mitigate._STATUSES_FROZEN
+    assert "failed" not in mitigate._STATUSES_FROZEN
 
     # `émis` reste bien un statut « parti » — c'est ce qui le distingue de
     # `dry_run`, qui n'a rien envoyé du tout.
-    assert "émis" in mitigate.STATUSES_GONE
+    assert "sent" in mitigate.STATUSES_GONE
     assert "dry_run" not in mitigate.STATUSES_GONE
 
 
@@ -336,7 +336,7 @@ def test_reverse_pour_actions_reversibles_pas_pour_kill():
 def test_desc_tache_contient_quoi_pourquoi_annulation():
     triage = {"verdict": "true_positive", "confidence": "high",
               "reason": "Ransomware en cours."}
-    desc = _task_desc(triage, "001", "exécuté", "Shuffle",
+    desc = _task_desc(triage, "001", "executed", "Shuffle",
                        "Isolation nftables.", "curl ... !host-unisolate.sh")
     assert "Ce qui a été fait" in desc
     assert "Pourquoi" in desc and "Ransomware en cours." in desc

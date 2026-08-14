@@ -340,7 +340,7 @@ services:
     <<: *soc-agent
     container_name: soc-agent-reconcile
     command: >
-      sh -c "while true; do python -m soc_agent.mitigate --reconcilier; sleep 60; done"
+      sh -c "while true; do python -m soc_agent.mitigate --reconcile; sleep 60; done"
 
   # Traite les tâches IRIS WHITELIST passées en 'To do'. Même cadence courte
   # que reconcile (ancien soc-agent-whitelist-task.timer).

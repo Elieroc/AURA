@@ -19,7 +19,7 @@ la machine (cf. assets.py) : compter les CVE à poids égal sur le contrôleur d
 domaine et sur un poste de lab fait patcher dans le désordre.
 
     python -m soc_agent.vulns                  # scan + export
-    python -m soc_agent.vulns --etat           # exposition du parc, sans écrire
+    python -m soc_agent.vulns --state           # exposition du parc, sans écrire
     python -m soc_agent.vulns --agent 013      # détail d'une machine
     python -m soc_agent.vulns --simulation     # montre les documents, n'écrit pas
 """
@@ -548,7 +548,7 @@ def _vuln_doc(v: dict, priority: int) -> dict:
         "package": {"name": v["package"], "version": v["version"]},
         "voc": {
             "status": v["status"],
-            "resolue": v["status"] == "corrigee",
+            "resolue": v["status"] == "fixed",
             "first_seen": v["first_seen"].astimezone(timezone.utc).isoformat(),
             "fixed_at": (v["fixed_at"].astimezone(timezone.utc).isoformat()
                            if v["fixed_at"] else None),
@@ -557,7 +557,7 @@ def _vuln_doc(v: dict, priority: int) -> dict:
             # résolu. Le MTTR se lit donc en filtrant sur `voc.resolue: true`.
             "age_jours": round(age, 2),
             "sla_jours": delay,
-            "hors_sla": bool(delay is not None and v["status"] == "ouverte"
+            "hors_sla": bool(delay is not None and v["status"] == "open"
                              and age > delay),
             "retard_jours": (round(age - delay, 2)
                              if delay is not None and age > delay else 0),
@@ -758,7 +758,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--etat", action="store_true",
+    ap.add_argument("--state", action="store_true",
                     help="exposition du parc, sans scanner ni écrire")
     ap.add_argument("--agent", metavar="AGENT_ID",
                     help="détail de l'exposition d'une machine")

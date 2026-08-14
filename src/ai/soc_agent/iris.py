@@ -1543,14 +1543,14 @@ def _section_iocs(alerts: list[dict],
 # d'un contrôleur de domaine avaient été mis en quarantaine — le script les
 # avait tous refusés. Un rapport qui ment est pire qu'un rapport incomplet.
 _STATUS_REMED = {
-    "émis": "📤 commande émise (effet non encore confirmé)",
-    "confirmé": "✅ confirmé par l'agent",
-    "sans_effet": "⚪ sans effet (rien à faire sur cette cible)",
-    "refusé_agent": "🛑 refusé par le garde-fou de l'agent",
+    "sent": "📤 commande émise (effet non encore confirmé)",
+    "confirmed": "✅ confirmé par l'agent",
+    "no_effect": "⚪ sans effet (rien à faire sur cette cible)",
+    "agent_refused": "🛑 refusé par le garde-fou de l'agent",
     "dry_run": "🟡 simulé (dry-run)",
     "sans_canal": "📄 documenté (manuel)",
-    "échec": "❌ échec",
-    "annulé": "↩️ annulé (défait)",
+    "failed": "❌ échec",
+    "canceled": "↩️ annulé (défait)",
 }
 
 
@@ -1600,7 +1600,7 @@ def _section_remediations(conn, incident_id: int, triage: dict) -> str:
         status = _STATUS_REMED.get(r["status"], r["status"])
         lines.append(f"| {label} | `{r['target']}` | {status} |")
 
-    refused = [r for r in rows if r["status"] == "refusé_agent"]
+    refused = [r for r in rows if r["status"] == "agent_refused"]
     if refused:
         lines += [
             "",
@@ -2746,7 +2746,7 @@ def create_case(conn, incident: dict, triage: dict) -> int:
     conn.execute(
         "UPDATE incidents SET iris_case_id = %s, status = %s, "
         "needs_refresh = false WHERE id = %s",
-        (case_id, "fp_classe" if fp else "case_ouvert", incident["id"]))
+        (case_id, "fp_classified" if fp else "case_open", incident["id"]))
     conn.commit()
 
     # Tags = hostname de la machine touchée + priorité de l'asset (add_case ne
@@ -2945,7 +2945,7 @@ def refresh_case(conn, incident: dict, triage: dict) -> int:
 
     conn.execute(
         "UPDATE incidents SET needs_refresh = false, status = %s WHERE id = %s",
-        ("fp_classe" if fp else "case_ouvert", incident["id"]))
+        ("fp_classified" if fp else "case_open", incident["id"]))
     conn.commit()
     return case_id
 

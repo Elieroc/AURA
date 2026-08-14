@@ -129,7 +129,7 @@ class _FakeAlert:
         return _Response({"alert_id": alert_id})
 
 
-def _outage(sensor="suricata", status="ouverte"):
+def _outage(sensor="suricata", status="open"):
     return {"id": 3, "agent_id": "008", "agent_name": "home-r-pf01",
             "sensor": sensor, "status": status,
             "detected_at": datetime.now(timezone.utc) - timedelta(hours=2),

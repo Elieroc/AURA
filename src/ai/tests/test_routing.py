@@ -62,7 +62,7 @@ def test_inconnu_nest_pas_un_nom():
 def test_repli_reste_deterministe_et_conforme():
     r = routing._fallback({"criterion_value": "npm-access"}, "pattern")
     assert r["index_base"] == "wazuh-npmaccess"
-    assert r["named_by"] == "repli"      # -> jamais auto-appliqué
+    assert r["named_by"] == "fallback"      # -> jamais auto-appliqué
 
 
 # --------------------------------------------------------------------------

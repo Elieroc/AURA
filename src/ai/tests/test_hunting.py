@@ -350,7 +350,7 @@ def test_dry_run_ne_telecharge_rien_et_rend_le_verdict(monkeypatch):
     monkeypatch.setattr(hunting, "prepare", _forbidden)
 
     r = hunting.restore("wazuh-web", "2026-03")
-    assert r["applique"] is False
+    assert r["applied"] is False
     assert r["guardrails"] == "ok"
     assert r["index_cible"] == "wazuh-hunting-web-2026-03"
     # Le rappel du cloisonnement doit être dans la réponse : c'est un client IA
@@ -370,7 +370,7 @@ def test_dry_run_annonce_le_refus_sans_lever(monkeypatch):
     monkeypatch.setattr("psycopg.connect", lambda *a, **k: _Ctx())
     monkeypatch.setattr(config, "HUNTING_MAX_DOCS", 1000)
     r = hunting.restore("wazuh-web", "2026-03")
-    assert r["applique"] is False
+    assert r["applied"] is False
     assert r["guardrails"].startswith("REFUS")
     assert "HUNTING_MAX_DOCS" in r["guardrails"]
 

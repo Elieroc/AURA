@@ -299,9 +299,9 @@ Statuts en base (`mitigations.statut`) :
 | `échec` | `Canceled` | `error` : tentée et échouée |
 | `sans_effet` | `On hold` | `noop` : rien à faire sur cette cible — à regarder |
 | `annulé` | `Canceled` | reverse rejoué après passage de la tâche IRIS en `Canceled` |
-| `annulation_impossible` | — | le reverse n'a pas pu être rejoué |
+| `undo_failed` | — | le reverse n'a pas pu être rejoué |
 
-`confirmé`, `sans_effet`, `refusé_agent`, `annulé` et `annulation_impossible`
+`confirmé`, `sans_effet`, `refusé_agent`, `annulé` et `undo_failed`
 sont **figés** (`_STATUTS_FIGES`) : jamais rejoués.
 
 Une action **sans compte rendu reste `émis`** : un script qui meurt avant
@@ -326,8 +326,8 @@ statut `annulé`.
 Isolation/dé-isolation manuelles :
 
 ```bash
-docker exec soc-agent-cycle python -m soc_agent.mitigate --isoler 003
-docker exec soc-agent-cycle python -m soc_agent.mitigate --desisoler 003
+docker exec soc-agent-cycle python -m soc_agent.mitigate --isolate 003
+docker exec soc-agent-cycle python -m soc_agent.mitigate --unisolate 003
 ```
 
 ## Réglages

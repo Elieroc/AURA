@@ -238,7 +238,7 @@ CREATE TABLE IF NOT EXISTS mitigations (
     action       text NOT NULL,
     target        text,            -- agent_id, IP ou compte visé
     status       text NOT NULL,   -- exécuté | dry_run | échec | annulé |
-                                  -- annulation_impossible | suspendu
+                                  -- undo_failed | suspendu
                                   -- 'canceled' : action défaite (tâche IRIS passée
                                   -- en Canceled → reverse rejoué, cf. reconcilier).
     details      text,

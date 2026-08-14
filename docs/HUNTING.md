@@ -153,7 +153,7 @@ d'alertes de production.
 ### En ligne de commande
 
 ```bash
-docker compose -p aura exec aura-mcp python -m soc_agent.hunting --etat
+docker compose -p aura exec aura-mcp python -m soc_agent.hunting --state
 docker compose -p aura exec aura-mcp \
   python -m soc_agent.hunting --restaurer wazuh-firewall/2026-03
 docker compose -p aura exec aura-mcp \
