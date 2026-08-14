@@ -279,6 +279,7 @@
     },
     {
       "script": {
+        "tag": "routage-statique",
         "description": "Aura-SOC: route les alertes des agents (hors manager 000) vers wazuh-linux-*/wazuh-windows-*/wazuh-web-*, le syslog pare-feu (pfSense) et les alertes Suricata (même boîtier, mais via l'agent : routées sur rule.groups 'suricata' car le décodeur est le json générique, comme AdGuard — et testées AVANT le test 'dns', sinon une alerte Suricata sur du DNS partirait dans wazuh-dns-*) vers wazuh-firewall-*, Nginx Proxy Manager vers wazuh-proxy-*, Jellyfin (log applicatif, pas de format web) vers wazuh-jellyfin-*, les événements WireGuard (wg-monitor.py, pas de log natif) vers wazuh-vpn-*, et les requêtes DNS AdGuard Home (JSON natif, routé sur rule.groups pas decoder.name car le décodeur json est générique) vers wazuh-dns-*, selon le type de log. Firewall/proxy/jellyfin/vpn testés sur decoder.name, pas rule.groups : ce dernier dépend de QUELLE règle gagne, et une règle native sœur (ex. 31100 web-log, héritée pour profiter des signatures d'attaque LFI/SQLi/XSS) peut gagner à la place de notre règle locale qui porte le tag de groupe — le decoder, lui, est stable quelle que soit la règle qui matche finalement.",
         "lang": "painless",
         "ignore_failure": true,

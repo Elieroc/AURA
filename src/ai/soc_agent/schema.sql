@@ -717,3 +717,63 @@ CREATE TABLE IF NOT EXISTS cti_articles (
 CREATE INDEX IF NOT EXISTS cti_articles_recents ON cti_articles (traite_a DESC);
 CREATE INDEX IF NOT EXISTS cti_articles_avec_iocs ON cti_articles (source, traite_a DESC)
     WHERE iocs_retenus > 0;
+
+-- ---------------------------------------------------------------------------
+-- Routage des sources de log vers leur index (routage.py)
+-- ---------------------------------------------------------------------------
+--
+-- Une « source de log » n'est pas un agent : c'est ce qui PRODUIT les lignes
+-- (un décodeur Wazuh, ou un groupe de règles quand le décodeur est générique).
+-- Le pipeline d'ingest de l'indexer route chaque source vers son index datée ;
+-- cette table est la mémoire de ce routage, et le seul endroit où il se décide.
+--
+-- Pourquoi une table et pas seulement le JSON du pipeline : le fichier
+-- `alerts-pipeline.json` est bind-monté sur le module filebeat du manager, et
+-- filebeat le REPOUSSE à chaque démarrage du manager. Une branche ajoutée par
+-- API seule disparaît au prochain `docker compose up`. Le rendu du pipeline est
+-- donc recalculé depuis cette table à chaque passage du watchdog, et réappliqué
+-- dès qu'il diverge de ce qui tourne — l'écrasement par filebeat se répare tout
+-- seul en moins de deux minutes.
+--
+-- `source_key` est COMPOSITE (`decoder:npm-access`, `groups:suricata`) : le
+-- décodeur est le critère stable quand il est spécifique (cf. le commentaire du
+-- script de routage — les groupes dépendent de QUELLE règle gagne), mais un
+-- décodeur générique comme `json` sert à la fois AdGuard et Suricata et ne peut
+-- pas être une clé. Pour ceux-là, le critère redescend sur le groupe de règles.
+CREATE TABLE IF NOT EXISTS routage_sources (
+    id             bigserial PRIMARY KEY,
+    source_key     text NOT NULL UNIQUE,
+    -- 'decoder' | 'groups' : ce sur quoi la branche painless teste.
+    critere_type   text NOT NULL,
+    critere_valeur text NOT NULL,
+    -- Préfixe SANS la date : 'wazuh-proxy' donne 'wazuh-proxy-2026.08.14'.
+    index_base     text NOT NULL,
+    -- 'applicative' (garde le nom du produit) | 'generique' (nom de métier).
+    kind           text NOT NULL DEFAULT 'generique',
+    -- 'propose'  : nommée, en attente (repli déterministe, ou plafond du jour)
+    -- 'applique' : les cinq pièces sont posées (pipeline, template, ISM,
+    --              lecture par l'IA, index pattern du dashboard)
+    -- 'refuse'   : écartée à la main, ne plus reproposer
+    statut         text NOT NULL DEFAULT 'propose',
+    -- 'statique' : branche déjà présente dans alerts-pipeline.json, découverte
+    --              par observation et jamais régénérée par nous
+    -- 'llm' | 'repli' | 'humain' : qui a choisi le nom
+    nomme_par      text NOT NULL DEFAULT 'llm',
+    justification  text NOT NULL DEFAULT '',
+    -- Dernier volume observé sur la fenêtre, et quand. C'est ce couple qui rend
+    -- visible une source ÉTABLIE devenue muette : un index qui n'existe plus
+    -- parce que plus personne n'y écrit ne se voit dans aucun tableau de bord.
+    volume_ref     bigint NOT NULL DEFAULT 0,
+    vue_a          timestamptz NOT NULL DEFAULT now(),
+    -- Alerte réellement observée, gardée comme TÉMOIN : avant tout PUT du
+    -- pipeline, chaque témoin est rejoué dans `_simulate` et doit ressortir
+    -- dans son index attendu. C'est le garde-fou contre le painless invalide,
+    -- qui — `on_failure: drop` oblige — jetterait silencieusement toutes les
+    -- alertes du SOC.
+    exemple        jsonb,
+    creee_a        timestamptz NOT NULL DEFAULT now(),
+    appliquee_a    timestamptz
+);
+CREATE INDEX IF NOT EXISTS routage_sources_statut ON routage_sources (statut);
+CREATE INDEX IF NOT EXISTS routage_sources_appliquees
+    ON routage_sources (appliquee_a DESC) WHERE appliquee_a IS NOT NULL;

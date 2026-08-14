@@ -440,6 +440,27 @@ Conséquences pratiques :
   panne se referme dans le canal où elle a été **ouverte** : basculer la
   configuration n'abandonne pas les cases déjà ouverts.
 
+### Routage des sources de log (`soc_agent.routage`)
+
+Même famille de problème que le capteur muet, à l'autre bout de la chaîne : une
+source de log qui n'a pas d'index dédié n'émet aucune erreur, ses alertes se
+diluent simplement dans `wazuh-alerts-4.x-*` — et si `INDEXER_ALERT_INDICES` a
+été oublié en même temps, l'IA ne les voit jamais. Piège rencontré **trois
+fois**.
+
+Le watchdog vérifie donc, à chaque passage, que chaque source tombe dans son
+index, et **crée l'index set** quand une source nouvelle apparaît : branche de
+routage, template, rétention ISM, liste lue par l'ingestion, index pattern du
+dashboard. Le nom est proposé par le LLM sous convention stricte
+(`wazuh-firewall` pour du pfSense ou du Forti, `wazuh-jellyfin` pour Jellyfin)
+et **validé en code** — un nom qui ne passe pas reste en attente d'un humain.
+
+`INDEXER_ALERT_INDICES` cesse d'être une liste à tenir à jour : `indices_lus()`
+en fait l'union avec les index sets réellement créés, ce qui ferme l'angle mort
+par construction plutôt que par vigilance.
+
+Détail, garde-fous et pièges mesurés : [`docs/ROUTAGE.md`](../../docs/ROUTAGE.md).
+
 ### Sortir du mode shadow
 
 `evaluate.py` refuse de conclure sous 30 incidents labellisés : un « 100 % »

@@ -42,8 +42,12 @@ INDEXER_CA = os.environ.get("INDEXER_CA") or None
 # Deux fois le même piège en pratique : d'abord wazuh-linux-*/wazuh-web-*, puis
 # le 2026-07-29 wazuh-yara-* (5 alertes de niveau 12, dont un web shell) et
 # wazuh-firewall-* (tout Suricata, routé la veille). D'où la liste exhaustive
-# ci-dessous, alignée sur les `index` du pipeline : la tenir à jour EN MÊME TEMPS
-# que lui.
+# ci-dessous, alignée sur les `index` du pipeline.
+#
+# Elle n'est plus à tenir à jour à la main : c'est le SOCLE, auquel
+# `routage.indices_lus()` ajoute les index sets créés depuis (cf. docs/ROUTAGE.md).
+# Un index set créé sans être ajouté ici était un capteur invisible pour l'IA —
+# c'est maintenant une conséquence, plus une vigilance.
 INDEXER_ALERT_INDICES = os.environ.get(
     "INDEXER_ALERT_INDICES",
     "wazuh-alerts-*,wazuh-linux-*,wazuh-web-*,wazuh-yara-*,wazuh-firewall-*,"
@@ -689,6 +693,67 @@ if WATCHDOG_IRIS_CANAL not in ("alert", "case", "off"):
 # a pris du retard.
 WATCHDOG_RETARD_INGEST_MAX = int(
     os.environ.get("WATCHDOG_RETARD_INGEST_MAX", "30"))
+
+# --- Routage des sources de log (routage.py) --------------------------------
+#
+# Le watchdog vérifie que chaque source de log tombe dans SON index, et crée
+# l'index set manquant quand une source nouvelle apparaît. C'est le pendant
+# actif de la liste INDEXER_ALERT_INDICES ci-dessus : tenir cette liste à la
+# main a déjà rendu l'IA aveugle deux fois (wazuh-linux/web, puis yara et
+# firewall). Ce qui est vérifié à chaque passage ne peut plus être oublié.
+ROUTAGE_ACTIF = os.environ.get("ROUTAGE_ACTIF", "true").lower() == "true"
+
+# Auto-application des index sets. `false` = les sources sont détectées,
+# nommées et proposées (alerte IRIS), mais rien n'est écrit côté indexer :
+# c'est le mode d'observation à tenir quelques jours après un déploiement.
+ROUTAGE_APPLIQUER = os.environ.get("ROUTAGE_APPLIQUER", "true").lower() == "true"
+
+# Le pipeline d'ingest visé. Nom imposé par filebeat (module wazuh), pas par
+# nous : c'est celui que le manager repousse à chaque démarrage.
+ROUTAGE_PIPELINE = os.environ.get(
+    "ROUTAGE_PIPELINE", "filebeat-7.10.2-wazuh-alerts-pipeline")
+
+# Fenêtre d'observation des sources. 24 h : assez large pour qu'une source
+# quotidienne (sauvegarde nocturne, rapport journalier) soit vue, assez courte
+# pour que l'agrégation reste gratuite.
+ROUTAGE_FENETRE_HEURES = int(os.environ.get("ROUTAGE_FENETRE_HEURES", "24"))
+
+# Volume minimum pour CRÉER un index set. Une source qui a produit trois lignes
+# hier n'est pas une source, c'est un accident — et un index set créé pour rien
+# reste ensuite dans le template, dans l'ISM et dans le pattern combiné du
+# dashboard, où un pattern vide casse Global (cf. create_index_patterns.py).
+ROUTAGE_BASELINE_MIN = int(os.environ.get("ROUTAGE_BASELINE_MIN", "20"))
+
+# Volume minimum pour signaler une DÉRIVE (source connue qui n'atterrit plus
+# où elle devrait). Plus bas que la création : constater qu'une route existante
+# ne fonctionne plus n'engage aucune écriture, et c'est le symptôme d'un
+# pipeline écrasé — on veut le voir tôt.
+ROUTAGE_DERIVE_MIN = int(os.environ.get("ROUTAGE_DERIVE_MIN", "5"))
+
+# Silence au-delà duquel une source ÉTABLIE est déclarée muette. Mesuré sur
+# l'indexer, donc contre l'horloge (contrairement aux capteurs du watchdog, qui
+# se mesurent contre l'horizon d'ingestion).
+#
+# 48 h et pas 10 minutes : une source de log n'est pas un capteur continu. Un
+# proxy peut ne rien logger d'alertable pendant une nuit entière. C'est ce
+# seuil qui aurait signalé wazuh-proxy, wazuh-jellyfin et wazuh-dns, morts
+# depuis le 2026-07-30 sans que rien ne le dise.
+ROUTAGE_SILENCE_HEURES = int(os.environ.get("ROUTAGE_SILENCE_HEURES", "48"))
+
+# Plafond de créations automatiques par 24 h. Un plafond bas est délibéré :
+# créer un index set touche le pipeline d'ingest de TOUT le SOC. Si dix sources
+# nouvelles apparaissent le même jour, ce n'est pas dix index sets qu'il faut,
+# c'est un humain qui regarde ce qui vient de changer dans le SI.
+ROUTAGE_MAX_NOUVEAUX_PAR_JOUR = int(
+    os.environ.get("ROUTAGE_MAX_NOUVEAUX_PAR_JOUR", "2"))
+
+# Index par défaut de Wazuh : une source qui atterrit là n'est routée par rien.
+ROUTAGE_INDEX_DEFAUT = os.environ.get("ROUTAGE_INDEX_DEFAUT", "wazuh-alerts-4.x")
+
+# OpenSearch Dashboards, pour créer l'index pattern d'un nouvel index set. Sans
+# lui l'index existe et se remplit, mais reste invisible dans Discover — le
+# genre de demi-création qui se découvre trois semaines plus tard.
+DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "https://localhost")
 
 # Reconstruction des commandes (rapport IRIS) : le compte compromis est souvent
 # aussi une session légitime (le même uid génère du bruit de login — gpg-agent,

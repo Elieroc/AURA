@@ -81,6 +81,32 @@ ISM_PATTERNS = [
 ]
 
 
+def ism_patterns() -> list[str]:
+    """Motifs statiques UNION les index sets créés par `routage.py`.
+
+    Un index set créé sans rétention grossit indéfiniment, et le disque plein
+    est la panne qui arrête TOUT le SOC (indexer en lecture seule, Postgres qui
+    refuse d'écrire). Lire la table plutôt que d'ajouter une ligne ici à chaque
+    création rend l'oubli impossible.
+
+    Repli sur les seuls motifs statiques si la base ne répond pas : mieux vaut
+    une politique qui couvre l'essentiel qu'un job de rétention qui ne tourne
+    pas du tout.
+    """
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+
+        from . import routage
+        with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
+            appris = routage.patterns_appliques(conn)
+    except Exception as e:                                    # noqa: BLE001
+        log.warning("patterns de routage illisibles (%s) : politique ISM "
+                    "limitée aux motifs statiques", e)
+        appris = []
+    return list(dict.fromkeys(ISM_PATTERNS + appris))
+
+
 def politique_ism() -> dict:
     return {
         "policy": {
@@ -102,7 +128,7 @@ def politique_ism() -> dict:
                  "transitions": []},
             ],
             "ism_template": [{
-                "index_patterns": ISM_PATTERNS,
+                "index_patterns": ism_patterns(),
                 "priority": 100,
             }],
         }
@@ -142,7 +168,7 @@ def appliquer_ism() -> str:
     # « failure » avec un motif explicite : ce n'est pas une erreur, c'est
     # l'état normal à partir du 2e passage.
     r = _indexer("POST", "/_plugins/_ism/add/"
-                         + ",".join(ISM_PATTERNS), {"policy_id": ISM_POLICY_ID})
+                         + ",".join(ism_patterns()), {"policy_id": ISM_POLICY_ID})
     ajoutes = r.json().get("updated_indices", 0) if r.ok else 0
     log.info("politique ISM « %s » %s (%s jours), %s index rattaché(s)",
              ISM_POLICY_ID, etat, config.RETENTION_INDEX_JOURS, ajoutes)

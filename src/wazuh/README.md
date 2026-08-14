@@ -530,6 +530,22 @@ quasi temps réel..
 - Modif du routage : éditer le script dans `alerts-pipeline.json` puis recréer le manager
   (`docker compose up -d --force-recreate wazuh.manager`).
 
+### Contrôle automatique du routage (`soc_agent.routage`)
+
+Le tableau ci-dessus est **vérifié en continu** par le watchdog (toutes les
+2 min), et complété tout seul quand une source de log nouvelle apparaît. Voir
+[`docs/ROUTAGE.md`](../../docs/ROUTAGE.md). Deux conséquences pour qui édite ce
+fichier :
+
+- le processor `script` du routage porte le **tag `routage-statique`**. C'est le
+  point d'insertion des branches apprises : le retirer casse la génération, qui
+  refuse alors d'écrire plutôt que d'insérer à l'aveugle ;
+- les branches apprises sont insérées **juste après** ce processor, dans un
+  processor tagué `routage-appris` régénéré à chaque passage. Ne pas l'éditer à
+  la main : il est écrasé. Et ne pas s'étonner de le voir revenir après un
+  `--force-recreate` du manager — filebeat repousse ce fichier au démarrage et
+  efface les branches apprises, que le watchdog réapplique dans les 2 minutes.
+
 ## Dashboards custom
 
 - `dashboards/soc-ai-dashboards.ndjson` (généré par `dashboards/gen_dashboard.py`), 5 dashboards :

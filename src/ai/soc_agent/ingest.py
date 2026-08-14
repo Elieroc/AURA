@@ -17,7 +17,7 @@ import psycopg
 import requests
 import urllib3
 
-from . import config, noise
+from . import config, noise, routage
 
 # --- Attribution conteneur LXC (auditd de l'hôte Proxmox) --------------------
 # L'agent pve (009) capte l'execve de TOUS les conteneurs LXC (noyau partagé) ;
@@ -199,7 +199,10 @@ def _lot(depuis: str | None, apres: tuple | None, taille: int,
         corps["search_after"] = list(apres)
 
     rep = requests.post(
-        f"{config.INDEXER_URL}/{config.INDEXER_ALERT_INDICES}/_search",
+        # Liste statique UNION les index sets créés depuis par routage.py :
+        # un index créé sans être ajouté ici est un capteur que l'IA ne voit
+        # pas, en silence (cf. routage.indices_lus).
+        f"{config.INDEXER_URL}/{routage.indices_lus()}/_search",
         json=corps,
         auth=(config.INDEXER_USER, config.INDEXER_PASSWORD),
         verify=config.INDEXER_CA if config.INDEXER_VERIFY_TLS else False,
