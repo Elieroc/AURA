@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""Génère le ndjson des dashboards Aura-SOC pour Wazuh dashboard (OSD 2.x).
+"""Generates the ndjson of the Aura-SOC dashboards for Wazuh dashboard (OSD 2.x).
 
-Dashboards :
-- Threat Intel : carte GeoIP, réputation AbuseIPDB, détections VirusTotal
-- Global      : timeline des alertes par niveau, compteur global d'événements,
-                MTTD / MTTR (délais issus de l'index wazuh-ai-*)
-- Linux       : top règles, échecs d'auth, top alertes (index wazuh-linux-*)
-- Windows     : Event IDs, types d'ouverture de session, processus créés, fichiers
-                déposés, accès aux identifiants, PowerShell (index wazuh-windows-*)
-- AI          : tokens, coût, latence et qualité des verdicts (index wazuh-ai-*,
-                alimenté par le conteneur soc-agent-metrics)
+Dashboards:
+- Threat Intel : GeoIP map, AbuseIPDB reputation, VirusTotal detections
+- Global      : timeline of alerts by level, global event counter,
+                MTTD / MTTR (delays taken from the wazuh-ai-* index)
+- Linux       : top rules, auth failures, top alerts (wazuh-linux-* index)
+- Windows     : Event IDs, logon types, processes created, files
+                dropped, credential access, PowerShell (wazuh-windows-* index)
+- AI          : tokens, cost, latency and verdict quality (wazuh-ai-* index,
+                fed by the soc-agent-metrics container)
 """
 import json
 import os
 
-IDX_ALL = "soc-ai-all-alerts"    # pattern combiné wazuh-alerts-*,wazuh-linux-*,wazuh-windows-*,wazuh-web-*,wazuh-firewall-*,wazuh-proxy-*
+IDX_ALL = "soc-ai-all-alerts"    # combined pattern wazuh-alerts-*,wazuh-linux-*,wazuh-windows-*,wazuh-web-*,wazuh-firewall-*,wazuh-proxy-*
 IDX_LINUX = "wazuh-linux-*"
 IDX_WINDOWS = "wazuh-windows-*"
 IDX_WEB = "wazuh-web-*"
 IDX_YARA = "wazuh-yara-*"
-IDX_AI = "wazuh-ai-*"      # métriques d'IA produites par ai/soc_agent/metrics.py
-IDX_VOC = "wazuh-voc-*"    # VOC : vulnérabilités du parc, produit par ai/soc_agent/vulns.py
+IDX_AI = "wazuh-ai-*"      # AI metrics produced by ai/soc_agent/metrics.py
+IDX_VOC = "wazuh-voc-*"    # VOC: fleet vulnerabilities, produced by ai/soc_agent/vulns.py
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "soc-ai-dashboards.ndjson")
 
 HIST_PARAMS = {
@@ -32,7 +32,7 @@ HIST_PARAMS = {
                     "position": "left", "show": True, "style": {},
                     "scale": {"type": "linear", "mode": "normal"},
                     "labels": {"show": True, "rotate": 0, "filter": False, "truncate": 100},
-                    "title": {"text": "Nombre d'alertes"}}],
+                    "title": {"text": "Number of alerts"}}],
     "seriesParams": [{"show": True, "type": "histogram", "mode": "stacked",
                        "data": {"label": "Count", "id": "1"},
                        "valueAxis": "ValueAxis-1", "drawLinesBetweenPoints": True,
@@ -42,40 +42,40 @@ HIST_PARAMS = {
     "thresholdLine": {"show": False, "value": 10, "width": 1, "style": "full", "color": "#E7664C"},
 }
 
-# PIEGE (vecu, 3 allers-retours) : ne JAMAIS ajouter `.keyword` a un champ ici.
-# Wazuh declare tous ses champs string en `keyword` PUR dans son template
-# (_template/wazuh) — pas en `text` + sous-champ `.keyword` comme le fait le
-# mapping dynamique par defaut d'OpenSearch. `agent.name.keyword`,
-# `rule.description.keyword`, `data.virustotal.source.file.keyword`... n'existent
-# donc pas, et la visualisation affiche "No results found" en silence.
-# Les index custom (wazuh-linux-*, wazuh-web-*, wazuh-proxy-*, ...) heritent du
-# meme mapping via le template `soc-ai-routing` (clone de celui de wazuh, cf.
-# wazuh/README.md) — la regle vaut donc pour eux aussi.
-# Verifier avant d'ajouter un champ :
+# TRAP (learned the hard way, 3 round-trips): NEVER append `.keyword` to a field here.
+# Wazuh declares all its string fields as PURE `keyword` in its template
+# (_template/wazuh) — not as `text` + `.keyword` sub-field like OpenSearch's
+# default dynamic mapping does. `agent.name.keyword`,
+# `rule.description.keyword`, `data.virustotal.source.file.keyword`... therefore
+# do not exist, and the visualization silently shows "No results found".
+# The custom indices (wazuh-linux-*, wazuh-web-*, wazuh-proxy-*, ...) inherit the
+# same mapping via the `soc-ai-routing` template (a clone of Wazuh's own, cf.
+# wazuh/README.md) — the rule therefore applies to them too.
+# Check before adding a field:
 #   curl -sk -u admin:$INDEXER_PASSWORD \
-#     "https://localhost:9200/wazuh-alerts-*/_mapping/field/<champ>"
+#     "https://localhost:9200/wazuh-alerts-*/_mapping/field/<field>"
 TERMS = {"orderBy": "1", "order": "desc", "otherBucket": False, "otherBucketLabel": "Other",
          "missingBucket": False, "missingBucketLabel": "Missing"}
 
-# Alertes actionnables : sévérité >= Medium (rule.level >= 7)
+# Actionable alerts: severity >= Medium (rule.level >= 7)
 SEV_ACTIONABLE = 'rule.severity:("Medium" or "High" or "Critical")'
 
-# Ce qu'on REGARDE, par opposition à ce qu'on compte. Même seuil que celui à
-# partir duquel le pipeline IA ouvre un incident (config.MIN_LEVEL = 12 ~ High) :
-# le flux du dashboard Global montre donc exactement ce que le soc-agent a pu
-# prendre en compte, ni plus ni moins.
+# What we LOOK at, as opposed to what we count. Same threshold as the one above
+# which the AI pipeline opens an incident (config.MIN_LEVEL = 12 ~ High):
+# the Global dashboard's stream therefore shows exactly what the soc-agent could
+# take into account, no more, no less.
 SEV_HIGH_CRIT = 'rule.severity:("High" or "Critical")'
 
-# Couleurs par sévérité (palette Elastic/OSD)
+# Colors by severity (Elastic/OSD palette)
 SEV_COLORS = {"vis": {"colors": {
-    "Critical": "#BD271E",   # rouge
+    "Critical": "#BD271E",   # red
     "High": "#E7664C",       # orange
-    "Medium": "#D6BF57",     # jaune
-    "Low": "#54B399",        # vert
-    "Info": "#6092C0",       # bleu
+    "Medium": "#D6BF57",     # yellow
+    "Low": "#54B399",        # green
+    "Info": "#6092C0",       # blue
 }}}
 
-# Tri des buckets sévérité par rule.severity_order (Critical=5 ... Info=1)
+# Sort severity buckets by rule.severity_order (Critical=5 ... Info=1)
 SEV_TERMS = {**TERMS, "field": "rule.severity", "size": 5, "orderBy": "custom", "order": "desc",
              "orderAgg": {"id": "orderAgg", "enabled": True, "type": "max", "schema": "orderAgg",
                           "params": {"field": "rule.severity_order"}}}
@@ -102,7 +102,7 @@ def vis(vid, title, vis_state, idx, query="", ui_state=None):
 
 
 def saved_search(sid, title, description, columns, idx, query="", sort=None):
-    """Recherche sauvegardée — liste chronologique d'événements (panneau de dashboard)."""
+    """Saved search — chronological list of events (dashboard panel)."""
     return {
         "attributes": {
             "title": title,
@@ -128,13 +128,13 @@ def saved_search(sid, title, description, columns, idx, query="", sort=None):
 
 
 def dashboard(did, title, description, layout, time_from="now-30d"):
-    """layout: liste de (obj_id, x, y, w, h[, type]) — grille 48 colonnes.
-    type vaut "visualization" (défaut) ou "search".
+    """layout: list of (obj_id, x, y, w, h[, type]) — 48-column grid.
+    type is "visualization" (default) or "search".
 
-    `time_from` : fenêtre restaurée à l'ouverture. Paramétrable pour le VOC, dont
-    les documents de vulnérabilité sont horodatés à leur PREMIÈRE observation —
-    une fenêtre de 30 jours y masquerait justement les plus anciennes, donc les
-    plus en retard.
+    `time_from`: window restored on open. Configurable for the VOC, whose
+    vulnerability documents are timestamped at their FIRST observation —
+    a 30-day window would precisely hide the oldest ones, i.e. the
+    most overdue.
     """
     panels, refs = [], []
     for i, item in enumerate(layout, 1):
@@ -168,10 +168,10 @@ def dashboard(did, title, description, layout, time_from="now-30d"):
 
 objs = []
 
-# ---------- Visualisations : Threat Intel ----------
+# ---------- Visualizations: Threat Intel ----------
 
-objs.append(vis("soc-ai-geoip-map", "Carte des IP sources (GeoIP)", {
-    "title": "Carte des IP sources (GeoIP)",
+objs.append(vis("soc-ai-geoip-map", "Source IP map (GeoIP)", {
+    "title": "Source IP map (GeoIP)",
     "type": "tile_map",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
@@ -185,21 +185,21 @@ objs.append(vis("soc-ai-geoip-map", "Carte des IP sources (GeoIP)", {
                "wms": {"enabled": False, "options": {"format": "image/png", "transparent": True}}},
 }, IDX_ALL))
 
-objs.append(vis("soc-ai-abuseipdb-table", "Réputation IP (AbuseIPDB)", {
-    "title": "Réputation IP (AbuseIPDB)",
+objs.append(vis("soc-ai-abuseipdb-table", "IP reputation (AbuseIPDB)", {
+    "title": "IP reputation (AbuseIPDB)",
     "type": "table",
     "aggs": [
-        {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {"customLabel": "Alertes"}},
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {"customLabel": "Alerts"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "data.abuseipdb.srcip", "size": 20, "customLabel": "IP source"}},
+         "params": {**TERMS, "field": "data.abuseipdb.srcip", "size": 20, "customLabel": "Source IP"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "data.abuseipdb.abuse_confidence_score", "orderBy": "_key",
-                     "size": 5, "customLabel": "Score abus"}},
+                     "size": 5, "customLabel": "Abuse score"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "data.abuseipdb.dstip", "size": 5,
-                     "missingBucket": True, "missingBucketLabel": "-", "customLabel": "IP destination"}},
+                     "missingBucket": True, "missingBucketLabel": "-", "customLabel": "Destination IP"}},
         {"id": "5", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "data.abuseipdb.country_code", "size": 5, "customLabel": "Pays"}},
+         "params": {**TERMS, "field": "data.abuseipdb.country_code", "size": 5, "customLabel": "Country"}},
         {"id": "6", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "data.abuseipdb.isp", "size": 5, "customLabel": "ISP"}},
     ],
@@ -207,16 +207,16 @@ objs.append(vis("soc-ai-abuseipdb-table", "Réputation IP (AbuseIPDB)", {
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_ALL, query="data.abuseipdb.srcip:*"))
 
-objs.append(vis("soc-ai-virustotal-table", "Détections VirusTotal", {
-    "title": "Détections VirusTotal",
+objs.append(vis("soc-ai-virustotal-table", "VirusTotal detections", {
+    "title": "VirusTotal detections",
     "type": "table",
     "aggs": [
-        {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {"customLabel": "Alertes"}},
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {"customLabel": "Alerts"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "data.virustotal.source.file", "size": 20, "customLabel": "Fichier"}},
+         "params": {**TERMS, "field": "data.virustotal.source.file", "size": 20, "customLabel": "File"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "data.virustotal.positives", "orderBy": "_key",
-                     "size": 5, "customLabel": "Moteurs positifs"}},
+                     "size": 5, "customLabel": "Positive engines"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "agent.name", "size": 5, "customLabel": "Machine"}},
     ],
@@ -224,12 +224,12 @@ objs.append(vis("soc-ai-virustotal-table", "Détections VirusTotal", {
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_ALL, query="data.virustotal.positives:* and not data.virustotal.positives:0"))
 
-objs.append(vis("soc-ai-vt-total", "Détections VirusTotal (total)", {
-    "title": "Détections VirusTotal (total)",
+objs.append(vis("soc-ai-vt-total", "VirusTotal detections (total)", {
+    "title": "VirusTotal detections (total)",
     "type": "metric",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Détections VT"}},
+         "params": {"customLabel": "VT detections"}},
     ],
     "params": {"addTooltip": True, "addLegend": False, "type": "metric",
                "metric": {"percentageMode": False, "useRanges": False,
@@ -241,14 +241,14 @@ objs.append(vis("soc-ai-vt-total", "Détections VirusTotal (total)", {
                                      "subText": "", "fontSize": 60}}},
 }, IDX_ALL, query="data.virustotal.positives:* and not data.virustotal.positives:0"))
 
-objs.append(vis("soc-ai-abuseipdb-countries", "Top pays (AbuseIPDB)", {
-    "title": "Top pays (AbuseIPDB)",
+objs.append(vis("soc-ai-abuseipdb-countries", "Top countries (AbuseIPDB)", {
+    "title": "Top countries (AbuseIPDB)",
     "type": "horizontal_bar",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Détections"}},
+         "params": {"customLabel": "Detections"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
-         "params": {**TERMS, "field": "data.abuseipdb.country_code", "size": 10, "customLabel": "Pays"}},
+         "params": {**TERMS, "field": "data.abuseipdb.country_code", "size": 10, "customLabel": "Country"}},
     ],
     "params": {"type": "histogram", "grid": {"categoryLines": False},
                "categoryAxes": [{"id": "CategoryAxis-1", "type": "category", "position": "left",
@@ -259,9 +259,9 @@ objs.append(vis("soc-ai-abuseipdb-countries", "Top pays (AbuseIPDB)", {
                                "position": "bottom", "show": True, "style": {},
                                "scale": {"type": "linear", "mode": "normal"},
                                "labels": {"show": True, "rotate": 75, "filter": True, "truncate": 100},
-                               "title": {"text": "Détections"}}],
+                               "title": {"text": "Detections"}}],
                "seriesParams": [{"show": True, "type": "histogram", "mode": "normal",
-                                  "data": {"label": "Détections", "id": "1"},
+                                  "data": {"label": "Detections", "id": "1"},
                                   "valueAxis": "ValueAxis-1", "drawLinesBetweenPoints": True,
                                   "lineWidth": 2, "showCircles": True}],
                "addTooltip": True, "addLegend": False, "legendPosition": "right",
@@ -270,10 +270,10 @@ objs.append(vis("soc-ai-abuseipdb-countries", "Top pays (AbuseIPDB)", {
                                   "color": "#E7664C"}},
 }, IDX_ALL, query="data.abuseipdb.srcip:*"))
 
-# ---------- Visualisations : Global ----------
+# ---------- Visualizations: Global ----------
 
-objs.append(vis("soc-ai-alerts-timeline", "Alertes par sévérité (timeline)", {
-    "title": "Alertes par sévérité (timeline)",
+objs.append(vis("soc-ai-alerts-timeline", "Alerts by severity (timeline)", {
+    "title": "Alerts by severity (timeline)",
     "type": "histogram",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
@@ -287,20 +287,20 @@ objs.append(vis("soc-ai-alerts-timeline", "Alertes par sévérité (timeline)", 
     "params": HIST_PARAMS,
 }, IDX_ALL, ui_state=SEV_COLORS))
 
-objs.append(saved_search("soc-ai-latest-alerts", "Dernières alertes (High / Critical)",
-    "Flux chronologique des alertes High et Critical, plus récentes en tête. "
-    "Le seuil ≥ Medium noyait ce flux sous le bruit de scan du reverse proxy — "
-    "des dizaines de milliers de 4xx par jour, aucune actionnable.",
+objs.append(saved_search("soc-ai-latest-alerts", "Latest alerts (High / Critical)",
+    "Chronological stream of High and Critical alerts, most recent first. "
+    "The >= Medium threshold drowned this stream under the reverse proxy's scan "
+    "noise — tens of thousands of 4xx per day, none of them actionable.",
     ["agent.name", "rule.severity", "rule.level", "rule.description", "data.srcip",
      "rule.mitre.tactic"],
     IDX_ALL, query=SEV_HIGH_CRIT))
 
-objs.append(vis("soc-ai-total-events", "Nombre d'événements global", {
-    "title": "Nombre d'événements global",
+objs.append(vis("soc-ai-total-events", "Global event count", {
+    "title": "Global event count",
     "type": "metric",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Événements"}},
+         "params": {"customLabel": "Events"}},
     ],
     "params": {"addTooltip": True, "addLegend": False, "type": "metric",
                "metric": {"percentageMode": False, "useRanges": False,
@@ -312,23 +312,23 @@ objs.append(vis("soc-ai-total-events", "Nombre d'événements global", {
                                      "subText": "", "fontSize": 60}}},
 }, IDX_ALL))
 
-# ---------- Visualisations : Linux (index wazuh-linux-*) ----------
+# ---------- Visualizations: Linux (wazuh-linux-* index) ----------
 
-objs.append(vis("soc-ai-top-rules", "Top règles déclenchées", {
-    "title": "Top règles déclenchées",
+objs.append(vis("soc-ai-top-rules", "Top triggered rules", {
+    "title": "Top triggered rules",
     "type": "pie",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
          "params": {**TERMS, "field": "rule.description", "size": 10,
-                     "otherBucket": True, "otherBucketLabel": "Autres"}},
+                     "otherBucket": True, "otherBucketLabel": "Other"}},
     ],
     "params": {"type": "pie", "addTooltip": True, "addLegend": True, "legendPosition": "right",
                "isDonut": True, "labels": {"show": False, "values": True, "last_level": True, "truncate": 100}},
 }, IDX_LINUX, query=SEV_ACTIONABLE))
 
-objs.append(vis("soc-ai-auth-failures", "Échecs d'authentification", {
-    "title": "Échecs d'authentification",
+objs.append(vis("soc-ai-auth-failures", "Authentication failures", {
+    "title": "Authentication failures",
     "type": "histogram",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
@@ -343,15 +343,15 @@ objs.append(vis("soc-ai-auth-failures", "Échecs d'authentification", {
 }, IDX_LINUX,
    query='rule.groups:("authentication_failed" or "authentication_failures" or "invalid_login") or rule.id:(5710 or 5716 or 5760)'))
 
-objs.append(vis("soc-ai-linux-top-alerts", "Top alertes", {
-    "title": "Top alertes",
+objs.append(vis("soc-ai-linux-top-alerts", "Top alerts", {
+    "title": "Top alerts",
     "type": "table",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {"customLabel": "Occurrences"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alerte"}},
+         "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alert"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**SEV_TERMS, "customLabel": "Sévérité"}},
+         "params": {**SEV_TERMS, "customLabel": "Severity"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "agent.name", "size": 3, "customLabel": "Agent"}},
     ],
@@ -391,36 +391,36 @@ def hbar_agents(vid, title, metric_label, query="", idx=IDX_LINUX, field="agent.
     }, idx, query=query)
 
 
-objs.append(hbar_agents("soc-ai-linux-agents-alerts", "Top agents par alertes (sévérité ≥ Medium)",
-                        "Alertes", query=SEV_ACTIONABLE))
-objs.append(hbar_agents("soc-ai-linux-agents-logs", "Top agents par volume de logs",
-                        "Événements"))
+objs.append(hbar_agents("soc-ai-linux-agents-alerts", "Top agents by alerts (severity >= Medium)",
+                        "Alerts", query=SEV_ACTIONABLE))
+objs.append(hbar_agents("soc-ai-linux-agents-logs", "Top agents by log volume",
+                        "Events"))
 
-# ---------- Visualisations : Web (index wazuh-web-*) ----------
-# Niveaux des règles web bas (attaques = 6) : le filtre pertinent est le groupe "attack".
+# ---------- Visualizations: Web (wazuh-web-* index) ----------
+# Web rule levels are low (attacks = 6): the relevant filter is the "attack" group.
 
-objs.append(vis("soc-ai-web-top-rules", "Top règles web (attaques)", {
-    "title": "Top règles web (attaques)",
+objs.append(vis("soc-ai-web-top-rules", "Top web rules (attacks)", {
+    "title": "Top web rules (attacks)",
     "type": "pie",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
          "params": {**TERMS, "field": "rule.description", "size": 10,
-                     "otherBucket": True, "otherBucketLabel": "Autres"}},
+                     "otherBucket": True, "otherBucketLabel": "Other"}},
     ],
     "params": {"type": "pie", "addTooltip": True, "addLegend": True, "legendPosition": "right",
                "isDonut": True, "labels": {"show": False, "values": True, "last_level": True, "truncate": 100}},
 }, IDX_WEB, query='rule.groups:"attack"'))
 
-objs.append(vis("soc-ai-web-top-alerts", "Top alertes web", {
-    "title": "Top alertes web",
+objs.append(vis("soc-ai-web-top-alerts", "Top web alerts", {
+    "title": "Top web alerts",
     "type": "table",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {"customLabel": "Occurrences"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alerte"}},
+         "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alert"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**SEV_TERMS, "customLabel": "Sévérité"}},
+         "params": {**SEV_TERMS, "customLabel": "Severity"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "agent.name", "size": 3, "customLabel": "Agent"}},
     ],
@@ -428,8 +428,8 @@ objs.append(vis("soc-ai-web-top-alerts", "Top alertes web", {
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_WEB, query='rule.groups:"attack"'))
 
-objs.append(vis("soc-ai-web-timeline", "Alertes web (timeline)", {
-    "title": "Alertes web (timeline)",
+objs.append(vis("soc-ai-web-timeline", "Web alerts (timeline)", {
+    "title": "Web alerts (timeline)",
     "type": "histogram",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
@@ -443,28 +443,28 @@ objs.append(vis("soc-ai-web-timeline", "Alertes web (timeline)", {
     "params": HIST_PARAMS,
 }, IDX_WEB))
 
-objs.append(vis("soc-ai-web-top-urls", "Top URLs ciblées", {
-    "title": "Top URLs ciblées",
+objs.append(vis("soc-ai-web-top-urls", "Top targeted URLs", {
+    "title": "Top targeted URLs",
     "type": "table",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {"customLabel": "Hits"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "data.url", "size": 15, "customLabel": "URL"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "data.id", "size": 3, "customLabel": "Code HTTP"}},
+         "params": {**TERMS, "field": "data.id", "size": 3, "customLabel": "HTTP code"}},
     ],
     "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_WEB, query='rule.groups:"attack"'))
 
-objs.append(vis("soc-ai-web-top-srcips", "Top IP sources web", {
-    "title": "Top IP sources web",
+objs.append(vis("soc-ai-web-top-srcips", "Top web source IPs", {
+    "title": "Top web source IPs",
     "type": "horizontal_bar",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Requêtes"}},
+         "params": {"customLabel": "Requests"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
-         "params": {**TERMS, "field": "data.srcip", "size": 10, "customLabel": "IP source"}},
+         "params": {**TERMS, "field": "data.srcip", "size": 10, "customLabel": "Source IP"}},
     ],
     "params": {"type": "histogram", "grid": {"categoryLines": False},
                "categoryAxes": [{"id": "CategoryAxis-1", "type": "category", "position": "left",
@@ -475,9 +475,9 @@ objs.append(vis("soc-ai-web-top-srcips", "Top IP sources web", {
                                "position": "bottom", "show": True, "style": {},
                                "scale": {"type": "linear", "mode": "normal"},
                                "labels": {"show": True, "rotate": 75, "filter": True, "truncate": 100},
-                               "title": {"text": "Requêtes"}}],
+                               "title": {"text": "Requests"}}],
                "seriesParams": [{"show": True, "type": "histogram", "mode": "normal",
-                                  "data": {"label": "Requêtes", "id": "1"},
+                                  "data": {"label": "Requests", "id": "1"},
                                   "valueAxis": "ValueAxis-1", "drawLinesBetweenPoints": True,
                                   "lineWidth": 2, "showCircles": True}],
                "addTooltip": True, "addLegend": False, "legendPosition": "right",
@@ -486,25 +486,25 @@ objs.append(vis("soc-ai-web-top-srcips", "Top IP sources web", {
                                   "color": "#E7664C"}},
 }, IDX_WEB))
 
-objs.append(vis("soc-ai-web-http-codes", "Codes HTTP", {
-    "title": "Codes HTTP",
+objs.append(vis("soc-ai-web-http-codes", "HTTP codes", {
+    "title": "HTTP codes",
     "type": "pie",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
-         "params": {**TERMS, "field": "data.id", "size": 10, "customLabel": "Code HTTP"}},
+         "params": {**TERMS, "field": "data.id", "size": 10, "customLabel": "HTTP code"}},
     ],
     "params": {"type": "pie", "addTooltip": True, "addLegend": True, "legendPosition": "right",
                "isDonut": True, "labels": {"show": False, "values": True, "last_level": True, "truncate": 100}},
 }, IDX_WEB))
 
-# ---------- Visualisations : YARA (index wazuh-yara-*) ----------
-# Loki/YARITRUST : les logs loki portent leur propre niveau dans data.level
-# (ALERT/WARNING/NOTICE) ; la machine scannee est dans data.yara.scanned_host
-# (le champ hostname natif de loki est TOUJOURS le scanner, cf. rule 100900).
+# ---------- Visualizations: YARA (wazuh-yara-* index) ----------
+# Loki/YARITRUST: loki logs carry their own level in data.level
+# (ALERT/WARNING/NOTICE); the scanned machine is in data.yara.scanned_host
+# (loki's native hostname field is ALWAYS the scanner, cf. rule 100900).
 
-objs.append(vis("soc-ai-yara-total", "Fichiers malveillants detectes (total)", {
-    "title": "Fichiers malveillants detectes (total)",
+objs.append(vis("soc-ai-yara-total", "Malicious files detected (total)", {
+    "title": "Malicious files detected (total)",
     "type": "metric",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
@@ -519,8 +519,8 @@ objs.append(vis("soc-ai-yara-total", "Fichiers malveillants detectes (total)", {
                                      "subText": "", "fontSize": 60}}},
 }, IDX_YARA))
 
-objs.append(vis("soc-ai-yara-timeline", "Matches YARA par gravite (timeline)", {
-    "title": "Matches YARA par gravite (timeline)",
+objs.append(vis("soc-ai-yara-timeline", "YARA matches by severity (timeline)", {
+    "title": "YARA matches by severity (timeline)",
     "type": "histogram",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
@@ -534,8 +534,8 @@ objs.append(vis("soc-ai-yara-timeline", "Matches YARA par gravite (timeline)", {
     "params": HIST_PARAMS,
 }, IDX_YARA, ui_state={"vis": {"colors": {"ALERT": "#BD271E", "WARNING": "#E7664C", "NOTICE": "#6092C0"}}}))
 
-objs.append(vis("soc-ai-yara-top-hosts", "Top machines infectees", {
-    "title": "Top machines infectees",
+objs.append(vis("soc-ai-yara-top-hosts", "Top infected machines", {
+    "title": "Top infected machines",
     "type": "horizontal_bar",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
@@ -563,13 +563,13 @@ objs.append(vis("soc-ai-yara-top-hosts", "Top machines infectees", {
                                   "color": "#E7664C"}},
 }, IDX_YARA))
 
-objs.append(vis("soc-ai-yara-top-files", "Fichiers detectes", {
-    "title": "Fichiers detectes",
+objs.append(vis("soc-ai-yara-top-files", "Files detected", {
+    "title": "Files detected",
     "type": "table",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {"customLabel": "Occurrences"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "data.file_path", "size": 20, "customLabel": "Fichier"}},
+         "params": {**TERMS, "field": "data.file_path", "size": 20, "customLabel": "File"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "data.yara.scanned_host", "size": 3, "customLabel": "Machine"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
@@ -579,23 +579,23 @@ objs.append(vis("soc-ai-yara-top-files", "Fichiers detectes", {
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_YARA))
 
-objs.append(saved_search("soc-ai-yara-latest", "Derniers matches YARA",
-    "Flux chronologique des fichiers detectes par Loki/YARITRUST, plus recents en tete.",
+objs.append(saved_search("soc-ai-yara-latest", "Latest YARA matches",
+    "Chronological stream of files detected by Loki/YARITRUST, most recent first.",
     ["data.yara.scanned_host", "data.score", "rule.severity", "data.file_path", "data.sha256"],
     IDX_YARA))
 
 
-# ---------- Visualisations : AI (index wazuh-ai-*) ----------
+# ---------- Visualizations: AI (wazuh-ai-* index) ----------
 #
-# Deux familles de documents dans cet index, toujours filtrer sur `event_type` :
-#   event_type:llm_call -> consommation (tokens, latence, coût), un doc par appel
-#   event_type:triage   -> qualité (verdict, incohérences, garde-fous)
-# Sans ce filtre, un compteur mélange les deux et ne veut rien dire.
+# Two families of documents in this index, always filter on `event_type`:
+#   event_type:llm_call -> consumption (tokens, latency, cost), one doc per call
+#   event_type:triage   -> quality (verdict, inconsistencies, guardrails)
+# Without this filter, a counter mixes the two and means nothing.
 
 Q_LLM = "event_type:llm_call"
 Q_TRIAGE = "event_type:triage"
 
-# Couleurs de verdict : vrai positif rouge, faux positif vert, doute jaune.
+# Verdict colors: true positive red, false positive green, uncertain yellow.
 VERDICT_COLORS = {"vis": {"colors": {
     "true_positive": "#BD271E",
     "false_positive": "#54B399",
@@ -604,7 +604,7 @@ VERDICT_COLORS = {"vis": {"colors": {
 
 
 def metric_vis(vid, title, label, idx, query, agg):
-    """Grand chiffre unique. `agg` est l'agrégation de métrique (count, sum...)."""
+    """Single big number. `agg` is the metric aggregation (count, sum...)."""
     return vis(vid, title, {
         "title": title,
         "type": "metric",
@@ -621,32 +621,32 @@ def metric_vis(vid, title, label, idx, query, agg):
     }, idx, query=query)
 
 
-objs.append(metric_vis("soc-ai-ai-tokens-total", "Tokens consommes (total)",
+objs.append(metric_vis("soc-ai-ai-tokens-total", "Tokens consumed (total)",
                        "Tokens", IDX_AI, Q_LLM,
                        {"type": "sum", "params": {"field": "ai.total_tokens"}}))
 
-objs.append(metric_vis("soc-ai-ai-calls-total", "Appels au modele",
-                       "Appels", IDX_AI, Q_LLM, {"type": "count"}))
+objs.append(metric_vis("soc-ai-ai-calls-total", "Model calls",
+                       "Calls", IDX_AI, Q_LLM, {"type": "count"}))
 
-objs.append(metric_vis("soc-ai-ai-cost-total", "Cout estime (USD, approx.)",
+objs.append(metric_vis("soc-ai-ai-cost-total", "Estimated cost (USD, approx.)",
                        "USD (approx.)", IDX_AI, Q_LLM,
                        {"type": "sum", "params": {"field": "ai.cost_usd"}}))
 
-objs.append(metric_vis("soc-ai-ai-latency-avg", "Latence moyenne (ms)",
+objs.append(metric_vis("soc-ai-ai-latency-avg", "Average latency (ms)",
                        "ms", IDX_AI, Q_LLM,
                        {"type": "avg", "params": {"field": "ai.duration_ms"}}))
 
-# Tokens dans le temps, empiles entree/sortie : c'est le rapport entre les deux
-# qui explique le cout (la sortie est facturee plus cher partout), et un pic de
-# sortie signale un modele qui raisonne long.
-objs.append(vis("soc-ai-ai-tokens-timeline", "Tokens dans le temps (entree / sortie)", {
-    "title": "Tokens dans le temps (entree / sortie)",
+# Tokens over time, stacked input/output: it's the ratio between the two
+# that explains the cost (output is billed more expensively everywhere), and an
+# output spike signals a model that reasons for a long time.
+objs.append(vis("soc-ai-ai-tokens-timeline", "Tokens over time (input / output)", {
+    "title": "Tokens over time (input / output)",
     "type": "histogram",
     "aggs": [
         {"id": "1", "enabled": True, "type": "sum", "schema": "metric",
-         "params": {"field": "ai.prompt_tokens", "customLabel": "Tokens entree"}},
+         "params": {"field": "ai.prompt_tokens", "customLabel": "Input tokens"}},
         {"id": "3", "enabled": True, "type": "sum", "schema": "metric",
-         "params": {"field": "ai.completion_tokens", "customLabel": "Tokens sortie"}},
+         "params": {"field": "ai.completion_tokens", "customLabel": "Output tokens"}},
         {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
          "params": {"field": "timestamp", "timeRange": {"from": "now-30d", "to": "now"},
                     "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
@@ -657,12 +657,12 @@ objs.append(vis("soc-ai-ai-tokens-timeline", "Tokens dans le temps (entree / sor
                "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
                               "title": {"text": "Tokens"}}]},
 }, IDX_AI, query=Q_LLM,
-   ui_state={"vis": {"colors": {"Tokens entree": "#6092C0", "Tokens sortie": "#E7664C"}}}))
+   ui_state={"vis": {"colors": {"Input tokens": "#6092C0", "Output tokens": "#E7664C"}}}))
 
-# Par appelant : dit OU part le budget. Le triage n'est qu'un des consommateurs
-# — le rapport IRIS coute souvent plus cher (4000 tokens de budget contre 3000).
-objs.append(vis("soc-ai-ai-tokens-by-usage", "Tokens par usage", {
-    "title": "Tokens par usage",
+# By caller: shows WHERE the budget goes. Triage is only one of the consumers
+# — the IRIS report often costs more (4000 tokens of budget vs 3000).
+objs.append(vis("soc-ai-ai-tokens-by-usage", "Tokens by usage", {
+    "title": "Tokens by usage",
     "type": "pie",
     "aggs": [
         {"id": "1", "enabled": True, "type": "sum", "schema": "metric",
@@ -676,10 +676,10 @@ objs.append(vis("soc-ai-ai-tokens-by-usage", "Tokens par usage", {
                           "truncate": 100}},
 }, IDX_AI, query=Q_LLM))
 
-# Cout dans le temps. Titre explicite sur l'approximation : les tarifs viennent
-# de la grille publique, pas d'une facture (cf. config.LLM_COUT_USD_PAR_MTOKEN_*).
-objs.append(vis("soc-ai-ai-cost-timeline", "Cout estime dans le temps (USD, approx.)", {
-    "title": "Cout estime dans le temps (USD, approx.)",
+# Cost over time. Title explicit about the approximation: the rates come
+# from the public pricing grid, not from an invoice (cf. config.LLM_COST_USD_PER_MTOKEN_*).
+objs.append(vis("soc-ai-ai-cost-timeline", "Estimated cost over time (USD, approx.)", {
+    "title": "Estimated cost over time (USD, approx.)",
     "type": "histogram",
     "aggs": [
         {"id": "1", "enabled": True, "type": "sum", "schema": "metric",
@@ -695,10 +695,10 @@ objs.append(vis("soc-ai-ai-cost-timeline", "Cout estime dans le temps (USD, appr
                               "title": {"text": "USD (estimation)"}}]},
 }, IDX_AI, query=Q_LLM))
 
-# Part de l'entree servie par le cache : c'est le principal levier de cout, le
-# cache hit etant facture 50x moins cher que le cache miss.
-objs.append(vis("soc-ai-ai-cache", "Entree : cache hit vs cache miss", {
-    "title": "Entree : cache hit vs cache miss",
+# Share of the input served by the cache: the main cost lever, since a
+# cache hit is billed 50x cheaper than a cache miss.
+objs.append(vis("soc-ai-ai-cache", "Input: cache hit vs cache miss", {
+    "title": "Input: cache hit vs cache miss",
     "type": "histogram",
     "aggs": [
         {"id": "1", "enabled": True, "type": "sum", "schema": "metric",
@@ -713,18 +713,18 @@ objs.append(vis("soc-ai-ai-cache", "Entree : cache hit vs cache miss", {
     ],
     "params": {**HIST_PARAMS,
                "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
-                              "title": {"text": "Tokens d'entree"}}]},
+                              "title": {"text": "Input tokens"}}]},
 }, IDX_AI, query=Q_LLM,
    ui_state={"vis": {"colors": {"Cache hit": "#54B399", "Cache miss": "#E7664C"}}}))
 
-objs.append(vis("soc-ai-ai-calls-by-model", "Appels par modele", {
-    "title": "Appels par modele",
+objs.append(vis("soc-ai-ai-calls-by-model", "Calls by model", {
+    "title": "Calls by model",
     "type": "pie",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Appels"}},
+         "params": {"customLabel": "Calls"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
-         "params": {**TERMS, "field": "ai.model", "size": 10, "customLabel": "Modele"}},
+         "params": {**TERMS, "field": "ai.model", "size": 10, "customLabel": "Model"}},
     ],
     "params": {"type": "pie", "addTooltip": True, "addLegend": True,
                "legendPosition": "right", "isDonut": True,
@@ -732,14 +732,14 @@ objs.append(vis("soc-ai-ai-calls-by-model", "Appels par modele", {
                           "truncate": 100}},
 }, IDX_AI, query=Q_LLM))
 
-# Latence : moyenne ET 95e centile. La moyenne seule cache les appels qui
-# partent en timeout, et c'est le 95e qui dit si le cycle de 5 min tient.
-objs.append(vis("soc-ai-ai-latency-timeline", "Latence des appels (moyenne / p95)", {
-    "title": "Latence des appels (moyenne / p95)",
+# Latency: average AND 95th percentile. The average alone hides calls that
+# time out, and it's the 95th that tells whether the 5-minute cycle holds.
+objs.append(vis("soc-ai-ai-latency-timeline", "Call latency (average / p95)", {
+    "title": "Call latency (average / p95)",
     "type": "line",
     "aggs": [
         {"id": "1", "enabled": True, "type": "avg", "schema": "metric",
-         "params": {"field": "ai.duration_ms", "customLabel": "Moyenne (ms)"}},
+         "params": {"field": "ai.duration_ms", "customLabel": "Average (ms)"}},
         {"id": "3", "enabled": True, "type": "percentiles", "schema": "metric",
          "params": {"field": "ai.duration_ms", "percents": [95],
                     "customLabel": "p95 (ms)"}},
@@ -751,28 +751,28 @@ objs.append(vis("soc-ai-ai-latency-timeline", "Latence des appels (moyenne / p95
     ],
     "params": {**HIST_PARAMS, "type": "line",
                "seriesParams": [{"show": True, "type": "line", "mode": "normal",
-                                 "data": {"label": "Moyenne (ms)", "id": "1"},
+                                 "data": {"label": "Average (ms)", "id": "1"},
                                  "valueAxis": "ValueAxis-1",
                                  "drawLinesBetweenPoints": True, "lineWidth": 2,
                                  "showCircles": True}],
                "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
-                              "title": {"text": "Millisecondes"}}]},
+                              "title": {"text": "Milliseconds"}}]},
 }, IDX_AI, query=Q_LLM))
 
-# Budget : un completion_tokens qui colle a max_tokens explique un content vide
-# (finish_reason=length sur les modeles raisonnants).
-objs.append(vis("soc-ai-ai-budget", "Sortie vs budget par usage", {
-    "title": "Sortie vs budget par usage",
+# Budget: a completion_tokens that sticks to max_tokens explains empty content
+# (finish_reason=length on reasoning models).
+objs.append(vis("soc-ai-ai-budget", "Output vs budget by usage", {
+    "title": "Output vs budget by usage",
     "type": "table",
     "aggs": [
         {"id": "1", "enabled": True, "type": "avg", "schema": "metric",
-         "params": {"field": "ai.completion_tokens", "customLabel": "Sortie moy."}},
+         "params": {"field": "ai.completion_tokens", "customLabel": "Avg. output"}},
         {"id": "3", "enabled": True, "type": "max", "schema": "metric",
-         "params": {"field": "ai.completion_tokens", "customLabel": "Sortie max"}},
+         "params": {"field": "ai.completion_tokens", "customLabel": "Max output"}},
         {"id": "4", "enabled": True, "type": "max", "schema": "metric",
          "params": {"field": "ai.max_tokens", "customLabel": "Budget"}},
         {"id": "5", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Appels"}},
+         "params": {"customLabel": "Calls"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "ai.usage", "size": 10, "customLabel": "Usage"}},
     ],
@@ -780,14 +780,14 @@ objs.append(vis("soc-ai-ai-budget", "Sortie vs budget par usage", {
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_AI, query=Q_LLM))
 
-objs.append(vis("soc-ai-ai-errors", "Appels en echec", {
-    "title": "Appels en echec",
+objs.append(vis("soc-ai-ai-errors", "Failed calls", {
+    "title": "Failed calls",
     "type": "table",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Appels"}},
+         "params": {"customLabel": "Calls"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "ai.error", "size": 10, "customLabel": "Erreur"}},
+         "params": {**TERMS, "field": "ai.error", "size": 10, "customLabel": "Error"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "ai.usage", "size": 5, "customLabel": "Usage"}},
     ],
@@ -795,10 +795,10 @@ objs.append(vis("soc-ai-ai-errors", "Appels en echec", {
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_AI, query="event_type:llm_call and ai.ok:false"))
 
-# ---------- Qualite des verdicts (event_type:triage) ----------
+# ---------- Verdict quality (event_type:triage) ----------
 
-objs.append(vis("soc-ai-ai-verdicts", "Repartition des verdicts", {
-    "title": "Repartition des verdicts",
+objs.append(vis("soc-ai-ai-verdicts", "Verdict breakdown", {
+    "title": "Verdict breakdown",
     "type": "pie",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
@@ -813,8 +813,8 @@ objs.append(vis("soc-ai-ai-verdicts", "Repartition des verdicts", {
                           "truncate": 100}},
 }, IDX_AI, query=Q_TRIAGE, ui_state=VERDICT_COLORS))
 
-objs.append(vis("soc-ai-ai-verdicts-timeline", "Verdicts dans le temps", {
-    "title": "Verdicts dans le temps",
+objs.append(vis("soc-ai-ai-verdicts-timeline", "Verdicts over time", {
+    "title": "Verdicts over time",
     "type": "histogram",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
@@ -831,8 +831,8 @@ objs.append(vis("soc-ai-ai-verdicts-timeline", "Verdicts dans le temps", {
                               "title": {"text": "Triages"}}]},
 }, IDX_AI, query=Q_TRIAGE, ui_state=VERDICT_COLORS))
 
-objs.append(vis("soc-ai-ai-confidence", "Confiance par verdict", {
-    "title": "Confiance par verdict",
+objs.append(vis("soc-ai-ai-confidence", "Confidence by verdict", {
+    "title": "Confidence by verdict",
     "type": "horizontal_bar",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
@@ -842,7 +842,7 @@ objs.append(vis("soc-ai-ai-confidence", "Confiance par verdict", {
                     "customLabel": "Verdict"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "group",
          "params": {**TERMS, "field": "triage.confidence", "size": 3,
-                    "customLabel": "Confiance"}},
+                    "customLabel": "Confidence"}},
     ],
     "params": {**HIST_PARAMS, "type": "horizontal_bar",
                "seriesParams": [{"show": True, "type": "histogram", "mode": "stacked",
@@ -856,16 +856,22 @@ objs.append(vis("soc-ai-ai-confidence", "Confiance par verdict", {
    ui_state={"vis": {"colors": {"high": "#BD271E", "medium": "#D6BF57",
                                 "low": "#6092C0"}}}))
 
-# Les trois signaux de degradation lisibles SANS jeu labellise. Une barre qui
-# monte ici precede toujours un probleme : prompt casse, ou donnees hostiles.
-objs.append(vis("soc-ai-ai-quality", "Garde-fous, incoherences, injections", {
-    "title": "Garde-fous, incoherences, injections",
+# The three degradation signals readable WITHOUT a labelled set. A bar that
+# rises here always precedes a problem: a broken prompt, or hostile data.
+#
+# NB: the producer (soc_agent/metrics.py, `_doc_triage`) writes these counters
+# under `triage.guardrail_count` and `triage.inconsistency_count` (English field
+# names) — the dashboard used to reference stale French field names
+# (`triage.garde_fou_count` / `triage.incoherence_count`) that no field in the
+# index ever carried; fixed below to match the actual producer output.
+objs.append(vis("soc-ai-ai-quality", "Guardrails, inconsistencies, injections", {
+    "title": "Guardrails, inconsistencies, injections",
     "type": "histogram",
     "aggs": [
         {"id": "1", "enabled": True, "type": "sum", "schema": "metric",
-         "params": {"field": "triage.garde_fou_count", "customLabel": "Garde-fous"}},
+         "params": {"field": "triage.guardrail_count", "customLabel": "Guardrails"}},
         {"id": "3", "enabled": True, "type": "sum", "schema": "metric",
-         "params": {"field": "triage.incoherence_count", "customLabel": "Incoherences"}},
+         "params": {"field": "triage.inconsistency_count", "customLabel": "Inconsistencies"}},
         {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
          "params": {"field": "timestamp", "timeRange": {"from": "now-30d", "to": "now"},
                     "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
@@ -876,10 +882,10 @@ objs.append(vis("soc-ai-ai-quality", "Garde-fous, incoherences, injections", {
                "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
                               "title": {"text": "Occurrences"}}]},
 }, IDX_AI, query=Q_TRIAGE,
-   ui_state={"vis": {"colors": {"Garde-fous": "#E7664C", "Incoherences": "#D6BF57"}}}))
+   ui_state={"vis": {"colors": {"Guardrails": "#E7664C", "Inconsistencies": "#D6BF57"}}}))
 
-objs.append(vis("soc-ai-ai-actions", "Actions proposees", {
-    "title": "Actions proposees",
+objs.append(vis("soc-ai-ai-actions", "Proposed actions", {
+    "title": "Proposed actions",
     "type": "horizontal_bar",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
@@ -898,14 +904,14 @@ objs.append(vis("soc-ai-ai-actions", "Actions proposees", {
                               "title": {"text": "Occurrences"}}]},
 }, IDX_AI, query=Q_TRIAGE))
 
-objs.append(vis("soc-ai-ai-cost-by-agent", "Cout et tokens par machine", {
-    "title": "Cout et tokens par machine",
+objs.append(vis("soc-ai-ai-cost-by-agent", "Cost and tokens by machine", {
+    "title": "Cost and tokens by machine",
     "type": "table",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
          "params": {"customLabel": "Triages"}},
         {"id": "3", "enabled": True, "type": "sum", "schema": "metric",
-         "params": {"field": "ai.prompt_tokens", "customLabel": "Tokens entree"}},
+         "params": {"field": "ai.prompt_tokens", "customLabel": "Input tokens"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "incident.agent_name", "size": 15,
                     "customLabel": "Machine"}},
@@ -914,30 +920,30 @@ objs.append(vis("soc-ai-ai-cost-by-agent", "Cout et tokens par machine", {
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_AI, query=Q_TRIAGE))
 
-objs.append(saved_search("soc-ai-ai-latest", "Derniers appels au modele",
-    "Flux chronologique des appels DeepSeek : usage, tokens, duree, incident.",
+objs.append(saved_search("soc-ai-ai-latest", "Latest model calls",
+    "Chronological stream of DeepSeek calls: usage, tokens, duration, incident.",
     ["ai.usage", "ai.model", "ai.prompt_tokens", "ai.completion_tokens",
      "ai.duration_ms", "ai.ok", "incident.id"],
     IDX_AI, query=Q_LLM))
 
 
-# ---------- Delais de bout en bout : MTTD / MTTR (event_type:incident_kpi) ----------
+# ---------- End-to-end delays: MTTD / MTTR (event_type:incident_kpi) ----------
 #
-# Les deux chiffres qu'on demande a un SOC. Ils viennent de l'index wazuh-ai-*
-# et NON des alertes : le delai se calcule entre des bornes qui vivent dans
-# trois tables Postgres (incidents, triages, mitigations), et OSD ne sait pas
-# soustraire deux dates de deux documents. Le calcul est fait a l'export
-# (soc_agent/metrics.py, `_doc_kpi`), un document par incident.
+# The two numbers every SOC gets asked for. They come from the wazuh-ai-*
+# index and NOT from the alerts: the delay is computed between bounds that live
+# in three Postgres tables (incidents, triages, mitigations), and OSD doesn't
+# know how to subtract two dates from two documents. The computation happens at
+# export time (soc_agent/metrics.py, `_doc_kpi`), one document per incident.
 #
-#   MTTD = premier evenement observe -> incident cree par la correlation.
-#   MTTR = incident cree -> premiere remediation REELLEMENT appliquee
-#          (statuts execute/confirme/sans_effet ; ni dry_run, ni 'emis' non
-#          confirme). Les deux s'additionnent pour le delai total.
+#   MTTD = first event observed -> incident created by correlation.
+#   MTTR = incident created -> first remediation ACTUALLY applied
+#          (statuses executed/confirmed/no_effect; neither dry_run nor an
+#          unconfirmed 'issued'). The two add up to the total delay.
 #
-# La moyenne SEULE ment ici : un seul incident rattrape par le balayage de
-# retard (alerte indexee des heures apres l'evenement) la fait tripler. D'ou la
-# mediane a cote, et le nombre d'incidents derriere le chiffre — une moyenne sur
-# 3 incidents n'a pas le meme poids qu'une moyenne sur 300.
+# The average ALONE lies here: a single incident caught up by a delay sweep
+# (alert indexed hours after the event) can triple it. Hence the median next to
+# it, and the incident count behind the number — an average over
+# 3 incidents doesn't carry the same weight as an average over 300.
 Q_KPI = "event_type:incident_kpi"
 
 
@@ -947,10 +953,10 @@ def kpi_delay(vid, title, field, query, account_label):
         "type": "metric",
         "aggs": [
             {"id": "1", "enabled": True, "type": "avg", "schema": "metric",
-             "params": {"field": field, "customLabel": "Moyenne (min)"}},
+             "params": {"field": field, "customLabel": "Average (min)"}},
             {"id": "2", "enabled": True, "type": "percentiles", "schema": "metric",
              "params": {"field": field, "percents": [50],
-                        "customLabel": "Mediane (min)"}},
+                        "customLabel": "Median (min)"}},
             {"id": "3", "enabled": True, "type": "count", "schema": "metric",
              "params": {"customLabel": account_label}},
         ],
@@ -966,19 +972,20 @@ def kpi_delay(vid, title, field, query, account_label):
 
 
 objs.append(kpi_delay(
-    "soc-ai-mttd", "MTTD — delai de detection", "kpi.mttd_minutes",
-    Q_KPI, "Incidents detectes"))
+    "soc-ai-mttd", "MTTD — detection delay", "kpi.mttd_minutes",
+    Q_KPI, "Incidents detected"))
 
-# Filtre explicite sur l'existence du delai : la moyenne ignorerait les nuls de
-# toute facon, mais le COMPTE, lui, dirait « 11 incidents » la ou seuls 3 ont
-# ete remedies. Le denominateur affiche doit etre celui de la moyenne affichee.
+# Explicit filter on the existence of the delay: the average would ignore
+# nulls anyway, but the COUNT would say "11 incidents" where only 3 were
+# actually remediated. The denominator shown must be the one behind the
+# average shown.
 objs.append(kpi_delay(
-    "soc-ai-mttr", "MTTR — delai de remediation", "kpi.mttr_minutes",
-    f"{Q_KPI} and kpi.remediated:true", "Incidents remedies"))
+    "soc-ai-mttr", "MTTR — remediation delay", "kpi.mttr_minutes",
+    f"{Q_KPI} and kpi.remediated:true", "Incidents remediated"))
 
 
 def counter(vid, title, label, query="", idx=IDX_ALL, agg=None):
-    """Grand chiffre unique sur l'index combiné."""
+    """Single big number on the combined index."""
     return vis(vid, title, {
         "title": title,
         "type": "metric",
@@ -996,25 +1003,25 @@ def counter(vid, title, label, query="", idx=IDX_ALL, agg=None):
     }, idx, query=query)
 
 
-objs.append(counter("soc-ai-actionable-events", "Alertes actionnables (>= Medium)",
-                     "Alertes", query=SEV_ACTIONABLE))
+objs.append(counter("soc-ai-actionable-events", "Actionable alerts (>= Medium)",
+                     "Alerts", query=SEV_ACTIONABLE))
 
-objs.append(counter("soc-ai-highcrit-events", "Alertes High + Critical",
-                     "Alertes", query=SEV_HIGH_CRIT))
+objs.append(counter("soc-ai-highcrit-events", "High + Critical alerts",
+                     "Alerts", query=SEV_HIGH_CRIT))
 
-# Cardinalite sur agent.name : compte les machines qui ont REELLEMENT emis,
-# pas les agents enroles. Un agent muet (capteur coupe, agent arrete) fait
-# baisser ce chiffre — c'est le but.
-objs.append(counter("soc-ai-active-agents", "Machines emettrices",
+# Cardinality on agent.name: counts the machines that have REALLY emitted,
+# not the enrolled agents. A silent agent (sensor down, agent stopped) makes
+# this number drop — that's the point.
+objs.append(counter("soc-ai-active-agents", "Emitting machines",
                      "Machines",
                      agg={"type": "cardinality", "params": {"field": "agent.name"}}))
 
-objs.append(vis("soc-ai-severity-pie", "Repartition par severite", {
-    "title": "Repartition par severite",
+objs.append(vis("soc-ai-severity-pie", "Breakdown by severity", {
+    "title": "Breakdown by severity",
     "type": "pie",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Alertes"}},
+         "params": {"customLabel": "Alerts"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
          "params": SEV_TERMS},
     ],
@@ -1024,15 +1031,15 @@ objs.append(vis("soc-ai-severity-pie", "Repartition par severite", {
                           "truncate": 100}},
 }, IDX_ALL, ui_state=SEV_COLORS))
 
-# Evenements par machine, EMPILES par severite : le simple total par host dit
-# qui est bavard, pas qui va mal. Une machine avec peu d'evenements mais une
-# barre rouge compte davantage qu'une machine noyee sous du niveau 3.
-objs.append(vis("soc-ai-events-by-host", "Evenements par machine (par severite)", {
-    "title": "Evenements par machine (par severite)",
+# Events by machine, STACKED by severity: the plain total per host says
+# who is chatty, not who is doing badly. A machine with few events but a
+# red bar matters more than a machine drowned in level 3.
+objs.append(vis("soc-ai-events-by-host", "Events by machine (by severity)", {
+    "title": "Events by machine (by severity)",
     "type": "horizontal_bar",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Evenements"}},
+         "params": {"customLabel": "Events"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
          "params": {**TERMS, "field": "agent.name", "size": 20,
                     "customLabel": "Machine"}},
@@ -1041,24 +1048,24 @@ objs.append(vis("soc-ai-events-by-host", "Evenements par machine (par severite)"
     ],
     "params": {**HIST_PARAMS, "type": "horizontal_bar",
                "seriesParams": [{"show": True, "type": "histogram", "mode": "stacked",
-                                 "data": {"label": "Evenements", "id": "1"},
+                                 "data": {"label": "Events", "id": "1"},
                                  "valueAxis": "ValueAxis-1",
                                  "drawLinesBetweenPoints": True, "lineWidth": 2,
                                  "showCircles": True}],
                "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
-                              "title": {"text": "Evenements"}}]},
+                              "title": {"text": "Events"}}]},
 }, IDX_ALL, ui_state=SEV_COLORS))
 
-# Par index : mesure ce que produit CHAQUE capteur, et donc ou part la charge de
-# la plateforme. `_index` est un champ meta d'OpenSearch, agregeable tel quel —
-# c'est la seule facon de voir le routage (alerts-pipeline.json) depuis une
-# visualisation, puisque le nom de l'index n'existe dans aucun champ du document.
-objs.append(vis("soc-ai-events-by-index", "Evenements par index (capteur)", {
-    "title": "Evenements par index (capteur)",
+# By index: measures what EACH sensor produces, and therefore where the
+# platform's load goes. `_index` is an OpenSearch meta field, aggregatable as-is
+# — it's the only way to see the routing (alerts-pipeline.json) from a
+# visualization, since the index name doesn't exist in any field of the document.
+objs.append(vis("soc-ai-events-by-index", "Events by index (sensor)", {
+    "title": "Events by index (sensor)",
     "type": "pie",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Evenements"}},
+         "params": {"customLabel": "Events"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
          "params": {**TERMS, "field": "_index", "size": 20,
                     "customLabel": "Index"}},
@@ -1069,107 +1076,107 @@ objs.append(vis("soc-ai-events-by-index", "Evenements par index (capteur)", {
                           "truncate": 100}},
 }, IDX_ALL))
 
-objs.append(vis("soc-ai-global-top-rules", "Top regles (toutes sources)", {
-    "title": "Top regles (toutes sources)",
+objs.append(vis("soc-ai-global-top-rules", "Top rules (all sources)", {
+    "title": "Top rules (all sources)",
     "type": "table",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Alertes"}},
+         "params": {"customLabel": "Alerts"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "rule.description", "size": 15,
-                    "customLabel": "Regle"}},
+                    "customLabel": "Rule"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "rule.level", "orderBy": "_key", "order": "desc",
-                    "size": 3, "customLabel": "Niveau"}},
+                    "size": 3, "customLabel": "Level"}},
     ],
     "params": {"perPage": 10, "showPartialRows": False, "showMetricsAtAllLevels": False,
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_ALL))
 
-# Restreint aux alertes actionnables : sur un parc expose, le top des IP toutes
-# severites confondues n'est qu'un classement de scanners.
-objs.append(vis("soc-ai-global-top-srcips", "Top IP sources (>= Medium)", {
-    "title": "Top IP sources (>= Medium)",
+# Restricted to actionable alerts: on an exposed estate, the top IPs across
+# all severities is just a ranking of scanners.
+objs.append(vis("soc-ai-global-top-srcips", "Top source IPs (>= Medium)", {
+    "title": "Top source IPs (>= Medium)",
     "type": "horizontal_bar",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Alertes"}},
+         "params": {"customLabel": "Alerts"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
          "params": {**TERMS, "field": "data.srcip", "size": 15,
-                    "customLabel": "IP source"}},
+                    "customLabel": "Source IP"}},
     ],
     "params": {**HIST_PARAMS, "type": "horizontal_bar",
                "seriesParams": [{"show": True, "type": "histogram", "mode": "stacked",
-                                 "data": {"label": "Alertes", "id": "1"},
+                                 "data": {"label": "Alerts", "id": "1"},
                                  "valueAxis": "ValueAxis-1",
                                  "drawLinesBetweenPoints": True, "lineWidth": 2,
                                  "showCircles": True}],
                "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
-                              "title": {"text": "Alertes"}}]},
+                              "title": {"text": "Alerts"}}]},
 }, IDX_ALL, query=SEV_ACTIONABLE))
 
-# Tactiques MITRE : dit a quel STADE d'une intrusion on se trouve. Une bascule
-# de Reconnaissance vers Execution/Persistence est le signal qui compte, et il
-# ne se lit sur aucun compteur de volume.
-objs.append(vis("soc-ai-mitre-tactics", "Tactiques MITRE (>= Medium)", {
-    "title": "Tactiques MITRE (>= Medium)",
+# MITRE tactics: says at what STAGE of an intrusion we are. A swing from
+# Reconnaissance to Execution/Persistence is the signal that matters, and it
+# doesn't show up on any volume counter.
+objs.append(vis("soc-ai-mitre-tactics", "MITRE tactics (>= Medium)", {
+    "title": "MITRE tactics (>= Medium)",
     "type": "horizontal_bar",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Alertes"}},
+         "params": {"customLabel": "Alerts"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
          "params": {**TERMS, "field": "rule.mitre.tactic", "size": 12,
-                    "customLabel": "Tactique"}},
+                    "customLabel": "Tactic"}},
     ],
     "params": {**HIST_PARAMS, "type": "horizontal_bar",
                "seriesParams": [{"show": True, "type": "histogram", "mode": "stacked",
-                                 "data": {"label": "Alertes", "id": "1"},
+                                 "data": {"label": "Alerts", "id": "1"},
                                  "valueAxis": "ValueAxis-1",
                                  "drawLinesBetweenPoints": True, "lineWidth": 2,
                                  "showCircles": True}],
                "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
-                              "title": {"text": "Alertes"}}]},
+                              "title": {"text": "Alerts"}}]},
 }, IDX_ALL, query=SEV_ACTIONABLE))
 
-# ---------- Visualisations : Windows (index wazuh-windows-*) ----------
-# Le volume Windows est ecrase par les 4624/4634 (ouverture / fermeture de
-# session) : 32 000 des 43 000 evenements, tous en Info. Les panneaux qui
-# comptent le bruit (Event IDs, types de session, volume par agent) le lisent
-# donc BRUT, et ceux qui montrent une menace filtrent >= Medium ou ciblent un
-# comportement precis. Melanger les deux donnerait un dashboard ou tout est vert
-# parce que tout est noye.
+# ---------- Visualizations: Windows (wazuh-windows-* index) ----------
+# Windows volume is crushed by 4624/4634 (logon / logoff):
+# 32,000 of 43,000 events, all Info. The panels that count the noise (Event
+# IDs, logon types, volume per agent) therefore read it RAW, while the ones
+# showing a threat filter >= Medium or target a precise behavior. Mixing the
+# two would give a dashboard where everything is green because everything is
+# drowned out.
 
-# Les groupes Wazuh cotes Windows arrivent parfois avec un espace de tete
-# (" powershell", " WEF") : la liste <group> des regles built-in est ecrite sur
-# plusieurs lignes dans le XML et l'espace d'indentation part dans la valeur.
-# `rule.groups:"powershell"` (terme exact sur un keyword) ne matche donc RIEN.
-# D'ou les jokers : ce sont eux qui rendent ces requetes fiables, pas du confort.
+# Wazuh's Windows-side groups sometimes arrive with a leading space
+# (" powershell", " WEF"): the built-in rules' <group> list is written across
+# several lines in the XML, and the indentation space leaks into the value.
+# `rule.groups:"powershell"` (exact term on a keyword) therefore matches NOTHING.
+# Hence the wildcards: they are what makes these queries reliable, not a comfort choice.
 Q_WIN_CRED = ('rule.groups:(*credential_access* or *lsass_dump* or *mimikatz* or '
               '*kerberoasting* or *ntds_dump* or *dcsync*) or rule.id:(100910 or 100915 or 100918)')
 Q_WIN_PS = 'rule.groups:*powershell* or data.win.system.eventID:("4103" or "4104")'
 Q_WIN_AUTH_FAIL = ('rule.groups:(*authentication_failed* or *win_authentication_failed*) or '
                    'data.win.system.eventID:("4625" or "4771" or "4776" or "4740")')
 
-objs.append(counter("soc-ai-win-total-events", "Evenements Windows",
-                     "Evenements", idx=IDX_WINDOWS))
+objs.append(counter("soc-ai-win-total-events", "Windows events",
+                     "Events", idx=IDX_WINDOWS))
 
-objs.append(counter("soc-ai-win-actionable", "Alertes actionnables (>= Medium)",
-                     "Alertes", query=SEV_ACTIONABLE, idx=IDX_WINDOWS))
+objs.append(counter("soc-ai-win-actionable", "Actionable alerts (>= Medium)",
+                     "Alerts", query=SEV_ACTIONABLE, idx=IDX_WINDOWS))
 
-# Cardinalite sur data.win.system.computer et non agent.name : c'est le nom vu
-# DANS l'event, donc le FQDN reel de la machine (WIN-DC.lab.local). Un agent
-# dont l'identite a ete clonee depuis un template emet sous le nom d'agent d'une
-# autre machine — les deux chiffres divergent alors, et c'est le signal.
-objs.append(counter("soc-ai-win-hosts", "Machines Windows emettrices",
+# Cardinality on data.win.system.computer and not agent.name: it's the name
+# seen INSIDE the event, i.e. the machine's real FQDN (WIN-DC.lab.local). An
+# agent whose identity was cloned from a template emits under another
+# machine's agent name — the two numbers then diverge, and that's the signal.
+objs.append(counter("soc-ai-win-hosts", "Emitting Windows machines",
                      "Machines", idx=IDX_WINDOWS,
                      agg={"type": "cardinality",
                           "params": {"field": "data.win.system.computer"}}))
 
-objs.append(counter("soc-ai-win-cred-count", "Acces aux identifiants",
-                     "Evenements", query=Q_WIN_CRED, idx=IDX_WINDOWS))
+objs.append(counter("soc-ai-win-cred-count", "Credential access",
+                     "Events", query=Q_WIN_CRED, idx=IDX_WINDOWS))
 
-objs.append(vis("soc-ai-win-timeline", "Alertes Windows par severite (timeline)", {
-    "title": "Alertes Windows par severite (timeline)",
+objs.append(vis("soc-ai-win-timeline", "Windows alerts by severity (timeline)", {
+    "title": "Windows alerts by severity (timeline)",
     "type": "histogram",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
@@ -1183,19 +1190,19 @@ objs.append(vis("soc-ai-win-timeline", "Alertes Windows par severite (timeline)"
     "params": HIST_PARAMS,
 }, IDX_WINDOWS, query=SEV_ACTIONABLE, ui_state=SEV_COLORS))
 
-objs.append(vis("soc-ai-win-mitre", "Tactiques MITRE Windows (>= Medium)", {
-    "title": "Tactiques MITRE Windows (>= Medium)",
+objs.append(vis("soc-ai-win-mitre", "Windows MITRE tactics (>= Medium)", {
+    "title": "Windows MITRE tactics (>= Medium)",
     "type": "horizontal_bar",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Alertes"}},
+         "params": {"customLabel": "Alerts"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
          "params": {**TERMS, "field": "rule.mitre.tactic", "size": 12,
-                    "customLabel": "Tactique"}},
+                    "customLabel": "Tactic"}},
     ],
     "params": {**HIST_PARAMS, "type": "horizontal_bar",
                "seriesParams": [{"show": True, "type": "histogram", "mode": "stacked",
-                                 "data": {"label": "Alertes", "id": "1"},
+                                 "data": {"label": "Alerts", "id": "1"},
                                  "valueAxis": "ValueAxis-1",
                                  "drawLinesBetweenPoints": True, "lineWidth": 2,
                                  "showCircles": True}],
@@ -1203,34 +1210,34 @@ objs.append(vis("soc-ai-win-mitre", "Tactiques MITRE Windows (>= Medium)", {
                                  "labels": {"show": True, "rotate": 0, "filter": False,
                                             "truncate": 200}}],
                "valueAxes": [{**HIST_PARAMS["valueAxes"][0], "name": "BottomAxis-1",
-                              "position": "bottom", "title": {"text": "Alertes"}}],
+                              "position": "bottom", "title": {"text": "Alerts"}}],
                "addLegend": False},
 }, IDX_WINDOWS, query=SEV_ACTIONABLE))
 
-objs.append(vis("soc-ai-win-top-rules", "Top regles Windows (>= Medium)", {
-    "title": "Top regles Windows (>= Medium)",
+objs.append(vis("soc-ai-win-top-rules", "Top Windows rules (>= Medium)", {
+    "title": "Top Windows rules (>= Medium)",
     "type": "pie",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
          "params": {**TERMS, "field": "rule.description", "size": 10,
-                     "otherBucket": True, "otherBucketLabel": "Autres"}},
+                     "otherBucket": True, "otherBucketLabel": "Other"}},
     ],
     "params": {"type": "pie", "addTooltip": True, "addLegend": True, "legendPosition": "right",
                "isDonut": True, "labels": {"show": False, "values": True,
                                             "last_level": True, "truncate": 100}},
 }, IDX_WINDOWS, query=SEV_ACTIONABLE))
 
-objs.append(vis("soc-ai-win-top-alerts", "Top alertes Windows", {
-    "title": "Top alertes Windows",
+objs.append(vis("soc-ai-win-top-alerts", "Top Windows alerts", {
+    "title": "Top Windows alerts",
     "type": "table",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
          "params": {"customLabel": "Occurrences"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alerte"}},
+         "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alert"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**SEV_TERMS, "customLabel": "Severite"}},
+         "params": {**SEV_TERMS, "customLabel": "Severity"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "agent.name", "size": 3, "customLabel": "Agent"}},
     ],
@@ -1238,16 +1245,16 @@ objs.append(vis("soc-ai-win-top-alerts", "Top alertes Windows", {
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_WINDOWS, query=SEV_ACTIONABLE))
 
-# Volume BRUT (pas de filtre severite) : la lecture utile ici est la forme de la
-# telemetrie, pas la menace. Un Event ID qui disparait de ce graphe = une
-# sous-categorie d'audit qui s'est eteinte sur la machine.
-objs.append(hbar_agents("soc-ai-win-event-ids", "Top Event IDs Windows",
-                        "Evenements", idx=IDX_WINDOWS,
+# RAW volume (no severity filter): the useful reading here is the shape of the
+# telemetry, not the threat. An Event ID that disappears from this graph = an
+# audit sub-category that went dark on the machine.
+objs.append(hbar_agents("soc-ai-win-event-ids", "Top Windows Event IDs",
+                        "Events", idx=IDX_WINDOWS,
                         field="data.win.system.eventID", bucket_label="Event ID"))
 
 objs.append(vis("soc-ai-win-logon-types",
-                "Ouvertures de session par type (2 interactif, 3 reseau, 5 service, 10 RDP)", {
-    "title": "Ouvertures de session par type (2 interactif, 3 reseau, 5 service, 10 RDP)",
+                "Logons by type (2 interactive, 3 network, 5 service, 10 RDP)", {
+    "title": "Logons by type (2 interactive, 3 network, 5 service, 10 RDP)",
     "type": "pie",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
@@ -1261,13 +1268,13 @@ objs.append(vis("soc-ai-win-logon-types",
                                             "last_level": True, "truncate": 100}},
 }, IDX_WINDOWS, query='data.win.system.eventID:"4624"'))
 
-objs.append(hbar_agents("soc-ai-win-top-accounts", "Top comptes cibles (ouvertures de session)",
+objs.append(hbar_agents("soc-ai-win-top-accounts", "Top targeted accounts (logons)",
                         "Sessions", idx=IDX_WINDOWS,
-                        field="data.win.eventdata.targetUserName", bucket_label="Compte",
+                        field="data.win.eventdata.targetUserName", bucket_label="Account",
                         query='data.win.system.eventID:"4624"'))
 
-objs.append(vis("soc-ai-win-auth-failures", "Echecs d'authentification Windows", {
-    "title": "Echecs d'authentification Windows",
+objs.append(vis("soc-ai-win-auth-failures", "Windows authentication failures", {
+    "title": "Windows authentication failures",
     "type": "histogram",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric", "params": {}},
@@ -1282,20 +1289,20 @@ objs.append(vis("soc-ai-win-auth-failures", "Echecs d'authentification Windows",
     "params": HIST_PARAMS,
 }, IDX_WINDOWS, query=Q_WIN_AUTH_FAIL))
 
-# Filiation parent -> enfant, pas la liste des processus : un powershell.exe
-# seul ne dit rien, un powershell.exe lance par winword.exe dit tout.
-objs.append(vis("soc-ai-win-processes", "Processus crees (parent -> enfant)", {
-    "title": "Processus crees (parent -> enfant)",
+# Parent -> child lineage, not the process list: a powershell.exe
+# alone says nothing, a powershell.exe launched by winword.exe says everything.
+objs.append(vis("soc-ai-win-processes", "Processes created (parent -> child)", {
+    "title": "Processes created (parent -> child)",
     "type": "table",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
          "params": {"customLabel": "Executions"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "data.win.eventdata.parentImage", "size": 10,
-                     "customLabel": "Processus parent"}},
+                     "customLabel": "Parent process"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "data.win.eventdata.image", "size": 3,
-                     "customLabel": "Processus cree"}},
+                     "customLabel": "Created process"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "agent.name", "size": 2, "customLabel": "Agent"}},
     ],
@@ -1303,15 +1310,15 @@ objs.append(vis("soc-ai-win-processes", "Processus crees (parent -> enfant)", {
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_WINDOWS))
 
-objs.append(vis("soc-ai-win-dropped-files", "Fichiers deposes (Sysmon EID 11)", {
-    "title": "Fichiers deposes (Sysmon EID 11)",
+objs.append(vis("soc-ai-win-dropped-files", "Files dropped (Sysmon EID 11)", {
+    "title": "Files dropped (Sysmon EID 11)",
     "type": "table",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Depots"}},
+         "params": {"customLabel": "Drops"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "data.win.eventdata.targetFilename", "size": 15,
-                     "customLabel": "Fichier"}},
+                     "customLabel": "File"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "agent.name", "size": 2, "customLabel": "Agent"}},
     ],
@@ -1319,19 +1326,19 @@ objs.append(vis("soc-ai-win-dropped-files", "Fichiers deposes (Sysmon EID 11)", 
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_WINDOWS, query='data.win.eventdata.targetFilename:*'))
 
-# Regles maison 100910 / 100915 / 100918 (kerberoasting RC4, DCSync, dump lsass)
-# + groupes built-in equivalents. C'est le panneau ou une compromission AD se
-# voit en premier, d'ou sa place au-dessus du flux brut.
-objs.append(vis("soc-ai-win-cred-access", "Acces aux identifiants (lsass, DCSync, Kerberoasting)", {
-    "title": "Acces aux identifiants (lsass, DCSync, Kerberoasting)",
+# In-house rules 100910 / 100915 / 100918 (kerberoasting RC4, DCSync, lsass dump)
+# + equivalent built-in groups. This is the panel where an AD compromise
+# shows up first, hence its position above the raw stream.
+objs.append(vis("soc-ai-win-cred-access", "Credential access (lsass, DCSync, Kerberoasting)", {
+    "title": "Credential access (lsass, DCSync, Kerberoasting)",
     "type": "table",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Evenements"}},
+         "params": {"customLabel": "Events"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alerte"}},
+         "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alert"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**SEV_TERMS, "customLabel": "Severite"}},
+         "params": {**SEV_TERMS, "customLabel": "Severity"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "agent.name", "size": 2, "customLabel": "Agent"}},
     ],
@@ -1339,16 +1346,16 @@ objs.append(vis("soc-ai-win-cred-access", "Acces aux identifiants (lsass, DCSync
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_WINDOWS, query=Q_WIN_CRED))
 
-objs.append(vis("soc-ai-win-powershell", "Activite PowerShell", {
-    "title": "Activite PowerShell",
+objs.append(vis("soc-ai-win-powershell", "PowerShell activity", {
+    "title": "PowerShell activity",
     "type": "table",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Evenements"}},
+         "params": {"customLabel": "Events"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alerte"}},
+         "params": {**TERMS, "field": "rule.description", "size": 15, "customLabel": "Alert"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "bucket",
-         "params": {**SEV_TERMS, "customLabel": "Severite"}},
+         "params": {**SEV_TERMS, "customLabel": "Severity"}},
         {"id": "4", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "agent.name", "size": 2, "customLabel": "Agent"}},
     ],
@@ -1356,15 +1363,15 @@ objs.append(vis("soc-ai-win-powershell", "Activite PowerShell", {
                "showTotal": False, "totalFunc": "sum", "percentageCol": ""},
 }, IDX_WINDOWS, query=Q_WIN_PS))
 
-objs.append(hbar_agents("soc-ai-win-agents-alerts", "Top agents Windows par alertes (>= Medium)",
-                        "Alertes", query=SEV_ACTIONABLE, idx=IDX_WINDOWS))
-objs.append(hbar_agents("soc-ai-win-agents-logs", "Top agents Windows par volume de logs",
-                        "Evenements", idx=IDX_WINDOWS))
+objs.append(hbar_agents("soc-ai-win-agents-alerts", "Top Windows agents by alerts (>= Medium)",
+                        "Alerts", query=SEV_ACTIONABLE, idx=IDX_WINDOWS))
+objs.append(hbar_agents("soc-ai-win-agents-logs", "Top Windows agents by log volume",
+                        "Events", idx=IDX_WINDOWS))
 
-objs.append(saved_search("soc-ai-win-latest", "Dernieres alertes Windows (High / Critical)",
-    "Flux chronologique des alertes Windows High et Critical, plus recentes en tete. "
-    "Colonnes choisies pour trancher sans ouvrir le document : qui (targetUserName), "
-    "sur quoi (computer), avec quoi (commandLine).",
+objs.append(saved_search("soc-ai-win-latest", "Latest Windows alerts (High / Critical)",
+    "Chronological stream of Windows High and Critical alerts, most recent first. "
+    "Columns chosen to decide without opening the document: who (targetUserName), "
+    "on what (computer), with what (commandLine).",
     ["agent.name", "rule.severity", "rule.level", "rule.description",
      "data.win.system.eventID", "data.win.eventdata.targetUserName",
      "data.win.eventdata.commandLine"],
@@ -1373,7 +1380,7 @@ objs.append(saved_search("soc-ai-win-latest", "Dernieres alertes Windows (High /
 # ---------- Dashboards ----------
 
 objs.append(dashboard("soc-ai-threat-intel", "Threat Intel",
-    "Threat intel : carte GeoIP des IP sources, réputation AbuseIPDB, détections VirusTotal.",
+    "Threat intel: GeoIP map of source IPs, AbuseIPDB reputation, VirusTotal detections.",
     [
         ("soc-ai-geoip-map",             0,  0, 48, 16),
         ("soc-ai-abuseipdb-table",       0, 16, 24, 14),
@@ -1383,17 +1390,17 @@ objs.append(dashboard("soc-ai-threat-intel", "Threat Intel",
     ]))
 
 objs.append(dashboard("soc-ai-global", "Global",
-    "Vue globale : volume et severite, delais de detection et de remediation "
-    "(MTTD / MTTR), repartition par machine et par capteur, tactiques MITRE, "
-    "flux des alertes High/Critical.",
+    "Global view: volume and severity, detection and remediation delays "
+    "(MTTD / MTTR), breakdown by machine and by sensor, MITRE tactics, "
+    "stream of High/Critical alerts.",
     [
         ("soc-ai-total-events",       0,  0, 12, 10),
         ("soc-ai-actionable-events", 12,  0, 12, 10),
         ("soc-ai-highcrit-events",   24,  0, 12, 10),
         ("soc-ai-active-agents",     36,  0, 12, 10),
-        # Deuxieme ligne : ce que la plateforme MET DE TEMPS a faire, en face de
-        # ce qu'elle voit. Volontairement au-dessus des courbes de volume : un
-        # SOC se juge sur ces deux chiffres avant de se juger sur son debit.
+        # Second row: what the platform TAKES TIME to do, facing what it sees.
+        # Deliberately above the volume curves: a SOC is judged on these two
+        # numbers before it's judged on its throughput.
         ("soc-ai-mttd",               0, 10, 24, 10),
         ("soc-ai-mttr",              24, 10, 24, 10),
         ("soc-ai-alerts-timeline",    0, 20, 32, 15),
@@ -1408,7 +1415,7 @@ objs.append(dashboard("soc-ai-global", "Global",
     ]))
 
 objs.append(dashboard("soc-ai-linux", "Linux",
-    "Alertes Linux (index wazuh-linux-*) : top règles, top alertes, échecs d'authentification.",
+    "Linux alerts (wazuh-linux-* index): top rules, top alerts, authentication failures.",
     [
         ("soc-ai-top-rules",        0,  0, 24, 15),
         ("soc-ai-linux-top-alerts",24,  0, 24, 15),
@@ -1418,10 +1425,10 @@ objs.append(dashboard("soc-ai-linux", "Linux",
     ]))
 
 objs.append(dashboard("soc-ai-windows", "Windows",
-    "Alertes Windows / Active Directory (index wazuh-windows-*) : Event IDs, "
-    "ouvertures de session, echecs d'authentification, filiation de processus, "
-    "fichiers deposes, acces aux identifiants (lsass / DCSync / Kerberoasting), "
-    "activite PowerShell.",
+    "Windows / Active Directory alerts (wazuh-windows-* index): Event IDs, "
+    "logons, authentication failures, process lineage, "
+    "dropped files, credential access (lsass / DCSync / Kerberoasting), "
+    "PowerShell activity.",
     [
         ("soc-ai-win-total-events",   0,  0, 12, 10),
         ("soc-ai-win-actionable",    12,  0, 12, 10),
@@ -1445,7 +1452,7 @@ objs.append(dashboard("soc-ai-windows", "Windows",
     ]))
 
 objs.append(dashboard("soc-ai-web", "Web",
-    "Alertes web (index wazuh-web-*) : attaques, URLs ciblées, IP sources, codes HTTP.",
+    "Web alerts (wazuh-web-* index): attacks, targeted URLs, source IPs, HTTP codes.",
     [
         ("soc-ai-web-top-rules",   0,  0, 24, 15),
         ("soc-ai-web-top-alerts", 24,  0, 24, 15),
@@ -1456,7 +1463,7 @@ objs.append(dashboard("soc-ai-web", "Web",
     ]))
 
 objs.append(dashboard("soc-ai-yara", "YARA",
-    "Scans YARA/IOC Loki (YARITRUST, index wazuh-yara-*) : fichiers malveillants detectes par machine.",
+    "Loki YARA/IOC scans (YARITRUST, wazuh-yara-* index): malicious files detected by machine.",
     [
         ("soc-ai-yara-total",     0,  0, 12, 12),
         ("soc-ai-yara-timeline", 12,  0, 36, 12),
@@ -1466,8 +1473,8 @@ objs.append(dashboard("soc-ai-yara", "YARA",
     ]))
 
 objs.append(dashboard("soc-ai-ai", "AI",
-    "Utilisation du modele (index wazuh-ai-*) : tokens, cout, latence, et "
-    "qualite des verdicts rendus par le triage.",
+    "Model usage (wazuh-ai-* index): tokens, cost, latency, and "
+    "quality of the verdicts returned by the triage.",
     [
         ("soc-ai-ai-tokens-total",     0,  0, 12, 10),
         ("soc-ai-ai-calls-total",     12,  0, 12, 10),
@@ -1490,23 +1497,31 @@ objs.append(dashboard("soc-ai-ai", "AI",
         ("soc-ai-ai-latest",           0, 102, 48, 20, "search"),
     ]))
 
-# ---------- Visualisations : VOC (index wazuh-voc-*) ----------
+# ---------- Visualizations: VOC (wazuh-voc-* index) ----------
 #
-# Trois natures de documents dans le meme index pattern, distinguees par
-# event_type (meme convention que wazuh-ai-*) :
+# Three kinds of documents in the same index pattern, distinguished by
+# event_type (same convention as wazuh-ai-*):
 #
-#   voc_parc  : une ligne par passage du scanner — compteurs du parc entier.
-#               C'est la SERIE TEMPORELLE : burn-down, flux, couverture.
-#   voc_asset : une ligne par machine par passage — score d'exposition.
-#   voc_vuln  : une ligne par vulnerabilite, REECRITE a chaque passage, dans
-#               l'index STABLE wazuh-voc-vulns. Horodatee a sa premiere
-#               observation, pas au run : c'est ce qui permet de lire l'age.
+#   voc_parc  : one line per scanner pass — counters for the whole fleet.
+#               This is the TIME SERIES: burn-down, flow, coverage.
+#   voc_asset : one line per machine per pass — exposure score.
+#   voc_vuln  : one line per vulnerability, REWRITTEN on each pass, in the
+#               STABLE index wazuh-voc-vulns. Timestamped at its first
+#               observation, not at run time: that's what allows reading the age.
 #
-# PIEGE, consequence directe : toute visualisation basee sur voc_vuln est
-# tributaire de la fenetre de temps du dashboard. Une fenetre de 30 jours
-# masquerait les vulnerabilites vues il y a plus de 30 jours — c'est-a-dire
-# exactement les plus vieilles, donc les plus en retard, donc les seules qui
-# comptent pour un VOC. D'ou le time_from a 3 ans sur ce dashboard.
+# TRAP, direct consequence: any visualization based on voc_vuln is
+# dependent on the dashboard's time window. A 30-day window would hide
+# vulnerabilities seen more than 30 days ago — i.e.
+# exactly the oldest ones, therefore the most overdue, therefore the only ones
+# that matter for a VOC. Hence the 3-year time_from on this dashboard.
+#
+# NB: the `voc.*` field names below (statut, resolue, ouvertes, critical,
+# hors_sla_total, score_max, couverture_pct, machines_muettes, nouvelles,
+# corrigees, age_jours, sla_jours, retard_jours...) are kept in French on
+# purpose — they are the data schema already written by the producer
+# (ai/soc_agent/vulns.py) into the live wazuh-voc-* index. Renaming them here
+# would silently break every panel below. Only the surrounding titles/labels
+# are translated.
 
 Q_FLEET = "event_type:voc_parc"
 Q_ASSET = "event_type:voc_asset"
@@ -1515,11 +1530,11 @@ Q_VULN_FIXED = "event_type:voc_vuln and voc.resolue:true"
 
 
 def last(vid, title, field, label, query=Q_FLEET, size=48):
-    """Grand chiffre = DERNIERE valeur relevee, via top_hits.
+    """Single big number = LATEST value recorded, via top_hits.
 
-    Pas `max` ni `avg` : ces documents sont des JAUGES, pas des evenements. Un
-    `max` sur 30 jours afficherait le pic de dette du mois en le faisant passer
-    pour l'etat courant — exactement le contraire de ce qu'un VOC doit montrer.
+    Not `max` nor `avg`: these documents are GAUGES, not events. A
+    `max` over 30 days would show the month's debt peak while passing it off
+    as the current state — exactly the opposite of what a VOC should show.
     """
     return vis(vid, title, {
         "title": title,
@@ -1540,30 +1555,30 @@ def last(vid, title, field, label, query=Q_FLEET, size=48):
     }, IDX_VOC, query=query)
 
 
-objs.append(last("soc-ai-voc-ouvertes", "Vulnerabilites ouvertes",
-                    "voc.ouvertes", "Ouvertes"))
-objs.append(last("soc-ai-voc-critical", "Dont critiques",
+objs.append(last("soc-ai-voc-ouvertes", "Open vulnerabilities",
+                    "voc.ouvertes", "Open"))
+objs.append(last("soc-ai-voc-critical", "Of which critical",
                     "voc.critical", "Critical"))
-objs.append(last("soc-ai-voc-horssla", "Hors delai (SLA depasse)",
-                    "voc.hors_sla_total", "Hors SLA"))
-objs.append(last("soc-ai-voc-score-max", "Machine la plus exposee (score)",
+objs.append(last("soc-ai-voc-horssla", "Overdue (SLA exceeded)",
+                    "voc.hors_sla_total", "Over SLA"))
+objs.append(last("soc-ai-voc-score-max", "Most exposed machine (score)",
                     "voc.score_max", "Score /100"))
 
-# La couverture d'abord, et en premier ecran du dashboard. Une dette qui baisse
-# parce que des machines ont cesse de repondre n'est pas une amelioration : sans
-# ce chiffre a cote du burn-down, rien ne permet de faire la difference. Le VOC
-# de la flotte a deja connu ce type d'angle mort (auditd absent partout, agents
-# clones muets) — la lecon est cablee ici.
-objs.append(last("soc-ai-voc-couverture", "Couverture d'inventaire",
-                    "voc.couverture_pct", "% des machines connues", size=36))
-objs.append(last("soc-ai-voc-muettes", "Machines sans inventaire",
+# Coverage first, and on the dashboard's first screen. A debt going down
+# because machines have stopped responding is not an improvement: without
+# this number next to the burn-down, nothing lets you tell the difference. The
+# fleet's VOC has already hit this kind of blind spot (auditd absent
+# everywhere, cloned agents gone silent) — the lesson is wired in here.
+objs.append(last("soc-ai-voc-couverture", "Inventory coverage",
+                    "voc.couverture_pct", "% of known machines", size=36))
+objs.append(last("soc-ai-voc-muettes", "Machines without inventory",
                     "voc.machines_muettes", "Machines", size=36))
 
-# Burn-down : la dette par severite dans le temps. `max` par intervalle et non
-# `avg` : plusieurs passages par intervalle relevent la meme jauge, la moyenne
-# lisserait une variation reelle survenue entre deux scans.
-objs.append(vis("soc-ai-voc-burndown", "Dette de vulnerabilites dans le temps", {
-    "title": "Dette de vulnerabilites dans le temps",
+# Burn-down: debt by severity over time. `max` per interval and not
+# `avg`: several passes per interval read the same gauge, the average would
+# smooth out a real variation that occurred between two scans.
+objs.append(vis("soc-ai-voc-burndown", "Vulnerability debt over time", {
+    "title": "Vulnerability debt over time",
     "type": "area",
     "aggs": [
         {"id": "1", "enabled": True, "type": "max", "schema": "metric",
@@ -1591,7 +1606,7 @@ objs.append(vis("soc-ai-voc-burndown", "Dette de vulnerabilites dans le temps", 
                                "scale": {"type": "linear", "mode": "normal"},
                                "labels": {"show": True, "rotate": 0, "filter": False,
                                           "truncate": 100},
-                               "title": {"text": "Vulnerabilites ouvertes"}}],
+                               "title": {"text": "Open vulnerabilities"}}],
                "seriesParams": [
                    {"show": True, "type": "area", "mode": "stacked",
                     "data": {"label": lbl, "id": i}, "valueAxis": "ValueAxis-1",
@@ -1607,18 +1622,18 @@ objs.append(vis("soc-ai-voc-burndown", "Dette de vulnerabilites dans le temps", 
    ui_state={"vis": {"colors": {"Critical": "#BD271E", "High": "#EC7014",
                                 "Medium": "#F5C700", "Low": "#6092C0"}}}))
 
-# Capacite de remediation : ce qui arrive contre ce qui part. Une dette stable
-# avec un flux eleve des deux cotes n'a pas le meme sens qu'une dette stable
-# sans aucun mouvement — la premiere est un parc vivant, la seconde un parc
-# abandonne. `sum` ici (et non `max`) : ce sont des DELTAS par passage.
-objs.append(vis("soc-ai-voc-flux", "Vulnerabilites apparues / corrigees", {
-    "title": "Vulnerabilites apparues / corrigees",
+# Remediation capacity: what comes in against what goes out. A stable debt
+# with a high flow on both sides doesn't mean the same thing as a stable debt
+# with no movement at all — the first is a living fleet, the second an
+# abandoned one. `sum` here (and not `max`): these are DELTAS per pass.
+objs.append(vis("soc-ai-voc-flux", "Vulnerabilities appeared / fixed", {
+    "title": "Vulnerabilities appeared / fixed",
     "type": "histogram",
     "aggs": [
         {"id": "1", "enabled": True, "type": "sum", "schema": "metric",
-         "params": {"field": "voc.nouvelles", "customLabel": "Apparues"}},
+         "params": {"field": "voc.nouvelles", "customLabel": "Appeared"}},
         {"id": "3", "enabled": True, "type": "sum", "schema": "metric",
-         "params": {"field": "voc.corrigees", "customLabel": "Corrigees"}},
+         "params": {"field": "voc.corrigees", "customLabel": "Fixed"}},
         {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
          "params": {"field": "timestamp", "timeRange": {"from": "now-90d", "to": "now"},
                     "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
@@ -1627,24 +1642,24 @@ objs.append(vis("soc-ai-voc-flux", "Vulnerabilites apparues / corrigees", {
     ],
     "params": {**HIST_PARAMS,
                "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
-                              "title": {"text": "Vulnerabilites"}}]},
+                              "title": {"text": "Vulnerabilities"}}]},
 }, IDX_VOC, query=Q_FLEET,
-   ui_state={"vis": {"colors": {"Apparues": "#E7664C", "Corrigees": "#54B399"}}}))
+   ui_state={"vis": {"colors": {"Appeared": "#E7664C", "Fixed": "#54B399"}}}))
 
-# MTTR de remediation. `voc.age_jours` porte deux sens selon le statut — age
-# tant que c'est ouvert, delai de correction une fois resolu — d'ou le filtre
-# `voc.resolue:true`, sans lequel ce chiffre melangerait la dette et la vitesse.
-objs.append(vis("soc-ai-voc-mttr", "Delai moyen de correction", {
-    "title": "Delai moyen de correction",
+# Remediation MTTR. `voc.age_jours` carries two meanings depending on
+# status — age while it's open, fix delay once resolved — hence the filter
+# `voc.resolue:true`, without which this number would mix debt and speed.
+objs.append(vis("soc-ai-voc-mttr", "Average fix delay", {
+    "title": "Average fix delay",
     "type": "metric",
     "aggs": [
         {"id": "1", "enabled": True, "type": "avg", "schema": "metric",
-         "params": {"field": "voc.age_jours", "customLabel": "Moyenne (jours)"}},
+         "params": {"field": "voc.age_jours", "customLabel": "Average (days)"}},
         {"id": "2", "enabled": True, "type": "percentiles", "schema": "metric",
          "params": {"field": "voc.age_jours", "percents": [50],
-                    "customLabel": "Mediane (jours)"}},
+                    "customLabel": "Median (days)"}},
         {"id": "3", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Vulnerabilites corrigees"}},
+         "params": {"customLabel": "Vulnerabilities fixed"}},
     ],
     "params": {"addTooltip": True, "addLegend": False, "type": "metric",
                "metric": {"percentageMode": False, "useRanges": False,
@@ -1656,15 +1671,15 @@ objs.append(vis("soc-ai-voc-mttr", "Delai moyen de correction", {
                                     "fontSize": 36}}},
 }, IDX_VOC, query=Q_VULN_FIXED))
 
-objs.append(vis("soc-ai-voc-mttr-severite", "Delai de correction par severite", {
-    "title": "Delai de correction par severite",
+objs.append(vis("soc-ai-voc-mttr-severite", "Fix delay by severity", {
+    "title": "Fix delay by severity",
     "type": "horizontal_bar",
     "aggs": [
         {"id": "1", "enabled": True, "type": "avg", "schema": "metric",
-         "params": {"field": "voc.age_jours", "customLabel": "Jours (moyenne)"}},
+         "params": {"field": "voc.age_jours", "customLabel": "Days (average)"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
          "params": {**TERMS, "field": "vulnerability.severity", "size": 6,
-                    "customLabel": "Severite"}},
+                    "customLabel": "Severity"}},
     ],
     "params": {"type": "histogram", "grid": {"categoryLines": False},
                "categoryAxes": [{"id": "CategoryAxis-1", "type": "category",
@@ -1677,9 +1692,9 @@ objs.append(vis("soc-ai-voc-mttr-severite", "Delai de correction par severite", 
                                "scale": {"type": "linear", "mode": "normal"},
                                "labels": {"show": True, "rotate": 75, "filter": True,
                                           "truncate": 100},
-                               "title": {"text": "Jours"}}],
+                               "title": {"text": "Days"}}],
                "seriesParams": [{"show": True, "type": "histogram", "mode": "normal",
-                                  "data": {"label": "Jours (moyenne)", "id": "1"},
+                                  "data": {"label": "Days (average)", "id": "1"},
                                   "valueAxis": "ValueAxis-1",
                                   "drawLinesBetweenPoints": True, "lineWidth": 2,
                                   "showCircles": True}],
@@ -1689,14 +1704,14 @@ objs.append(vis("soc-ai-voc-mttr-severite", "Delai de correction par severite", 
                                   "style": "full", "color": "#E7664C"}},
 }, IDX_VOC, query=Q_VULN_FIXED))
 
-# Score d'exposition par machine. `max` sur voc.score et non un compte de
-# documents : chaque passage ecrit une ligne par machine, donc un `count` classerait
-# les agents par nombre de scans — c'est-a-dire par rien du tout. Le max sur la
-# fenetre donne le pire etat de la machine, ce qu'on veut dans une liste de
-# priorisation. Trie par la metrique (orderBy "1"), pas alphabetiquement.
+# Exposure score by machine. `max` on voc.score and not a document count:
+# each pass writes one line per machine, so a `count` would rank
+# agents by number of scans — i.e. by nothing at all. The max over the
+# window gives the machine's worst state, which is what a prioritization
+# list wants. Sorted by the metric (orderBy "1"), not alphabetically.
 objs.append(vis("soc-ai-voc-score-agents",
-                "Machines les plus exposees (score /100)", {
-    "title": "Machines les plus exposees (score /100)",
+                "Most exposed machines (score /100)", {
+    "title": "Most exposed machines (score /100)",
     "type": "horizontal_bar",
     "aggs": [
         {"id": "1", "enabled": True, "type": "max", "schema": "metric",
@@ -1717,7 +1732,7 @@ objs.append(vis("soc-ai-voc-score-agents",
                                "style": {}, "scale": {"type": "linear", "mode": "normal"},
                                "labels": {"show": True, "rotate": 75, "filter": True,
                                           "truncate": 100},
-                               "title": {"text": "Score d'exposition /100"}}],
+                               "title": {"text": "Exposure score /100"}}],
                "seriesParams": [{"show": True, "type": "histogram", "mode": "normal",
                                   "data": {"label": "Score /100", "id": "1"},
                                   "valueAxis": "ValueAxis-1",
@@ -1730,56 +1745,56 @@ objs.append(vis("soc-ai-voc-score-agents",
 }, IDX_VOC, query=Q_ASSET))
 
 objs.append(vis("soc-ai-voc-risque-priorite",
-                "Vulnerabilites ouvertes par priorite d'asset", {
-    "title": "Vulnerabilites ouvertes par priorite d'asset",
+                "Open vulnerabilities by asset priority", {
+    "title": "Open vulnerabilities by asset priority",
     "type": "histogram",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Vulnerabilites"}},
+         "params": {"customLabel": "Vulnerabilities"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
          "params": {**TERMS, "field": "asset.priorite_label", "orderBy": "_key",
-                    "order": "asc", "size": 4, "customLabel": "Priorite"}},
+                    "order": "asc", "size": 4, "customLabel": "Priority"}},
         {"id": "3", "enabled": True, "type": "terms", "schema": "group",
          "params": {**TERMS, "field": "vulnerability.severity", "size": 6,
-                    "customLabel": "Severite"}},
+                    "customLabel": "Severity"}},
     ],
     "params": {**HIST_PARAMS,
                "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
-                              "title": {"text": "Vulnerabilites ouvertes"}}]},
+                              "title": {"text": "Open vulnerabilities"}}]},
 }, IDX_VOC, query=Q_VULN_OPEN,
    ui_state={"vis": {"colors": {"critical": "#BD271E", "high": "#EC7014",
                                 "medium": "#F5C700", "low": "#6092C0"}}}))
 
-# Top paquets : le meilleur retour sur investissement de patch. Un seul paquet
-# (le meta-paquet noyau) porte souvent la moitie de la dette d'un hote Debian —
-# ce panneau evite de la traiter CVE par CVE.
-objs.append(vis("soc-ai-voc-top-paquets", "Paquets porteurs de la dette", {
-    "title": "Paquets porteurs de la dette",
+# Top packages: the best patching return on investment. A single package
+# (the kernel meta-package) often carries half the debt of a Debian host —
+# this panel avoids handling it CVE by CVE.
+objs.append(vis("soc-ai-voc-top-paquets", "Packages carrying the debt", {
+    "title": "Packages carrying the debt",
     "type": "table",
     "aggs": [
         {"id": "1", "enabled": True, "type": "count", "schema": "metric",
-         "params": {"customLabel": "Vulnerabilites"}},
+         "params": {"customLabel": "Vulnerabilities"}},
         {"id": "3", "enabled": True, "type": "cardinality", "schema": "metric",
          "params": {"field": "agent.name", "customLabel": "Machines"}},
         {"id": "4", "enabled": True, "type": "max", "schema": "metric",
          "params": {"field": "vulnerability.score_base",
-                    "customLabel": "Pire CVSS"}},
+                    "customLabel": "Worst CVSS"}},
         {"id": "2", "enabled": True, "type": "terms", "schema": "bucket",
          "params": {**TERMS, "field": "package.name", "size": 20,
-                    "customLabel": "Paquet"}},
+                    "customLabel": "Package"}},
     ],
     "params": {"perPage": 10, "showPartialRows": False,
                "showMetricsAtAllLevels": False, "showTotal": False,
                "totalFunc": "sum", "percentageCol": ""},
 }, IDX_VOC, query=Q_VULN_OPEN))
 
-# La file d'attente reelle du VOC : ce qui a depasse son delai, trie par retard.
-# Une recherche sauvegardee et non une table d'agregation, pour que l'analyste
-# puisse ouvrir la ligne, voir le paquet exact et pivoter.
+# The VOC's real work queue: what has exceeded its deadline, sorted by delay.
+# A saved search and not an aggregation table, so the analyst
+# can open the row, see the exact package, and pivot.
 objs.append(saved_search(
-    "soc-ai-voc-horssla-liste", "Vulnerabilites hors delai (a traiter)",
-    "Vulnerabilites ouvertes dont le SLA (severite x priorite de l'asset) est "
-    "depasse, du plus gros retard au plus faible.",
+    "soc-ai-voc-horssla-liste", "Overdue vulnerabilities (to handle)",
+    "Open vulnerabilities whose SLA (severity x asset priority) is "
+    "exceeded, from the biggest delay to the smallest.",
     ["agent.name", "asset.priorite_label", "vulnerability.id",
      "vulnerability.severity", "vulnerability.score_base", "package.name",
      "package.version", "voc.age_jours", "voc.sla_jours", "voc.retard_jours"],
@@ -1787,11 +1802,11 @@ objs.append(saved_search(
     sort=[["voc.retard_jours", "desc"]]))
 
 objs.append(dashboard("soc-ai-voc", "VOC",
-    "Gestion des vulnerabilites du parc (index wazuh-voc-*, alimente par le "
-    "conteneur soc-agent-vulns) : dette, capacite de remediation, respect des "
-    "delais, et couverture d'inventaire. La couverture se lit AVANT le "
-    "burn-down : une dette qui baisse parce qu'une machine a cesse de repondre "
-    "n'est pas une amelioration.",
+    "Fleet vulnerability management (wazuh-voc-* index, fed by the "
+    "soc-agent-vulns container): debt, remediation capacity, deadline "
+    "compliance, and inventory coverage. Coverage is read BEFORE the "
+    "burn-down: a debt going down because a machine stopped responding "
+    "is not an improvement.",
     [
         ("soc-ai-voc-ouvertes",       0,  0, 12, 10),
         ("soc-ai-voc-critical",      12,  0, 12, 10),
@@ -1808,13 +1823,13 @@ objs.append(dashboard("soc-ai-voc", "VOC",
         ("soc-ai-voc-top-paquets",   16, 62, 32, 14),
         ("soc-ai-voc-horssla-liste",  0, 76, 48, 20, "search"),
     ],
-    # 3 ans : les documents `voc_vuln` sont horodates a leur PREMIERE
-    # observation. Une fenetre courte masquerait les vulnerabilites les plus
-    # anciennes — donc les plus en retard — et le panneau « hors delai »
-    # afficherait le contraire de la verite.
+    # 3 years: `voc_vuln` documents are timestamped at their FIRST
+    # observation. A short window would hide the oldest vulnerabilities
+    # — i.e. the most overdue ones — and the "overdue" panel
+    # would show the opposite of the truth.
     time_from="now-3y"))
 
 with open(OUT, "w") as f:
     for o in objs:
         f.write(json.dumps(o) + "\n")
-print(f"{len(objs)} objets -> {OUT}")
+print(f"{len(objs)} objects -> {OUT}")

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# Intégration Wazuh -> AbuseIPDB
-# Interroge l'API AbuseIPDB pour la réputation de l'IP source (data.srcip)
-# d'une alerte, et réinjecte le résultat comme nouvel événement dans
-# l'analyseur Wazuh (socket queue), qui matche les règles 100621/100622.
+# Wazuh -> AbuseIPDB integration
+# Queries the AbuseIPDB API for the reputation of an alert's source IP
+# (data.srcip), and reinjects the result as a new event into the Wazuh
+# analyzer (socket queue), matched by rules 100621/100622.
 #
-# Appelé par wazuh-integratord : custom-abuseipdb <alert_file> <api_key>
+# Called by wazuh-integratord: custom-abuseipdb <alert_file> <api_key>
 
 import json
 import sys
@@ -39,10 +39,10 @@ def main() -> None:
     if not srcip:
         sys.exit(0)
 
-    # IP destination : dstip de l'alerte si présente, sinon IP de l'agent attaqué
+    # Destination IP: the alert's dstip if present, otherwise the attacked agent's IP
     dstip = alert.get("data", {}).get("dstip") or alert.get("agent", {}).get("ip")
 
-    # IP privées/locales : pas de sens de requêter AbuseIPDB
+    # Private/local IPs: no point querying AbuseIPDB
     if srcip.startswith(("10.", "192.168.", "127.", "172.16.", "172.17.",
                          "172.18.", "172.19.", "172.2", "172.30.", "172.31.",
                          "fe80:", "::1")):
@@ -66,8 +66,8 @@ def main() -> None:
 
     send_event({
         "integration": "custom-abuseipdb",
-        # srcip à la racine -> data.srcip après décodage JSON -> enrichi en
-        # GeoLocation par le pipeline geoip de l'indexer
+        # srcip at the root -> data.srcip after JSON decoding -> enriched with
+        # GeoLocation by the indexer's geoip pipeline
         "srcip": srcip,
         "abuseipdb": {
             "srcip": srcip,

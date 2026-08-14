@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Rafraîchit la liste de champs de tous les index patterns OSD.
+"""Refreshes the field list of all OSD index patterns.
 
-À lancer après tout ajout de champ dans le pipeline ingest (ex: rule.severity) :
-les index patterns cachent leur liste de champs, un champ inconnu casse les
-visualisations ("Could not locate that index-pattern-field").
+Run this after any field addition in the ingest pipeline (e.g. rule.severity):
+index patterns cache their field list, an unknown field breaks the
+visualizations ("Could not locate that index-pattern-field").
 
-Usage : INDEXER_PASSWORD=... python3 refresh_index_patterns.py
-        (ou lancé depuis wazuh/ avec .env chargé)
+Usage: INDEXER_PASSWORD=... python3 refresh_index_patterns.py
+        (or run from wazuh/ with .env loaded)
 """
 import json
 import os
@@ -20,13 +20,13 @@ AUTH = f"admin:{os.environ['INDEXER_PASSWORD']}"
 
 
 def req(method, path, data=None):
-    """Le corps passe par un FICHIER (`-d @...`), jamais par argv.
+    """The body goes through a FILE (`-d @...`), never through argv.
 
-    Même piège que dans create_index_patterns.py : la liste de champs qu'on
-    réécrit ici dépasse la limite d'argv du noyau pour les patterns larges
-    (`OSError: [Errno 7] Argument list too long`), et le script mourait au
-    milieu du parcours — les patterns déjà traités rafraîchis, les suivants
-    jamais, sans que rien ne le dise.
+    Same pitfall as in create_index_patterns.py: the field list we rewrite
+    here exceeds the kernel's argv limit for large patterns
+    (`OSError: [Errno 7] Argument list too long`), and the script used to die
+    partway through — the already-processed patterns refreshed, the
+    remaining ones never, without anything reporting it.
     """
     cmd = ["curl", "-sk", "-u", AUTH, "-X", method, DASHBOARD_URL + path,
            "-H", "osd-xsrf: true"]
@@ -54,7 +54,7 @@ def main():
                      "&meta_fields=_source&meta_fields=_id&meta_fields=_type"
                      "&meta_fields=_index&meta_fields=_score")
         if "fields" not in fields:
-            print(f"ECHEC {pid} ({title}): {str(fields)[:100]}")
+            print(f"FAILED {pid} ({title}): {str(fields)[:100]}")
             failed = True
             continue
         attrs = obj["attributes"]
@@ -62,7 +62,7 @@ def main():
         r = req("PUT", f"/api/saved_objects/index-pattern/{pid}", {"attributes": attrs})
         ok = "id" in r
         failed |= not ok
-        print(f"{'ok    ' if ok else 'ECHEC '}{pid} ({title}): {len(fields['fields'])} champs")
+        print(f"{'ok    ' if ok else 'FAILED '}{pid} ({title}): {len(fields['fields'])} fields")
     sys.exit(1 if failed else 0)
 
 
