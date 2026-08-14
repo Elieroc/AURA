@@ -1,27 +1,33 @@
-"""VOC : cycle de vie des vulnérabilités du parc, et exposition par machine.
+"""VOC: life cycle of the estate vulnerabilities, and exposure per machine.
 
-Wazuh sait DÉTECTER les vulnérabilités (module Vulnerability Detection) mais pas
-en SUIVRE la gestion. Son index `wazuh-states-vulnerabilities-*` est un index
-d'état : quand un paquet est corrigé, le document est supprimé. On y lit donc en
-permanence « où on en est », jamais « est-ce qu'on progresse ». Les trois
-questions d'un VOC — la dette baisse-t-elle, en combien de temps corrige-t-on,
-qui est hors délai — n'ont aucune réponse dans cet index, et les alertes 23504+
-n'aident pas : elles datent la DÉTECTION, jamais la résolution.
+Wazuh knows how to DETECT vulnerabilities (Vulnerability Detection module) but
+not how to TRACK their management. Its `wazuh-states-vulnerabilities-*` index is
+a state index: when a package is fixed, the document is deleted. So one reads
+"where we stand" there permanently, never "are we making progress". The three
+questions of a VOC — is the debt going down, how long does a fix take, who is
+past the deadline — have no answer in that index, and the 23504+ alerts do not
+help: they date the DETECTION, never the resolution.
 
-Ce module construit l'historique manquant :
+This module builds the missing history:
 
-  scan  -> table `vulnerabilites` (journal : first_seen / derniere_vue / corrigee_a)
-        -> index `wazuh-voc-*` (séries temporelles pour le dashboard VOC)
-        -> `exposition()` (score de risque d'une machine, pour les cases IRIS)
+  scan  -> `vulnerabilities` table (journal: first_seen / last_seen / fixed_at)
+        -> `wazuh-voc-*` index (time series for the VOC dashboard)
+        -> `exposure()` (risk score of a machine, for the IRIS cases)
 
-Le score de risque pondère la charge de vulnérabilités par la priorité CMDB de
-la machine (cf. assets.py) : compter les CVE à poids égal sur le contrôleur de
-domaine et sur un poste de lab fait patcher dans le désordre.
+The risk score weights the vulnerability load by the CMDB priority of the
+machine (cf. assets.py): counting CVEs with equal weight on the domain
+controller and on a lab workstation makes patching happen in the wrong order.
+
+Note on the exported field names: the documents of the `wazuh-voc-*` indices keep
+their original French field names (`voc.hors_sla_total`, `voc.niveau`,
+`asset.priorite_label`...). They are a data schema, not code: the documents
+already indexed carry them, and the VOC dashboard reads them. Renaming them would
+cut the panels off from their history.
 
     python -m soc_agent.vulns                  # scan + export
-    python -m soc_agent.vulns --state           # exposition du parc, sans écrire
-    python -m soc_agent.vulns --agent 013      # détail d'une machine
-    python -m soc_agent.vulns --simulation     # montre les documents, n'écrit pas
+    python -m soc_agent.vulns --state          # exposure of the estate, no write
+    python -m soc_agent.vulns --agent 013      # detail of one machine
+    python -m soc_agent.vulns --simulation     # shows the documents, writes nothing
 """
 
 from __future__ import annotations
@@ -48,18 +54,18 @@ if not config.INDEXER_VERIFY_TLS:
 
 
 # --------------------------------------------------------------------------
-# Sévérité et poids
+# Severity and weights
 # --------------------------------------------------------------------------
 
-# Seuils CVSS v3 officiels, pour reclasser une vulnérabilité dont le feed ne
-# donne PAS de sévérité mais donne un score. Mesuré le 2026-08-12 : 334 CVE par
-# hôte Debian arrivent avec `vulnerability.severity` vide. Les laisser toutes au
-# poids « inconnu » revient à jeter l'information qu'on a effectivement.
+# Official CVSS v3 thresholds, to reclassify a vulnerability whose feed gives NO
+# severity but gives a score. Measured on 2026-08-12: 334 CVEs per Debian host
+# arrive with an empty `vulnerability.severity`. Leaving them all at the
+# "unknown" weight amounts to throwing away information we actually have.
 _THRESHOLDS_CVSS = ((9.0, "critical"), (7.0, "high"), (4.0, "medium"), (0.1, "low"))
 
 
 def effective_severity(severity: str | None, score_base: float | None) -> str:
-    """Sévérité exploitable : celle du feed, sinon celle déduite du score CVSS."""
+    """Usable severity: the feed's, else the one deduced from the CVSS score."""
     s = (severity or "").strip().lower()
     if s and s not in ("untriaged", "unknown", "none"):
         return s
@@ -75,8 +81,8 @@ def weight(severity: str) -> float:
 
 
 def sla_days(severity: str, priority: int) -> int | None:
-    """Délai de correction attendu. None si la sévérité n'est pas classée —
-    on ne réclame pas le respect d'une échéance qu'on n'a pas su fixer."""
+    """Expected patching delay. None if the severity is not classified — we do
+    not demand a deadline we were unable to set ourselves."""
     line = config.VOC_SLA_DAYS.get(severity)
     if not line:
         return None
@@ -84,12 +90,12 @@ def sla_days(severity: str, priority: int) -> int | None:
 
 
 def risk_score(charge: float) -> int:
-    """Indice d'exposition 0-100 d'une machine, à partir de sa charge pondérée.
+    """Exposure index 0-100 of a machine, from its weighted load.
 
-    Log-compressé (cf. `VOC_MAX_LOAD`). Le revers est assumé et doit être dit
-    partout où le score est affiché : au-delà du plafond, il SATURE — deux
-    machines à 100 ne sont plus comparables entre elles, seuls les compteurs
-    bruts exportés à côté les départagent.
+    Log-compressed (cf. `VOC_MAX_LOAD`). The downside is accepted and must be
+    said wherever the score is displayed: past the ceiling it SATURATES — two
+    machines at 100 are no longer comparable, only the raw counters exported
+    alongside tell them apart.
     """
     if charge <= 0:
         return 0
@@ -97,9 +103,11 @@ def risk_score(charge: float) -> int:
         100 * math.log10(1 + charge) / math.log10(1 + config.VOC_MAX_LOAD))))
 
 
-# Bornes de lecture du score. Purement descriptives : elles servent à écrire
-# « exposition élevée » dans un case IRIS plutôt que « 68 », qui ne dit rien à
-# qui n'a pas le reste du parc en tête.
+# Reading bounds of the score. Purely descriptive: they serve to write
+# "exposition élevée" in an IRIS case rather than "68", which says nothing to
+# someone who does not have the rest of the estate in mind. The values stay
+# French: they are displayed in the (French) IRIS notes and exported as
+# `voc.niveau`.
 def risk_level(score: int) -> str:
     if score >= 80:
         return "critique"
@@ -113,18 +121,18 @@ def risk_level(score: int) -> str:
 
 
 # --------------------------------------------------------------------------
-# Lecture de l'index d'état Wazuh
+# Reading the Wazuh state index
 # --------------------------------------------------------------------------
 
 def _scan() -> list[dict]:
-    """Toutes les vulnérabilités ouvertes du parc, telles que Wazuh les voit.
+    """Every open vulnerability of the estate, as Wazuh sees them.
 
-    API `scroll` et non `search_after` : la clé métier (agent, CVE, paquet) sert
-    déjà de clé d'unicité en base, mais `package.name` est absent de certains
-    documents Windows — un tri total dessus n'est donc pas garanti, et une
-    pagination par `search_after` sauterait silencieusement des lignes. Le
-    volume (quelques dizaines de milliers de documents, un shard) rend le scroll
-    sans coût réel.
+    `scroll` API and not `search_after`: the business key (agent, CVE, package)
+    already serves as the uniqueness key in the database, but `package.name` is
+    absent from some Windows documents — a total ordering on it is therefore not
+    guaranteed, and a `search_after` pagination would silently skip rows. The
+    volume (a few tens of thousands of documents, one shard) makes the scroll
+    cost nothing in practice.
     """
     body = {
         "size": 1000,
@@ -141,11 +149,11 @@ def _scan() -> list[dict]:
         f"{config.INDEXER_URL}/{config.VULN_INDICES}/_search",
         params={"scroll": "2m"}, json=body, auth=auth, verify=verify,
         timeout=120)
-    # 404 = le module VD n'a jamais écrit (pas activé, ou premier feed en cours).
-    # Cas normal d'un déploiement neuf : on rend une liste vide, l'appelant
-    # n'écrit alors RIEN — surtout pas une clôture massive.
+    # 404 = the VD module never wrote (not enabled, or first feed in progress).
+    # Normal case of a fresh deployment: we return an empty list, the caller then
+    # writes NOTHING — above all not a mass closure.
     if r.status_code == 404:
-        log.warning("aucun index %s : module Vulnerability Detection inactif ?",
+        log.warning("no %s index: Vulnerability Detection module inactive?",
                     config.VULN_INDICES)
         return []
     r.raise_for_status()
@@ -174,7 +182,7 @@ def _scan() -> list[dict]:
 
 
 def _flatten(src: dict) -> dict | None:
-    """Document indexer -> ligne de `vulnerabilites`. None si inexploitable."""
+    """Indexer document -> `vulnerabilities` row. None if unusable."""
     agent = src.get("agent") or {}
     package = src.get("package") or {}
     vuln = src.get("vulnerability") or {}
@@ -187,9 +195,9 @@ def _flatten(src: dict) -> dict | None:
         "agent_id": str(agent_id),
         "agent_name": agent.get("name"),
         "cve": str(cve),
-        # Le paquet manque sur certaines entrées Windows (vulnérabilité de l'OS
-        # lui-même, corrigée par un hotfix) : on retombe sur un libellé stable
-        # plutôt que sur NULL, qui casserait la clé d'unicité.
+        # The package is missing on some Windows entries (vulnerability of the
+        # OS itself, fixed by a hotfix): we fall back on a stable label rather
+        # than on NULL, which would break the uniqueness key.
         "package": package.get("name") or "(système)",
         "version": package.get("version"),
         "severity": effective_severity(vuln.get("severity"), score),
@@ -200,7 +208,7 @@ def _flatten(src: dict) -> dict | None:
 
 
 # --------------------------------------------------------------------------
-# Synchronisation : le journal
+# Synchronisation: the journal
 # --------------------------------------------------------------------------
 
 UPSERT = """
@@ -218,21 +226,21 @@ ON CONFLICT (agent_id, cve, package) DO UPDATE SET
     published_at    = EXCLUDED.published_at,
     os_name       = EXCLUDED.os_name,
     last_seen = now(),
-    -- `first_seen` n'est JAMAIS réécrite : c'est elle qui fait courir le SLA. Une
-    -- vulnérabilité qui réapparaît après avoir été corrigée redémarre en
-    -- revanche à zéro — c'est une régression, pas la poursuite de l'ancienne.
+    -- `first_seen` is NEVER rewritten: it is what makes the SLA run. A
+    -- vulnerability that reappears after being fixed does restart from zero
+    -- though — that is a regression, not the continuation of the old one.
     first_seen        = CASE WHEN vulnerabilities.status = 'fixed'
                         THEN now() ELSE vulnerabilities.first_seen END,
     fixed_at   = NULL,
     status       = 'open'
-RETURNING (xmax = 0) AS cree
+RETURNING (xmax = 0) AS created
 """
 
-# Clôture : uniquement sur les agents qui ont RÉPONDU à ce scan. Un agent
-# arrêté, ou dont syscollector est cassé, sort de l'index d'état avec toutes ses
-# vulnérabilités — sans ce filtre, le diff conclurait à une remédiation massive.
-# Le burn-down serait parfait et le parc invisible : exactement le mensonge que
-# ce module existe pour éviter.
+# Closure: only on the agents that ANSWERED this scan. A stopped agent, or one
+# whose syscollector is broken, leaves the state index with all its
+# vulnerabilities — without this filter, the diff would conclude a mass
+# remediation. The burn-down would be perfect and the estate invisible: exactly
+# the lie this module exists to avoid.
 CLOSURE = """
 UPDATE vulnerabilities
    SET status = 'fixed', fixed_at = now()
@@ -243,16 +251,16 @@ UPDATE vulnerabilities
 
 
 def sync(conn, lines: list[dict] | None = None) -> dict:
-    """Confronte l'inventaire Wazuh au journal. Retourne le résumé du scan."""
+    """Confront the Wazuh inventory with the journal. Returns the scan summary."""
     start = datetime.now(timezone.utc)
     raw = _scan() if lines is None else lines
     seen = [v for v in (_flatten(s) for s in raw) if v]
 
-    # Dédoublonnage sur la clé métier AVANT insertion : deux documents Wazuh
-    # peuvent porter la même (machine, CVE, paquet) pour deux versions
-    # différentes du paquet (cohabitation de noyaux). `ON CONFLICT` ne sait pas
-    # traiter deux fois la même clé dans un seul `executemany` sous psycopg —
-    # il lève `CardinalityViolation`. On garde la plus grave des deux.
+    # Deduplication on the business key BEFORE insertion: two Wazuh documents
+    # can carry the same (machine, CVE, package) for two different versions of
+    # the package (cohabiting kernels). `ON CONFLICT` cannot handle the same key
+    # twice in a single `executemany` under psycopg — it raises
+    # `CardinalityViolation`. We keep the more severe of the two.
     by_key: dict[tuple, dict] = {}
     for v in seen:
         key = (v["agent_id"], v["cve"], v["package"])
@@ -263,9 +271,10 @@ def sync(conn, lines: list[dict] | None = None) -> dict:
 
     agents_seen = sorted({v["agent_id"] for v in seen})
     if not seen:
-        # Rien du tout : indexer vide, VD inactif, ou scan en cours. On ne
-        # clôture rien et on le dit — un scan sans donnée n'est pas un parc sain.
-        log.warning("scan de vulnérabilités vide : aucune clôture appliquée")
+        # Nothing at all: empty indexer, VD inactive, or scan in progress. We
+        # close nothing and we say so — a scan with no data is not a healthy
+        # estate.
+        log.warning("empty vulnerability scan: no closure applied")
         with conn.cursor() as cur:
             cur.execute("INSERT INTO vuln_scans (agents_seen, vulns_seen) "
                         "VALUES (0, 0)")
@@ -277,14 +286,14 @@ def sync(conn, lines: list[dict] | None = None) -> dict:
     with conn.cursor(row_factory=dict_row) as cur:
         for v in seen:
             r = cur.execute(UPSERT, v).fetchone()
-            new += 1 if r["cree"] else 0
+            new += 1 if r["created"] else 0
         cur.execute(CLOSURE, {"agents": agents_seen, "start_ts": start})
         fixed = max(cur.rowcount, 0)
 
-        # Agents connus de la CMDB mais absents du scan. Deux causes très
-        # différentes qu'on ne peut pas distinguer ici — OS non couvert par le
-        # feed (pfSense/BSD, l'image du manager) ou capteur en panne — d'où la
-        # trace brute, exploitée par le panneau « couverture » du dashboard.
+        # Agents known to the CMDB but absent from the scan. Two very different
+        # causes that we cannot tell apart here — OS not covered by the feed
+        # (pfSense/BSD, the manager image) or broken sensor — hence the raw
+        # trace, used by the "coverage" panel of the dashboard.
         known = {r["agent_id"] for r in cur.execute(
             "SELECT agent_id FROM assets").fetchall()}
         silent = sorted(known - set(agents_seen))
@@ -300,25 +309,24 @@ def sync(conn, lines: list[dict] | None = None) -> dict:
 
 
 # --------------------------------------------------------------------------
-# Exposition d'une machine
+# Exposure of a machine
 # --------------------------------------------------------------------------
 
 SQL_OPEN = """
 SELECT cve, package, version, severity, base_score, published_at, first_seen,
-       extract(epoch FROM now() - first_seen) / 86400 AS age_jours
+       extract(epoch FROM now() - first_seen) / 86400 AS age_days
   FROM vulnerabilities
  WHERE agent_id = %s AND status = 'open'
 """
 
 
 def exposure(conn, agent_id: str) -> dict:
-    """Exposition d'une machine : score, répartition, retard, pires CVE.
+    """Exposure of a machine: score, distribution, delay, worst CVEs.
 
-    Fonction de LECTURE, sans effet de bord : c'est elle que consomment la
-    section IRIS et le serveur MCP. Rend un dict même quand la machine n'a
-    aucune donnée — `couverte: False` — parce que « aucune vulnérabilité
-    connue » et « jamais inventoriée » sont deux affirmations opposées qu'un
-    rapport ne doit surtout pas confondre.
+    READ function, no side effects: it is what the IRIS section and the MCP
+    server consume. Returns a dict even when the machine has no data at all —
+    `covered: False` — because "no known vulnerability" and "never inventoried"
+    are two opposite statements that a report must never confuse.
     """
     prio = assets.agent_priority(conn, str(agent_id))
     lines = [dict(r) for r in conn.execute(SQL_OPEN, (str(agent_id),))]
@@ -332,18 +340,18 @@ def exposure(conn, agent_id: str) -> dict:
         by_severity[sev] = by_severity.get(sev, 0) + 1
         charge += weight(sev)
         delay = sla_days(sev, prio["priority"])
-        if delay is not None and v["age_jours"] > delay:
-            outside_sla.append({**v, "sla_jours": delay,
-                             "retard_jours": round(v["age_jours"] - delay, 1)})
+        if delay is not None and v["age_days"] > delay:
+            outside_sla.append({**v, "sla_days": delay,
+                             "overdue_days": round(v["age_days"] - delay, 1)})
 
     score = risk_score(charge * factor)
-    # Tri des « pires » : sévérité d'abord, puis score CVSS, puis ancienneté.
-    # L'ancienneté départage volontairement en dernier — une critical d'hier
-    # passe avant une high de l'an dernier.
+    # Sorting the "worst": severity first, then CVSS score, then age. Age
+    # deliberately breaks ties last — a critical from yesterday comes before a
+    # high from last year.
     worst = sorted(
         lines,
         key=lambda v: (-weight(v["severity"] or ""), -(v["base_score"] or 0),
-                       -v["age_jours"]))[:config.VOC_MAX_CVE_REPORT]
+                       -v["age_days"]))[:config.VOC_MAX_CVE_REPORT]
 
     fixed = conn.execute(
         "SELECT count(*) AS n, "
@@ -355,42 +363,41 @@ def exposure(conn, agent_id: str) -> dict:
 
     return {
         "agent_id": str(agent_id),
-        # Nom résolu ici et non chez l'appelant : la CLI, l'export vers
-        # l'indexer et la note IRIS doivent désigner la machine de la même
-        # façon. La CMDB fait foi (elle suit les renommages du manager), le nom
-        # figé dans le journal ne sert que de repli.
+        # Name resolved here and not in the caller: the CLI, the export to the
+        # indexer and the IRIS note must designate the machine the same way. The
+        # CMDB is authoritative (it follows the manager's renames), the name
+        # frozen in the journal only serves as a fallback.
         "agent_name": _agent_name(conn, str(agent_id)),
-        "couverte": bool(lines) or _already_scanned(conn, str(agent_id)),
+        "covered": bool(lines) or _already_scanned(conn, str(agent_id)),
         "priority": prio["priority"],
         "role": prio["role"],
         "score": score,
-        "niveau": risk_level(score),
+        "level": risk_level(score),
         "charge": round(charge, 1),
-        "facteur_priorite": factor,
+        "priority_factor": factor,
         "total": len(lines),
-        "par_severite": by_severity,
-        "critiques": by_severity.get("critical", 0),
-        "elevees": by_severity.get("high", 0),
-        "hors_sla": sorted(outside_sla, key=lambda v: -v["retard_jours"]),
-        "hors_sla_total": len(outside_sla),
-        "plus_ancienne_jours": round(max((v["age_jours"] for v in lines),
+        "by_severity": by_severity,
+        "critical_count": by_severity.get("critical", 0),
+        "high_count": by_severity.get("high", 0),
+        "outside_sla": sorted(outside_sla, key=lambda v: -v["overdue_days"]),
+        "outside_sla_total": len(outside_sla),
+        "oldest_days": round(max((v["age_days"] for v in lines),
                                          default=0), 1),
-        "journal_jours": log_age(conn),
-        "pires": worst,
-        "corrigees_90j": fixed["n"],
-        "mttr_jours": round(fixed["mttr"], 1) if fixed["mttr"] else None,
+        "journal_days": log_age(conn),
+        "worst": worst,
+        "fixed_90d": fixed["n"],
+        "mttr_days": round(fixed["mttr"], 1) if fixed["mttr"] else None,
     }
 
 
 def log_age(conn) -> float | None:
-    """Âge du journal en jours, ou None s'il n'a jamais tourné.
+    """Age of the journal in days, or None if it never ran.
 
-    Indispensable pour lire honnêtement l'ancienneté et le retard : ces deux
-    grandeurs se comptent depuis NOTRE première observation, pas depuis la
-    publication de la CVE. Un journal de trois jours affiche donc « plus ancienne
-    ouverte : 3 jours » et « 0 hors délai » sur un parc qui traîne des CVE de
-    2019 — chiffres exacts, conclusion inverse de la vérité si l'on ne dit pas
-    depuis quand on mesure.
+    Indispensable to read the age and the delay honestly: both quantities are
+    counted from OUR first observation, not from the publication of the CVE. A
+    three-day-old journal therefore displays "oldest open: 3 days" and "0 past
+    deadline" on an estate dragging CVEs from 2019 — exact figures, conclusion
+    opposite to the truth if we do not say since when we have been measuring.
     """
     line = conn.execute(
         "SELECT extract(epoch FROM now() - min(started_at)) / 86400 AS j "
@@ -410,15 +417,15 @@ def _agent_name(conn, agent_id: str) -> str | None:
 
 
 def _already_scanned(conn, agent_id: str) -> bool:
-    """Cet agent a-t-il DÉJÀ figuré dans un inventaire ? Distingue « rien à
-    signaler » de « jamais vu » quand la liste ouverte est vide."""
+    """Has this agent EVER appeared in an inventory? Tells "nothing to report"
+    from "never seen" when the open list is empty."""
     return bool(conn.execute(
         "SELECT 1 FROM vulnerabilities WHERE agent_id = %s LIMIT 1",
         (agent_id,)).fetchone())
 
 
 def fleet_exposure(conn) -> list[dict]:
-    """Exposition de chaque machine ayant au moins une vulnérabilité connue."""
+    """Exposure of every machine with at least one known vulnerability."""
     ids = [r["agent_id"] for r in conn.execute(
         "SELECT DISTINCT agent_id FROM vulnerabilities ORDER BY agent_id")]
     return sorted((exposure(conn, a) for a in ids),
@@ -426,32 +433,32 @@ def fleet_exposure(conn) -> list[dict]:
 
 
 # --------------------------------------------------------------------------
-# Rapprochement avec un incident
+# Matching against an incident
 # --------------------------------------------------------------------------
 
 _CVE = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
 
-# Techniques ATT&CK dont la réussite SUPPOSE une vulnérabilité logicielle. Leur
-# présence dans un incident ne prouve pas qu'une CVE de la machine a été
-# exploitée — c'est une piste, et la section le dit en toutes lettres. Sans ce
-# garde-fou de formulation, un rapport transformerait une corrélation en cause.
+# ATT&CK techniques whose success PRESUPPOSES a software vulnerability. Their
+# presence in an incident does not prove that a CVE of the machine was exploited
+# — it is a lead, and the section says so in plain words. Without that wording
+# guardrail, a report would turn a correlation into a cause.
 TECHNIQUES_EXPLOIT = {
-    "T1190",      # exploitation d'une application exposée
-    "T1210",      # exploitation d'un service distant
-    "T1068",      # élévation de privilèges par exploitation
-    "T1211",      # contournement de défense par exploitation
-    "T1212",      # exploitation pour l'accès aux identifiants
-    "T1203",      # exécution par exploitation côté client
+    "T1190",      # exploitation of a public-facing application
+    "T1210",      # exploitation of a remote service
+    "T1068",      # privilege escalation through exploitation
+    "T1211",      # defence evasion through exploitation
+    "T1212",      # exploitation for credential access
+    "T1203",      # client-side exploitation for execution
 }
 
 
 def cited_cves(alerts: list[dict]) -> set[str]:
-    """Identifiants CVE apparaissant littéralement dans les alertes.
+    """CVE identifiers appearing literally in the alerts.
 
-    C'est le SEUL lien certain entre un incident et une vulnérabilité : une CVE
-    écrite dans une ligne de commande ou un nom de fichier (règle locale 100660,
-    « CVE identifier in command ») dit ce que l'attaquant CHERCHAIT. Tout le
-    reste est une hypothèse.
+    This is the ONLY certain link between an incident and a vulnerability: a CVE
+    written in a command line or in a file name (local rule 100660, "CVE
+    identifier in command") says what the attacker was LOOKING FOR. Everything
+    else is a hypothesis.
     """
     found: set[str] = set()
     for a in alerts:
@@ -466,17 +473,17 @@ def cited_cves(alerts: list[dict]) -> set[str]:
 
 def incident_link(conn, agent_id: str, alerts: list[dict],
                   expo: dict | None = None) -> dict:
-    """Ce qui rattache l'exposition de la machine à CET incident.
+    """What ties the exposure of the machine to THIS incident.
 
-    Trois degrés de certitude, jamais mélangés :
+    Three degrees of certainty, never mixed:
 
-    - `confirmees` : la CVE est citée dans les alertes ET ouverte sur la
-      machine. Fait, pas déduction.
-    - `citees_non_ouvertes` : la CVE est citée mais n'est pas (ou plus) ouverte
-      ici. Information à part entière — tentative sur une machine non
-      vulnérable, ou vulnérabilité déjà corrigée.
-    - `vecteurs_possibles` : l'incident porte une technique d'exploitation et la
-      machine a des vulnérabilités graves ouvertes. Aucune preuve de lien.
+    - `confirmed`: the CVE is quoted in the alerts AND open on the machine. Fact,
+      not deduction.
+    - `quoted_not_open`: the CVE is quoted but is not (or no longer) open here.
+      Information in its own right — attempt against a non-vulnerable machine, or
+      vulnerability already fixed.
+    - `possible_vectors`: the incident carries an exploitation technique and the
+      machine has serious open vulnerabilities. No proof of any link.
     """
     expo = expo or exposure(conn, agent_id)
     cited = cited_cves(alerts)
@@ -490,33 +497,33 @@ def incident_link(conn, agent_id: str, alerts: list[dict],
 
     confirmed = [dict(open_by_cve[c]) for c in sorted(cited) if c in open_by_cve]
     return {
-        "confirmees": confirmed,
-        "citees_non_ouvertes": sorted(cited - set(open_by_cve)),
-        "techniques_exploit": exploit,
-        # Les vecteurs ne sont proposés que si l'incident porte réellement une
-        # technique d'exploitation : sinon la section listerait les pires CVE de
-        # la machine à côté d'un incident qui n'a rien à voir, et l'analyste
-        # ferait le lien à notre place.
-        "vecteurs_possibles": (
-            [v for v in expo["pires"]
+        "confirmed": confirmed,
+        "quoted_not_open": sorted(cited - set(open_by_cve)),
+        "exploit_techniques": exploit,
+        # The vectors are only proposed if the incident really carries an
+        # exploitation technique: otherwise the section would list the worst CVEs
+        # of the machine next to an unrelated incident, and the analyst would
+        # make the link on our behalf.
+        "possible_vectors": (
+            [v for v in expo["worst"]
              if (v["severity"] or "") in ("critical", "high")][:5]
             if exploit else []),
     }
 
 
 # --------------------------------------------------------------------------
-# Export vers l'indexer (dashboard VOC)
+# Export to the indexer (VOC dashboard)
 # --------------------------------------------------------------------------
 
 def _series_index(ts: datetime) -> str:
-    """Index quotidien des séries temporelles (`wazuh-voc-YYYY.MM.DD`)."""
+    """Daily index of the time series (`wazuh-voc-YYYY.MM.DD`)."""
     return f"{config.VOC_INDEX_PREFIX}-{ts.astimezone(timezone.utc):%Y.%m.%d}"
 
 
-# Index STABLE et non daté pour les documents de cycle de vie. Leur `_id` est
-# déterministe (une vulnérabilité = un document, réécrit à chaque passage) : le
-# ranger dans un index daté en créerait une copie par jour, chacune figée sur
-# l'état de son jour, et les compteurs seraient multipliés par la rétention.
+# STABLE, undated index for the life-cycle documents. Their `_id` is
+# deterministic (one vulnerability = one document, rewritten on every pass):
+# filing it in a dated index would create one copy per day, each frozen on the
+# state of its day, and the counters would be multiplied by the retention.
 INDEX_VULNS = "vulns"
 
 
@@ -526,11 +533,11 @@ def _vuln_id(v: dict) -> str:
 
 
 def _vuln_doc(v: dict, priority: int) -> dict:
-    """Une vulnérabilité et son cycle de vie. @timestamp = première observation :
-    un document se lit à la date où le problème est apparu, pas à celle du run."""
+    """One vulnerability and its life cycle. @timestamp = first observation:
+    a document is read at the date the problem appeared, not at the run date."""
     sev = v["severity"] or ""
     delay = sla_days(sev, priority)
-    age = (v["age_jours"] if v["fixed_at"] is None
+    age = (v["age_days"] if v["fixed_at"] is None
            else (v["fixed_at"] - v["first_seen"]).total_seconds() / 86400)
     return {
         "@timestamp": v["first_seen"].astimezone(timezone.utc).isoformat(),
@@ -552,9 +559,10 @@ def _vuln_doc(v: dict, priority: int) -> dict:
             "first_seen": v["first_seen"].astimezone(timezone.utc).isoformat(),
             "fixed_at": (v["fixed_at"].astimezone(timezone.utc).isoformat()
                            if v["fixed_at"] else None),
-            # Un seul champ pour deux sens selon le statut, et c'est voulu :
-            # c'est l'âge tant que c'est ouvert, le délai de correction une fois
-            # résolu. Le MTTR se lit donc en filtrant sur `voc.resolue: true`.
+            # One single field with two meanings depending on status, on
+            # purpose: it is the age while open, the patching delay once
+            # resolved. The MTTR is therefore read by filtering on
+            # `voc.resolue: true`.
             "age_jours": round(age, 2),
             "sla_jours": delay,
             "hors_sla": bool(delay is not None and v["status"] == "open"
@@ -567,7 +575,7 @@ def _vuln_doc(v: dict, priority: int) -> dict:
 
 
 def _asset_doc(e: dict, maintenant: datetime) -> dict:
-    """Exposition d'une machine à l'instant du run — le point de la courbe."""
+    """Exposure of a machine at the moment of the run — the point of the curve."""
     return {
         "@timestamp": maintenant.isoformat(),
         "timestamp": maintenant.isoformat(),
@@ -577,36 +585,35 @@ def _asset_doc(e: dict, maintenant: datetime) -> dict:
                   "role": e["role"]},
         "voc": {
             "score": e["score"],
-            "niveau": e["niveau"],
+            "niveau": e["level"],
             "charge": e["charge"],
             "ouvertes": e["total"],
-            "critical": e["par_severite"].get("critical", 0),
-            "high": e["par_severite"].get("high", 0),
-            "medium": e["par_severite"].get("medium", 0),
-            "low": e["par_severite"].get("low", 0),
-            "inconnue": e["par_severite"].get("", 0),
-            # `hors_sla_total` et non `hors_sla` : sur un document `voc_vuln`,
-            # `voc.hors_sla` est un BOOLÉEN. Deux types sous le même nom de
-            # champ dans un même index font rejeter le document par
-            # OpenSearch — et un rejet en bulk est silencieux si l'on ne lit pas
-            # la réponse.
-            "hors_sla_total": e["hors_sla_total"],
-            "plus_ancienne_jours": e["plus_ancienne_jours"],
-            "corrigees_90j": e["corrigees_90j"],
-            "mttr_jours": e["mttr_jours"],
+            "critical": e["by_severity"].get("critical", 0),
+            "high": e["by_severity"].get("high", 0),
+            "medium": e["by_severity"].get("medium", 0),
+            "low": e["by_severity"].get("low", 0),
+            "inconnue": e["by_severity"].get("", 0),
+            # `hors_sla_total` and not `hors_sla`: on a `voc_vuln` document,
+            # `voc.hors_sla` is a BOOLEAN. Two types under the same field name in
+            # the same index get the document rejected by OpenSearch — and a bulk
+            # rejection is silent unless the response is read.
+            "hors_sla_total": e["outside_sla_total"],
+            "plus_ancienne_jours": e["oldest_days"],
+            "corrigees_90j": e["fixed_90d"],
+            "mttr_jours": e["mttr_days"],
         },
     }
 
 
 def _fleet_doc(conn, expos: list[dict], scan: dict, maintenant: datetime) -> dict:
-    """Vue parc. Porte la COUVERTURE en premier : une dette qui baisse parce que
-    des machines ont cessé de répondre n'est pas une amélioration, et c'est le
-    seul chiffre qui permet de le voir."""
+    """Fleet view. Carries the COVERAGE first: a debt going down because
+    machines stopped answering is not an improvement, and it is the only figure
+    that lets one see it."""
     inventories = {r["agent_id"] for r in conn.execute(
         "SELECT DISTINCT agent_id FROM vulnerabilities")}
     total_assets = conn.execute(
         "SELECT count(*) AS n FROM assets").fetchone()["n"]
-    total_of = lambda key: sum(e["par_severite"].get(key, 0) for e in expos)  # noqa: E731
+    total_of = lambda key: sum(e["by_severity"].get(key, 0) for e in expos)  # noqa: E731
     return {
         "@timestamp": maintenant.isoformat(),
         "timestamp": maintenant.isoformat(),
@@ -623,7 +630,7 @@ def _fleet_doc(conn, expos: list[dict], scan: dict, maintenant: datetime) -> dic
             "high": total_of("high"),
             "medium": total_of("medium"),
             "low": total_of("low"),
-            "hors_sla_total": sum(e["hors_sla_total"] for e in expos),
+            "hors_sla_total": sum(e["outside_sla_total"] for e in expos),
             "new_count": scan["new_count"],
             "fixed_count": scan["fixed_count"],
             "score_max": max((e["score"] for e in expos), default=0),
@@ -662,7 +669,7 @@ def _line(index: str, doc_id: str, doc: dict) -> list[str]:
 SQL_DETAIL = """
 SELECT agent_id, agent_name, cve, package, version, severity, base_score,
        published_at, first_seen, fixed_at, status,
-       extract(epoch FROM now() - first_seen) / 86400 AS age_jours
+       extract(epoch FROM now() - first_seen) / 86400 AS age_days
   FROM vulnerabilities
  WHERE (status = 'open' AND severity = ANY(%(sev)s))
     OR (status = 'fixed' AND fixed_at >= now() - interval '180 days')
@@ -670,26 +677,26 @@ SELECT agent_id, agent_name, cve, package, version, severity, base_score,
 
 
 def export(conn, scan: dict, simulation: bool = False) -> dict:
-    """Écrit les séries VOC dans l'indexer. Idempotent (`_id` déterministe)."""
+    """Write the VOC series to the indexer. Idempotent (`_id` deterministic)."""
     maintenant = datetime.now(timezone.utc)
     expos = fleet_exposure(conn)
     lines: list[str] = []
-    resume = {"voc_asset": 0, "voc_parc": 0, "voc_vuln": 0}
+    summary = {"voc_asset": 0, "voc_parc": 0, "voc_vuln": 0}
 
-    # `_id` à l'HEURE : le job tourne plus souvent que ça (rattrapage, relance
-    # manuelle) et on ne veut ni écraser le point précédent ni empiler dix
-    # points par heure. Une courbe horaire suffit largement pour une dette qui
-    # bouge à la journée.
+    # `_id` at the HOUR: the job runs more often than that (catch-up, manual
+    # rerun) and we want neither to overwrite the previous point nor to stack
+    # ten points per hour. An hourly curve is largely enough for a debt that
+    # moves at day scale.
     hour = f"{maintenant:%Y%m%d%H}"
     for e in expos:
         lines += _line(_series_index(maintenant),
                          f"asset-{e['agent_id']}-{hour}",
                          _asset_doc(e, maintenant))
-        resume["voc_asset"] += 1
+        summary["voc_asset"] += 1
 
     lines += _line(_series_index(maintenant), f"parc-{hour}",
                      _fleet_doc(conn, expos, scan, maintenant))
-    resume["voc_parc"] = 1
+    summary["voc_parc"] = 1
 
     prios = {e["agent_id"]: e["priority"] for e in expos}
     for v in conn.execute(SQL_DETAIL,
@@ -697,17 +704,17 @@ def export(conn, scan: dict, simulation: bool = False) -> dict:
         prio = prios.get(v["agent_id"], config.DEFAULT_PRIORITY)
         lines += _line(f"{config.VOC_INDEX_PREFIX}-{INDEX_VULNS}",
                          _vuln_id(v), _vuln_doc(dict(v), prio))
-        resume["voc_vuln"] += 1
+        summary["voc_vuln"] += 1
 
     if simulation:
         for l in lines:
             print(l, end="")
-        return resume
+        return summary
 
     written, errors = _bulk(lines)
-    resume["ecrits"] = written
-    resume["erreurs"] = errors
-    return resume
+    summary["written"] = written
+    summary["errors"] = errors
+    return summary
 
 
 # --------------------------------------------------------------------------
@@ -716,42 +723,42 @@ def export(conn, scan: dict, simulation: bool = False) -> dict:
 
 def _show_fleet(expos: list[dict]) -> None:
     print(f"{'agent':<6}{'machine':<22}{'P':<4}{'score':>6}  "
-          f"{'crit':>5}{'high':>6}{'ouvert':>8}{'horsSLA':>9}  niveau")
+          f"{'crit':>5}{'high':>6}{'open':>8}{'outSLA':>9}  level")
     print("-" * 82)
     for e in expos:
         print(f"{e['agent_id']:<6}{(e.get('agent_name') or '?')[:21]:<22}"
               f"P{e['priority']:<3}{e['score']:>6}  "
-              f"{e['par_severite'].get('critical', 0):>5}"
-              f"{e['par_severite'].get('high', 0):>6}"
-              f"{e['total']:>8}{e['hors_sla_total']:>9}  {e['niveau']}")
+              f"{e['by_severity'].get('critical', 0):>5}"
+              f"{e['by_severity'].get('high', 0):>6}"
+              f"{e['total']:>8}{e['outside_sla_total']:>9}  {e['level']}")
 
 
 def _show_agent(e: dict) -> None:
     print(f"Agent {e['agent_id']} — P{e['priority']} "
-          f"({e['role'] or 'rôle non déclaré'})")
-    if not e["couverte"]:
-        print("  JAMAIS INVENTORIÉE : aucune donnée de vulnérabilité. "
-              "« 0 CVE » ne veut pas dire « à jour ».")
+          f"({e['role'] or 'role not declared'})")
+    if not e["covered"]:
+        print("  NEVER INVENTORIED: no vulnerability data. "
+              "\"0 CVE\" does not mean \"up to date\".")
         return
-    print(f"  score d'exposition : {e['score']}/100 ({e['niveau']}) — "
-          f"charge {e['charge']} x{e['facteur_priorite']} (priorité)")
-    print(f"  ouvertes : {e['total']} "
-          + ", ".join(f"{k or 'sans sévérité'}={v}"
-                      for k, v in sorted(e["par_severite"].items())))
-    print(f"  hors SLA : {e['hors_sla_total']} — plus ancienne : "
-          f"{e['plus_ancienne_jours']} j")
-    if e.get("journal_jours") is not None and e["journal_jours"] < 30:
-        print(f"  (journal de {e['journal_jours']:.0f} j seulement : "
-              f"l'ancienneté et le retard mesurent la durée de la MESURE, pas "
-              f"l'état du parc)")
-    if e["mttr_jours"] is not None:
-        print(f"  corrigées sur 90 j : {e['corrigees_90j']} "
-              f"(délai moyen {e['mttr_jours']} j)")
-    print("  pires vulnérabilités :")
-    for v in e["pires"]:
+    print(f"  exposure score: {e['score']}/100 ({e['level']}) — "
+          f"load {e['charge']} x{e['priority_factor']} (priority)")
+    print(f"  open: {e['total']} "
+          + ", ".join(f"{k or 'no severity'}={v}"
+                      for k, v in sorted(e["by_severity"].items())))
+    print(f"  past SLA: {e['outside_sla_total']} — oldest: "
+          f"{e['oldest_days']} d")
+    if e.get("journal_days") is not None and e["journal_days"] < 30:
+        print(f"  (only {e['journal_days']:.0f} d of journal: age and delay "
+              f"measure how long we have been MEASURING, not the state of "
+              f"the estate)")
+    if e["mttr_days"] is not None:
+        print(f"  fixed over 90 d: {e['fixed_90d']} "
+              f"(average delay {e['mttr_days']} d)")
+    print("  worst vulnerabilities:")
+    for v in e["worst"]:
         print(f"    {v['cve']:<18}{(v['severity'] or '?'):<10}"
               f"{(v['base_score'] or 0):>5}  {v['package'][:32]:<34}"
-              f"{v['age_jours']:.0f} j")
+              f"{v['age_days']:.0f} d")
 
 
 def main() -> None:
@@ -759,13 +766,13 @@ def main() -> None:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--state", action="store_true",
-                    help="exposition du parc, sans scanner ni écrire")
+                    help="exposure of the estate, no scan and no write")
     ap.add_argument("--agent", metavar="AGENT_ID",
-                    help="détail de l'exposition d'une machine")
-    ap.add_argument("--sans-export", action="store_true",
-                    help="scanne et met à jour le journal, sans exporter")
+                    help="exposure detail of one machine")
+    ap.add_argument("--no-export", action="store_true",
+                    help="scans and updates the journal, without exporting")
     ap.add_argument("--simulation", action="store_true",
-                    help="affiche les documents au lieu de les indexer")
+                    help="shows the documents instead of indexing them")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -778,23 +785,23 @@ def main() -> None:
             return
 
         scan = sync(conn)
-        print(f"{scan['vulns_seen']} vulnérabilité(s) sur "
-              f"{scan['agents_seen']} machine(s) : {scan['new_count']} nouvelle(s), "
-              f"{scan['fixed_count']} corrigée(s)")
+        print(f"{scan['vulns_seen']} vulnerabilit(y/ies) on "
+              f"{scan['agents_seen']} machine(s): {scan['new_count']} new, "
+              f"{scan['fixed_count']} fixed")
         if scan["silent_agents"]:
-            print(f"  {len(scan['silent_agents'])} machine(s) sans inventaire : "
-                  f"{', '.join(scan['silent_agents'])} — OS non couvert par le "
-                  f"feed, ou syscollector muet. Rien n'a été clôturé pour elles.")
-        if args.sans_export:
+            print(f"  {len(scan['silent_agents'])} machine(s) with no inventory: "
+                  f"{', '.join(scan['silent_agents'])} — OS not covered by the "
+                  f"feed, or silent syscollector. Nothing was closed for them.")
+        if args.no_export:
             return
         r = export(conn, scan, args.simulation)
         if args.simulation:
             return
-        print(f"  {r['ecrits']} document(s) indexés "
-              f"({r['voc_asset']} machines, {r['voc_vuln']} vulnérabilités, "
-              f"1 vue parc)")
-        for e in r["erreurs"]:
-            print(f"  ERREUR {e}")
+        print(f"  {r['written']} document(s) indexed "
+              f"({r['voc_asset']} machines, {r['voc_vuln']} vulnerabilities, "
+              f"1 fleet view)")
+        for e in r["errors"]:
+            print(f"  ERROR {e}")
 
 
 if __name__ == "__main__":

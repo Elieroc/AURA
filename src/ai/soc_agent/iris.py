@@ -1857,7 +1857,7 @@ def _table_cve(lines: list[dict], with_age: bool = True) -> list[str]:
             + (" Ouverte depuis |" if with_age else ""),
             "|:---|:---|---:|:---|:---|" + ("---:|" if with_age else "")]
     for v in lines:
-        age = f" {v['age_jours']:.0f} j |" if with_age else ""
+        age = f" {v['age_days']:.0f} j |" if with_age else ""
         head.append(
             f"| [{v['cve']}]({_link_cve(v['cve'])}) "
             f"| {(v['severity'] or 'non classée').capitalize()} "
@@ -1885,7 +1885,7 @@ def _exposure_note(conn, incident: dict, alerts: list[dict]) -> str:
               f"priorité **P{expo['priority']}** "
               f"({expo['role'] or 'rôle non déclaré'}).", ""]
 
-    if not expo["couverte"]:
+    if not expo["covered"]:
         lines += [
             "> ⚠️ **Cette machine n'a jamais été inventoriée** par le module "
             "Vulnerability Detection de Wazuh. Il n'y a donc aucune donnée de "
@@ -1905,20 +1905,20 @@ def _exposure_note(conn, incident: dict, alerts: list[dict]) -> str:
                    "low": "Low", "": "non classée"}
     distribution = ", ".join(
         f"**{n}** {sev_readable.get(s, s)}"
-        for s, n in sorted(expo["par_severite"].items(),
+        for s, n in sorted(expo["by_severity"].items(),
                            key=lambda kv: -vulns.weight(kv[0])))
 
     lines += [
         f"| | |", "|---|---|",
         f"| **Score d'exposition** | **{expo['score']}/100** — "
-        f"exposition {expo['niveau']} |",
+        f"exposition {expo['level']} |",
         f"| **Vulnérabilités ouvertes** | {expo['total']} ({distribution}) |",
-        f"| **Hors délai de correction** | {expo['hors_sla_total']} |",
-        f"| **Plus ancienne ouverte** | {expo['plus_ancienne_jours']:.0f} jours |",
-        (f"| **Corrigées sur 90 jours** | {expo['corrigees_90j']} "
-         f"(délai moyen {expo['mttr_jours']} j) |"
-         if expo["mttr_jours"] is not None
-         else f"| **Corrigées sur 90 jours** | {expo['corrigees_90j']} |"),
+        f"| **Hors délai de correction** | {expo['outside_sla_total']} |",
+        f"| **Plus ancienne ouverte** | {expo['oldest_days']:.0f} jours |",
+        (f"| **Corrigées sur 90 jours** | {expo['fixed_90d']} "
+         f"(délai moyen {expo['mttr_days']} j) |"
+         if expo["mttr_days"] is not None
+         else f"| **Corrigées sur 90 jours** | {expo['fixed_90d']} |"),
         "",
         # The score is log-compressed and weighted: without this sentence a
         # reader would take it for a percentage of vulnerable machines or for an
@@ -1926,7 +1926,7 @@ def _exposure_note(conn, incident: dict, alerts: list[dict]) -> str:
         # machines at 100 would look equivalent.
         f"Le score agrège les vulnérabilités ouvertes pondérées par leur "
         f"sévérité (charge {expo['charge']}), multipliées par le facteur de "
-        f"priorité de l'asset (×{expo['facteur_priorite']}), sur une échelle "
+        f"priorité de l'asset (×{expo['priority_factor']}), sur une échelle "
         f"logarithmique. Il sert à **classer** les machines entre elles, pas à "
         f"mesurer un risque absolu : au-delà du plafond il sature, et ce sont "
         f"alors les compteurs ci-dessus qui départagent.",
@@ -1938,14 +1938,14 @@ def _exposure_note(conn, incident: dict, alerts: list[dict]) -> str:
     # describe how long we have been measuring, not the state of the estate.
     # Without this callout, a reader would see an up-to-date estate when it may
     # be dragging CVEs from 2019.
-    young = expo.get("journal_jours")
+    young = expo.get("journal_days")
     if young is not None and young < 30:
         lines += [
             f"> ℹ️ **Le suivi VOC n'a que {young:.0f} jour(s) d'historique.** "
             f"L'ancienneté et le retard se comptent depuis la première "
             f"observation par AURA, pas depuis la publication de la CVE : "
-            f"« {expo['plus_ancienne_jours']:.0f} jours » et "
-            f"« {expo['hors_sla_total']} hors délai » mesurent ici la durée de "
+            f"« {expo['oldest_days']:.0f} jours » et "
+            f"« {expo['outside_sla_total']} hors délai » mesurent ici la durée de "
             f"la mesure, **pas** l'état réel du parc. Ces deux chiffres ne "
             f"deviennent significatifs qu'au-delà du premier seuil de SLA "
             f"applicable. Les compteurs par sévérité, eux, sont valables "
@@ -1954,7 +1954,7 @@ def _exposure_note(conn, incident: dict, alerts: list[dict]) -> str:
         ]
 
     # --- Link with THIS case ----------------------------------------------
-    if link["confirmees"]:
+    if link["confirmed"]:
         lines += [
             "## Vulnérabilités citées dans l'incident",
             "",
@@ -1964,7 +1964,7 @@ def _exposure_note(conn, incident: dict, alerts: list[dict]) -> str:
             "l'incident et l'exposition : ce que l'attaquant visait était "
             "effectivement présent ici.",
             "",
-        ] + _table_cve(link["confirmees"]) + [
+        ] + _table_cve(link["confirmed"]) + [
             "",
             "**Conséquence directe** : remédier l'incident ne suffit pas. Tant "
             "que ces paquets ne sont pas corrigés, le même accès reste "
@@ -1972,7 +1972,7 @@ def _exposure_note(conn, incident: dict, alerts: list[dict]) -> str:
             "",
         ]
 
-    if link["citees_non_ouvertes"]:
+    if link["quoted_not_open"]:
         lines += [
             "## Vulnérabilités citées mais non ouvertes ici",
             "",
@@ -1983,32 +1983,32 @@ def _exposure_note(conn, incident: dict, alerts: list[dict]) -> str:
             "l'attaquant, pas sur l'exposition de l'hôte.",
             "",
             ", ".join(f"[{c}]({_link_cve(c)})"
-                      for c in link["citees_non_ouvertes"]),
+                      for c in link["quoted_not_open"]),
             "",
         ]
 
-    if link["vecteurs_possibles"]:
+    if link["possible_vectors"]:
         lines += [
             "## Vecteurs possibles (hypothèse, non démontrée)",
             "",
             f"L'incident porte une ou des techniques d'exploitation "
-            f"({', '.join(link['techniques_exploit'])}) et cette machine a des "
+            f"({', '.join(link['exploit_techniques'])}) et cette machine a des "
             f"vulnérabilités graves ouvertes. **Aucun élément du case ne relie "
             f"ces CVE à l'attaque** : elles sont listées parce qu'un analyste "
             f"qui cherche par où l'accès a été obtenu doit les avoir sous les "
             f"yeux, pas parce qu'elles ont été exploitées.",
             "",
-        ] + _table_cve(link["vecteurs_possibles"]) + [""]
+        ] + _table_cve(link["possible_vectors"]) + [""]
 
     # --- Patching delay ---------------------------------------------------
-    if expo["hors_sla"]:
-        top = expo["hors_sla"][:config.VOC_MAX_CVE_REPORT]
+    if expo["outside_sla"]:
+        top = expo["outside_sla"][:config.VOC_MAX_CVE_REPORT]
         lines += [
             "## Vulnérabilités hors délai",
             "",
-            f"{expo['hors_sla_total']} vulnérabilité(s) ouverte(s) au-delà du "
+            f"{expo['outside_sla_total']} vulnérabilité(s) ouverte(s) au-delà du "
             f"délai attendu pour leur sévérité sur un asset P{expo['priority']}"
-            + (f" — les {len(top)} plus en retard :" if len(top) < expo['hors_sla_total']
+            + (f" — les {len(top)} plus en retard :" if len(top) < expo['outside_sla_total']
                else " :"),
             "",
             "| CVE | Sévérité | Paquet | Ouverte depuis | Délai | Retard |",
@@ -2016,14 +2016,14 @@ def _exposure_note(conn, incident: dict, alerts: list[dict]) -> str:
         ] + [
             f"| [{v['cve']}]({_link_cve(v['cve'])}) "
             f"| {(v['severity'] or 'non classée').capitalize()} "
-            f"| `{_package(v['package'])}` | {v['age_jours']:.0f} j "
-            f"| {v['sla_jours']} j | **+{v['retard_jours']:.0f} j** |"
+            f"| `{_package(v['package'])}` | {v['age_days']:.0f} j "
+            f"| {v['sla_days']} j | **+{v['overdue_days']:.0f} j** |"
             for v in top
         ] + [""]
 
     # --- Fallback: nothing specific to the case ---------------------------
-    if not (link["confirmees"] or link["vecteurs_possibles"]
-            or expo["hors_sla"]):
+    if not (link["confirmed"] or link["possible_vectors"]
+            or expo["outside_sla"]):
         lines += [
             "## Pires vulnérabilités ouvertes",
             "",
@@ -2032,7 +2032,7 @@ def _exposure_note(conn, incident: dict, alerts: list[dict]) -> str:
             "l'exposition de la machine**. Le contexte reste utile pour évaluer "
             "ce qu'une compromission d'ici permettrait ensuite.",
             "",
-        ] + _table_cve(expo["pires"]) + [""]
+        ] + _table_cve(expo["worst"]) + [""]
 
     lines += [
         "---",
@@ -2073,18 +2073,18 @@ def _exposure_summary(conn, agent_id: str, alerts: list[dict]) -> str:
     try:
         from . import vulns
         expo = vulns.exposure(conn, str(agent_id))
-        if not expo["couverte"]:
+        if not expo["covered"]:
             return ("exposition aux vulnérabilités : machine JAMAIS "
                     "inventoriée (aucune donnée — ne pas conclure qu'elle est "
                     "à jour)")
         link = vulns.incident_link(conn, str(agent_id), alerts, expo)
         bout = (f"exposition aux vulnérabilités : score {expo['score']}/100 "
-                f"({expo['niveau']}), {expo['total']} ouvertes dont "
-                f"{expo['critiques']} critical et {expo['elevees']} high, "
-                f"{expo['hors_sla_total']} hors délai")
-        if link["confirmees"]:
+                f"({expo['level']}), {expo['total']} ouvertes dont "
+                f"{expo['critical_count']} critical et {expo['high_count']} high, "
+                f"{expo['outside_sla_total']} hors délai")
+        if link["confirmed"]:
             bout += (" ; CVE citées dans l'incident ET ouvertes sur cet hôte : "
-                     + ", ".join(v["cve"] for v in link["confirmees"]))
+                     + ", ".join(v["cve"] for v in link["confirmed"]))
         return bout
     except Exception as e:  # noqa: BLE001
         log.debug("exposure summary of agent %s: %s", agent_id, e)
