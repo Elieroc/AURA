@@ -387,9 +387,9 @@ def export(batch: dict, destination: Path) -> dict:
     _check_tools()
     _free_space(batch["octets"])
 
-    recipients: list[str] = []
+    recipient_args: list[str] = []
     for r in recipients():
-        recipients += ["-r", r]
+        recipient_args += ["-r", r]
 
     sha_plain = hashlib.sha256()
     plain_bytes = documents = 0
@@ -401,7 +401,7 @@ def export(batch: dict, destination: Path) -> dict:
              "-q", "-c"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE)
-        age = subprocess.Popen(["age", *recipients], stdin=zstd.stdout,
+        age = subprocess.Popen(["age", *recipient_args], stdin=zstd.stdout,
                                stdout=output, stderr=subprocess.PIPE)
         # Indispensable : sans ça, `zstd` ne voit jamais le EOF de son lecteur
         # et la chaîne se bloque à la fermeture.
@@ -1102,10 +1102,10 @@ def check_key() -> dict:
                                dir=config.ARCHIVE_TMP_DIR))
     try:
         witness, chiffre = b"aura\n", tmp / "t.age"
-        recipients: list[str] = []
+        recipient_args: list[str] = []
         for r in summary["recipients"]:
-            recipients += ["-r", r]
-        c = subprocess.run(["age", *recipients, "-o", str(chiffre)],
+            recipient_args += ["-r", r]
+        c = subprocess.run(["age", *recipient_args, "-o", str(chiffre)],
                            input=witness, capture_output=True)
         if c.returncode:
             raise RuntimeError("chiffrement du témoin en échec : "

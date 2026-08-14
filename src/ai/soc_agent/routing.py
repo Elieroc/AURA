@@ -1,38 +1,40 @@
-"""Chaque source de log tombe-t-elle dans son index ? Sinon, créer l'index set.
+"""Does every log source land in its index? If not, create the index set.
 
-Wazuh n'a pas de notion d'« index par agent » : le routage se fait par TYPE DE
-LOG, dans un script painless du pipeline d'ingest de l'indexer
-(`wazuh/config/wazuh_cluster/alerts-pipeline.json`). Une source qu'aucune
-branche ne reconnaît atterrit dans `wazuh-alerts-4.x-*` sans le moindre
-message : ni erreur côté Wazuh, ni alerte manquante, juste un type de log qui
-n'a pas d'index à lui — et, si `INDEXER_ALERT_INDICES` a été oublié en même
-temps, une IA aveugle sur ce capteur. Ce piège s'est produit trois fois
-(wazuh-linux/web, puis wazuh-yara et wazuh-firewall le 2026-07-29).
+Wazuh has no notion of an "index per agent": routing happens by LOG TYPE, in a
+painless script of the indexer's ingest pipeline
+(`wazuh/config/wazuh_cluster/alerts-pipeline.json`). A source no branch
+recognises lands in `wazuh-alerts-4.x-*` without a single message: no error on
+the Wazuh side, no missing alert, just a log type with no index of its own — and,
+if `INDEXER_ALERT_INDICES` was forgotten at the same time, an AI blind to that
+sensor. That trap struck three times (wazuh-linux/web, then wazuh-yara and
+wazuh-firewall on 2026-07-29).
 
-Ce module en fait un contrôle permanent, adossé au watchdog :
+This module turns it into a permanent control, backed onto the watchdog:
 
-    observer   -> ce que l'indexer a réellement reçu sur 24 h, par source
-    classer    -> routée / non routée / dérive / muette
-    nommer     -> un index conventionnel `wazuh-<suffixe>` (LLM + validation)
-    appliquer  -> les CINQ pièces d'un index set, pas une seule
+    observe   -> what the indexer actually received over 24 h, per source
+    classify  -> routed / unrouted / drifting / silent
+    name      -> a conventional `wazuh-<suffix>` index (LLM plus validation)
+    apply     -> the FIVE pieces of an index set, not just one
 
-Un index set n'est pas un index. Créer `wazuh-jellyfin` suppose :
+An index set is not an index. Creating `wazuh-jellyfin` implies:
 
-  1. la branche de routage dans le pipeline d'ingest (sinon rien n'y entre) ;
-  2. le template `soc-ai-routing` (sinon mapping par défaut, champs en text) ;
-  3. la politique ISM `aura-retention` (sinon l'index n'est jamais purgé) ;
-  4. la liste d'indices lue par l'ingestion (sinon l'IA ne le voit pas) ;
-  5. l'index pattern du dashboard (sinon invisible dans Discover).
+  1. the routing branch in the ingest pipeline (otherwise nothing enters it);
+  2. the `soc-ai-routing` template (otherwise a default mapping, fields as text);
+  3. the `aura-retention` ISM policy (otherwise the index is never purged);
+  4. the index list read by ingestion (otherwise the AI does not see it);
+  5. the dashboard index pattern (otherwise invisible in Discover).
 
-Le point 1 se défait tout seul : le fichier du pipeline est bind-monté sur le
-module filebeat du manager, et filebeat le REPOUSSE à chaque démarrage. Une
-branche posée par API disparaît donc au prochain `docker compose up`. D'où le
-principe de ce module : le pipeline attendu est RECALCULÉ à chaque passage
-depuis la table `routage_sources`, comparé à celui qui tourne, et réappliqué
-dès qu'il diverge. L'écrasement par filebeat se répare seul en deux minutes.
+Point 1 undoes itself: the pipeline file is bind-mounted onto the manager's
+filebeat module, and filebeat PUSHES IT BACK on every start. A branch set through
+the API therefore disappears on the next `docker compose up`. Hence the principle
+of this module: the expected pipeline is RECOMPUTED on every pass from the
+`routing_sources` table, compared with the one running, and reapplied as soon as
+it diverges. Filebeat overwriting it repairs itself in two minutes.
 
-    python -m soc_agent.routing              # état des sources, n'écrit rien
-    python -m soc_agent.routing --appliquer  # crée les index sets manquants
+The IRIS anomalies produced here stay in French: analysts read them.
+
+    python -m soc_agent.routing           # source state, writes nothing
+    python -m soc_agent.routing --apply   # creates the missing index sets
 """
 
 from __future__ import annotations
@@ -54,47 +56,47 @@ log = logging.getLogger(__name__)
 
 PROMPTS = Path(__file__).parent / "prompts"
 
-# Tags des deux processors de routage du pipeline. `routage-statique` est posé
-# dans alerts-pipeline.json et sert de POINT D'INSERTION : les branches apprises
-# passent JUSTE APRÈS lui.
+# Tags of the pipeline's two routing processors. `routing-static` is set in
+# alerts-pipeline.json and serves as the INSERTION POINT: the learned branches go
+# RIGHT AFTER it.
 #
-# L'ordre inverse paraissait évident et il est faux — vérifié sur le pipeline de
-# prod le 2026-08-14. Le `return` du painless ne sort que du SCRIPT COURANT, pas
-# du pipeline : un processor placé avant a beau écrire `ctx._index`, le script
-# statique qui suit le réécrit derrière lui. Une branche apprise
-# `pam -> wazuh-endpoint` insérée avant repartait donc dans wazuh-linux, sans
-# la moindre erreur. Après le statique, la branche spécifique gagne sur le
-# classement fourre-tout par OS, ce qui est précisément ce qu'on veut ; le
-# script YARA, lui, reste volontairement le dernier mot.
+# The reverse order looked obvious and is wrong — verified on the production
+# pipeline on 2026-08-14. The painless `return` only exits the CURRENT SCRIPT,
+# not the pipeline: a processor placed before may write `ctx._index`, the static
+# script that follows rewrites it behind. A learned branch
+# `pam -> wazuh-endpoint` inserted before therefore went back to wazuh-linux,
+# without a single error. After the static one, the specific branch wins over the
+# catch-all classification by OS, which is precisely what we want; the YARA
+# script deliberately keeps the last word.
 #
-# Repli sur la description si le tag manque : la prod tourne peut-être encore
-# avec un pipeline antérieur à ce chantier. Si NI l'un NI l'autre n'est trouvé,
-# on refuse d'écrire — insérer à l'aveugle dans le pipeline qui porte toutes les
-# alertes du SOC n'est pas un risque acceptable.
-TAG_STATIC = "routage-statique"
-TAG_LEARNED = "routage-appris"
-_DESC_STATIC = "route les alertes des agents"
+# Fallback on the description when the tag is missing: production may still run a
+# pipeline predating this work. If NEITHER is found we refuse to write —
+# inserting blindly into the pipeline that carries every SOC alert is not an
+# acceptable risk.
+TAG_STATIC = "routing-static"
+TAG_LEARNED = "routing-learned"
+_DESC_STATIC = "routes the agent alerts"
 
 # --------------------------------------------------------------------------
-# Ce qui n'est PAS une source de log
+# What is NOT a log source
 # --------------------------------------------------------------------------
 #
-# Le SOC produit en permanence des alertes qui ne viennent d'aucun capteur de
-# log : intégrité de fichiers, audit de configuration, rootcheck, état des
-# agents, vulnérabilités, VirusTotal. Elles sont normales dans
-# `wazuh-alerts-4.x-*` — elles concernent TOUS les agents et n'ont pas de type
-# de log propre. Sans cette liste blanche, le module proposerait de créer
-# `wazuh-syscheck` dès le premier passage, sur 1 800 alertes par jour.
+# The SOC constantly produces alerts that come from no log sensor: file
+# integrity, configuration audit, rootcheck, agent state, vulnerabilities,
+# VirusTotal. They are normal in `wazuh-alerts-4.x-*` — they concern EVERY agent
+# and have no log type of their own. Without this allowlist, the module would
+# propose creating `wazuh-syscheck` on the very first pass, on 1,800 alerts a
+# day.
 DECODERS_CROSS_CUTTING = frozenset({
     "ossec", "rootcheck", "sca", "wazuh", "agent-upgrade", "syscollector",
     "vulnerability-detector", "active-response",
 })
 
-# Le FIM ne se décode pas sous un seul nom : `syscheck_deleted`,
-# `syscheck_integrity_changed`, `syscheck_registry_value_modified`… Relevé sur
-# la prod le 2026-08-14, six décodeurs distincts, 226 alertes en 24 h — soit six
-# propositions d'index set au premier passage si on ne raisonne que sur des noms
-# exacts. Le préfixe est la seule forme qui résiste à l'ajout d'un septième.
+# FIM does not decode under a single name: `syscheck_deleted`,
+# `syscheck_integrity_changed`, `syscheck_registry_value_modified`... Observed in
+# production on 2026-08-14, six distinct decoders, 226 alerts in 24 h — that is
+# six index-set proposals on the first pass if we only reason on exact names. The
+# prefix is the only form that survives a seventh being added.
 PREFIXES_CROSS_CUTTING = ("syscheck", "sca_", "rootcheck", "wazuh-", "agent-")
 
 
@@ -110,29 +112,29 @@ GROUPS_CROSS_CUTTING = frozenset({
     "nist_800_53", "pci_dss", "tsc", "mitre",
 })
 
-# Décodeurs GÉNÉRIQUES : ils décodent un format, pas une source. `json` sert à
-# la fois AdGuard, Suricata et les modules internes de Wazuh — il ne peut pas
-# être une clé de source. Pour ceux-là, le critère redescend sur le groupe de
-# règles, exactement comme le fait déjà le routage statique (cf. son
-# commentaire : « routé sur rule.groups pas decoder.name »).
+# GENERIC decoders: they decode a format, not a source. `json` serves AdGuard,
+# Suricata and Wazuh's internal modules all at once — it cannot be a source key.
+# For those, the criterion falls back to the rule group, exactly as the static
+# routing already does (see its comment: "routed on rule.groups not
+# decoder.name").
 #
-# `windows_eventchannel` en est délibérément ABSENT bien qu'il soit tout aussi
-# générique : ses alertes portent des dizaines de groupes (sysmon_event1,
-# authentication_failed, policy_changed…) qui deviendraient autant de fausses
-# « sources » pour un seul et même index. Elles sont déjà routées par OS.
+# `windows_eventchannel` is deliberately ABSENT although it is just as generic:
+# its alerts carry dozens of groups (sysmon_event1, authentication_failed,
+# policy_changed...) which would become as many false "sources" for one and the
+# same index. They are already routed by OS.
 DECODERS_AMBIGUOUS = frozenset({"json", "syslog"})
 
-# Suffixes qu'on ne peut pas réutiliser : ce sont déjà des index de la stack,
-# et le pattern `wazuh-<suffixe>-*` en avalerait le contenu.
+# Suffixes we cannot reuse: they are already stack indices, and the
+# `wazuh-<suffix>-*` pattern would swallow their content.
 SUFFIXES_RESERVED = frozenset({
     "alerts", "archives", "monitoring", "statistics", "states", "ai", "voc",
     "agent", "manager", "indexer", "dashboard", "custom", "all",
 })
 
-# Vocabulaire FERMÉ des sources génériques. Le modèle choisit dedans, ou il ne
-# choisit pas : c'est la seule garantie qu'un pare-feu Fortinet n'ouvre pas un
-# index `fortinet` à côté de `firewall`. Un nom générique hors liste est traité
-# comme une réponse invalide, pas comme une proposition.
+# CLOSED vocabulary of generic sources. The model picks inside it, or it does
+# not pick: that is the only guarantee a Fortinet firewall does not open a
+# `fortinet` index next to `firewall`. A generic name outside the list is treated
+# as an invalid answer, not as a proposal.
 FAMILIES_GENERIC = frozenset({
     "firewall", "ids", "web", "proxy", "dns", "vpn", "mail", "database",
     "auth", "edr", "cloud", "container", "backup", "printer", "voip",
@@ -140,11 +142,11 @@ FAMILIES_GENERIC = frozenset({
 })
 
 _SUFFIX = re.compile(r"^[a-z]{2,20}$")
-# Ce qui peut entrer dans le code painless généré. Volontairement étroit : ces
-# valeurs viennent des données indexées, et elles finissent dans une chaîne
-# entre quotes simples au milieu d'un script exécuté par l'indexer.
+# What may enter the generated painless code. Deliberately narrow: these values
+# come from the indexed data, and they end up in a single-quoted string in the
+# middle of a script executed by the indexer.
 _CRITERION = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
-# Suffixe daté d'un index Wazuh : `wazuh-linux-2026.08.14` -> `wazuh-linux`.
+# Dated suffix of a Wazuh index: `wazuh-linux-2026.08.14` -> `wazuh-linux`.
 _DATE_INDEX = re.compile(r"-\d{4}\.\d{2}\.\d{2}$")
 
 
@@ -163,7 +165,7 @@ def _indexer(method: str, path: str, body: dict | None = None,
 
 
 def _base_index(name: str) -> str:
-    """Préfixe d'un index daté, sans sa date."""
+    """Prefix of a dated index, without its date."""
     return _DATE_INDEX.sub("", name)
 
 
@@ -175,22 +177,22 @@ def _key(criterion_type: str, value: str) -> str:
 # Observation
 # --------------------------------------------------------------------------
 
-# Ce qu'on garde d'une alerte comme témoin. Tout le document serait inutilement
-# lourd en base, mais il en faut ASSEZ pour que `_simulate` reproduise le
-# routage : le décodeur et les groupes décident, `timestamp` construit le nom
-# daté de l'index, `agent` sert au routage par OS du script statique.
+# What we keep of an alert as a witness. The whole document would be needlessly
+# heavy in database, but ENOUGH is needed for `simulate` to reproduce the
+# routing: the decoder and the groups decide, `timestamp` builds the dated index
+# name, `agent` serves the static script's routing by OS.
 _FIELDS_WITNESS = ["timestamp", "decoder", "rule.id", "rule.level",
                   "rule.groups", "rule.description", "agent", "location",
                   "data.win"]
 
 
 def _agg_sources(window_h: int) -> dict:
-    """Agrégation « qui écrit où » sur la fenêtre.
+    """The "who writes where" aggregation over the window.
 
-    Deux agrégations en une requête : par décodeur pour le cas normal, et par
-    groupe de règles pour les décodeurs génériques, qui n'identifient pas leur
-    source. `_index` est un champ de métadonnée agrégeable — c'est lui qui dit
-    où l'alerte a RÉELLEMENT atterri, la seule vérité qui compte ici.
+    Two aggregations in one query: by decoder for the normal case, and by rule
+    group for the generic decoders, which do not identify their source. `_index`
+    is an aggregatable metadata field — it says where the alert ACTUALLY landed,
+    the only truth that counts here.
     """
     under_aggs = {
         "idx": {"terms": {"field": "_index", "size": 20}},
@@ -200,21 +202,20 @@ def _agg_sources(window_h: int) -> dict:
         "size": 0,
         "query": {"bool": {
             "filter": [{"range": {"@timestamp": {"gte": f"now-{window_h}h"}}}],
-            # Le manager (agent 000) est exclu du routage par OS dans le script
-            # statique : ses alertes restent volontairement dans l'index par
-            # défaut. Les compter ici ferait passer des sources parfaitement
-            # routées pour des sources orphelines — mesuré sur `web-accesslog`,
-            # dont les alertes agent 000 (426 sur 7 j) écrasaient en nombre
-            # celles des vrais agents web.
+            # The manager (agent 000) is excluded from the routing by OS in the
+            # static script: its alerts deliberately stay in the default index.
+            # Counting them here would make perfectly routed sources look like
+            # orphans — measured on `web-accesslog`, whose agent 000 alerts (426
+            # over 7 d) outnumbered those of the real web agents.
             "must_not": [{"term": {"agent.id": "000"}}],
         }},
         "aggs": {
-            "par_decodeur": {
+            "by_decoder": {
                 "terms": {"field": "decoder.name", "size": 300},
                 "aggs": {**under_aggs,
                          "grp": {"terms": {"field": "rule.groups", "size": 20}}},
             },
-            "par_groupe": {
+            "by_group": {
                 "filter": {"terms": {"decoder.name": sorted(DECODERS_AMBIGUOUS)}},
                 "aggs": {"src": {"terms": {"field": "rule.groups", "size": 200},
                                  "aggs": under_aggs}},
@@ -227,21 +228,21 @@ def _agg_sources(window_h: int) -> dict:
 
 
 def observed_sources(window_h: int | None = None) -> list[dict]:
-    """Les sources de log vues sur la fenêtre, avec leur index majoritaire.
+    """The log sources seen over the window, with their majority index.
 
-    Fonction pure au sens utile du terme : elle lit l'indexer et ne décide
-    rien. Le tri de sortie est déterministe (par clé), pour que deux passages
-    successifs produisent le même rendu de pipeline — cf. `_script_appris`.
+    A pure function in the useful sense: it reads the indexer and decides
+    nothing. The output ordering is deterministic (by key), so two successive
+    passes produce the same pipeline rendering — see `_learned_script`.
     """
     aggs = _agg_sources(window_h or config.ROUTING_WINDOW_HOURS)
     sources: dict[str, dict] = {}
 
     def add(criterion_type: str, value: str, bucket: dict) -> None:
         if not _CRITERION.match(value or ""):
-            # Une valeur qu'on ne saurait pas réinjecter proprement dans le
-            # painless n'a rien à faire dans cette table : on la journalise
-            # plutôt que de la laisser silencieusement de côté.
-            log.warning("source ignorée, critère non conforme : %s=%r",
+            # A value we could not reinject cleanly into the painless has no
+            # business in this table: we log it rather than silently leaving it
+            # aside.
+            log.warning("source ignored, non-compliant criterion: %s=%r",
                         criterion_type, value)
             return
         index = [(_base_index(b["key"]), b["doc_count"])
@@ -264,13 +265,13 @@ def observed_sources(window_h: int | None = None) -> list[dict]:
             "example": hits[0]["_source"] if hits else None,
         }
 
-    for bucket in aggs["par_decodeur"]["buckets"]:
+    for bucket in aggs["by_decoder"]["buckets"]:
         name = bucket["key"]
         if _cross_cutting(name) or name in DECODERS_AMBIGUOUS:
             continue
         add("decoder", name, bucket)
 
-    for bucket in aggs["par_groupe"]["src"]["buckets"]:
+    for bucket in aggs["by_group"]["src"]["buckets"]:
         group = bucket["key"]
         if group in GROUPS_CROSS_CUTTING:
             continue
@@ -284,84 +285,83 @@ def observed_sources(window_h: int | None = None) -> list[dict]:
 # --------------------------------------------------------------------------
 
 def classify(conn, observed: list[dict]) -> dict[str, list[dict]]:
-    """Range chaque source observée dans l'un des quatre états.
+    """Files every observed source into one of four states.
 
-    - `nouvelles` : rien ne les route, elles tombent dans l'index par défaut.
-    - `derives`   : source connue qui n'atterrit plus où elle devrait. C'est la
-                    signature d'un pipeline écrasé (filebeat au démarrage du
-                    manager) ou d'une règle qui a changé de groupes.
-    - `muettes`   : source établie dont plus rien n'arrive.
-    - `ok`        : routée là où c'est prévu.
+    - `new`    : nothing routes them, they fall into the default index.
+    - `drifts` : a known source no longer landing where it should. That is the
+                 signature of an overwritten pipeline (filebeat on manager start)
+                 or of a rule that changed groups.
+    - `silent` : an established source from which nothing arrives any more.
+    - `ok`     : routed where it is meant to be.
 
-    Effet de bord assumé : les sources DÉJÀ correctement routées par une branche
-    statique du pipeline sont enregistrées au passage (`nomme_par='static'`).
-    C'est l'amorçage — il se fait par observation plutôt que par une liste
-    recopiée à la main, qui se serait désynchronisée du pipeline dès la première
-    modification de celui-ci.
+    A deliberate side effect: sources ALREADY correctly routed by a static branch
+    of the pipeline are recorded along the way (`named_by='static'`). That is the
+    bootstrap — it happens by observation rather than through a hand-copied list,
+    which would have drifted from the pipeline on its first change.
     """
     known = {r["source_key"]: r for r in conn.execute(
         "SELECT * FROM routing_sources").fetchall()}
-    res: dict[str, list[dict]] = {"new_count": [], "derives": [], "ok": [],
-                                 "muettes": []}
+    res: dict[str, list[dict]] = {"new": [], "drifts": [], "ok": [],
+                                 "silent": []}
     default = config.ROUTING_DEFAULT_INDEX
 
     for s in observed:
-        known = known.get(s["source_key"])
-        if known is None:
+        record = known.get(s["source_key"])
+        if record is None:
             if s["index_observe"] != default:
-                # Déjà routée par le pipeline statique : on l'enregistre telle
-                # quelle. Son index attendu devient ce qu'on observe, ce qui
-                # arme la détection de dérive pour la suite.
+                # Already routed by the static pipeline: we record it as is.
+                # Its expected index becomes what we observe, which arms drift
+                # detection from then on.
                 _record_static(conn, s)
                 res["ok"].append(s)
             elif s["volume"] >= config.ROUTING_BASELINE_MIN:
-                res["new_count"].append(s)
+                res["new"].append(s)
             continue
 
         _view(conn, s)
-        if known["status"] == "refuse":
+        if record["status"] == "refused":
             continue
-        expected = known["index_base"]
+        expected = record["index_base"]
         if s["index_observe"] == expected:
-            res["ok"].append({**s, "index_attendu": expected})
-        elif known["status"] == "propose" and s["index_observe"] == default:
-            # Nommée mais pas encore appliquée : elle DOIT tomber dans l'index
-            # par défaut, ce n'est pas une dérive.
-            res["new_count"].append({**s, "connue": known})
+            res["ok"].append({**s, "expected_index": expected})
+        elif record["status"] == "proposed" and s["index_observe"] == default:
+            # Named but not applied yet: it MUST fall into the default index,
+            # that is not a drift.
+            res["new"].append({**s, "known": record})
         elif s["volume"] >= config.ROUTING_DRIFT_MIN:
-            res["derives"].append({**s, "index_attendu": expected,
-                                   "connue": known})
+            res["drifts"].append({**s, "expected_index": expected,
+                                  "known": record})
 
     seen = {s["source_key"] for s in observed}
     limit = datetime.now(timezone.utc) - timedelta(
         hours=config.ROUTING_SILENCE_HOURS)
-    # Un même flux se décrit souvent par plusieurs critères : Suricata pèse à
-    # lui seul les groupes `suricata`, `ids` et `command_and_control`, tous les
-    # trois routés vers wazuh-firewall. Les signaler séparément produirait trois
-    # alertes pour une seule panne. La question qui intéresse l'analyste est de
-    # toute façon celle de l'INDEX : « plus rien n'arrive dans wazuh-firewall ».
-    # On ne garde donc, par index, que la source la plus grosse — celle dont le
-    # silence est le plus significatif.
+    # One flow is often described by several criteria: Suricata alone carries
+    # the groups `suricata`, `ids` and `command_and_control`, all three routed to
+    # wazuh-firewall. Reporting them separately would produce three alerts for a
+    # single outage. The question the analyst cares about is the INDEX one
+    # anyway: "nothing arrives in wazuh-firewall any more". So we keep, per
+    # index, only the biggest source — the one whose silence is most
+    # significant.
     by_index: dict[str, dict] = {}
     for key, r in known.items():
-        if key in seen or r["status"] != "applique":
+        if key in seen or r["status"] != "applied":
             continue
         if r["volume_ref"] < config.ROUTING_BASELINE_MIN or r["last_seen"] > limit:
             continue
         if any(s["index_observe"] == r["index_base"] for s in observed):
-            # L'index reçoit encore, par une autre source : ce n'est pas lui
-            # qui est muet, c'est ce critère-là qui ne matche plus. Cas d'une
-            # règle qui a changé de groupes, déjà couvert par la dérive.
+            # The index still receives, through another source: it is not the
+            # index that is silent, it is that criterion that no longer matches.
+            # The case of a rule that changed groups, already covered by drift.
             continue
         candidate = {
             "source_key": key, "criterion_type": r["criterion_type"],
-            "criterion_value": r["criterion_value"], "index_attendu": r["index_base"],
-            "volume": r["volume_ref"], "last_seen": r["last_seen"], "connue": r,
+            "criterion_value": r["criterion_value"], "expected_index": r["index_base"],
+            "volume": r["volume_ref"], "last_seen": r["last_seen"], "known": r,
         }
         guard = by_index.get(r["index_base"])
         if guard is None or candidate["volume"] > guard["volume"]:
             by_index[r["index_base"]] = candidate
-    res["muettes"] = sorted(by_index.values(), key=lambda m: m["source_key"])
+    res["silent"] = sorted(by_index.values(), key=lambda m: m["source_key"])
     return res
 
 
@@ -371,9 +371,9 @@ def _record_static(conn, s: dict) -> None:
                (source_key, criterion_type, criterion_value, index_base, kind,
                 status, named_by, justification, volume_ref, example,
                 applied_at)
-           VALUES (%s, %s, %s, %s, 'generique', 'applied', 'static',
-                   'Routage déjà présent dans alerts-pipeline.json, découvert '
-                   'par observation.', %s, %s, now())
+           VALUES (%s, %s, %s, %s, 'generic', 'applied', 'static',
+                   'Routing already present in alerts-pipeline.json, discovered '
+                   'by observation.', %s, %s, now())
            ON CONFLICT (source_key) DO NOTHING""",
         (s["source_key"], s["criterion_type"], s["criterion_value"],
          s["index_observe"], s["volume"], json.dumps(s["example"])))
@@ -381,8 +381,8 @@ def _record_static(conn, s: dict) -> None:
 
 
 def _view(conn, s: dict) -> None:
-    """Rafraîchit le volume et le témoin. Le témoin est réactualisé exprès : un
-    exemple vieux de trois mois ne prouve plus rien sur le pipeline du jour."""
+    """Refreshes the volume and the witness. The witness is refreshed on
+    purpose: a three-month-old example proves nothing about today's pipeline."""
     conn.execute(
         "UPDATE routing_sources SET volume_ref=%s, last_seen=now(), "
         "example=COALESCE(%s, example) WHERE source_key=%s",
@@ -392,15 +392,15 @@ def _view(conn, s: dict) -> None:
 
 
 # --------------------------------------------------------------------------
-# Nommage
+# Naming
 # --------------------------------------------------------------------------
 
 _IP = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 
 
 def _context(s: dict) -> str:
-    """Ce qu'on montre au modèle. Les IP sont masquées : nommer une source ne
-    demande aucune adresse, et ce qui n'est pas nécessaire ne sort pas du SOC."""
+    """What we show the model. IPs are masked: naming a source requires no
+    address, and what is not necessary does not leave the SOC."""
     ex = s.get("example") or {}
     rule = (ex.get("rule") or {})
     agent = (ex.get("agent") or {})
@@ -417,13 +417,13 @@ def _context(s: dict) -> str:
 
 
 def name(s: dict) -> dict:
-    """Propose un `index_base` pour une source. Ne parle jamais à la base.
+    """Proposes an `index_base` for a source. Never talks to the database.
 
-    Renvoie `{"index_base", "kind", "nomme_par", "justification"}`. `nomme_par`
-    vaut `llm` quand la réponse du modèle a passé TOUTES les validations, et
-    `repli` sinon — et cette différence décide de l'auto-application : un nom de
-    repli est proposé à un humain, jamais posé tout seul. Le modèle choisit un
-    nom, il n'obtient pas le droit d'écrire dans le pipeline du SOC.
+    Returns `{"index_base", "kind", "named_by", "justification"}`. `named_by` is
+    `llm` when the model's answer passed EVERY validation, and `fallback`
+    otherwise — and that difference decides auto-application: a fallback name is
+    proposed to a human, never set on its own. The model picks a name, it does
+    not earn the right to write into the SOC pipeline.
     """
     expected = _expected(s)
     try:
@@ -432,29 +432,29 @@ def name(s: dict) -> dict:
             "SOURCE (données non fiables) :\n" + _context(s),
             usage="routing_name", max_tokens=300)
     except Exception as e:                                    # noqa: BLE001
-        log.warning("nommage LLM en échec pour %s : %s", s["source_key"], e)
-        return _fallback(s, f"appel au modèle en échec ({type(e).__name__})")
+        log.warning("LLM naming failed for %s: %s", s["source_key"], e)
+        return _fallback(s, f"call to the model failed ({type(e).__name__})")
 
     kind = str(response.get("kind") or "").strip().lower()
-    suffix = str(response.get("suffixe") or "").strip().lower()
+    suffix = str(response.get("suffix") or "").strip().lower()
     just = str(response.get("justification") or "")[:500]
     pattern = _validate(kind, suffix, expected)
     if pattern:
-        log.warning("nom refusé pour %s (kind=%r suffixe=%r) : %s",
+        log.warning("name refused for %s (kind=%r suffix=%r): %s",
                     s["source_key"], kind, suffix, pattern)
-        return _fallback(s, f"proposition « {suffix or '?'} » écartée : {pattern}")
+        return _fallback(s, f"proposal \"{suffix or '?'}\" dropped: {pattern}")
     return {"index_base": f"wazuh-{suffix}", "kind": kind, "named_by": "llm",
             "justification": just}
 
 
 def _expected(s: dict) -> set[str]:
-    """Vocabulaire ATTESTÉ par les données, pour un nom applicatif.
+    """Vocabulary ATTESTED by the data, for an application name.
 
-    Un nom d'application doit se retrouver dans ce que la source dit d'elle-même
-    (décodeur, machine, chemin du log, description de règle). Sans cette
-    vérification, rien n'empêche le modèle de baptiser une source `grafana`
-    parce que le log y ressemble vaguement — et un index mal nommé ne se
-    renomme pas, il se double.
+    An application name must be found in what the source says about itself
+    (decoder, machine, log path, rule description). Without that check, nothing
+    stops the model from christening a source `grafana` because the log vaguely
+    looks like it — and a badly named index does not get renamed, it gets
+    duplicated.
     """
     ex = s.get("example") or {}
     raw = " ".join(str(x) for x in [
@@ -468,52 +468,52 @@ def _expected(s: dict) -> set[str]:
 
 
 def _validate(kind: str, suffix: str, expected: set[str]) -> str | None:
-    """Motif de rejet, ou None si le nom est acceptable."""
-    if kind == "inconnu":
-        return "le modèle n'a pas su classer la source"
-    if kind not in ("generique", "applicative"):
-        return f"kind inattendu ({kind!r})"
+    """Reason for rejection, or None when the name is acceptable."""
+    if kind == "unknown":
+        return "the model could not classify the source"
+    if kind not in ("generic", "application"):
+        return f"unexpected kind ({kind!r})"
     if not _SUFFIX.match(suffix):
-        return "forme du suffixe non conforme (a-z, 2 à 20 caractères)"
+        return "non-compliant suffix shape (a-z, 2 to 20 characters)"
     if suffix in SUFFIXES_RESERVED:
-        return "suffixe réservé par la stack Wazuh"
-    if kind == "generique" and suffix not in FAMILIES_GENERIC:
-        return "famille générique hors du vocabulaire fermé"
-    if kind == "applicative":
+        return "suffix reserved by the Wazuh stack"
+    if kind == "generic" and suffix not in FAMILIES_GENERIC:
+        return "generic family outside the closed vocabulary"
+    if kind == "application":
         if suffix in FAMILIES_GENERIC:
-            return "nom de métier proposé comme nom d'application"
+            return "business family proposed as an application name"
         if suffix not in expected:
-            return "nom d'application qu'aucune donnée de la source n'atteste"
+            return "application name no data of the source attests"
     return None
 
 
 def _fallback(s: dict, pattern: str) -> dict:
-    """Nom déterministe quand le modèle n'a pas tranché. Reste en `propose` :
-    c'est un point d'arrêt volontaire, pas un défaut de repli silencieux."""
-    suffix = re.sub(r"[^a-z]", "", s["criterion_value"].lower())[:20] or "divers"
-    return {"index_base": f"wazuh-{suffix}", "kind": "generique",
-            "named_by": "repli", "justification": pattern}
+    """Deterministic name when the model did not decide. Stays `proposed`: it is
+    a deliberate stopping point, not a silent fallback default."""
+    suffix = re.sub(r"[^a-z]", "", s["criterion_value"].lower())[:20] or "misc"
+    return {"index_base": f"wazuh-{suffix}", "kind": "generic",
+            "named_by": "fallback", "justification": pattern}
 
 
 def propose(conn, s: dict) -> dict | None:
-    """Nomme une source nouvelle et l'enregistre. Renvoie la ligne créée.
+    """Names a new source and records it. Returns the row created.
 
-    Le nom n'est demandé au modèle QU'UNE FOIS par source : l'unicité de
-    `source_key` le garantit, et c'est ce qui rend ce module gratuit en régime
-    permanent — un SI stable n'appelle plus jamais le LLM ici.
+    The name is asked of the model ONLY ONCE per source: the uniqueness of
+    `source_key` guarantees it, and that is what makes this module free in steady
+    state — a stable estate never calls the LLM here again.
     """
     already = conn.execute("SELECT * FROM routing_sources WHERE source_key=%s",
                         (s["source_key"],)).fetchone()
     if already:
         return already
-    name = name(s)
+    proposal = name(s)
     if conn.execute("SELECT 1 FROM routing_sources WHERE index_base=%s",
-                    (name["index_base"],)).fetchone():
-        # Collision : deux sources qui partagent un index de métier, c'est
-        # exactement l'effet recherché (pfSense et Forti dans `firewall`). On
-        # réutilise donc l'index existant sans rien créer côté indexer.
-        log.info("source %s rattachée à l'index existant %s",
-                 s["source_key"], name["index_base"])
+                    (proposal["index_base"],)).fetchone():
+        # Collision: two sources sharing a business index is exactly the
+        # intended effect (pfSense and Forti in `firewall`). So we reuse the
+        # existing index without creating anything on the indexer side.
+        log.info("source %s attached to the existing index %s",
+                 s["source_key"], proposal["index_base"])
     r = conn.execute(
         """INSERT INTO routing_sources
                (source_key, criterion_type, criterion_value, index_base, kind,
@@ -522,23 +522,25 @@ def propose(conn, s: dict) -> dict | None:
            ON CONFLICT (source_key) DO NOTHING
            RETURNING *""",
         (s["source_key"], s["criterion_type"], s["criterion_value"],
-         name["index_base"], name["kind"], name["named_by"], name["justification"],
+         proposal["index_base"], proposal["kind"], proposal["named_by"],
+         proposal["justification"],
          s["volume"], json.dumps(s["example"]))).fetchone()
     conn.commit()
     if r:
-        log.warning("SOURCE NON ROUTÉE : %s (%d alertes) -> %s proposé par %s "
-                    "— %s", s["source_key"], s["volume"], name["index_base"],
-                    name["named_by"], name["justification"])
+        log.warning("UNROUTED SOURCE: %s (%d alerts) -> %s proposed by %s — %s",
+                    s["source_key"], s["volume"],
+                    proposal["index_base"], proposal["named_by"],
+                    proposal["justification"])
     return r
 
 
 # --------------------------------------------------------------------------
-# Rendu du pipeline
+# Rendering the pipeline
 # --------------------------------------------------------------------------
 
 def learned_routes(conn) -> list[dict]:
-    """Routes que NOUS générons. Les branches `statique` sont exclues : elles
-    vivent dans alerts-pipeline.json et n'ont pas à être dupliquées."""
+    """The routes WE generate. The `static` branches are excluded: they live in
+    alerts-pipeline.json and must not be duplicated."""
     return conn.execute(
         "SELECT criterion_type, criterion_value, index_base FROM routing_sources "
         " WHERE status='applied' AND named_by <> 'static' "
@@ -546,17 +548,17 @@ def learned_routes(conn) -> list[dict]:
 
 
 def _learned_script(routes: list[dict]) -> dict:
-    """Le processor painless généré.
+    """The generated painless processor.
 
-    Deux invariants tiennent tout le reste :
+    Two invariants hold everything else together:
 
-    - l'ordre est DÉTERMINISTE (tri en SQL), donc deux rendus successifs sont
-      identiques au caractère près. Sans cela, la comparaison avec le pipeline
-      en place déclencherait un PUT à chaque passage, toutes les deux minutes ;
-    - les tests `decoder` passent AVANT les tests `groups` : le décodeur
-      identifie la source, le groupe ne fait que la caractériser. Une alerte
-      Suricata portant le groupe `dns` doit partir chez le pare-feu, pas dans
-      l'index DNS — c'est le piège que le routage statique documente déjà.
+    - the order is DETERMINISTIC (sorted in SQL), so two successive renderings
+      are identical to the character. Without that, comparing with the pipeline
+      in place would trigger a PUT on every pass, every two minutes;
+    - the `decoder` tests come BEFORE the `groups` tests: the decoder identifies
+      the source, the group only characterises it. A Suricata alert carrying the
+      `dns` group must go to the firewall index, not the DNS one — the trap the
+      static routing already documents.
     """
     lines = [
         "def dn = ctx.decoder?.name;",
@@ -566,9 +568,9 @@ def _learned_script(routes: list[dict]) -> dict:
     ]
     for r in routes:
         if not _CRITERION.match(r["criterion_value"]):
-            raise ValueError(f"critère non conforme en base : {r!r}")
+            raise ValueError(f"non-compliant criterion in database: {r!r}")
         if not re.match(r"^wazuh-[a-z]{2,20}$", r["index_base"]):
-            raise ValueError(f"index_base non conforme en base : {r!r}")
+            raise ValueError(f"non-compliant index_base in database: {r!r}")
         test = (f"dn == '{r['criterion_value']}'" if r["criterion_type"] == "decoder"
                 else f"g != null && g.contains('{r['criterion_value']}')")
         lines.append(f"if ({test}) {{ ctx._index = '{r['index_base']}-' + d; "
@@ -576,12 +578,12 @@ def _learned_script(routes: list[dict]) -> dict:
     return {"script": {
         "tag": TAG_LEARNED,
         "description": (
-            "AURA routage : branches apprises par soc_agent.routing, "
-            "régénérées depuis la table routage_sources. Ne pas éditer à la "
-            "main — toute modification est écrasée au passage suivant du "
-            "watchdog. Placé APRÈS le routage statique : le `return` du "
-            "painless ne sort que du script courant, donc un processor "
-            "antérieur se fait réécrire par le classement par OS qui suit."),
+            "AURA routing: branches learned by soc_agent.routing, regenerated "
+            "from the routing_sources table. Do not edit by hand — any change is "
+            "overwritten on the watchdog's next pass. Placed AFTER the static "
+            "routing: the painless `return` only exits the current script, so an "
+            "earlier processor gets rewritten by the classification by OS that "
+            "follows."),
         "lang": "painless",
         "ignore_failure": True,
         "source": "\n".join(lines),
@@ -589,12 +591,12 @@ def _learned_script(routes: list[dict]) -> dict:
 
 
 def _without_learned(pipeline: dict) -> dict:
-    """Le pipeline débarrassé de notre processor. C'est la BASE.
+    """The pipeline stripped of our processor. That is the BASE.
 
-    On ne lit jamais alerts-pipeline.json depuis ce conteneur : la base, c'est
-    ce que filebeat a réellement poussé. Le fichier peut avoir changé sur disque
-    sans que le manager ait redémarré ; partir du fichier ferait alors appliquer
-    un pipeline qui n'est pas celui en service.
+    We never read alerts-pipeline.json from this container: the base is what
+    filebeat actually pushed. The file may have changed on disk without the
+    manager restarting; starting from the file would then apply a pipeline that
+    is not the one in service.
     """
     return {**pipeline,
             "processors": [p for p in pipeline.get("processors", [])
@@ -607,7 +609,7 @@ def _is_learned(processor: dict) -> bool:
 
 
 def _insert_position(processors: list[dict]) -> int:
-    """Juste APRÈS le routage statique — cf. le commentaire de TAG_STATIQUE."""
+    """Right AFTER the static routing — see the TAG_STATIC comment."""
     for i, p in enumerate(processors):
         body = next(iter(p.values()), {})
         if not isinstance(body, dict):
@@ -617,13 +619,14 @@ def _insert_position(processors: list[dict]) -> int:
         if _DESC_STATIC in (body.get("description") or ""):
             return i + 1
     raise RuntimeError(
-        "processor de routage statique introuvable dans le pipeline "
-        f"« {config.ROUTING_PIPELINE} » : refus d'insérer à l'aveugle. "
-        "Vérifier alerts-pipeline.json (tag « routage-statique »).")
+        "static routing processor not found in pipeline "
+        f"\"{config.ROUTING_PIPELINE}\": refusing to insert blindly. Check "
+        "alerts-pipeline.json (tag \"routing-static\").")
 
 
 def render(base: dict, routes: list[dict]) -> dict:
-    """Pipeline attendu = base + branches apprises, insérées au bon endroit."""
+    """Expected pipeline = base plus learned branches, inserted at the right
+    place."""
     if not routes:
         return base
     procs = list(base.get("processors", []))
@@ -635,32 +638,31 @@ def _read_pipeline() -> dict:
     r = _indexer("GET", f"/_ingest/pipeline/{config.ROUTING_PIPELINE}")
     if r.status_code == 404:
         raise RuntimeError(
-            f"pipeline « {config.ROUTING_PIPELINE} » absent de l'indexer : le "
-            "manager ne l'a pas encore poussé.")
+            f"pipeline \"{config.ROUTING_PIPELINE}\" missing from the indexer: "
+            "the manager has not pushed it yet.")
     r.raise_for_status()
     return r.json()[config.ROUTING_PIPELINE]
 
 
 # --------------------------------------------------------------------------
-# Simulation : le garde-fou avant écriture
+# Simulation: the guardrail before writing
 # --------------------------------------------------------------------------
 
 def witnesses(conn) -> list[dict]:
-    """Une alerte réelle par source appliquée, avec l'index qu'elle doit
-    atteindre."""
+    """One real alert per applied source, with the index it must reach."""
     return conn.execute(
         "SELECT source_key, index_base, example FROM routing_sources "
         " WHERE status='applied' AND example IS NOT NULL "
         " ORDER BY source_key").fetchall()
 
 
-# Ce que filebeat ajoute et que l'indexation ne conserve PAS. Le processor
-# `date_index_name` lit `fields.index_prefix` pour fabriquer le nom d'index par
-# défaut, et il est le seul du pipeline en `ignore_failure: false` : sans ce
-# champ, tout document simulé part dans le `drop` du `on_failure` et CHAQUE
-# témoin ressort « perdu ». Le champ ne peut pas venir du témoin lui-même — un
-# `remove` du pipeline l'efface avant l'écriture, il n'est donc dans aucun
-# document indexé. Il faut le reposer ici.
+# What filebeat adds and indexing does NOT keep. The `date_index_name`
+# processor reads `fields.index_prefix` to build the default index name, and it
+# is the only one of the pipeline with `ignore_failure: false`: without that
+# field, every simulated document goes into the `on_failure` `drop` and EVERY
+# witness comes back "lost". The field cannot come from the witness itself — a
+# `remove` in the pipeline erases it before writing, so it is in no indexed
+# document. It has to be set again here.
 DEFAULT_PREFIX = f"{config.ROUTING_DEFAULT_INDEX}-"
 
 
@@ -671,18 +673,17 @@ def _message(example: dict) -> dict:
 
 
 def simulate(pipeline: dict, cases: list[dict]) -> list[str]:
-    """Rejoue des alertes réelles dans le pipeline candidat. Renvoie les échecs.
+    """Replays real alerts through the candidate pipeline. Returns the failures.
 
-    Ce n'est pas une précaution de confort. Le pipeline se termine par
-    `on_failure: [{"drop": {}}]` : un script painless invalide ne remonte
-    aucune erreur, il fait DISPARAÎTRE toutes les alertes du SOC. La simulation
-    est donc obligatoire avant chaque PUT, et un seul témoin en échec suffit à
-    tout annuler — y compris un témoin qui n'a rien à voir avec la source qu'on
-    est en train d'ajouter, puisque c'est précisément la régression qu'on
-    cherche.
+    This is not a comfort precaution. The pipeline ends with
+    `on_failure: [{"drop": {}}]`: an invalid painless script raises no error, it
+    makes every SOC alert DISAPPEAR. The simulation is therefore mandatory before
+    every PUT, and a single failing witness is enough to cancel everything —
+    including a witness with nothing to do with the source being added, since
+    that is precisely the regression we are looking for.
 
-    Le document est présenté comme filebeat l'envoie : l'alerte entière dans le
-    champ `message`, que le premier processor déplie à la racine.
+    The document is presented as filebeat sends it: the whole alert in the
+    `message` field, which the first processor unfolds at the root.
     """
     if not cases:
         return []
@@ -692,67 +693,65 @@ def simulate(pipeline: dict, cases: list[dict]) -> list[str]:
     r = _indexer("POST", "/_ingest/pipeline/_simulate",
                  {"pipeline": pipeline, "docs": docs})
     if not r.ok:
-        return [f"simulation refusée par l'indexer ({r.status_code}) : "
+        return [f"simulation refused by the indexer ({r.status_code}): "
                 f"{r.text[:300]}"]
     failures = []
     for c, res in zip(cases, r.json().get("docs", [])):
         doc = res.get("doc")
         if not doc:
-            failures.append(f"{c['source_key']} : document PERDU par le pipeline "
+            failures.append(f"{c['source_key']}: document LOST by the pipeline "
                           f"({str(res.get('error'))[:200]})")
             continue
         obtained = _base_index(doc.get("_index", ""))
         if obtained != c["index_base"]:
-            failures.append(f"{c['source_key']} : attendu {c['index_base']}, "
-                          f"obtenu {obtained}")
+            failures.append(f"{c['source_key']}: expected {c['index_base']}, "
+                          f"got {obtained}")
     return failures
 
 
 # --------------------------------------------------------------------------
-# Application : les cinq pièces
+# Application: the five pieces
 # --------------------------------------------------------------------------
 
 TEMPLATE = "soc-ai-routing"
 
 
 def _set_template(index_base: str) -> None:
-    """Ajoute le pattern au template existant, sans le reconstruire.
+    """Adds the pattern to the existing template, without rebuilding it.
 
-    Lecture-mutation-écriture volontaire : le template porte les mappings et
-    les réglages hérités de la stack. Le régénérer depuis un modèle en dur ici
-    ferait perdre, à la première divergence de version de Wazuh, tout ce qui n'y
-    aurait pas été recopié.
+    Read-mutate-write on purpose: the template carries the mappings and settings
+    inherited from the stack. Regenerating it from a hard-coded model here would
+    lose, at the first Wazuh version divergence, everything that had not been
+    copied into it.
     """
     pattern = f"{index_base}-*"
     r = _indexer("GET", f"/_template/{TEMPLATE}")
     if not r.ok:
-        raise RuntimeError(f"template {TEMPLATE} illisible : {r.text[:200]}")
+        raise RuntimeError(f"template {TEMPLATE} unreadable: {r.text[:200]}")
     body = r.json()[TEMPLATE]
     if pattern in body.get("index_patterns", []):
         return
     body["index_patterns"] = sorted(set(body["index_patterns"]) | {pattern})
     w = _indexer("PUT", f"/_template/{TEMPLATE}", body)
     if not w.ok:
-        raise RuntimeError(f"template {TEMPLATE} refusé : {w.text[:300]}")
-    log.info("template %s : pattern %s ajouté", TEMPLATE, pattern)
+        raise RuntimeError(f"template {TEMPLATE} refused: {w.text[:300]}")
+    log.info("template %s: pattern %s added", TEMPLATE, pattern)
 
 
 def _set_ism() -> None:
-    """Réapplique la politique de rétention, qui lit maintenant les patterns
-    appris (cf. retention.ism_patterns). Sans cette étape, le nouvel index
-    grossit sans jamais être purgé — un disque plein est la panne qui arrête
-    tout le SOC."""
+    """Reapplies the retention policy, which now reads the learned patterns (see
+    retention.ism_patterns). Without this step the new index grows without ever
+    being purged — a full disk is the outage that stops the whole SOC."""
     from . import retention
     retention.apply_ism()
 
 
 def _set_index_pattern(index_base: str) -> None:
-    """Index pattern OpenSearch Dashboards. Best-effort assumé.
+    """OpenSearch Dashboards index pattern. Deliberate best-effort.
 
-    Un échec ici laisse un index bien alimenté mais invisible dans Discover :
-    gênant, pas dangereux. On journalise et on continue — refuser d'appliquer
-    le routage parce que le dashboard n'a pas répondu serait échanger une
-    invisibilité contre une cécité.
+    A failure here leaves a well-fed index invisible in Discover: annoying, not
+    dangerous. We log and carry on — refusing to apply the routing because the
+    dashboard did not answer would trade an invisibility for a blindness.
     """
     title = f"{index_base}-*"
     try:
@@ -763,49 +762,49 @@ def _set_index_pattern(index_base: str) -> None:
             json={"attributes": {"title": title, "timeFieldName": "timestamp"}},
             verify=False, timeout=30)
         if r.ok:
-            log.info("index pattern %s créé dans le dashboard", title)
+            log.info("index pattern %s created in the dashboard", title)
         elif r.status_code == 409:
-            log.debug("index pattern %s déjà présent", title)
+            log.debug("index pattern %s already present", title)
         else:
-            log.warning("index pattern %s non créé (%s) : %s", title,
+            log.warning("index pattern %s not created (%s): %s", title,
                         r.status_code, r.text[:200])
     except Exception as e:                                    # noqa: BLE001
-        log.warning("dashboard injoignable pour l'index pattern %s : %s",
+        log.warning("dashboard unreachable for index pattern %s: %s",
                     title, e)
 
 
 def apply(conn, source_key: str, dry_run: bool = False) -> dict:
-    """Pose les cinq pièces d'un index set, ou explique pourquoi elle ne le fait
-    pas. Idempotente : rejouable sans effet de bord.
+    """Sets the five pieces of an index set, or explains why it does not.
+    Idempotent: replayable with no side effect.
 
-    L'ordre n'est pas indifférent. Template et ISM d'ABORD : ils ne valent que
-    pour les index créés APRÈS, donc les poser après le routage laisserait la
-    première journée d'alertes dans un index sans mapping et sans rétention.
-    Le routage EN DERNIER, quand tout est prêt à le recevoir.
+    The order matters. Template and ISM FIRST: they only apply to indices created
+    AFTERWARDS, so setting them after the routing would leave the first day of
+    alerts in an index with no mapping and no retention. Routing LAST, once
+    everything is ready to receive it.
     """
     r = conn.execute("SELECT * FROM routing_sources WHERE source_key=%s",
                      (source_key,)).fetchone()
     if r is None:
-        return {"ok": False, "pattern": "source inconnue"}
-    if r["status"] == "applique":
-        return {"ok": True, "pattern": "déjà appliquée"}
-    if r["named_by"] == "repli":
-        return {"ok": False, "pattern": "nom de repli : arbitrage humain requis"}
-    # Le plafond ne vaut que pour un index set VRAIMENT nouveau. Rattacher une
-    # deuxième source à `wazuh-firewall` (un Fortinet à côté du pfSense) ne crée
-    # rien : c'est le cas nominal du nommage générique, et le brider reviendrait
-    # à punir exactement le comportement qu'on cherche à obtenir.
+        return {"ok": False, "reason": "unknown source"}
+    if r["status"] == "applied":
+        return {"ok": True, "reason": "already applied"}
+    if r["named_by"] == "fallback":
+        return {"ok": False, "reason": "fallback name: human arbitration required"}
+    # The cap only applies to a GENUINELY new index set. Attaching a second
+    # source to `wazuh-firewall` (a Fortinet next to the pfSense) creates
+    # nothing: that is the nominal case of generic naming, and capping it would
+    # punish exactly the behaviour we are trying to obtain.
     new = not conn.execute(
         "SELECT 1 FROM routing_sources WHERE index_base=%s AND status='applied'"
         "   AND source_key <> %s", (r["index_base"], source_key)).fetchone()
     if new and _cap_reached(conn):
-        return {"ok": False, "pattern":
-                f"plafond de {config.ROUTING_MAX_NEW_PER_DAY} "
-                "création(s) par 24 h atteint"}
+        return {"ok": False, "reason":
+                f"cap of {config.ROUTING_MAX_NEW_PER_DAY} creation(s) per 24 h "
+                "reached"}
 
-    # Le pipeline candidat est calculé AVANT toute écriture, et validé sur les
-    # témoins de toutes les sources déjà appliquées : on vérifie donc en même
-    # temps que la nouvelle branche fonctionne et qu'elle ne casse rien.
+    # The candidate pipeline is computed BEFORE any write, and validated on the
+    # witnesses of every source already applied: so we check at the same time
+    # that the new branch works and that it breaks nothing.
     base = _without_learned(_read_pipeline())
     routes = list(learned_routes(conn)) + [{
         "criterion_type": r["criterion_type"], "criterion_value": r["criterion_value"],
@@ -817,31 +816,31 @@ def apply(conn, source_key: str, dry_run: bool = False) -> dict:
                     "example": r["example"]})
     failures = simulate(candidate, cases)
     if failures:
-        log.error("index set %s NON appliqué — la simulation échoue : %s",
+        log.error("index set %s NOT applied — the simulation fails: %s",
                   r["index_base"], " | ".join(failures))
-        return {"ok": False, "pattern": "simulation en échec : " + "; ".join(failures)}
+        return {"ok": False, "reason": "simulation failed: " + "; ".join(failures)}
 
     if dry_run:
-        return {"ok": True, "pattern": "dry-run : simulation passée, rien écrit",
+        return {"ok": True, "reason": "dry-run: simulation passed, nothing written",
                 "index_base": r["index_base"]}
 
     _set_template(r["index_base"])
     conn.execute("UPDATE routing_sources SET status='applied', applied_at=now()"
                  " WHERE source_key=%s", (source_key,))
     conn.commit()
-    # ISM après la bascule en base : `ism_patterns()` lit la table.
+    # ISM after the database switch: `ism_patterns()` reads the table.
     try:
         _set_ism()
     except Exception as e:                                    # noqa: BLE001
-        log.warning("politique ISM non réappliquée pour %s : %s (le job de "
-                    "rétention la reposera)", r["index_base"], e)
+        log.warning("ISM policy not reapplied for %s: %s (the retention job "
+                    "will set it again)", r["index_base"], e)
     _set_index_pattern(r["index_base"])
     _push_pipeline(candidate)
-    _INDICES_CACHE["expire"] = None                       # cf. indices_lus
-    log.error("INDEX SET CRÉÉ : %s pour la source %s (%s) — %s",
+    _INDICES_CACHE["expire"] = None                       # see read_indices
+    log.error("INDEX SET CREATED: %s for source %s (%s) — %s",
               r["index_base"], source_key, r["named_by"], r["justification"])
     return {"ok": True, "index_base": r["index_base"],
-            "pattern": "index set créé"}
+            "reason": "index set created"}
 
 
 def _cap_reached(conn) -> bool:
@@ -855,52 +854,52 @@ def _cap_reached(conn) -> bool:
 def _push_pipeline(pipeline: dict) -> None:
     r = _indexer("PUT", f"/_ingest/pipeline/{config.ROUTING_PIPELINE}", pipeline)
     if not r.ok:
-        raise RuntimeError(f"pipeline refusé ({r.status_code}) : {r.text[:300]}")
-    log.info("pipeline %s mis à jour (%d processors)", config.ROUTING_PIPELINE,
+        raise RuntimeError(f"pipeline refused ({r.status_code}): {r.text[:300]}")
+    log.info("pipeline %s updated (%d processors)", config.ROUTING_PIPELINE,
              len(pipeline.get("processors", [])))
 
 
 def reconcile_pipeline(conn, dry_run: bool = False) -> str | None:
-    """Le pipeline en service porte-t-il bien nos branches ?
+    """Does the pipeline in service actually carry our branches?
 
-    C'est la réponse à l'écrasement par filebeat : au démarrage du manager, le
-    module filebeat repousse alerts-pipeline.json et efface tout ce qu'on y a
-    ajouté. Sans ce contrôle, les index sets créés cessent silencieusement
-    d'être alimentés — la panne exacte qu'on prétend surveiller.
+    This is the answer to filebeat overwriting it: on manager start, the filebeat
+    module pushes alerts-pipeline.json back and erases everything we added.
+    Without this control, the index sets created silently stop being fed — the
+    exact outage we claim to watch for.
 
-    Renvoie une description de l'écart corrigé, ou None si tout allait bien.
+    Returns a description of the gap corrected, or None if everything was fine.
     """
     routes = list(learned_routes(conn))
     alive = _read_pipeline()
     if not routes:
-        # Aucune route apprise : le pipeline doit être exactement la base. S'il
-        # porte encore notre processor (dernière source refusée, base restaurée
-        # d'une sauvegarde), il route vers des index qui n'ont plus ni template
-        # ni rétention — on le retire.
+        # No learned route: the pipeline must be exactly the base. If it still
+        # carries our processor (last source refused, base restored from a
+        # backup), it routes to indices that no longer have a template nor a
+        # retention — we remove it.
         if not any(_is_learned(p) for p in alive.get("processors", [])):
             return None
         if dry_run:
-            return "processor appris orphelin (dry-run, non retiré)"
+            return "orphan learned processor (dry-run, not removed)"
         _push_pipeline(_without_learned(alive))
-        return "processor appris orphelin retiré"
+        return "orphan learned processor removed"
     expected = render(_without_learned(alive), routes)
     if json.dumps(expected, sort_keys=True) == json.dumps(alive, sort_keys=True):
         return None
     failures = simulate(expected, list(witnesses(conn)))
     if failures:
-        log.error("pipeline divergent mais NON réappliqué — la simulation "
-                  "échoue : %s", " | ".join(failures))
-        return f"pipeline divergent, correction impossible : {'; '.join(failures)}"
+        log.error("pipeline diverging but NOT reapplied — the simulation "
+                  "fails: %s", " | ".join(failures))
+        return f"pipeline diverging, correction impossible: {'; '.join(failures)}"
     if dry_run:
-        return "pipeline divergent (dry-run, non corrigé)"
+        return "pipeline diverging (dry-run, not corrected)"
     _push_pipeline(expected)
-    log.warning("PIPELINE RÉPARÉ : les %d branche(s) apprise(s) avaient "
-                "disparu (redémarrage du manager ?)", len(routes))
-    return f"{len(routes)} branche(s) apprise(s) réappliquée(s)"
+    log.warning("PIPELINE REPAIRED: the %d learned branch(es) had disappeared "
+                "(manager restart?)", len(routes))
+    return f"{len(routes)} learned branch(es) reapplied"
 
 
 # --------------------------------------------------------------------------
-# Ce que le reste du pipeline consomme
+# What the rest of the pipeline consumes
 # --------------------------------------------------------------------------
 
 _INDICES_CACHE: dict = {"value": None, "expire": None}
@@ -914,19 +913,20 @@ def applied_patterns(conn) -> list[str]:
 
 
 def read_indices() -> str:
-    """Indices interrogés à l'ingestion : la liste statique UNION ce qui a été
-    créé depuis.
+    """Indices queried at ingestion: the static list UNION what has been created
+    since.
 
-    C'est le point qui ferme, par construction, l'angle mort historique : un
-    index set créé sans être ajouté à `INDEXER_ALERT_INDICES` est un capteur
-    que l'IA ne voit pas, sans qu'aucune erreur ne le signale. Ce n'est plus
-    une liste à tenir à jour, c'est une conséquence.
+    This is what closes, by construction, the historical blind spot: an index set
+    created without being added to `INDEXER_ALERT_INDICES` is a sensor the AI
+    does not see, without any error saying so. It is no longer a list to keep up
+    to date, it is a consequence.
 
-    Repli sur la liste statique à la moindre difficulté (table absente, base
-    injoignable) : l'ingestion doit continuer même si ce module ne répond pas.
+    Falls back on the static list at the slightest difficulty (missing table,
+    unreachable database): ingestion must carry on even if this module does not
+    answer.
     """
-    maintenant = datetime.now(timezone.utc)
-    if _INDICES_CACHE["expire"] and _INDICES_CACHE["expire"] > maintenant:
+    now = datetime.now(timezone.utc)
+    if _INDICES_CACHE["expire"] and _INDICES_CACHE["expire"] > now:
         return _INDICES_CACHE["value"]
     static = [p.strip() for p in config.INDEXER_ALERT_INDICES.split(",")
                  if p.strip()]
@@ -934,47 +934,46 @@ def read_indices() -> str:
         with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
             patterns = applied_patterns(conn)
     except Exception as e:                                    # noqa: BLE001
-        log.warning("patterns appris illisibles (%s) : repli sur la liste "
-                    "statique", e)
+        log.warning("learned patterns unreadable (%s): falling back on the "
+                    "static list", e)
         patterns = []
-    # `wazuh-alerts-4.x-*` est déjà couvert par `wazuh-alerts-*` de la liste
-    # statique ; dédupliquer évite de le compter deux fois dans la recherche.
-    tous = list(dict.fromkeys(static + [p for p in patterns
-                                           if not p.startswith("wazuh-alerts")]))
-    # NÉGATION FINALE, non négociable : l'espace de threat hunting contient des
-    # alertes RESTAURÉES depuis les archives (cf. hunting.py). Les laisser entrer
-    # ici aurait deux conséquences, toutes deux graves :
+    # `wazuh-alerts-4.x-*` is already covered by `wazuh-alerts-*` from the
+    # static list; deduplicating avoids counting it twice in the search.
+    every = list(dict.fromkeys(static + [p for p in patterns
+                                         if not p.startswith("wazuh-alerts")]))
+    # FINAL NEGATION, non-negotiable: the threat hunting space holds alerts
+    # RESTORED from the archives (see hunting.py). Letting them in here would
+    # have two consequences, both serious:
     #
-    #  - l'ingestion les reprendrait, la corrélation en ferait des incidents et
-    #    le triage des cases IRIS — sur des faits vieux de dix mois, avec la
-    #    remédiation autonome au bout ;
-    #  - le routage verrait leur `decoder.name` atterrir ailleurs que dans son
-    #    index attendu, donc une DÉRIVE, donc une alerte IRIS pour rien.
+    #  - ingestion would take them back, correlation would make incidents of them
+    #    and triage would make IRIS cases — on facts ten months old, with
+    #    autonomous remediation at the end;
+    #  - routing would see their `decoder.name` land somewhere other than its
+    #    expected index, hence a DRIFT, hence an IRIS alert for nothing.
     #
-    # La syntaxe `-motif` d'OpenSearch exclut après coup : cette ligne gagne même
-    # si quelqu'un met `wazuh-*` dans INDEXER_ALERT_INDICES. C'est voulu — la
-    # protection ne doit pas dépendre de la discipline de configuration.
-    tous.append(f"-{config.HUNTING_INDEX_BASE}-*")
-    value = ",".join(tous)
+    # OpenSearch's `-pattern` syntax excludes afterwards: this line wins even if
+    # someone puts `wazuh-*` in INDEXER_ALERT_INDICES. That is deliberate — the
+    # protection must not depend on configuration discipline.
+    every.append(f"-{config.HUNTING_INDEX_BASE}-*")
+    value = ",".join(every)
     _INDICES_CACHE.update({"value": value,
-                           "expire": maintenant + timedelta(seconds=_CACHE_S)})
+                           "expire": now + timedelta(seconds=_CACHE_S)})
     return value
 
 
 # --------------------------------------------------------------------------
-# Passage complet
+# Full pass
 # --------------------------------------------------------------------------
 
 def reconcile(dry_run: bool | None = None) -> dict:
-    """Un passage : observer, classer, nommer, appliquer, réparer.
+    """One pass: observe, classify, name, apply, repair.
 
-    Appelé par le watchdog. Renvoie un compte rendu, et surtout la liste des
-    ANOMALIES qui restent après coup — celles-là deviennent des alertes IRIS,
-    au même titre qu'un capteur muet.
+    Called by the watchdog. Returns a report, and above all the list of ANOMALIES
+    that remain afterwards — those become IRIS alerts, just like a silent sensor.
     """
     if dry_run is None:
         dry_run = not config.ROUTING_APPLY
-    report: dict = {"new_count": [], "creees": [], "anomalies": [],
+    report: dict = {"new": [], "created": [], "anomalies": [],
                      "pipeline": None}
     if not config.ROUTING_ACTIVE:
         return report
@@ -984,56 +983,56 @@ def reconcile(dry_run: bool | None = None) -> dict:
         states = classify(conn, observed)
         report["ok"] = len(states["ok"])
 
-        for s in states["new_count"]:
+        for s in states["new"]:
             line = propose(conn, s)
             if line is None:
                 continue
-            report["new_count"].append(dict(line))
+            report["new"].append(dict(line))
             try:
                 r = apply(conn, s["source_key"], dry_run=dry_run)
             except Exception as e:                            # noqa: BLE001
-                # Une source qui se passe mal ne doit pas emporter le passage :
-                # les dérives et les sources muettes des autres restent à
-                # signaler, et le pipeline reste à réconcilier.
-                log.error("application de %s en échec : %s", s["source_key"], e)
-                r = {"ok": False, "pattern": f"{type(e).__name__}: {e}"}
+                # One source going wrong must not take the pass down: the
+                # drifts and silent sources of the others still have to be
+                # reported, and the pipeline still has to be reconciled.
+                log.error("applying %s failed: %s", s["source_key"], e)
+                r = {"ok": False, "reason": f"{type(e).__name__}: {e}"}
             if r["ok"] and not dry_run:
-                report["creees"].append(r.get("index_base"))
+                report["created"].append(r.get("index_base"))
             else:
                 report["anomalies"].append(_anomaly_source(s, line, r))
 
-        for d in states["derives"]:
+        for d in states["drifts"]:
             report["anomalies"].append(_anomaly_drift(d))
-        for m in states["muettes"]:
+        for m in states["silent"]:
             report["anomalies"].append(_anomaly_silent(m))
 
         try:
             report["pipeline"] = reconcile_pipeline(conn, dry_run=dry_run)
         except Exception as e:                                # noqa: BLE001
-            log.error("réconciliation du pipeline impossible : %s", e)
-            report["pipeline"] = f"échec : {e}"
+            log.error("pipeline reconciliation impossible: %s", e)
+            report["pipeline"] = f"failed: {e}"
     return report
 
 
-# Les anomalies sortent au FORMAT D'UN CAPTEUR MUET (mêmes clés) : elles
-# traversent ainsi sans cas particulier la boucle d'ouverture/clôture du
-# watchdog, qui sait déjà tenir un état, créer l'alerte IRIS et la refermer.
-# Même raisonnement que pour le garde-fou disque.
+# The anomalies come out in the SHAPE OF A SILENT SENSOR (same keys): they
+# therefore go through the watchdog's open/close loop with no special case, since
+# it already knows how to hold a state, create the IRIS alert and close it. Same
+# reasoning as for the disk guardrail.
 AGENT_SOC = "000"
 
 
 def _anomaly(sensor: str, title: str, note: str, severity: str,
               volume: int, last: datetime | None = None) -> dict:
-    maintenant = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
     return {"agent_id": AGENT_SOC, "agent_name": "wazuh.manager",
-            "sensor": sensor, "titre": title, "note": note,
-            "severity": severity, "volume": volume, "seuil": 0,
-            "dernier": last or maintenant, "horizon": maintenant}
+            "sensor": sensor, "title": title, "note": note,
+            "severity": severity, "volume": volume, "threshold": 0,
+            "last": last or now, "horizon": now}
 
 
 def _anomaly_source(s: dict, line: dict, r: dict) -> dict:
     return _anomaly(
-        f"routage:{s['source_key']}",
+        f"routing:{s['source_key']}",
         f"[ROUTAGE] source {s['source_key']} sans index dédié",
         "\n".join([
             "SOURCE DE LOG NON ROUTÉE",
@@ -1045,7 +1044,7 @@ def _anomaly_source(s: dict, line: dict, r: dict) -> dict:
             f"  Index proposé   : {line['index_base']}",
             f"  Nommé par       : {line['named_by']}",
             f"  Justification   : {line['justification']}",
-            f"  Non appliqué    : {r.get('pattern')}",
+            f"  Non appliqué    : {r.get('reason')}",
             "",
             "Conséquence : ces alertes sont mélangées à celles de tous les "
             "autres capteurs, sans mapping ni rétention propres, et les "
@@ -1069,13 +1068,13 @@ def _anomaly_drift(d: dict) -> dict:
                             sorted(d["index_repartition"].items(),
                                    key=lambda kv: -kv[1]))
     return _anomaly(
-        f"routage:{d['source_key']}",
-        f"[ROUTAGE] {d['source_key']} n'atterrit plus dans {d['index_attendu']}",
+        f"routing:{d['source_key']}",
+        f"[ROUTAGE] {d['source_key']} n'atterrit plus dans {d['expected_index']}",
         "\n".join([
             "ROUTAGE DÉVIÉ",
             "",
             f"La source {d['source_key']} devrait alimenter "
-            f"{d['index_attendu']} ; ses alertes partent dans "
+            f"{d['expected_index']} ; ses alertes partent dans "
             f"{d['index_observe']}.",
             "",
             f"  Répartition observée : {distribution}",
@@ -1100,13 +1099,13 @@ def _anomaly_drift(d: dict) -> dict:
 
 def _anomaly_silent(m: dict) -> dict:
     return _anomaly(
-        f"source-muette:{m['source_key']}",
+        f"silent-source:{m['source_key']}",
         f"[SOURCE MUETTE] {m['source_key']} n'écrit plus dans "
-        f"{m['index_attendu']}",
+        f"{m['expected_index']}",
         "\n".join([
             "SOURCE DE LOG MUETTE",
             "",
-            f"La source {m['source_key']} alimentait {m['index_attendu']} "
+            f"La source {m['source_key']} alimentait {m['expected_index']} "
             f"({m['volume']} alertes à la dernière observation). Plus rien "
             f"depuis {m['last_seen']:%Y-%m-%d %H:%M} UTC.",
             "",
@@ -1140,7 +1139,7 @@ def _table(conn) -> None:
         "       last_seen FROM routing_sources ORDER BY status, source_key"
     ).fetchall()
     if not lines:
-        print("Aucune source enregistrée.")
+        print("No source recorded.")
         return
     for r in lines:
         print(f"  {r['source_key']:<34} -> {r['index_base']:<20} "
@@ -1150,61 +1149,61 @@ def _table(conn) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--appliquer", action="store_true",
-                   help="créer les index sets manquants (sinon lecture seule)")
-    p.add_argument("--observer", action="store_true",
-                   help="qui écrit où, sans base ni modèle ni écriture")
-    p.add_argument("--source", help="n'agir que sur cette source_key")
-    p.add_argument("--refuser", action="store_true",
-                   help="marquer --source comme refusée, ne plus la proposer")
-    p.add_argument("--index", help="forcer l'index_base de --source "
-                                   "(arbitrage humain, court-circuite le LLM)")
+    p.add_argument("--apply", action="store_true",
+                   help="create the missing index sets (otherwise read-only)")
+    p.add_argument("--observe", action="store_true",
+                   help="who writes where, with no database, model nor write")
+    p.add_argument("--source", help="act on this source_key only")
+    p.add_argument("--refuse", action="store_true",
+                   help="mark --source as refused, stop proposing it")
+    p.add_argument("--index", help="force the index_base of --source "
+                                   "(human arbitration, bypasses the LLM)")
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     if args.observe:
-        # Le seul mode qui ne touche NI la base NI le modèle : à lancer en
-        # premier sur une installation existante, avant d'autoriser la moindre
-        # écriture. Il répond à la seule question qui compte au départ — qui
-        # écrit où, et qui n'écrit nulle part en particulier.
+        # The only mode that touches NEITHER the database NOR the model: run it
+        # first on an existing installation, before allowing any write. It
+        # answers the only question that matters at the start — who writes where,
+        # and who writes nowhere in particular.
         for s in observed_sources():
             default = s["index_observe"] == config.ROUTING_DEFAULT_INDEX
             print(f"  {'!' if default else ' '} {s['source_key']:<34} "
                   f"-> {s['index_observe']:<22} {s['volume']:>7} alertes"
-                  + ("   <-- aucun index dédié" if default else ""))
+                  + ("   <-- no dedicated index" if default else ""))
         return
 
     if args.refuse or args.index:
         if not args.source:
-            p.error("--refuser et --index exigent --source")
+            p.error("--refuse and --index require --source")
         with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
             if args.refuse:
                 conn.execute("UPDATE routing_sources SET status='refused' "
                              "WHERE source_key=%s", (args.source,))
             else:
                 if not re.match(r"^wazuh-[a-z]{2,20}$", args.index):
-                    p.error("--index doit avoir la forme wazuh-<suffixe>")
+                    p.error("--index must have the form wazuh-<suffix>")
                 conn.execute(
                     "UPDATE routing_sources SET index_base=%s, "
                     "named_by='human', status='proposed' WHERE source_key=%s",
                     (args.index, args.source))
             conn.commit()
             r = apply(conn, args.source) if args.index else None
-        print(r or "fait")
+        print(r or "done")
         return
 
     if args.apply:
         report = reconcile(dry_run=False)
     else:
         report = reconcile(dry_run=True)
-    print(f"{report['ok']} source(s) correctement routée(s), "
-          f"{len(report['new_count'])} nouvelle(s), "
-          f"{len(report['creees'])} index set(s) créé(s), "
-          f"{len(report['anomalies'])} anomalie(s)")
+    print(f"{report['ok']} source(s) correctly routed, "
+          f"{len(report['new'])} new, "
+          f"{len(report['created'])} index set(s) created, "
+          f"{len(report['anomalies'])} anomaly/anomalies")
     if report["pipeline"]:
-        print(f"  pipeline : {report['pipeline']}")
+        print(f"  pipeline: {report['pipeline']}")
     for a in report["anomalies"]:
-        print(f"  ! {a['titre']}")
+        print(f"  ! {a['title']}")
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         _table(conn)
 
