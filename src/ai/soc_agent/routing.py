@@ -294,7 +294,7 @@ def classify(conn, observed: list[dict]) -> dict[str, list[dict]]:
     - `ok`        : routée là où c'est prévu.
 
     Effet de bord assumé : les sources DÉJÀ correctement routées par une branche
-    statique du pipeline sont enregistrées au passage (`nomme_par='statique'`).
+    statique du pipeline sont enregistrées au passage (`nomme_par='static'`).
     C'est l'amorçage — il se fait par observation plutôt que par une liste
     recopiée à la main, qui se serait désynchronisée du pipeline dès la première
     modification de celui-ci.
@@ -371,7 +371,7 @@ def _record_static(conn, s: dict) -> None:
                (source_key, criterion_type, criterion_value, index_base, kind,
                 status, named_by, justification, volume_ref, example,
                 applied_at)
-           VALUES (%s, %s, %s, %s, 'generique', 'applique', 'statique',
+           VALUES (%s, %s, %s, %s, 'generique', 'applied', 'static',
                    'Routage déjà présent dans alerts-pipeline.json, découvert '
                    'par observation.', %s, %s, now())
            ON CONFLICT (source_key) DO NOTHING""",
@@ -518,7 +518,7 @@ def propose(conn, s: dict) -> dict | None:
         """INSERT INTO routing_sources
                (source_key, criterion_type, criterion_value, index_base, kind,
                 status, named_by, justification, volume_ref, example)
-           VALUES (%s, %s, %s, %s, %s, 'propose', %s, %s, %s, %s)
+           VALUES (%s, %s, %s, %s, %s, 'proposed', %s, %s, %s, %s)
            ON CONFLICT (source_key) DO NOTHING
            RETURNING *""",
         (s["source_key"], s["criterion_type"], s["criterion_value"],
@@ -541,7 +541,7 @@ def learned_routes(conn) -> list[dict]:
     vivent dans alerts-pipeline.json et n'ont pas à être dupliquées."""
     return conn.execute(
         "SELECT criterion_type, criterion_value, index_base FROM routing_sources "
-        " WHERE status='applique' AND named_by <> 'statique' "
+        " WHERE status='applied' AND named_by <> 'static' "
         " ORDER BY criterion_type DESC, criterion_value").fetchall()
 
 
@@ -650,7 +650,7 @@ def witnesses(conn) -> list[dict]:
     atteindre."""
     return conn.execute(
         "SELECT source_key, index_base, example FROM routing_sources "
-        " WHERE status='applique' AND example IS NOT NULL "
+        " WHERE status='applied' AND example IS NOT NULL "
         " ORDER BY source_key").fetchall()
 
 
@@ -796,7 +796,7 @@ def apply(conn, source_key: str, dry_run: bool = False) -> dict:
     # rien : c'est le cas nominal du nommage générique, et le brider reviendrait
     # à punir exactement le comportement qu'on cherche à obtenir.
     new = not conn.execute(
-        "SELECT 1 FROM routing_sources WHERE index_base=%s AND status='applique'"
+        "SELECT 1 FROM routing_sources WHERE index_base=%s AND status='applied'"
         "   AND source_key <> %s", (r["index_base"], source_key)).fetchone()
     if new and _cap_reached(conn):
         return {"ok": False, "pattern":
@@ -826,7 +826,7 @@ def apply(conn, source_key: str, dry_run: bool = False) -> dict:
                 "index_base": r["index_base"]}
 
     _set_template(r["index_base"])
-    conn.execute("UPDATE routing_sources SET status='applique', applied_at=now()"
+    conn.execute("UPDATE routing_sources SET status='applied', applied_at=now()"
                  " WHERE source_key=%s", (source_key,))
     conn.commit()
     # ISM après la bascule en base : `ism_patterns()` lit la table.
@@ -848,7 +848,7 @@ def _cap_reached(conn) -> bool:
     n = conn.execute(
         "SELECT count(*) c FROM routing_sources "
         " WHERE applied_at > now() - interval '24 hours' "
-        "   AND named_by <> 'statique'").fetchone()["c"]
+        "   AND named_by <> 'static'").fetchone()["c"]
     return n >= config.ROUTING_MAX_NEW_PER_DAY
 
 
@@ -910,7 +910,7 @@ _CACHE_S = 300
 def applied_patterns(conn) -> list[str]:
     return [f"{r['index_base']}-*" for r in conn.execute(
         "SELECT DISTINCT index_base FROM routing_sources "
-        " WHERE status='applique' ORDER BY index_base").fetchall()]
+        " WHERE status='applied' ORDER BY index_base").fetchall()]
 
 
 def read_indices() -> str:
@@ -1179,14 +1179,14 @@ def main() -> None:
             p.error("--refuser et --index exigent --source")
         with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
             if args.refuse:
-                conn.execute("UPDATE routing_sources SET status='refuse' "
+                conn.execute("UPDATE routing_sources SET status='refused' "
                              "WHERE source_key=%s", (args.source,))
             else:
                 if not re.match(r"^wazuh-[a-z]{2,20}$", args.index):
                     p.error("--index doit avoir la forme wazuh-<suffixe>")
                 conn.execute(
                     "UPDATE routing_sources SET index_base=%s, "
-                    "named_by='humain', status='propose' WHERE source_key=%s",
+                    "named_by='human', status='proposed' WHERE source_key=%s",
                     (args.index, args.source))
             conn.commit()
             r = apply(conn, args.source) if args.index else None

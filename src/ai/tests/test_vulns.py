@@ -193,7 +193,7 @@ def test_cloture_ne_touche_que_les_agents_vus():
     produirait aucune erreur, seulement un mensonge.
     """
     assert "agent_id = ANY(%(agents)s)" in vulns.CLOSURE
-    assert "statut = 'corrigee'" in vulns.CLOSURE
+    assert "statut = 'fixed'" in vulns.CLOSURE
 
 
 def test_upsert_ne_reecrit_pas_la_date_de_premiere_vue():
@@ -201,7 +201,7 @@ def test_upsert_ne_reecrit_pas_la_date_de_premiere_vue():
     les compteurs de retard à zéro à chaque passage, et le VOC se féliciterait
     tout seul. Seule une vulnérabilité qui RÉAPPARAÎT après correction
     redémarre."""
-    assert "first_seen        = CASE WHEN vulnerabilites.statut = 'corrigee'" \
+    assert "first_seen        = CASE WHEN vulnerabilites.statut = 'fixed'" \
         in vulns.UPSERT
 
 

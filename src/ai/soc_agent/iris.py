@@ -2782,7 +2782,7 @@ def create_case(conn, incident: dict, triage: dict) -> int:
             from . import mitigate
             mitigate.run(incident["id"])
         except Exception as e:  # noqa: BLE001 — une remédiation KO ne bloque
-            # pas la création du case ; elle est tracée en 'échec'.
+            # pas la création du case ; elle est tracée en 'failed'.
             log.warning("remédiation auto #%s : %s", incident["id"], e)
 
     # Vrai positif : les traits UEBA impliqués ne doivent plus jamais devenir

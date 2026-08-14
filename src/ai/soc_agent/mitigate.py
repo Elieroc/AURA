@@ -211,7 +211,7 @@ def _wazuh_ar(agent_id: str, command: str, arguments: list[str]) -> dict:
 
     Lève si l'API n'a pas retenu l'agent. Un 200 ne suffit pas : l'API répond
     200 avec l'agent dans `failed_items` quand il est déconnecté ou inconnu, et
-    l'appelant marquait alors la remédiation 'exécuté' alors que rien n'était
+    l'appelant marquait alors la remédiation 'executed' alors que rien n'était
     parti.
 
     Reste hors de portée : le RÉSULTAT du script côté agent. L'API est
@@ -422,7 +422,7 @@ def _confirm(agent_id: str, expected: bool, attempts: int = 6) -> dict:
 # --- exécuteurs par action --------------------------------------------------
 #
 # Chacun retourne (statut, canal, details, undo). En dry-run, il DÉCRIT l'action
-# sans la déclencher (statut 'dry_run'). Toute exception -> statut 'échec'.
+# sans la déclencher (statut 'dry_run'). Toute exception -> statut 'failed'.
 
 def _agent_windows(agent_id: str) -> bool:
     """Vrai si l'agent tourne sous Windows (route vers les AR Windows/AD)."""
@@ -579,16 +579,16 @@ EXECUTEURS = {
 # Chacun défait l'action par le MÊME canal que l'aller (Shuffle pour l'hôte, API
 # Wazuh pour l'IP/compte), via l'active-response inverse. Retourne le libellé du
 # canal utilisé, et LÈVE si le canal échoue (l'appelant garde alors le statut
-# 'exécuté' et retentera).
+# 'executed' et retentera).
 #
 # Un reverse s'exécute TOUJOURS, indépendamment de MITIGATE_EXECUTE — même
 # logique que --isoler/--desisoler : ce drapeau ne borne que l'exécution
 # AUTOMATIQUE depuis un verdict, jamais la restauration. Le gater était un piège
-# de sûreté : `reconcilier` marque 'annulé' dès que le reverse rend la main, donc
+# de sûreté : `reconcilier` marque 'canceled' dès que le reverse rend la main, donc
 # couper l'exécution puis annuler ne défaisait RIEN tout en sortant la ligne de
-# la sélection `statut='exécuté'` — l'annulation était perdue en silence, sans
+# la sélection `statut='executed'` — l'annulation était perdue en silence, sans
 # nouvelle tentative possible. Et il n'y a rien à protéger : seules les actions
-# réellement parties portent le statut 'exécuté' (une action en dry-run reste en
+# réellement parties portent le statut 'executed' (une action en dry-run reste en
 # 'dry_run'), donc un reverse ne touche que ce qui a vraiment été appliqué.
 
 def _revert_isolate(target: str, ctx: dict) -> str:
@@ -622,7 +622,7 @@ def _revert_quarantine_file(target: str, ctx: dict) -> str:
 
 # Pas de propose_kill_process : un process tué n'a pas de reverse (« unkill »).
 # Pas de propose_remove_privileged_group : proposé seulement, jamais exécuté auto
-# (donc jamais 'exécuté' à défaire) ; ad-add-group-member reste dispo à la main.
+# (donc jamais 'executed' à défaire) ; ad-add-group-member reste dispo à la main.
 REVERTERS = {
     "propose_isolate_host": _revert_isolate,
     "propose_block_ip": _revert_block_ip,
@@ -1205,11 +1205,11 @@ RETURNING id
 
 # Statuts qui interdisent de rejouer une action sur le même couple
 # (incident, cible). Les quatre statuts « la commande est partie » pour
-# l'idempotence évidente — y compris 'refusé_agent' : une action que le script
+# l'idempotence évidente — y compris 'agent_refused' : une action que le script
 # a déclinée par garde-fou serait redemandée à chaque cycle, et redéclinée,
 # indéfiniment. Un refus est une réponse, pas une erreur transitoire.
-# 'échec' n'y est PAS : un canal qui tombe mérite un nouvel essai.
-# 'annulé' et
+# 'failed' n'y est PAS : un canal qui tombe mérite un nouvel essai.
+# 'canceled' et
 # 'annulation_impossible' parce qu'une action ANNULÉE ne doit pas revenir : un
 # incident gagne de nouvelles alertes en continu (needs_refresh), donc le triage
 # est rejoué, donc la remédiation aussi — l'analyste qui passe la tâche IRIS en
@@ -1220,12 +1220,12 @@ RETURNING id
 # rien ne repart tout seul. C'est le bon défaut (l'analyste a tranché en
 # connaissance de cause) et il reste rattrapable à la main :
 # `mitigate --isoler <agent>`, ou suppression de la ligne pour rouvrir le droit.
-# Statuts TERMINAUX : on connaît l'issue, on ne rejoue jamais. 'émis' n'en fait
+# Statuts TERMINAUX : on connaît l'issue, on ne rejoue jamais. 'sent' n'en fait
 # PAS partie — c'est « la commande est partie », pas « elle a eu l'effet voulu ».
-# Une action restée 'émis' (aucun `ar-result` de confirmation) est retentée
+# Une action restée 'sent' (aucun `ar-result` de confirmation) est retentée
 # jusqu'à MITIGATE_MAX_TENTATIVES : sans quoi un compte attaquant recréé sous un
 # incident déjà ouvert n'est jamais désactivé (mesuré à l'exercice : `art-backdoor`
-# figé sur un 'émis' hérité, disable_user jamais rejoué). 'confirmé'/'sans_effet'
+# figé sur un 'sent' hérité, disable_user jamais rejoué). 'confirmed'/'no_effect'
 # sont, eux, des réponses de l'agent : terminaux.
 _STATUSES_FROZEN = ("confirmé", "sans_effet", "refusé_agent",
                   "annulé", "annulation_impossible")
@@ -1241,7 +1241,7 @@ def _already_executed(conn, incident_id: int, action: str, target: str,
         return False
     if r["status"] in _STATUSES_FROZEN:
         return True
-    # 'émis' non confirmé : rejouable tant que le plafond n'est pas atteint.
+    # 'sent' non confirmé : rejouable tant que le plafond n'est pas atteint.
     if r["status"] == "émis":
         return r["attempts"] >= config.MITIGATE_MAX_ATTEMPTS
     return False
@@ -1451,7 +1451,7 @@ def reconcile_ar_results() -> list[dict]:
     System32 sur un contrôleur de domaine, quand le script les avait toutes
     déclinées.
 
-    Une remédiation qui ne reçoit AUCUN compte rendu reste 'émis' — jamais
+    Une remédiation qui ne reçoit AUCUN compte rendu reste 'sent' — jamais
     promue en succès. C'est le bon défaut : un script qui meurt avant d'écrire
     sa ligne (exception PowerShell) ne doit pas être lu comme un succès.
     """
@@ -1479,7 +1479,7 @@ def reconcile_ar_results() -> list[dict]:
                 UPDATE mitigations m
                    SET status = %(status)s,
                        details = m.details || %(suffixe)s
-                 WHERE m.status = 'émis'
+                 WHERE m.status = 'sent'
                    AND m.agent_id = %(agent)s
                    AND m.action = ANY(%(actions)s)
                    AND m.target = %(target)s
@@ -1528,7 +1528,7 @@ SELECT m.id, m.incident_id, m.action, m.target, m.details, m.iris_task_id,
        COALESCE(NULLIF(m.agent_id, ''), i.agent_id) AS agent_id, i.iris_case_id
   FROM mitigations m
   JOIN incidents i ON i.id = m.incident_id
- WHERE m.status IN ('émis', 'confirmé', 'sans_effet')
+ WHERE m.status IN ('sent', 'confirmed', 'no_effect')
    AND m.iris_task_id IS NOT NULL
    AND i.iris_case_id IS NOT NULL
    AND (%(inc)s::bigint IS NULL OR m.incident_id = %(inc)s)
@@ -1541,7 +1541,7 @@ _STATUS_IRREVERSIBLE = "annulation_impossible"
 
 # Verrou consultatif dédié à la réconciliation. Son timer (1 min) est plus court
 # que celui du cycle : deux passages ne doivent pas se superposer et double-tirer
-# un reverse (fenêtre entre le SELECT et le commit du statut 'annulé').
+# un reverse (fenêtre entre le SELECT et le commit du statut 'canceled').
 _LOCK_RECONCILE = 0x50CA2
 
 
@@ -1551,10 +1551,10 @@ def reconcile(incident_id: int | None = None) -> list[dict]:
     L'analyste garde la main a posteriori : mettre une tâche de remédiation en
     'Canceled' dans IRIS demande au soc-agent de DÉFAIRE l'action — désisoler
     l'hôte, débloquer l'IP, réactiver le compte. Boucle fermée : la tâche IRIS
-    est le signal, la table `mitigations` la mémoire (une action partie — 'émis',
-    'confirmé' ou 'sans_effet' — est à surveiller ; 'annulé' = déjà défait, plus
+    est le signal, la table `mitigations` la mémoire (une action partie — 'sent',
+    'confirmed' ou 'no_effect' — est à surveiller ; 'canceled' = déjà défait, plus
     repris). Le kill de process n'a pas de reverse : on le documente une fois et
-    on le marque terminal. Une action 'refusé_agent' n'est pas défaisable : le
+    on le marque terminal. Une action 'agent_refused' n'est pas défaisable : le
     script l'a déclinée, il n'y a rien à remettre en état.
 
     Idempotent : une remédiation déjà annulée n'est plus sélectionnée ; un
@@ -1570,7 +1570,7 @@ def reconcile(incident_id: int | None = None) -> list[dict]:
             return []
         try:
             # D'abord, ce que les agents ont réellement fait : sans ça, une
-            # remédiation refusée par le script resterait 'émis' et le rapport
+            # remédiation refusée par le script resterait 'sent' et le rapport
             # IRIS continuerait d'annoncer une action qui n'a pas eu lieu.
             # Même verrou : les deux passes écrivent dans `mitigations`.
             try:
@@ -1658,7 +1658,7 @@ def _reconcile_rows(conn, rows: list[dict]) -> list[dict]:
         try:
             channel = reverter(target, ctx)
         except Exception as e:  # noqa: BLE001 — reverse en échec : on garde le
-            # statut 'exécuté' pour retenter au prochain passage, on trace.
+            # statut 'executed' pour retenter au prochain passage, on trace.
             log.warning("reverse %s [%s] échoué : %s", action, target, e)
             _comment_task(case, cid, task_id,
                 f"❌ Tentative d'annulation automatique de « "
@@ -1667,7 +1667,7 @@ def _reconcile_rows(conn, rows: list[dict]) -> list[dict]:
             continue
 
         conn.execute(
-            "UPDATE mitigations SET status = 'annulé', "
+            "UPDATE mitigations SET status = 'canceled', "
             "details = %s, executed_at = now() WHERE id = %s",
             (f"{r['details'] or ''} — Annulé : tâche IRIS passée en "
              f"{_TASK_CANCELED}, action défaite via {channel}.", r["id"]))

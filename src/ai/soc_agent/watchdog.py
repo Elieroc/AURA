@@ -805,7 +805,7 @@ def monitor() -> dict:
                        (agent_id, agent_name, sensor, last_event,
                         volume_ref, threshold_minutes)
                    VALUES (%s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (agent_id, sensor) WHERE status = 'ouverte'
+                   ON CONFLICT (agent_id, sensor) WHERE status = 'open'
                    DO NOTHING
                    RETURNING id""",
                 (m["agent_id"], m["agent_name"], m["sensor"], m["dernier"],
@@ -839,7 +839,7 @@ def monitor() -> dict:
                              else None})
 
         for p in conn.execute(
-                "SELECT * FROM sensor_outages WHERE status='ouverte'").fetchall():
+                "SELECT * FROM sensor_outages WHERE status='open'").fetchall():
             if (p["agent_id"], p["sensor"]) in seen:
                 continue
             # Ingestion en retard : `capteurs_muets` n'a pas tourné, donc

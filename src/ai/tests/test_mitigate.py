@@ -299,7 +299,7 @@ def test_seules_les_reponses_de_l_agent_sont_figees():
 
 def test_chaque_action_remediable_a_un_script_ar():
     """Sans entrée dans _SCRIPTS_AR, le compte rendu de l'agent n'est jamais
-    rapproché et la remédiation reste 'émis' pour toujours."""
+    rapproché et la remédiation reste 'sent' pour toujours."""
     for action in REMEDIATIONS:
         if action in mitigate.MANUAL_ACTIONS:
             continue

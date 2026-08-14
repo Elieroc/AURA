@@ -209,7 +209,7 @@ INSERT INTO vulnerabilities (agent_id, agent_name, cve, package, version,
                             first_seen, last_seen, status)
 VALUES (%(agent_id)s, %(agent_name)s, %(cve)s, %(package)s, %(version)s,
         %(severity)s, %(base_score)s, %(published_at)s, %(os_name)s,
-        now(), now(), 'ouverte')
+        now(), now(), 'open')
 ON CONFLICT (agent_id, cve, package) DO UPDATE SET
     agent_name   = EXCLUDED.agent_name,
     version      = EXCLUDED.version,
@@ -221,10 +221,10 @@ ON CONFLICT (agent_id, cve, package) DO UPDATE SET
     -- `first_seen` n'est JAMAIS réécrite : c'est elle qui fait courir le SLA. Une
     -- vulnérabilité qui réapparaît après avoir été corrigée redémarre en
     -- revanche à zéro — c'est une régression, pas la poursuite de l'ancienne.
-    first_seen        = CASE WHEN vulnerabilities.status = 'corrigee'
+    first_seen        = CASE WHEN vulnerabilities.status = 'fixed'
                         THEN now() ELSE vulnerabilities.first_seen END,
     fixed_at   = NULL,
-    status       = 'ouverte'
+    status       = 'open'
 RETURNING (xmax = 0) AS cree
 """
 
@@ -235,8 +235,8 @@ RETURNING (xmax = 0) AS cree
 # ce module existe pour éviter.
 CLOSURE = """
 UPDATE vulnerabilities
-   SET status = 'corrigee', fixed_at = now()
- WHERE status = 'ouverte'
+   SET status = 'fixed', fixed_at = now()
+ WHERE status = 'open'
    AND agent_id = ANY(%(agents)s)
    AND last_seen < %(start_ts)s
 """
@@ -307,7 +307,7 @@ SQL_OPEN = """
 SELECT cve, package, version, severity, base_score, published_at, first_seen,
        extract(epoch FROM now() - first_seen) / 86400 AS age_jours
   FROM vulnerabilities
- WHERE agent_id = %s AND status = 'ouverte'
+ WHERE agent_id = %s AND status = 'open'
 """
 
 
@@ -349,7 +349,7 @@ def exposure(conn, agent_id: str) -> dict:
         "SELECT count(*) AS n, "
         "       avg(extract(epoch FROM fixed_at - first_seen) / 86400) AS mttr "
         "  FROM vulnerabilities "
-        " WHERE agent_id = %s AND status = 'corrigee' "
+        " WHERE agent_id = %s AND status = 'fixed' "
         "   AND fixed_at >= now() - interval '90 days'",
         (str(agent_id),)).fetchone()
 
@@ -664,8 +664,8 @@ SELECT agent_id, agent_name, cve, package, version, severity, base_score,
        published_at, first_seen, fixed_at, status,
        extract(epoch FROM now() - first_seen) / 86400 AS age_jours
   FROM vulnerabilities
- WHERE (status = 'ouverte' AND severity = ANY(%(sev)s))
-    OR (status = 'corrigee' AND fixed_at >= now() - interval '180 days')
+ WHERE (status = 'open' AND severity = ANY(%(sev)s))
+    OR (status = 'fixed' AND fixed_at >= now() - interval '180 days')
 """
 
 

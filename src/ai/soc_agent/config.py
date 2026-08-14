@@ -319,7 +319,7 @@ NETWORKS_INTERNAL = [
 # Une action à fort impact sur la prod ne doit pas s'armer par accident.
 MITIGATE_EXECUTE = os.environ.get("MITIGATE_EXECUTE", "false").lower() == "true"
 
-# Nombre max d'émissions d'une même remédiation restée 'émis' (partie mais jamais
+# Nombre max d'émissions d'une même remédiation restée 'sent' (partie mais jamais
 # confirmée par un `ar-result`). Au-delà, on cesse de réémettre : un canal
 # fire-and-forget qui ne confirme jamais ne doit pas être sollicité à chaque
 # cycle indéfiniment. 3 : deux retentatives après le premier essai.

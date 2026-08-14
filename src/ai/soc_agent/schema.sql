@@ -120,9 +120,9 @@ CREATE TABLE IF NOT EXISTS labels (
         CHECK (verdict IN ('true_positive', 'false_positive', 'needs_investigation')),
     actions         text[] NOT NULL DEFAULT '{}',
     comment     text,
-    -- 'humain' vs 'synthetique' : un jeu d'amorçage fabriqué ne doit jamais
+    -- 'human' vs 'synthetique' : un jeu d'amorçage fabriqué ne doit jamais
     -- être confondu avec des cas réellement observés et jugés.
-    origin         text NOT NULL DEFAULT 'humain',
+    origin         text NOT NULL DEFAULT 'human',
     labeled_by   text,
     created_at      timestamptz NOT NULL DEFAULT now()
 );
@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS whitelist_rules (
     signature        text UNIQUE NOT NULL,   -- forme canonique de match_all, anti-doublon
     match_all        jsonb NOT NULL,
     reason           text NOT NULL,
-    source           text NOT NULL DEFAULT 'auto',   -- 'auto' | 'analyste' | 'humain' | 'training'
+    source           text NOT NULL DEFAULT 'auto',   -- 'auto' | 'analyst' | 'human' | 'training'
     active           boolean NOT NULL DEFAULT true,
     origin_incidents bigint[] NOT NULL DEFAULT '{}',
     fp_count         integer NOT NULL DEFAULT 0,
@@ -239,7 +239,7 @@ CREATE TABLE IF NOT EXISTS mitigations (
     target        text,            -- agent_id, IP ou compte visé
     status       text NOT NULL,   -- exécuté | dry_run | échec | annulé |
                                   -- annulation_impossible | suspendu
-                                  -- 'annulé' : action défaite (tâche IRIS passée
+                                  -- 'canceled' : action défaite (tâche IRIS passée
                                   -- en Canceled → reverse rejoué, cf. reconcilier).
     details      text,
     undo         text,            -- commande / procédure d'annulation
@@ -319,15 +319,15 @@ ALTER TABLE mitigations DROP CONSTRAINT IF EXISTS mitigations_incident_id_action
 CREATE UNIQUE INDEX IF NOT EXISTS mitigations_uniq
     ON mitigations (incident_id, action, target, agent_id);
 
--- Compteur d'émissions d'une même remédiation. Une action restée 'émis' (la
+-- Compteur d'émissions d'une même remédiation. Une action restée 'sent' (la
 -- commande est partie mais aucun `ar-result` n'a confirmé l'effet) n'est PAS
 -- terminale : elle doit être réémise au cycle suivant, sinon un compte
 -- attaquant recréé n'est jamais désactivé (purple-team #2/#3 : `art-backdoor`
--- figé sur un enregistrement 'émis' hérité, disable_user jamais rejoué). Mais
+-- figé sur un enregistrement 'sent' hérité, disable_user jamais rejoué). Mais
 -- une réémission sans borne inonderait un canal fire-and-forget qui ne confirme
 -- jamais : on plafonne à MITIGATE_MAX_TENTATIVES. Le job reconcile (1 min) fait
--- passer 'émis' -> 'confirmé'/'sans_effet' bien avant le cycle suivant (5 min)
--- quand le canal répond ; ne restent 'émis' que les actions réellement sans
+-- passer 'sent' -> 'confirmed'/'no_effect' bien avant le cycle suivant (5 min)
+-- quand le canal répond ; ne restent 'sent' que les actions réellement sans
 -- retour, qu'on retente jusqu'au plafond.
 ALTER TABLE mitigations ADD COLUMN IF NOT EXISTS attempts int NOT NULL DEFAULT 1;
 
@@ -506,10 +506,10 @@ CREATE TABLE IF NOT EXISTS sensor_outages (
     detected_at    timestamptz NOT NULL DEFAULT now(),
     recovered_at    timestamptz,
     iris_case_id  bigint,
-    status        text        NOT NULL DEFAULT 'ouverte'
+    status        text        NOT NULL DEFAULT 'open'
 );
 CREATE UNIQUE INDEX IF NOT EXISTS sensor_outages_single_open
-    ON sensor_outages (agent_id, sensor) WHERE status = 'ouverte';
+    ON sensor_outages (agent_id, sensor) WHERE status = 'open';
 CREATE INDEX IF NOT EXISTS sensor_outages_recent
     ON sensor_outages (detected_at DESC);
 -- Canal ALERTE (WATCHDOG_IRIS_CANAL=alert, défaut depuis le 2026-08-13) : une
@@ -653,12 +653,12 @@ CREATE TABLE IF NOT EXISTS vulnerabilities (
     -- La ligne n'est PAS supprimée : c'est elle qui porte l'historique de
     -- remédiation, donc le seul MTTR mesurable.
     fixed_at    timestamptz,
-    status        text NOT NULL DEFAULT 'ouverte',
+    status        text NOT NULL DEFAULT 'open',
     os_name        text,
     UNIQUE (agent_id, cve, package)
 );
 CREATE INDEX IF NOT EXISTS vuln_open
-    ON vulnerabilities (agent_id, severity) WHERE status = 'ouverte';
+    ON vulnerabilities (agent_id, severity) WHERE status = 'open';
 CREATE INDEX IF NOT EXISTS vuln_fixed ON vulnerabilities (fixed_at)
     WHERE fixed_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS vuln_cve ON vulnerabilities (cve);
@@ -750,14 +750,14 @@ CREATE TABLE IF NOT EXISTS routing_sources (
     index_base     text NOT NULL,
     -- 'applicative' (garde le name du produit) | 'generique' (name de métier).
     kind           text NOT NULL DEFAULT 'generique',
-    -- 'propose'  : nommée, en attente (repli déterministe, ou plafond du day)
-    -- 'applique' : les cinq pièces sont posées (pipeline, template, ISM,
+    -- 'proposed'  : nommée, en attente (repli déterministe, ou plafond du day)
+    -- 'applied' : les cinq pièces sont posées (pipeline, template, ISM,
     --              lecture par l'IA, index pattern du dashboard)
-    -- 'refuse'   : écartée à la main, ne plus reproposer
-    status         text NOT NULL DEFAULT 'propose',
-    -- 'statique' : branche déjà présente dans alerts-pipeline.json, découverte
+    -- 'refused'   : écartée à la main, ne plus reproposer
+    status         text NOT NULL DEFAULT 'proposed',
+    -- 'static' : branche déjà présente dans alerts-pipeline.json, découverte
     --              par observation et jamais régénérée par nous
-    -- 'llm' | 'repli' | 'humain' : qui a choisi le name
+    -- 'llm' | 'fallback' | 'human' : qui a choisi le name
     named_by      text NOT NULL DEFAULT 'llm',
     justification  text NOT NULL DEFAULT '',
     -- Dernier volume observé sur la fenêtre, et quand. C'est ce couple qui rend
