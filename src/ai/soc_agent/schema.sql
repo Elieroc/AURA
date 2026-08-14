@@ -580,7 +580,7 @@ CREATE TABLE IF NOT EXISTS assets (
     priority        smallint NOT NULL DEFAULT 4 CHECK (priority BETWEEN 1 AND 4),
     -- 'group' (deduced from Wazuh groups) | 'operator' (set by hand, never
     -- overwritten) | 'default' (no role declared — inventory debt).
-    priority_source text NOT NULL DEFAULT 'defaut',
+    priority_source text NOT NULL DEFAULT 'default',
     notes           text,
     seen_at            timestamptz,
     updated_at           timestamptz NOT NULL DEFAULT now()

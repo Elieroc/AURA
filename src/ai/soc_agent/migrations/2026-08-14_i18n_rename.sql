@@ -199,6 +199,11 @@ UPDATE assets SET priority_source = 'operator' WHERE priority_source = 'operateu
 UPDATE assets SET priority_source = 'group'    WHERE priority_source = 'groupe';
 UPDATE assets SET priority_source = 'default'  WHERE priority_source = 'defaut';
 
+-- The column's own DEFAULT was 'defaut' pre-i18n (a genuine bug: assets.py has
+-- always queried 'default'). Fix the constraint too, so newly inserted rows
+-- stop getting an unqueryable default value.
+ALTER TABLE assets ALTER COLUMN priority_source SET DEFAULT 'default';
+
 UPDATE ueba_signals SET status = 'promoted' WHERE status = 'promu';
 UPDATE ueba_signals SET status = 'pending'  WHERE status = 'en_attente';
 
