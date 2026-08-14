@@ -30,7 +30,7 @@ Cas décision "whitelist" :
     {
       "reason": "<pourquoi cette whitelist est justifiée, en une phrase>",
       "decision": "whitelist",
-      "champs": ["<un ou plusieurs champs parmi ceux disponibles>"]
+      "fields": ["<un ou plusieurs champs parmi ceux disponibles>"]
     }
 
 Cas décision "question" :

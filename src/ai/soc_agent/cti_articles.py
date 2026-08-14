@@ -1,56 +1,54 @@
-"""CTI : extraire les IOC des articles publics de sécurité, vers MISP.
+"""CTI: extracting the IOCs of public security articles into MISP.
 
-Les feeds MISP (cf. cti.py) livrent du renseignement DÉJÀ structuré. L'essentiel
-de ce qui se publie ne l'est pas : un rapport de BleepingComputer, un article de
-The Hacker News ou un billet RST Cloud décrit l'infrastructure d'une campagne
-en prose, avec les indicateurs au milieu du texte, parfois « défangés »
-(hxxp://evil[.]com), parfois dans un tableau, parfois dans une annexe. Aucun
-format commun, aucune API.
+The MISP feeds (see cti.py) deliver ALREADY structured intelligence. Most of
+what gets published is not: a BleepingComputer report, a The Hacker News article
+or an RST Cloud post describes a campaign's infrastructure in prose, with the
+indicators in the middle of the text, sometimes "defanged"
+(hxxp://evil[.]com), sometimes in a table, sometimes in an appendix. No common
+format, no API.
 
-Ce module comble cet écart en trois étages, et le découpage est le point
-important :
+This module fills that gap in three stages, and the split is the important part:
 
-  1. RÉCUPÉRATION (déterministe) — RSS ou annuaire, puis texte de l'article.
-  2. CANDIDATS (déterministe) — défanging + expressions régulières. Trouve tout
-     ce qui RESSEMBLE à un IOC, sans chercher à juger.
-  3. ARBITRAGE (LLM) — décide lesquels sont des indicateurs de la menace, et
-     leur rôle.
+  1. FETCHING (deterministic) — RSS or directory, then the article text.
+  2. CANDIDATES (deterministic) — defanging plus regular expressions. Finds
+     everything that LOOKS LIKE an IOC, without trying to judge.
+  3. ARBITRATION (LLM) — decides which ones are indicators of the threat, and
+     their role.
 
-Pourquoi le LLM au troisième étage, et pas une regex de plus. Un article de
-presse cite en permanence des domaines parfaitement légitimes : le média
-lui-même, ses sources, l'éditeur qui a publié le rapport, les plateformes
-citées, la victime, les outils détournés. Une extraction purement régulière
-produit donc surtout des faux indicateurs — et un faux IOC vaut ici plus cher
-qu'un IOC manqué : il fait alerter au niveau 12 sur du trafic normal, et
-s'il finit en remédiation autonome, il coupe une machine saine. Seule la lecture
-du CONTEXTE permet de trancher « evil-c2[.]com » de « microsoft.com cité comme
-victime », et c'est précisément ce que le modèle sait faire.
+Why the LLM at the third stage, and not one more regex. A press article
+constantly quotes perfectly legitimate domains: the outlet itself, its sources,
+the vendor that published the report, the platforms mentioned, the victim, the
+tools abused. A purely regular extraction therefore produces mostly false
+indicators — and a false IOC costs more here than a missed one: it makes level 12
+alerts fire on normal traffic, and if it ends up in autonomous remediation it
+cuts off a healthy machine. Only reading the CONTEXT tells "evil-c2[.]com" from
+"microsoft.com quoted as the victim", and that is precisely what the model can
+do.
 
-Mais le LLM n'est PAS une frontière de sécurité (cf. README) : sa sortie est
-donc revérifiée par du code, dans cet ordre —
+But the LLM is NOT a security boundary (see README): its output is therefore
+re-checked by code, in this order —
 
-  - présence LITTÉRALE de chaque valeur dans les candidats (anti-hallucination :
-    un indicateur inventé est rejeté, pas discuté) ;
-  - exclusions dures : IP privées, infrastructure du SOC, nos réseaux, domaines
-    des médias sources eux-mêmes ;
-  - warninglists de MISP (`/warninglists/checkValue`), qui connaissent les
-    domaines et IP à ne jamais traiter comme IOC ;
-  - plafond d'indicateurs par article.
+  - LITERAL presence of every value among the candidates (anti-hallucination: an
+    invented indicator is rejected, not discussed);
+  - hard exclusions: private IPs, SOC infrastructure, our networks, the domains
+    of the source outlets themselves;
+  - MISP warninglists (`/warninglists/checkValue`), which know the domains and
+    IPs never to treat as IOCs;
+  - a cap on indicators per article.
 
-Les IOC retenus deviennent un ÉVÉNEMENT MISP, pas une entrée directe dans le
-cache de détection : c'est ce qui leur donne une existence consultable (lien
-vers l'article, famille de malware, corrélation avec le reste du
-renseignement), et ce qui fait que `cti.py` les récupère ensuite par le même
-chemin que tous les autres feeds. Ils sont tagués `aura:source:extracted`, ce
-qui les fait matcher la règle 100957 (niveau 12) et non 100951/100952
-(niveau 12-14) : une extraction automatique d'article de presse ne vaut pas un
-IOC publié par le CERT-FR, et le ruleset doit le dire.
+The retained IOCs become a MISP EVENT, not a direct entry into the detection
+cache: that is what gives them a consultable existence (link to the article,
+malware family, correlation with the rest of the intelligence), and what makes
+`cti.py` pick them up afterwards through the same path as every other feed. They
+are tagged `aura:source:extracted`, which makes them match rule 100957 (level 12)
+and not 100951/100952 (level 12-14): an automatic extraction from a press article
+is not worth an IOC published by CERT-FR, and the ruleset must say so.
 
-    python -m soc_agent.cti_articles                  # une passe sur toutes les sources
-    python -m soc_agent.cti_articles --amorcage       # marque l'existant comme vu, sans traiter
+    python -m soc_agent.cti_articles                  # one pass over every source
+    python -m soc_agent.cti_articles --bootstrap      # marks what exists as seen, without processing
     python -m soc_agent.cti_articles --source thehackernews --max 3
-    python -m soc_agent.cti_articles --simulation     # extrait et affiche, n'écrit ni MISP ni base
-    python -m soc_agent.cti_articles --url https://...  # un article précis, à la demande
+    python -m soc_agent.cti_articles --simulation     # extracts and prints, writes neither MISP nor database
+    python -m soc_agent.cti_articles --url https://...  # one specific article, on demand
 """
 
 from __future__ import annotations
@@ -82,48 +80,47 @@ if not config.MISP_VERIFY_TLS:
 PROMPTS = Path(__file__).parent / "prompts"
 TIMEOUT = 60
 
-# Confiance et tag vivent dans cti.py, avec les deux autres niveaux : c'est
-# cti.py qui relit ce tag pour classer l'IOC, les deux doivent donc bouger
-# ensemble ou pas du tout.
+# Confidence and tag live in cti.py, with the other two levels: cti.py is what
+# reads this tag back to classify the IOC, so both must move together or not at
+# all.
 TAG_SOURCE = cti.TAG_EXTRACTION
 
-# Plafond d'IOC publiés pour UN article, surchargeable par source
-# (`max_iocs` dans le catalogue). Au-delà, on ne publie rien et on le dit :
-# soit l'article est un dump de blocklist, soit l'extraction est partie de
-# travers, et un événement de plusieurs milliers d'attributs pollue MISP
-# durablement.
+# Cap on IOCs published for ONE article, overridable per source (`max_iocs` in
+# the catalog). Past it we publish nothing and we say so: either the article is a
+# blocklist dump, or the extraction went wrong, and an event with several
+# thousand attributes pollutes MISP durably.
 #
-# 300 et non 60 : mesuré sur un « RST TI Report Digest », un seul billet porte
-# 400 candidats dont la majorité sont de vrais indicateurs — c'est le format
-# même de la source. Un plafond serré rejetait donc l'article le plus riche des
-# quatre sources, ce qui est le contraire du but.
+# 300 and not 60: measured on an "RST TI Report Digest", a single post carries
+# 400 candidates most of which are real indicators — that is the very format of
+# the source. A tight cap therefore rejected the richest article of the four
+# sources, which is the opposite of the goal.
 MAX_IOC_ARTICLE = 300
 
-# Candidats soumis au modèle par appel, et budget de sortie.
+# Candidates submitted to the model per call, and output budget.
 #
-# Un digest en produit plusieurs centaines. Les envoyer d'un bloc épuise le
-# budget et l'appel échoue sur `finish_reason=length` SANS RIEN RENDRE : le
-# modèle est raisonnant, son raisonnement est décompté du même budget que la
-# réponse (piège documenté dans llm.py). Mesuré sur un digest RST Cloud de 403
-# candidats : 60 candidats / 3 000 tokens échoue, 40 / 4 000 échoue aussi.
+# A digest produces several hundred. Sending them in one block exhausts the
+# budget and the call fails on `finish_reason=length` RETURNING NOTHING: the
+# model is a reasoning one, and its reasoning is charged against the same budget
+# as the answer (trap documented in llm.py). Measured on an RST Cloud digest of
+# 403 candidates: 60 candidates / 3,000 tokens fails, 40 / 4,000 fails too.
 #
-# Le surcoût du découpage est faible parce que le prompt système et l'article
-# sont IDENTIQUES d'un lot à l'autre : DeepSeek les sert depuis son cache de
-# préfixe (50x moins cher, cf. LLM_COUT_USD_PAR_MTOKEN_IN_CACHE). Ce sont les
-# candidats, en fin de prompt, qui changent.
+# The overhead of the split is small because the system prompt and the article
+# are IDENTICAL from one batch to the next: DeepSeek serves them from its prefix
+# cache (50x cheaper, see LLM_COST_USD_PER_MTOKEN_IN_CACHE). What changes are the
+# candidates, at the end of the prompt.
 BATCH_CANDIDATES = int(os.environ.get("CTI_ARTICLES_LOT", "20"))
 MAX_TOKENS = int(os.environ.get("CTI_ARTICLES_MAX_TOKENS", "12000"))
 
-# Garde-fou de dernier recours sur le nombre d'appels par article. Ce qui
-# dépasse est écarté, mais JAMAIS en silence (cf. `arbitrer`) : un plafond muet
-# donnerait l'illusion d'un article entièrement couvert.
+# Last-resort guardrail on the number of calls per article. What exceeds it is
+# dropped, but NEVER silently (see `arbitrate`): a silent cap would give the
+# illusion of an article fully covered.
 MAX_BATCHES = int(os.environ.get("CTI_ARTICLES_MAX_LOTS", "16"))
 
-# Volume de texte envoyé au modèle. Les articles utiles font 5 à 20 k
-# caractères ; au-delà, c'est du commentaire, de la navigation et des articles
-# liés. Tronquer borne le coût sans perdre la section « Indicators of
-# Compromise », qui est presque toujours en fin de corps mais avant les
-# commentaires — d'où la conservation du DÉBUT et de la FIN.
+# Volume of text sent to the model. Useful articles are 5 to 20 k characters;
+# past that it is comments, navigation and related articles. Truncating bounds
+# the cost without losing the "Indicators of Compromise" section, which is almost
+# always at the end of the body but before the comments — hence keeping the
+# BEGINNING and the END.
 MAX_TEXT = 24000
 
 
@@ -137,9 +134,9 @@ def sources(catalogue: dict | None = None) -> list[dict]:
 
 
 def _http(url: str) -> requests.Response:
-    # User-Agent explicite : plusieurs médias renvoient 403 à un client sans
-    # agent, et un agent mensonger serait une mauvaise manière de se présenter
-    # à des sites qu'on lit gratuitement.
+    # Explicit User-Agent: several outlets return 403 to a client without one,
+    # and a lying agent would be a poor way to introduce oneself to sites we read
+    # for free.
     response = requests.get(
         url, timeout=TIMEOUT,
         headers={"User-Agent": "AURA-SOC CTI collector (+threat intel, contact SOC)"})
@@ -148,11 +145,11 @@ def _http(url: str) -> requests.Response:
 
 
 def rss_entries(source: dict, since: datetime) -> list[dict]:
-    """Articles d'un flux RSS/Atom, plus récents que `depuis`.
+    """Articles of an RSS/Atom feed, more recent than `since`.
 
-    Le contenu complet est repris du flux quand il y est (Medium le fournit
-    intégralement) : autant d'articles à ne pas retélécharger, et une page HTML
-    de moins à nettoyer.
+    The full content is taken from the feed when it is there (Medium provides it
+    in full): that many articles not to download again, and one less HTML page to
+    clean.
     """
     root = ET.fromstring(_http(source["url"]).content)
     entries = []
@@ -178,12 +175,12 @@ def rss_entries(source: dict, since: datetime) -> list[dict]:
             continue
         entries.append({
             "url": link,
-            "titre": text("title", "{http://www.w3.org/2005/Atom}title"),
-            "publie": published,
-            "contenu": text("{http://purl.org/rss/1.0/modules/content/}encoded",
+            "title": text("title", "{http://www.w3.org/2005/Atom}title"),
+            "published": published,
+            "content": text("{http://purl.org/rss/1.0/modules/content/}encoded",
                              "description",
                              "{http://www.w3.org/2005/Atom}content"),
-            "contexte": "",
+            "context": "",
         })
     return entries
 
@@ -202,19 +199,19 @@ def _rss_date(raw: str) -> datetime | None:
 
 
 def malpedia_entries(source: dict, already_seen: set[str]) -> list[dict]:
-    """Nouveaux rapports de la bibliographie Malpedia, avec leur attribution.
+    """New reports of the Malpedia bibliography, with their attribution.
 
-    Malpedia n'expose pas d'IOC sans clé d'API (`/api/list/samples` répond 403),
-    mais `/api/get/references` est un annuaire rapport -> familles de malware et
-    acteurs. En mémorisant les URL déjà vues, il devient un flux de NOUVEAUTÉS,
-    et il apporte ce qu'aucun article ne donne de lui-même : l'attribution,
-    faite par des chercheurs.
+    Malpedia exposes no IOC without an API key (`/api/list/samples` answers 403),
+    but `/api/get/references` is a report -> malware families and actors
+    directory. By remembering the URLs already seen it becomes a stream of NEW
+    ITEMS, and it brings what no article gives on its own: attribution, made by
+    researchers.
 
-    Corollaire à connaître : la bibliographie complète compte des dizaines de
-    milliers d'entrées, dont l'immense majorité est ancienne. Le premier passage
-    doit donc être un AMORÇAGE (`--amorcage`), qui marque tout comme vu sans
-    rien traiter. Sans lui, la première exécution essaierait de télécharger et
-    de faire lire au modèle l'intégralité de la littérature du domaine.
+    A corollary to know: the full bibliography counts tens of thousands of
+    entries, the vast majority of them old. The first pass must therefore be a
+    BOOTSTRAP (`--bootstrap`), which marks everything as seen without processing
+    anything. Without it, the first run would try to download and have the model
+    read the entire literature of the field.
     """
     data = _http(source["url"]).json()
     references = data.get("references", data) or {}
@@ -226,10 +223,10 @@ def malpedia_entries(source: dict, already_seen: set[str]) -> list[dict]:
                     for c in (targets or []) if isinstance(c, dict)]
         entries.append({
             "url": url,
-            "titre": "",          # la bibliographie ne porte pas de titre
-            "publie": None,       # ni de date : le curseur joue ce rôle
-            "contenu": "",
-            "contexte": ", ".join(f for f in families if f)[:300],
+            "title": "",          # the bibliography carries no title
+            "published": None,    # nor a date: the cursor plays that role
+            "content": "",
+            "context": ", ".join(f for f in families if f)[:300],
         })
     return entries
 
@@ -246,18 +243,17 @@ _LINES = re.compile(r"\n{3,}")
 
 
 def plain_text(html_source: str) -> str:
-    """Texte lisible d'une page, sans dépendance de parsing HTML.
+    """Readable text of a page, with no HTML parsing dependency.
 
-    Un vrai extracteur de contenu (readability, trafilatura) ferait mieux, mais
-    ajouterait une dépendance pour un gain nul ici : on ne cherche pas à
-    reproduire la mise en forme, seulement à donner au modèle une suite de
-    phrases contenant les indicateurs. Les blocs de navigation et de script
-    sont retirés parce qu'ils sont pleins de domaines tiers — donc de faux
-    candidats.
+    A real content extractor (readability, trafilatura) would do better, but
+    would add a dependency for no gain here: we are not trying to reproduce the
+    layout, only to give the model a sequence of sentences containing the
+    indicators. The navigation and script blocks are removed because they are
+    full of third-party domains — hence of false candidates.
     """
     without_blocks = _BLOCKS_USELESS.sub(" ", html_source or "")
-    # Les balises deviennent des sauts de ligne : sans ça, un tableau d'IOC
-    # ressort collé en un seul mot et plus aucune valeur n'est reconnaissable.
+    # Tags become line breaks: without that, an IOC table comes out glued into
+    # a single word and no value is recognisable any more.
     text = _TAGS.sub("\n", without_blocks)
     text = html.unescape(text)
     text = _SPACES.sub(" ", text)
@@ -275,10 +271,10 @@ def truncate(text: str, cap: int = MAX_TEXT) -> str:
 # Candidats
 # ---------------------------------------------------------------------------
 
-# Défanging : les publications neutralisent les indicateurs pour qu'ils ne
-# soient pas cliquables. Sans cette réécriture, la quasi-totalité des IOC
-# réellement présents dans un article passent inaperçus — c'est LA raison pour
-# laquelle une extraction naïve ne trouve rien sur ces sources.
+# Defanging: publications neutralise the indicators so they are not clickable.
+# Without this rewriting, nearly every IOC actually present in an article goes
+# unnoticed — that is THE reason a naive extraction finds nothing on these
+# sources.
 DEFANG = [
     (re.compile(r"\bh(?:xx|XX|tt)p(s?)\s*(?::|\[:\])//", re.I), r"http\1://"),
     (re.compile(r"\[\s*\.\s*\]|\(\s*\.\s*\)|\{\s*\.\s*\}"), "."),
@@ -297,11 +293,11 @@ PATTERN_DOMAIN = re.compile(
     r"cloud|de|fr|uk|nl|eu|br|in|ir|kr|jp|pl|tk|ml|ga|cf|gq|zip|mov)\b", re.I)
 PATTERN_HASH = re.compile(r"\b[0-9a-fA-F]{64}\b|\b[0-9a-fA-F]{40}\b|\b[0-9a-fA-F]{32}\b")
 
-# Domaines à ne jamais retenir : ceux des médias sources et des plateformes
-# qu'ils citent en boucle. Le modèle les écarte déjà (le prompt le lui demande),
-# mais une exclusion en code ne dépend pas de son humeur. Un IOC légitimement
-# hébergé sur un de ces domaines est perdu — c'est le prix, et il est faible
-# devant une alerte de niveau 12 sur github.com.
+# Domains never to keep: those of the source outlets and of the platforms they
+# quote over and over. The model already drops them (the prompt asks it to), but
+# an exclusion in code does not depend on its mood. An IOC legitimately hosted on
+# one of those domains is lost — that is the price, and it is small next to a
+# level 12 alert on github.com.
 DOMAINS_EXCLUDED = {
     "thehackernews.com", "bleepingcomputer.com", "medium.com", "malpedia.caad.fkie.fraunhofer.de",
     "twitter.com", "x.com", "linkedin.com", "facebook.com", "youtube.com", "reddit.com",
@@ -320,8 +316,8 @@ DOMAINS_EXCLUDED = {
     "example.com", "example.org", "localhost", "schema.org", "w3.org",
 }
 
-# Réseaux de documentation et de test (RFC 5737, RFC 3849, TEST-NET) : les
-# articles s'en servent pour illustrer sans exposer une vraie cible.
+# Documentation and test networks (RFC 5737, RFC 3849, TEST-NET): articles use
+# them to illustrate without exposing a real target.
 NETWORKS_DOC = [ipaddress.ip_network(r) for r in (
     "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "233.252.0.0/24")]
 
@@ -335,8 +331,8 @@ def defanger(text: str) -> str:
 def _domain_excluded(value: str) -> bool:
     host = (urlparse(value).hostname if value.startswith("http") else value) or ""
     host = host.lower().rstrip(".")
-    # Comparaison par suffixe : `cdn.microsoft.com` doit tomber avec
-    # `microsoft.com`, sinon l'exclusion ne tient que sur le domaine nu.
+    # Suffix comparison: `cdn.microsoft.com` must fall with `microsoft.com`,
+    # otherwise the exclusion only holds on the bare domain.
     return any(host == d or host.endswith("." + d) for d in DOMAINS_EXCLUDED)
 
 
@@ -350,23 +346,23 @@ def _ip_to_ignore(value: str) -> bool:
         return True
     if any(ip in network for network in NETWORKS_DOC):
         return True
-    # L'infrastructure du SOC et nos propres réseaux ne peuvent pas être des
-    # IOC publiés par un tiers. Si ça arrive, c'est une erreur de l'article ou
-    # de l'extraction, et la conséquence serait de faire alerter — voire agir —
-    # le SOC contre lui-même.
+    # The SOC infrastructure and our own networks cannot be IOCs published by a
+    # third party. If that happens it is an error of the article or of the
+    # extraction, and the consequence would be to make the SOC alert — or even
+    # act — against itself.
     if str(ip) in config.SOC_INFRA_IPS:
         return True
     return any(ip in network for network in _internal_networks())
 
 
 def _internal_networks() -> list:
-    """`config.RESEAUX_INTERNES` converti en réseaux comparables.
+    """`config.NETWORKS_INTERNAL` converted into comparable networks.
 
-    La configuration les livre en CHAÎNES ("192.168.1.0/24, ..."), et
-    `ip in "192.168.1.0/24"` lève un TypeError — vu en prod le 2026-08-12, il a
-    emporté toute la source The Hacker News au milieu d'une passe. Une entrée
-    mal écrite est ignorée plutôt que fatale : elle ne doit pas décider de la
-    disponibilité de la veille.
+    The configuration delivers them as STRINGS ("192.168.1.0/24, ..."), and
+    `ip in "192.168.1.0/24"` raises a TypeError — seen in production on
+    2026-08-12, it took down the whole The Hacker News source in the middle of a
+    pass. A badly written entry is ignored rather than fatal: it must not decide
+    the availability of the intelligence watch.
     """
     networks = []
     for raw in getattr(config, "NETWORKS_INTERNAL", None) or []:
@@ -376,15 +372,15 @@ def _internal_networks() -> list:
         try:
             networks.append(ipaddress.ip_network(str(raw).strip(), strict=False))
         except ValueError:
-            log.debug("RESEAUX_INTERNES : entrée ignorée %r", raw)
+            log.debug("NETWORKS_INTERNAL: entry ignored %r", raw)
     return networks
 
 
 def candidates(text: str) -> dict[str, list[str]]:
-    """Valeurs qui ressemblent à un IOC, par type, déjà filtrées du bruit dur.
+    """Values that look like an IOC, by type, already filtered of hard noise.
 
-    Ne juge PAS la malveillance : c'est le rôle de l'étage suivant. Ne fait ici
-    que retirer ce qui ne peut structurellement pas être un indicateur.
+    Does NOT judge maliciousness: that is the next stage's job. Here it only
+    removes what structurally cannot be an indicator.
     """
     plain = defanger(text)
     found = {"ip": [], "domain": [], "url": [], "hash": []}
@@ -413,48 +409,47 @@ def candidates(text: str) -> dict[str, list[str]]:
 
 
 # ---------------------------------------------------------------------------
-# Arbitrage par le modèle
+# Arbitration by the model
 # ---------------------------------------------------------------------------
 
 def _batches(found: dict[str, list[str]]) -> list[list[tuple[str, str]]]:
-    """Candidats découpés en lots de taille bornée, tous types mélangés."""
+    """Candidates split into bounded batches, all types mixed."""
     plat = [(type_, v) for type_, values in found.items() for v in values]
     return [plat[i:i + BATCH_CANDIDATES]
             for i in range(0, len(plat), BATCH_CANDIDATES)][:MAX_BATCHES]
 
 
-def arbitrate(article: dict, found: dict[str, listing[str]]) -> dict:
-    """Demande au modèle lesquels des candidats sont des IOC de la menace.
+def arbitrate(article: dict, found: dict[str, list[str]]) -> dict:
+    """Asks the model which of the candidates are IOCs of the threat.
 
-    Pas de pseudonymisation ici, contrairement au triage (cf. anonymize.py) :
-    ce qui part est le texte d'un article PUBLIC et des indicateurs publiés par
-    son auteur. Il n'y a rien de notre infrastructure dans ce prompt — et c'est
-    une propriété à préserver si ce module évolue.
+    No pseudonymisation here, unlike triage (see anonymize.py): what leaves is
+    the text of a PUBLIC article and indicators published by its author. There is
+    nothing of our infrastructure in this prompt — and that is a property to
+    preserve if this module evolves.
 
-    Le texte est envoyé en entier à CHAQUE lot de candidats, et c'est
-    volontaire : c'est le contexte qui permet de trancher, le tronçonner ferait
-    juger des valeurs sans le récit qui les qualifie. Le préfixe étant
-    identique d'un appel à l'autre, il est servi par le cache du fournisseur.
+    The text is sent whole with EVERY batch of candidates, and that is
+    deliberate: the context is what allows deciding, chopping it would have
+    values judged without the story that qualifies them. The prefix being
+    identical from one call to the next, it is served from the provider's cache.
     """
     system = (PROMPTS / "cti_extraction.md").read_text()
     header = (
-        f"TITRE : {article.get('titre') or '(inconnu)'}\n"
+        f"TITRE : {article.get('title') or '(inconnu)'}\n"
         f"URL : {article['url']}\n"
-        + (f"FAMILLES ASSOCIÉES (attribution Malpedia) : {article['contexte']}\n"
-           if article.get("contexte") else ""))
-    article_body = f"\nARTICLE :\n{truncate(article['texte'])}\n"
+        + (f"FAMILLES ASSOCIÉES (attribution Malpedia) : {article['context']}\n"
+           if article.get("context") else ""))
+    article_body = f"\nARTICLE :\n{truncate(article['text'])}\n"
 
-    def request(batch: listing[tuple[str, str]], label: str) -> dict | None:
-        """Un appel au modèle sur un lot de candidats. None si l'appel échoue.
+    def request(batch: list[tuple[str, str]], label: str) -> dict | None:
+        """One call to the model on a batch of candidates. None if it fails.
 
-        Rejoue une fois en DEUX MOITIÉS quand le budget a été épuisé : le
-        modèle est raisonnant et la longueur de son raisonnement n'est pas
-        prévisible (mesuré : le même budget suffit pour un lot et pas pour le
-        suivant). Diviser le lot est la seule réponse qui ne consiste pas à
-        surdimensionner le budget de tous les appels pour les rares qui
-        débordent.
+        Replays once in TWO HALVES when the budget has been exhausted: the model
+        is a reasoning one and the length of its reasoning is not predictable
+        (measured: the same budget is enough for one batch and not for the next).
+        Splitting the batch is the only answer that does not consist of
+        oversizing the budget of every call for the rare ones that overflow.
         """
-        by_type: dict[str, listing[str]] = {}
+        by_type: dict[str, list[str]] = {}
         for type_, value in batch:
             by_type.setdefault(type_, []).append(value)
         listing = "\n".join(f"{t} : " + ", ".join(v) for t, v in by_type.items())
@@ -467,7 +462,7 @@ def arbitrate(article: dict, found: dict[str, listing[str]]) -> dict:
             budget_exhausted = "finish_reason=length" in str(exc) or "Unterminated" in str(exc)
             if budget_exhausted and len(batch) > 4:
                 middle = len(batch) // 2
-                log.info("lot %s trop lourd pour le budget, redécoupé en deux",
+                log.info("batch %s too heavy for the budget, split in two",
                          label)
                 left = request(batch[:middle], f"{label}a")
                 right = request(batch[middle:], f"{label}b")
@@ -476,49 +471,49 @@ def arbitrate(article: dict, found: dict[str, listing[str]]) -> dict:
                 return {"iocs": (left or {}).get("iocs", [])
                                 + (right or {}).get("iocs", []),
                         "threat": (left or right or {}).get("threat", ""),
-                        "resume": (left or right or {}).get("resume", ""),
-                        "confiance": (left or right or {}).get("confiance", "")}
-            # Un lot perdu ne doit pas emporter l'article : les autres ont
-            # peut-être livré de vrais indicateurs, et les jeter pour un
-            # accident d'API serait payer deux fois.
-            log.warning("lot %s en échec sur %s : %s", label, article["url"], exc)
+                        "summary": (left or right or {}).get("summary", ""),
+                        "confidence": (left or right or {}).get("confidence", "")}
+            # A lost batch must not take the article down: the others may have
+            # delivered real indicators, and dropping them over an API accident
+            # would be paying twice.
+            log.warning("batch %s failed on %s: %s", label, article["url"], exc)
             return None
 
-    merge = {"iocs": [], "threat": "", "resume": "", "confiance": ""}
+    merge = {"iocs": [], "threat": "", "summary": "", "confidence": ""}
     batches = _batches(found)
     total = sum(len(v) for v in found.values())
     covered = sum(len(batch) for batch in batches)
     if covered < total:
-        log.warning("%s : %d candidats sur %d soumis au modèle (plafond de "
-                    "%d lots) — %d NON examinés", article["url"], covered,
+        log.warning("%s: %d candidates out of %d submitted to the model (cap "
+                    "of %d batches) — %d NOT examined", article["url"], covered,
                     total, MAX_BATCHES, total - covered)
     for number, batch in enumerate(batches, 1):
         response = request(batch, f"{number}/{len(batches)}")
         if response is None:
             continue
         merge["iocs"].extend(response.get("iocs") or [])
-        # Menace, résumé et confiance sont des propriétés de l'ARTICLE, pas du
-        # lot : on garde la première réponse non vide plutôt que d'écraser à
-        # chaque tour, un lot ne contenant parfois aucun IOC et donc aucun
-        # contexte.
-        for key in ("threat", "resume", "confiance"):
+        # Threat, summary and confidence are properties of the ARTICLE, not of
+        # the batch: we keep the first non-empty answer rather than overwriting
+        # on every round, a batch sometimes containing no IOC and hence no
+        # context.
+        for key in ("threat", "summary", "confidence"):
             if not merge[key] and response.get(key):
                 merge[key] = str(response[key])
     return merge
 
 
 def validate(response: dict, found: dict[str, list[str]]) -> list[dict]:
-    """Garde-fou déterministe sur la sortie du modèle.
+    """Deterministic guardrail on the model output.
 
-    Trois rejets, dans cet ordre, et aucun n'est négociable :
+    Three rejections, in this order, and none is negotiable:
 
-    1. valeur absente des candidats -> HALLUCINATION. Le modèle n'a pas le
-       droit de produire un indicateur que le texte ne contient pas ; c'est le
-       seul mode de défaillance qui fabriquerait des IOC de toutes pièces.
-    2. type incohérent avec la valeur -> on reclasse d'après la valeur, jamais
-       d'après ce que le modèle annonce.
-    3. exclusions dures rejouées. Le prompt les demande déjà, mais un prompt
-       n'est pas un contrôle.
+    1. value absent from the candidates -> HALLUCINATION. The model is not
+       allowed to produce an indicator the text does not contain; that is the one
+       failure mode that would manufacture IOCs out of thin air.
+    2. type inconsistent with the value -> we reclassify from the value, never
+       from what the model announces.
+    3. hard exclusions replayed. The prompt already asks for them, but a prompt
+       is not a control.
     """
     allowed = {v: t for t, values in found.items() for v in values}
     kept, seen = [], set()
@@ -527,13 +522,13 @@ def validate(response: dict, found: dict[str, list[str]]) -> list[dict]:
             continue
         value = str(raw.get("value", "")).strip()
         announced_type = str(raw.get("type", "")).strip().lower()
-        # Normalise avec le type annoncé s'il est plausible, sinon avec celui
-        # sous lequel le candidat a réellement été trouvé.
+        # Normalise with the announced type when it is plausible, otherwise
+        # with the one the candidate was actually found under.
         value = cti.normalize(announced_type, value) or cti.normalize(
             allowed.get(value, ""), value) or value
         real_type = allowed.get(value)
         if not real_type:
-            log.warning("IOC rejeté (absent des candidats) : %r", raw.get("value"))
+            log.warning("IOC rejected (absent from the candidates): %r", raw.get("value"))
             continue
         if value in seen:
             continue
@@ -551,10 +546,10 @@ def validate(response: dict, found: dict[str, list[str]]) -> list[dict]:
 # MISP
 # ---------------------------------------------------------------------------
 
-# Type de cache -> type d'attribut MISP. `ip-dst` et non `ip-src` : un IOC
-# d'article désigne une infrastructure d'attaquant, donc une DESTINATION vue
-# depuis chez nous. Le cache retombe de toute façon sur « ip » (cf. cti.TYPES),
-# la distinction ne sert qu'à la lisibilité dans MISP.
+# Cache type -> MISP attribute type. `ip-dst` and not `ip-src`: an IOC from an
+# article names attacker infrastructure, hence a DESTINATION seen from our side.
+# The cache falls back onto "ip" anyway (see cti.TYPES), the distinction only
+# serves readability in MISP.
 TYPE_MISP = {"ip": "ip-dst", "domain": "domain", "url": "url"}
 
 
@@ -563,25 +558,24 @@ def _type_hash(value: str) -> str:
 
 
 def filter_warninglists(values: list[str]) -> set[str]:
-    """Valeurs que MISP connaît comme NE DEVANT PAS être des IOC.
+    """Values MISP knows as NOT SUPPOSED to be IOCs.
 
-    Les warninglists de MISP recensent ce qu'un indicateur ne devrait jamais
-    être : domaines du top 1000, résolveurs DNS publics, plages de cloud
-    providers, adresses de documentation... Exactement la population de faux
-    positifs qu'un article de presse génère. Les interroger ici évite de
-    publier ce que `cti.py` écarterait ensuite en silence à la lecture
-    (`enforceWarninglist`) — publier un IOC inutilisable est pire que ne pas le
-    publier : il donne l'illusion d'une couverture.
+    The MISP warninglists list what an indicator should never be: top-1000
+    domains, public DNS resolvers, cloud provider ranges, documentation
+    addresses... Exactly the population of false positives a press article
+    generates. Querying them here avoids publishing what `cti.py` would then
+    silently drop on reading (`enforceWarninglist`) — publishing an unusable IOC
+    is worse than not publishing it: it gives the illusion of coverage.
 
-    En cas d'échec de l'appel, on ne filtre rien plutôt que de tout jeter : la
-    perte serait invisible.
+    If the call fails we filter nothing rather than drop everything: the loss
+    would be invisible.
     """
     if not values:
         return set()
     try:
         response = cti._misp("POST", "/warninglists/checkValue", values)
     except Exception as exc:                                  # noqa: BLE001
-        log.warning("warninglists MISP injoignables (%s) : aucun filtrage", exc)
+        log.warning("MISP warninglists unreachable (%s): no filtering", exc)
         return set()
     if isinstance(response, dict):
         return {v for v, lists in response.items() if lists}
@@ -590,20 +584,21 @@ def filter_warninglists(values: list[str]) -> set[str]:
 
 def create_event(article: dict, iocs: list[dict], response: dict,
                     source: dict) -> int | None:
-    """Publie un événement MISP portant les IOC de l'article.
+    """Publishes a MISP event carrying the article's IOCs.
 
-    L'événement est la BONNE granularité : un article = une menace = un
-    ensemble d'indicateurs qui se corrèlent entre eux. Un attribut isolé dans
-    un événement fourre-tout perdrait le contexte, donc l'essentiel.
+    The event is the RIGHT granularity: one article = one threat = a set of
+    indicators that correlate with each other. An isolated attribute in a
+    catch-all event would lose the context, hence the essential part.
 
-    `to_ids` est vrai (ce sont des indicateurs de détection) mais le tag
-    `aura:source:extracted` les distingue du renseignement curé jusque dans le
-    niveau de la règle Wazuh. `analysis: 2` (terminé) et publication immédiate :
-    sans publication, `cti.py` ne les verrait jamais (il filtre `published=1`).
+    `to_ids` is true (these are detection indicators) but the
+    `aura:source:extracted` tag distinguishes them from curated intelligence all
+    the way to the Wazuh rule level. `analysis: 2` (complete) and immediate
+    publication: without publishing, `cti.py` would never see them (it filters
+    `published=1`).
     """
     threat = str(response.get("threat") or "").strip()
-    resume = str(response.get("resume") or "").strip()
-    title = (article.get("titre") or article["url"])[:200]
+    summary = str(response.get("summary") or "").strip()
+    title = (article.get("title") or article["url"])[:200]
     info = f"[AURA/{source['name']}] {threat + ' — ' if threat else ''}{title}"
 
     attributes = [{
@@ -618,20 +613,20 @@ def create_event(article: dict, iocs: list[dict], response: dict,
                         else "Network activity",
             "value": ioc["value"],
             "to_ids": True,
-            "comment": ioc["role"] or resume[:100],
+            "comment": ioc["role"] or summary[:100],
         })
 
     tags = [{"name": TAG_SOURCE}, {"name": f"aura:feed:{source['name']}"},
             {"name": "tlp:clear"}]
-    confidence = str(response.get("confiance") or "").lower()
+    confidence = str(response.get("confidence") or "").lower()
     if confidence in ("haute", "moyenne", "basse"):
         tags.append({"name": f"aura:extraction-confidence:{confidence}"})
-    if article.get("contexte"):
+    if article.get("context"):
         tags.append({"name": "aura:attribution:malpedia"})
 
     body = {"Event": {
         "info": info[:255],
-        "date": (article.get("publie") or datetime.now(timezone.utc)).strftime("%Y-%m-%d"),
+        "date": (article.get("published") or datetime.now(timezone.utc)).strftime("%Y-%m-%d"),
         "analysis": "2",
         "threat_level_id": "2",
         "distribution": "0",
@@ -645,7 +640,7 @@ def create_event(article: dict, iocs: list[dict], response: dict,
 
 
 # ---------------------------------------------------------------------------
-# Curseur
+# Cursor
 # ---------------------------------------------------------------------------
 
 def _connection():
@@ -670,64 +665,64 @@ def mark(conn, source: str, url: str, nb_iocs: int, event_id: int | None,
 
 
 # ---------------------------------------------------------------------------
-# Traitement
+# Processing
 # ---------------------------------------------------------------------------
 
 def load_text(article: dict) -> str:
-    """Texte de l'article : celui du flux s'il est complet, sinon la page."""
-    du_flux = plain_text(article.get("contenu") or "")
-    # Un extrait RSS fait quelques centaines de caractères : il ne contient
-    # jamais la section des IOC. On ne s'en contente que s'il est substantiel.
-    if len(du_flux) > 3000:
-        return du_flux
+    """Text of the article: the feed's when it is complete, otherwise the page."""
+    from_feed = plain_text(article.get("content") or "")
+    # An RSS excerpt is a few hundred characters: it never contains the IOC
+    # section. We only settle for it when it is substantial.
+    if len(from_feed) > 3000:
+        return from_feed
     return plain_text(_http(article["url"]).text)
 
 
 def process(article: dict, source: dict, simulation: bool = False) -> dict:
-    """Un article, de la récupération à l'événement MISP.
+    """One article, from fetching to the MISP event.
 
-    Rend un compte rendu, y compris quand rien n'est retenu : « aucun IOC »
-    est le résultat normal pour la majorité des articles de presse, et le
-    tracer évite de retraiter le même texte à chaque passe.
+    Returns a report, including when nothing is kept: "no IOC" is the normal
+    result for most press articles, and recording it avoids reprocessing the same
+    text on every pass.
     """
     result = {"url": article["url"], "iocs": [], "event_id": None,
                 "threat": "", "pattern": ""}
     try:
-        article["texte"] = load_text(article)
+        article["text"] = load_text(article)
     except Exception as exc:                                  # noqa: BLE001
-        result["pattern"] = f"article illisible : {exc}"
+        result["pattern"] = f"unreadable article: {exc}"
         return result
-    if len(article["texte"]) < 500:
-        result["pattern"] = "texte trop court pour être un rapport"
+    if len(article["text"]) < 500:
+        result["pattern"] = "text too short to be a report"
         return result
 
-    found = candidates(article["texte"])
+    found = candidates(article["text"])
     if not any(found.values()):
-        result["pattern"] = "aucun candidat dans le texte"
+        result["pattern"] = "no candidate in the text"
         return result
 
     response = arbitrate(article, found)
     iocs = validate(response, found)
     result["threat"] = str(response.get("threat") or "")[:200]
     if not iocs:
-        result["pattern"] = "aucun IOC retenu par l'arbitrage"
+        result["pattern"] = "no IOC kept by the arbitration"
         return result
     cap = int(source.get("max_iocs") or MAX_IOC_ARTICLE)
     if len(iocs) > cap:
-        # Ne pas publier plutôt que publier n'importe quoi, et le DIRE : une
-        # troncature muette laisserait croire à une couverture complète.
-        result["pattern"] = (f"{len(iocs)} IOC extraits, au-delà du plafond "
-                             f"de {cap} : article non publié")
+        # Not publishing rather than publishing anything, and SAYING so: a
+        # silent truncation would suggest full coverage.
+        result["pattern"] = (f"{len(iocs)} IOCs extracted, past the cap of "
+                             f"{cap}: article not published)")
         log.warning("%s : %s", article["url"], result["pattern"])
         return result
 
     known = filter_warninglists([i["value"] for i in iocs])
     if known:
-        log.info("%d IOC écartés par les warninglists MISP", len(known))
+        log.info("%d IOCs dropped by the MISP warninglists", len(known))
     iocs = [i for i in iocs if i["value"] not in known]
     result["iocs"] = iocs
     if not iocs:
-        result["pattern"] = "tous les IOC écartés par les warninglists MISP"
+        result["pattern"] = "every IOC dropped by the MISP warninglists"
         return result
 
     if not simulation:
@@ -735,9 +730,9 @@ def process(article: dict, source: dict, simulation: bool = False) -> dict:
     return result
 
 
-# Sources qui n'ont ni date ni flux de nouveautés : c'est le curseur des URL
-# vues qui en tient lieu, donc elles DOIVENT être amorcées avant la première
-# passe. Les flux RSS, eux, sont déjà bornés par leur fenêtre de fraîcheur.
+# Sources with neither a date nor a stream of new items: the cursor of seen
+# URLs stands in for it, so they MUST be bootstrapped before the first pass. The
+# RSS feeds are already bounded by their freshness window.
 TYPES_TO_BOOTSTRAP = {"malpedia_references"}
 
 
@@ -745,36 +740,35 @@ def collect(source: dict, already: set[str], since: datetime,
               maximum: int, bootstrap: bool, simulation: bool,
               ledger=None) -> list[dict]:
     if bootstrap and source.get("type") not in TYPES_TO_BOOTSTRAP:
-        # Ne PAS marquer les flux RSS pendant un amorçage : ce serait griller
-        # les articles récents, qui sont précisément ceux qu'on veut traiter à
-        # la première vraie passe. L'amorçage n'existe que pour les sources sans
-        # date (cf. TYPES_A_AMORCER).
-        log.info("%s : rien à amorcer (source datée)", source["name"])
+        # Do NOT mark the RSS feeds during a bootstrap: it would burn the
+        # recent articles, which are precisely the ones we want to process on the
+        # first real pass. Bootstrapping only exists for sources with no date
+        # (see TYPES_TO_BOOTSTRAP).
+        log.info("%s: nothing to bootstrap (dated source)", source["name"])
         return []
 
     if source.get("type") == "malpedia_references":
         entries = malpedia_entries(source, already)
     else:
         entries = [e for e in rss_entries(source, since) if e["url"] not in already]
-    log.info("%s : %d entrée(s) nouvelle(s)", source["name"], len(entries))
+    log.info("%s: %d new entry/entries", source["name"], len(entries))
 
     if bootstrap:
-        # Marquer sans traiter : c'est ce qui rend la première exécution
-        # possible sur une bibliographie de plusieurs dizaines de milliers de
-        # rapports.
+        # Marking without processing: that is what makes the first run possible
+        # on a bibliography of several tens of thousands of reports.
         return [{"url": e["url"], "iocs": [], "event_id": None, "threat": "",
-                 "pattern": "amorçage"} for e in entries]
+                 "pattern": "bootstrap"} for e in entries]
 
     results = []
     for entry in entries[:maximum]:
         log.info("→ %s", entry["url"])
         result = process(entry, source, simulation=simulation)
         results.append(result)
-        # Marquage IMMÉDIAT, article par article, et non à la fin de la source :
-        # une panne au milieu d'une passe (ou un arrêt du conteneur) perdrait
-        # sinon le travail déjà fait, appels au modèle compris. Constaté en prod
-        # le 2026-08-12 sur une erreur de type — l'article traité juste avant a
-        # été payé puis oublié.
+        # IMMEDIATE marking, article by article, and not at the end of the
+        # source: an outage in the middle of a pass (or the container stopping)
+        # would otherwise lose the work already done, model calls included. Seen
+        # in production on 2026-08-12 on a type error — the article processed
+        # just before was paid for then forgotten.
         if ledger is not None and not simulation:
             mark(ledger, source["name"], result["url"],
                     len(result["iocs"]), result["event_id"],
@@ -782,11 +776,11 @@ def collect(source: dict, already: set[str], since: datetime,
     return results
 
 
-def passe(source_name: str | None = None, maximum: int = 10,
+def pass_(source_name: str | None = None, maximum: int = 10,
           hours: int = 48, bootstrap: bool = False,
           simulation: bool = False) -> list[dict]:
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
-    tous = []
+    everything = []
     with _connection() as conn:
         for source in sources():
             if source_name and source["name"] != source_name:
@@ -796,52 +790,52 @@ def passe(source_name: str | None = None, maximum: int = 10,
                 results = collect(source, already, since, maximum, bootstrap,
                                       simulation, ledger=conn)
             except Exception as exc:                          # noqa: BLE001
-                # Une source en panne ne doit pas emporter les autres : elles
-                # sont indépendantes, et le renseignement perdu serait celui
-                # de tout le monde. Les articles déjà traités de cette source
-                # sont, eux, déjà enregistrés (marquage au fil de l'eau).
-                log.warning("source %s en échec : %s", source["name"], exc)
+                # A broken source must not take the others down: they are
+                # independent, and the intelligence lost would be everyone's.
+                # The articles of that source already processed are already
+                # recorded (marked as we go).
+                log.warning("source %s failed: %s", source["name"], exc)
                 continue
             for r in results:
                 if bootstrap and not simulation:
-                    mark(conn, source["name"], r["url"], 0, None, "", "amorçage")
+                    mark(conn, source["name"], r["url"], 0, None, "", "bootstrap")
                 if r["iocs"]:
-                    log.info("%d IOC publiés (event %s) — %s", len(r["iocs"]),
-                             r["event_id"], r["threat"] or "menace non nommée")
-            tous.extend(results)
-    return tous
+                    log.info("%d IOCs published (event %s) — %s", len(r["iocs"]),
+                             r["event_id"], r["threat"] or "unnamed threat")
+            everything.extend(results)
+    return everything
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--source", help="ne traiter qu'une source (nom du catalogue)")
+    p.add_argument("--source", help="process one source only (catalog name)")
     p.add_argument("--max", type=int, default=10,
-                   help="articles traités par source et par passe (défaut 10)")
-    p.add_argument("--heures", type=int, default=48,
-                   help="fenêtre de fraîcheur des flux RSS (défaut 48)")
-    p.add_argument("--amorcage", action="store_true",
-                   help="marque l'existant comme vu SANS rien traiter "
-                        "(obligatoire au premier lancement, cf. Malpedia)")
+                   help="articles processed per source and per pass (default 10)")
+    p.add_argument("--hours", type=int, default=48,
+                   help="freshness window of the RSS feeds (default 48)")
+    p.add_argument("--bootstrap", action="store_true",
+                   help="marks what exists as seen WITHOUT processing anything "
+                        "(mandatory on the first run, see Malpedia)")
     p.add_argument("--simulation", action="store_true",
-                   help="extrait et affiche, n'écrit ni dans MISP ni en base")
-    p.add_argument("--url", help="traiter un article précis, hors flux")
+                   help="extracts and prints, writes neither MISP nor database")
+    p.add_argument("--url", help="process one specific article, outside the feeds")
     args = p.parse_args()
 
     if args.url:
         source = {"name": args.source or "manuel"}
-        r = process({"url": args.url, "titre": "", "publie": None,
-                     "contenu": "", "contexte": ""}, source,
+        r = process({"url": args.url, "title": "", "published": None,
+                     "content": "", "context": ""}, source,
                     simulation=args.simulation)
         print(json.dumps(r, indent=2, ensure_ascii=False))
         return
 
-    results = passe(args.source, args.max, args.hours, args.bootstrap,
+    results = pass_(args.source, args.max, args.hours, args.bootstrap,
                       args.simulation)
     published = sum(len(r["iocs"]) for r in results)
-    log.info("%d article(s) traité(s), %d IOC%s", len(results), published,
-             " (simulation)" if args.simulation else " publiés dans MISP")
+    log.info("%d article(s) processed, %d IOC%s", len(results), published,
+             " (simulation)" if args.simulation else " published into MISP")
     if args.simulation:
         print(json.dumps([r for r in results if r["iocs"] or r["pattern"]],
                          indent=2, ensure_ascii=False, default=str))

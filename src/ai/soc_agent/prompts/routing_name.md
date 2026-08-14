@@ -29,7 +29,7 @@ fermée**, et dans aucune autre :
     printer   voip    wireless  storage  iot     ot       endpoint
 
 Si aucune de ces familles ne convient et que la source n'est pas non plus une
-application identifiable, réponds `kind: "inconnu"` : un humain tranchera. Ne
+application identifiable, réponds `kind: "unknown"` : un humain tranchera. Ne
 force jamais une famille approchante — un index mal nommé est définitif.
 
 Pour une source `applicative`, le suffixe doit être le nom du produit tel qu'il
@@ -43,8 +43,8 @@ Format de sortie — réponds par un UNIQUE objet JSON, sans texte autour, avec
 exactement ces clés :
 
     {
-      "kind": "generique" | "applicative" | "inconnu",
-      "suffixe": "<suffixe>",
+      "kind": "generic" | "application" | "unknown",
+      "suffix": "<suffixe>",
       "justification": "<une phrase : ce que cette source produit, et pourquoi
                         ce nom>"
     }

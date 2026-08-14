@@ -163,7 +163,7 @@ def _process_task(conn, case, incident_id: int, case_id: int, task_id: int,
         _comment_task(case, case_id, task_id, _PREFIX_AI + question)
         return {"task_id": task_id, "action": "question"}
 
-    fields = [c for c in (rep.get("champs") or []) if c in candidate]
+    fields = [c for c in (rep.get("fields") or []) if c in candidate]
     signature = {c: candidate[c] for c in fields} or dict(candidate)
     llm_reason = rehydrate(str(rep.get("reason") or ""), anon.mapping)
 

@@ -34,17 +34,17 @@ Format de réponse :
 
 {
   "iocs": [
-    {"valeur": "<la valeur, telle qu'elle apparaît dans les candidats>",
+    {"value": "<la valeur, telle qu'elle apparaît dans les candidats>",
      "type": "ip|domain|url|hash",
      "role": "<rôle dans l'attaque, en anglais, 6 mots maximum : par ex.
                'C2 server', 'malware distribution URL', 'phishing page',
                'payload SHA256'>"}
   ],
-  "menace": "<nom de la campagne, du malware ou de l'acteur, en anglais ;
+  "threat": "<nom de la campagne, du malware ou de l'acteur, en anglais ;
               chaîne vide si l'article n'en nomme aucun>",
-  "resume": "<une phrase en anglais : quelle est la menace et ce que
+  "summary": "<une phrase en anglais : quelle est la menace et ce que
               l'attaquant fait avec cette infrastructure>",
-  "confiance": "haute|moyenne|basse"
+  "confidence": "haute|moyenne|basse"
 }
 
 Règles impératives :

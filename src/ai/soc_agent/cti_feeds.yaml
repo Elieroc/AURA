@@ -26,27 +26,27 @@ misp_feeds:
   # --- Demandé : le feed public du CERT-FR (TLP:CLEAR). Peu volumineux, très
   # ciblé, et c'est le seul feed de cette liste qui parle des campagnes visant
   # spécifiquement des organisations françaises.
-  - nom: CERT-FR OSINT
+  - name: CERT-FR OSINT
     url: https://misp.cert.ssi.gouv.fr/feed-misp/
-    fournisseur: CERT-FR / ANSSI
+    provider: CERT-FR / ANSSI
     format: misp
     active: true
     tags: [cti:certfr, tlp:clear]
 
   # --- Le feed OSINT historique de MISP, maintenu par le CIRCL. C'est la
   # référence de fait : rapports APT, campagnes, malware, avec le contexte.
-  - nom: CIRCL OSINT Feed
+  - name: CIRCL OSINT Feed
     url: https://www.circl.lu/doc/misp/feed-osint/
-    fournisseur: CIRCL
+    provider: CIRCL
     format: misp
     active: true
     tags: [cti:circl, tlp:clear]
 
   # --- Botvrij.eu : IOC extraits de rapports publics, faible taux de faux
   # positif, complémentaire du CIRCL (recouvrement partiel seulement).
-  - nom: Botvrij.eu OSINT
+  - name: Botvrij.eu OSINT
     url: https://www.botvrij.eu/data/feed-osint/
-    fournisseur: Botvrij.eu
+    provider: Botvrij.eu
     format: misp
     active: true
     tags: [cti:botvrij, tlp:clear]
@@ -54,18 +54,18 @@ misp_feeds:
   # --- ThreatFox (abuse.ch) : IOC de C2 en activité, avec la famille de
   # malware. Le plus utile des feeds « chauds » : un match ici veut dire
   # « cette machine parle à un C2 connu », c'est-à-dire déjà compromise.
-  - nom: ThreatFox (abuse.ch)
+  - name: ThreatFox (abuse.ch)
     url: https://threatfox.abuse.ch/downloads/misp/
-    fournisseur: abuse.ch
+    provider: abuse.ch
     format: misp
     active: true
     tags: [cti:threatfox, malware:c2]
 
   # --- URLhaus (abuse.ch) : URL de distribution de malware. Match sur une URL
   # vue dans un log proxy/web = téléchargement de charge utile.
-  - nom: URLhaus (abuse.ch)
+  - name: URLhaus (abuse.ch)
     url: https://urlhaus.abuse.ch/downloads/misp/
-    fournisseur: abuse.ch
+    provider: abuse.ch
     format: misp
     active: true
     tags: [cti:urlhaus, malware:distribution]
@@ -79,56 +79,56 @@ blocklists:
   # sont les listes complètes (~100 000 IP chacune) ; les variantes aa/ab/ac
   # sont les mêmes découpées en tranches de 30 000 pour les pare-feux qui
   # plafonnent. On prend les listes complètes : pas de découpage nécessaire ici.
-  - nom: data-shield
-    fournisseur: duggytuxy
+  - name: data-shield
+    provider: duggytuxy
     type: ip
     urls:
       - https://raw.githubusercontent.com/duggytuxy/Data-Shield_IPv4_Blocklist/main/prod_data-shield_ipv4_blocklist.txt
       - https://raw.githubusercontent.com/duggytuxy/Data-Shield_IPv4_Blocklist/main/prod_critical_data-shield_ipv4_blocklist.txt
-    categorie: Network activity
-    commentaire: Scanner or attacker seen against web targets and exposed infrastructure
+    category: Network activity
+    comment: Scanner or attacker seen against web targets and exposed infrastructure
     tags: [cti:data-shield, reputation:scanner]
 
   # --- blocklist.de : IP ayant attaqué (SSH, mail, web) un capteur du réseau
   # fail2ban mondial. Recouvre en partie data-shield, mais avec une fenêtre
   # plus courte : bon signal de fraîcheur.
-  - nom: blocklist.de
-    fournisseur: blocklist.de
+  - name: blocklist.de
+    provider: blocklist.de
     type: ip
     urls: [https://lists.blocklist.de/lists/all.txt]
-    categorie: Network activity
-    commentaire: IP that attacked a fail2ban sensor (SSH, mail, web)
+    category: Network activity
+    comment: IP that attacked a fail2ban sensor (SSH, mail, web)
     tags: [cti:blocklist-de, reputation:bruteforce]
 
   # --- CINS Army (Sentinel IPS) : IP à mauvaise réputation confirmée par de
   # multiples capteurs, seuil de confiance élevé, peu de bruit.
-  - nom: cins-army
-    fournisseur: CINS Score
+  - name: cins-army
+    provider: CINS Score
     type: ip
     urls: [https://cinsscore.com/list/ci-badguys.txt]
-    categorie: Network activity
-    commentaire: Bad reputation confirmed by multiple sensors (CINS)
+    category: Network activity
+    comment: Bad reputation confirmed by multiple sensors (CINS)
     tags: [cti:cins, reputation:malicious]
 
   # --- Nœuds de sortie Tor. NE PAS confondre avec de la malveillance : c'est
   # un attribut de provenance. Retombe volontairement au niveau 5 (règle
   # 100954) — utile en contexte d'investigation, inutile en alerte.
-  - nom: tor-exit
-    fournisseur: Tor Project
+  - name: tor-exit
+    provider: Tor Project
     type: ip
     urls: [https://check.torproject.org/torbulkexitlist]
-    categorie: Network activity
-    commentaire: Tor exit node (provenance, not maliciousness)
+    category: Network activity
+    comment: Tor exit node (provenance, not maliciousness)
     tags: [cti:tor, anonymizer:tor]
 
   # --- OpenPhish (flux gratuit) : URL de phishing actives. Volume modéré,
   # rotation rapide.
-  - nom: openphish
-    fournisseur: OpenPhish
+  - name: openphish
+    provider: OpenPhish
     type: url
     urls: [https://openphish.com/feed.txt]
-    categorie: Payload delivery
-    commentaire: Active phishing URL (OpenPhish community feed)
+    category: Payload delivery
+    comment: Active phishing URL (OpenPhish community feed)
     tags: [cti:openphish, phishing]
 
 #   articles : renseignement NON STRUCTURÉ (presse et blogs de sécurité). Les
@@ -145,12 +145,12 @@ articles:
   # ressortent donc à vide. C'est le régime NORMAL de ces deux sources, pas un
   # dysfonctionnement — le rendement se joue sur les quelques articles qui
   # publient une section « Indicators of Compromise ».
-  - nom: thehackernews
+  - name: thehackernews
     url: https://feeds.feedburner.com/TheHackersNews
     type: rss
     active: true
 
-  - nom: bleepingcomputer
+  - name: bleepingcomputer
     url: https://www.bleepingcomputer.com/feed/
     type: rss
     active: true
@@ -162,7 +162,7 @@ articles:
   # la majorité sont de vrais indicateurs — c'est le format de la source, pas
   # une extraction folle. Le plafond par défaut (300) rejetterait en bloc
   # l'article le plus riche des quatre sources.
-  - nom: rst-cloud
+  - name: rst-cloud
     url: https://medium.com/feed/@rst_cloud
     type: rss
     active: true
@@ -180,7 +180,7 @@ articles:
   # (`--amorcage`), qui marque les dizaines de milliers d'entrées existantes
   # comme vues sans les traiter. Sans lui, la première passe essaierait de faire
   # lire au modèle toute la littérature du domaine.
-  - nom: malpedia
+  - name: malpedia
     url: https://malpedia.caad.fkie.fraunhofer.de/api/get/references
     type: malpedia_references
     active: true
