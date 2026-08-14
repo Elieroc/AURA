@@ -1139,8 +1139,31 @@ def tourner(dry_run: bool = False) -> dict:
                               "candidats à la suppression SANS copie.", e,
                               len(peril))
         finally:
-            conn.execute("SELECT pg_advisory_unlock(%s)", (_VERROU_ARCHIVE,))
+            _deverrouiller(conn)
     return bilan
+
+
+def _deverrouiller(conn) -> None:
+    """Rend le verrou consultatif SANS masquer l'erreur qui nous amène ici.
+
+    Constaté en prod au premier passage : la table `archives_s3` n'existait pas
+    encore, `lots_a_archiver` a levé `UndefinedTable`, et le `finally` a voulu
+    exécuter l'`UNLOCK` dans une transaction déjà avortée. Postgres a répondu
+    `InFailedSqlTransaction`, cette seconde exception a REMPLACÉ la première, et
+    la trace ne disait plus du tout ce qui n'allait pas — le diagnostic utile
+    (« il manque une table ») était devenu invisible.
+
+    D'où le rollback d'abord, et le tout en best-effort : un verrou consultatif
+    de session est de toute façon rendu à la fermeture de la connexion, donc
+    échouer ici n'a aucune conséquence, alors que masquer la cause en a une.
+    """
+    for etape in (conn.rollback,
+                  lambda: conn.execute("SELECT pg_advisory_unlock(%s)",
+                                       (_VERROU_ARCHIVE,))):
+        try:
+            etape()
+        except Exception as e:                                    # noqa: BLE001
+            log.debug("libération du verrou d'archivage : %s", e)
 
 
 def main() -> None:

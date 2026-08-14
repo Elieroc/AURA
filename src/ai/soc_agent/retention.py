@@ -354,7 +354,20 @@ def tourner(dry_run: bool = False) -> dict:
             bilan["evidences_orphelines"] = purger_evidences_orphelines(
                 conn, dry_run)
         finally:
-            conn.execute("SELECT pg_advisory_unlock(%s)", (_VERROU_RETENTION,))
+            # Rollback AVANT l'unlock : dans une transaction avortée, Postgres
+            # refuse toute commande, y compris celle-ci, et la seconde exception
+            # remplacerait la première — le diagnostic utile disparaîtrait
+            # (constaté sur l'archivage, cf. archive._deverrouiller). Le verrou
+            # est de session, donc rendu à la fermeture de la connexion de toute
+            # façon : échouer ici est sans conséquence, masquer la cause non.
+            for etape in (conn.rollback,
+                          lambda: conn.execute(
+                              "SELECT pg_advisory_unlock(%s)",
+                              (_VERROU_RETENTION,))):
+                try:
+                    etape()
+                except Exception as e:                            # noqa: BLE001
+                    log.debug("libération du verrou de rétention : %s", e)
 
     fichiers, octets = purger_residus_vd(dry_run)
     bilan["residus_vd"] = fichiers

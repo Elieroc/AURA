@@ -449,3 +449,82 @@ def test_peril_tombe_quand_l_archive_existe(monkeypatch):
         ("wazuh-web", "2026-05", 1, 7)))
     conn = _Conn([{"index_base": "wazuh-web", "periode": "2026-05"}])
     assert archive.indices_en_peril(conn, date(2026, 8, 14)) == []
+
+
+# --------------------------------------------------------------------------
+# Le verrou ne doit pas masquer l'erreur qui a interrompu le passage
+# --------------------------------------------------------------------------
+
+class _ConnAvortee:
+    """Connexion dont la transaction est avortée : tout `execute` échoue.
+
+    Reproduit l'état réel de Postgres après une requête en erreur — c'est ce que
+    la prod a rencontré au premier passage, table `archives_s3` absente.
+    """
+
+    def __init__(self):
+        self.rollback_appele = False
+
+    def execute(self, sql, params=None):
+        if not self.rollback_appele:
+            raise RuntimeError("current transaction is aborted")
+
+        class R:
+            @staticmethod
+            def fetchone():
+                return {"pg_advisory_unlock": True}
+        return R()
+
+    def rollback(self):
+        self.rollback_appele = True
+
+
+def test_deverrouillage_ne_masque_pas_la_cause():
+    """Sans rollback préalable, l'UNLOCK lève `InFailedSqlTransaction` et cette
+    seconde exception REMPLACE la première : la trace ne dit plus ce qui
+    n'allait pas. Arrivé en prod, où le diagnostic utile (« il manque une
+    table ») était devenu invisible sous une erreur de transaction."""
+    conn = _ConnAvortee()
+    archive._deverrouiller(conn)          # ne doit RIEN lever
+    assert conn.rollback_appele, "rollback non tenté avant l'unlock"
+
+
+def test_deverrouillage_survit_a_une_connexion_morte():
+    """Un verrou de session est rendu à la fermeture de la connexion : échouer
+    ici est sans conséquence, alors que propager l'échec masquerait la cause."""
+    class _Morte:
+        def rollback(self):
+            raise OSError("connexion fermée")
+
+        def execute(self, *a):
+            raise OSError("connexion fermée")
+
+    archive._deverrouiller(_Morte())      # ne doit RIEN lever
+
+
+def test_erreur_de_table_absente_remonte_telle_quelle(monkeypatch):
+    """Le bout à bout du scénario de prod : ce qui doit sortir de `tourner`,
+    c'est la cause réelle, pas l'erreur de transaction du nettoyage."""
+    monkeypatch.setattr(config, "ARCHIVAGE_ENABLED", True)
+
+    class _Conn(_ConnAvortee):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params=None):
+            if "pg_try_advisory_lock" in sql:
+                class R:
+                    @staticmethod
+                    def fetchone():
+                        return {"pg_try_advisory_lock": True}
+                return R()
+            return super().execute(sql, params)
+
+    monkeypatch.setattr("psycopg.connect", lambda *a, **k: _Conn())
+    monkeypatch.setattr(archive, "lots_a_archiver", lambda conn: (_ for _ in ()).throw(
+        RuntimeError('relation "archives_s3" does not exist')))
+    with pytest.raises(RuntimeError, match="archives_s3"):
+        archive.tourner()
