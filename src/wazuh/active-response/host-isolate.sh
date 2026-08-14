@@ -1,22 +1,22 @@
 #!/bin/sh
-# Active response Wazuh : isolation réseau de l'hôte (nftables).
+# Wazuh active response: network isolation of the host (nftables).
 #
-# Coupe tout le trafic sauf :
+# Cuts all traffic except:
 #   - loopback
-#   - connexion agent -> manager Wazuh (tcp/1514) pour garder le contrôle
-#   - SSH depuis le serveur Wazuh (tcp/22) pour l'administration/dé-isolation
+#   - agent -> Wazuh manager connection (tcp/1514) to keep control
+#   - SSH from the Wazuh server (tcp/22) for administration/de-isolation
 #
-# Déployé dans /var/ossec/active-response/bin/ sur les agents Linux.
-# Reçoit le message AR (JSON) sur stdin ; n'agit que sur "command": "add".
-# La dé-isolation est faite par host-unisolate.sh (suppression de la table).
+# Deployed in /var/ossec/active-response/bin/ on Linux agents.
+# Receives the AR message (JSON) on stdin; only acts on "command": "add".
+# De-isolation is done by host-unisolate.sh (table removal).
 
 set -u
 
-# Défaut surchargé par /var/ossec/etc/soc-ai.conf (valeur éditée dans le .env
-# racine, déployée par generate-soc-ai-conf.sh) :
-# WAZUH_MANAGER_IP = IP du manager telle que les agents la joignent. C'est la
-# seule sortie laissée ouverte par l'isolation, donc la seule façon de garder
-# l'agent pilotable — une valeur fausse ici coupe l'agent définitivement.
+# Default overridden by /var/ossec/etc/soc-ai.conf (value edited in the root
+# .env, deployed by generate-soc-ai-conf.sh):
+# WAZUH_MANAGER_IP = manager IP as reached by agents. It is the
+# only outbound path left open by isolation, so the only way to keep
+# the agent controllable — a wrong value here cuts the agent off for good.
 WAZUH_MANAGER_IP="192.168.60.1"
 CONF_FILE="/var/ossec/etc/soc-ai.conf"
 # shellcheck source=/dev/null
@@ -27,102 +27,105 @@ NFT="/usr/sbin/nft"
 TABLE="wazuh_isolation"
 LOG_FILE="/var/ossec/logs/active-responses.log"
 SCRIPT_NAME="host-isolate"
-# Marqueur d'état robuste. Deux formes, complémentaires :
-#  - MARKER : fichier local, vérité terrain inspectable même hors réseau (le
-#    manager garde SSH). Contient un JSON état + horodatage.
-#  - le token Aura-SOC-ISOLATION-STATE=<état> écrit dans active-responses.log,
-#    ingéré par Wazuh -> interrogeable à distance sans toucher l'agent.
-# La présence de la table nftables reste l'autorité ; le marqueur la reflète.
+# Robust state marker. Two forms, complementary:
+#  - MARKER: local file, ground truth inspectable even off the network (the
+#    manager keeps SSH). Contains a JSON state + timestamp.
+#  - the token Aura-SOC-ISOLATION-STATE=<state> written to active-responses.log,
+#    ingested by Wazuh -> queryable remotely without touching the agent.
+# The presence of the nftables table remains authoritative; the marker mirrors it.
 MARKER="/var/ossec/isolated"
 
-# Cible du compte rendu : c'est l'hôte lui-même qui est isolé (miroir du
-# $env:COMPUTERNAME utilisé par win-host-isolate.ps1).
+# Report target: the host itself is what's isolated (mirrors
+# the $env:COMPUTERNAME used by win-host-isolate.ps1).
 HOST_NAME=$(hostname 2>/dev/null || echo "unknown")
 
 log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') host-isolate: $1" >> "$LOG_FILE"
 }
 
-# Compte rendu structuré, lu par le decodeur Wazuh 100930 puis par
-# soc_agent.reconcile. statut : applied | refused | noop | error.
-ar_result() {   # $1 statut  $2 cible  $3 motif
+# Structured report, read by the Wazuh 100930 decoder and then by
+# soc_agent.reconcile. status: applied | refused | noop | error.
+ar_result() {   # $1 status  $2 target  $3 reason
     printf '%s ar-result: script=%s status=%s target="%s" reason="%s"\n' \
         "$(date '+%Y/%m/%d %H:%M:%S')" "$SCRIPT_NAME" "$1" \
         "$(printf '%s' "$2" | tr -d '\r\n"')" \
         "$(printf '%s' "$3" | tr -d '\r\n"')" >> "$LOG_FILE"
 }
 
-# Écrit le marqueur d'isolation (état "isolated") de façon atomique.
-poser_marqueur() {
+# Atomically writes the isolation marker (state "isolated").
+write_marker() {
     _tmp="${MARKER}.tmp.$$"
     printf '{"isolated":true,"since":"%s","manager":"%s","table":"%s"}\n' \
         "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$MANAGER_IP" "$TABLE" > "$_tmp" \
         && mv "$_tmp" "$MARKER"
-    log "Aura-SOC-ISOLATION-STATE=isolated (marqueur $MARKER)"
+    log "Aura-SOC-ISOLATION-STATE=isolated (marker $MARKER)"
 }
 
-# Message AR v2 sur stdin
+# AR v2 message on stdin
 read -r INPUT_JSON
 COMMAND=$(echo "$INPUT_JSON" | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 
 case "$COMMAND" in
     add) ;;
     delete)
-        # Pas de timeout géré ici : la dé-isolation passe par host-unisolate.sh
-        ar_result noop "$HOST_NAME" "commande delete (expiration timeout), la de-isolation passe par host-unisolate"
+        # No timeout handled here: de-isolation goes through host-unisolate.sh
+        ar_result noop "$HOST_NAME" "delete command (timeout expiry), de-isolation goes through host-unisolate"
         exit 0
         ;;
     *)
-        log "commande invalide: '$COMMAND'"
-        ar_result error "$HOST_NAME" "commande invalide: $COMMAND"
+        log "invalid command: '$COMMAND'"
+        ar_result error "$HOST_NAME" "invalid command: $COMMAND"
         exit 1
         ;;
 esac
 
 if [ ! -x "$NFT" ]; then
-    log "ERREUR: $NFT introuvable, isolation impossible"
-    ar_result error "$HOST_NAME" "$NFT introuvable, isolation impossible"
+    log "ERROR: $NFT not found, isolation impossible"
+    ar_result error "$HOST_NAME" "$NFT not found, isolation impossible"
     exit 1
 fi
 
-# Refus porté par la machine elle-même. `SOC_AI_NO_ISOLATE=1` dans
-# /var/ossec/etc/soc-ai.conf marque un hôte d'INFRASTRUCTURE — pare-feu, reverse
-# proxy, résolveur DNS, passerelle VPN. Ces machines acheminent le trafic
-# d'autrui : les isoler ne contient pas un incident, ça provoque une panne
-# générale, et sur un pare-feu ça coupe le lien par lequel on rétablirait.
+# Refusal carried by the machine itself. `SOC_AI_NO_ISOLATE=1` in
+# /var/ossec/etc/soc-ai.conf marks an INFRASTRUCTURE host — firewall, reverse
+# proxy, DNS resolver, VPN gateway. These machines route other hosts' traffic:
+# isolating them doesn't contain an incident, it causes a general outage, and
+# on a firewall it cuts the very link through which it would be restored.
 #
-# Doublon assumé du garde-fou Python (groupes Wazuh, cf. mitigate.raison_non_
-# isolable) : l'AR est aussi joignable par l'API Wazuh et le serveur MCP, qui ne
-# passent pas par ce code. Et celui-ci survit à une erreur d'inventaire côté
-# manager, puisque la machine porte elle-même son refus.
+# Deliberate duplicate of the Python guardrail (Wazuh groups, cf.
+# mitigate.not_isolatable_reason): the AR is also reachable via the Wazuh API and
+# the MCP server, which don't go through this code. And this one survives an
+# inventory error on the manager side, since the machine itself carries its
+# own refusal.
 if [ "${SOC_AI_NO_ISOLATE:-0}" = "1" ]; then
-    log "REFUS: hôte d'infrastructure (SOC_AI_NO_ISOLATE=1 dans $CONF_FILE) — isolation refusée"
-    ar_result refused "$HOST_NAME" "hote d'infrastructure (SOC_AI_NO_ISOLATE=1)"
+    log "REFUSED: infrastructure host (SOC_AI_NO_ISOLATE=1 in $CONF_FILE) — isolation refused"
+    ar_result refused "$HOST_NAME" "infrastructure host (SOC_AI_NO_ISOLATE=1)"
     exit 1
 fi
 
-# Refus d'auto-isolation du manager. Si MANAGER_IP est une adresse LOCALE, c'est
-# que ce script tourne SUR le manager (agent 000) : l'isoler couperait la
-# collecte de tout le parc, l'API et la console — donc le seul canal par lequel
-# on pourrait le dé-isoler. Le ruleset ci-dessous n'ouvre d'exception que « vers
-# le manager », ce qui ne veut rien dire quand on EST le manager.
+# Refuse self-isolation of the manager. If MANAGER_IP is a LOCAL address, this
+# script is running ON the manager (agent 000): isolating it would cut off
+# collection for the whole fleet, the API, and the console — i.e. the only
+# channel through which it could be de-isolated. The ruleset below only opens
+# an exception "toward the manager", which is meaningless when we ARE the
+# manager.
 #
-# Doublon assumé du garde-fou Python (config.AGENTS_PROTECTED) : l'AR est aussi
-# joignable par l'API Wazuh et le serveur MCP, qui ne passent pas par ce code.
+# Deliberate duplicate of the Python guardrail (config.AGENTS_PROTECTED): the
+# AR is also reachable via the Wazuh API and the MCP server, which don't go
+# through this code.
 if [ -n "$MANAGER_IP" ] && command -v ip >/dev/null 2>&1 \
    && ip -o addr show 2>/dev/null | grep -qw "$MANAGER_IP"; then
-    log "REFUS: $MANAGER_IP est une adresse locale — auto-isolation du manager refusée"
-    ar_result refused "$HOST_NAME" "auto-isolation du manager refusee ($MANAGER_IP est locale)"
+    log "REFUSED: $MANAGER_IP is a local address — manager self-isolation refused"
+    ar_result refused "$HOST_NAME" "manager self-isolation refused ($MANAGER_IP is local)"
     exit 1
 fi
 
-# Idempotent : table déjà en place = déjà isolé. On (re)pose le marqueur au cas
-# où il aurait disparu (agent redémarré, marqueur effacé), pour qu'il reflète
-# toujours l'état réel de la table.
+# Idempotent: table already in place = already isolated. We (re)write the
+# marker in case it went missing (agent restarted, marker deleted), so it
+# always reflects the actual state of the table.
 if "$NFT" list table inet "$TABLE" >/dev/null 2>&1; then
-    poser_marqueur
-    log "déjà isolé (table $TABLE présente)"
-    ar_result noop "$HOST_NAME" "deja isole (table $TABLE presente)"
+    write_marker
+    log "already isolated (table $TABLE present)"
+    ar_result noop "$HOST_NAME" "already isolated (table $TABLE present)"
     exit 0
 fi
 
@@ -148,12 +151,12 @@ table inet $TABLE {
 EOF
 
 if [ $? -eq 0 ]; then
-    poser_marqueur
-    log "hôte isolé du réseau (exceptions: lo, manager $MANAGER_IP 1514/1515, SSH depuis manager)"
-    ar_result applied "$HOST_NAME" "isole (exceptions: lo, manager $MANAGER_IP 1514/1515, SSH depuis manager)"
+    write_marker
+    log "host isolated from the network (exceptions: lo, manager $MANAGER_IP 1514/1515, SSH from manager)"
+    ar_result applied "$HOST_NAME" "isolated (exceptions: lo, manager $MANAGER_IP 1514/1515, SSH from manager)"
     exit 0
 else
-    log "ERREUR: échec application ruleset nftables"
-    ar_result error "$HOST_NAME" "echec application du ruleset nftables"
+    log "ERROR: failed to apply the nftables ruleset"
+    ar_result error "$HOST_NAME" "failed to apply the nftables ruleset"
     exit 1
 fi

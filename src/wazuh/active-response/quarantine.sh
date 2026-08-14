@@ -1,19 +1,19 @@
 #!/bin/sh
-# Active response Wazuh : mise en quarantaine / restauration d'un fichier.
+# Wazuh active response: quarantine / restore of a file.
 #
-# Appelé par le serveur MCP via la commande AR "quarantine" :
-#   extra_args = ["/chemin/fichier"]            -> quarantaine
-#   extra_args = ["restore", "/chemin/fichier"] -> restauration
+# Called by the MCP server via the "quarantine" AR command:
+#   extra_args = ["/file/path"]            -> quarantine
+#   extra_args = ["restore", "/file/path"] -> restore
 #
-# Le fichier est déplacé (pas copié) dans QUARANTINE_DIR, mode 000, avec un
-# fichier .path à côté qui mémorise le chemin d'origine pour la restauration.
-# Déployé dans /var/ossec/active-response/bin/ sur les agents Linux.
+# The file is moved (not copied) into QUARANTINE_DIR, mode 000, with a
+# .path sidecar file that remembers the original path for restoration.
+# Deployed in /var/ossec/active-response/bin/ on Linux agents.
 
 set -u
 
 QUARANTINE_DIR="/var/ossec/quarantine"
 LOG_FILE="/var/ossec/logs/active-responses.log"
-# Chemins jamais mis en quarantaine : casser ça rend l'hôte ou l'agent inutilisable.
+# Paths never quarantined: breaking these renders the host or the agent unusable.
 PROTECTED="/bin /sbin /lib /lib64 /usr/bin /usr/sbin /usr/lib /etc /boot /var/ossec/bin"
 SCRIPT_NAME="quarantine"
 
@@ -21,9 +21,9 @@ log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') quarantine: $1" >> "$LOG_FILE"
 }
 
-# Compte rendu structuré, lu par le decodeur Wazuh 100930 puis par
-# soc_agent.reconcile. statut : applied | refused | noop | error.
-ar_result() {   # $1 statut  $2 cible  $3 motif
+# Structured report, read by the Wazuh 100930 decoder and then by
+# soc_agent.reconcile. status: applied | refused | noop | error.
+ar_result() {   # $1 status  $2 target  $3 reason
     printf '%s ar-result: script=%s status=%s target="%s" reason="%s"\n' \
         "$(date '+%Y/%m/%d %H:%M:%S')" "$SCRIPT_NAME" "$1" \
         "$(printf '%s' "$2" | tr -d '\r\n"')" \
@@ -36,17 +36,17 @@ COMMAND=$(echo "$INPUT_JSON" | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\(
 case "$COMMAND" in
     add) ;;
     delete)
-        ar_result noop "" "commande delete (expiration timeout), seul restore sort de quarantaine"
+        ar_result noop "" "delete command (timeout expiry), only restore takes a file out of quarantine"
         exit 0
         ;;
     *)
-        log "commande invalide: '$COMMAND'"
-        ar_result error "" "commande invalide: $COMMAND"
+        log "invalid command: '$COMMAND'"
+        ar_result error "" "invalid command: $COMMAND"
         exit 1
         ;;
 esac
 
-# extra_args : on extrait la liste complète puis les deux premiers éléments.
+# extra_args: extract the full list, then its first two elements.
 ARGS=$(echo "$INPUT_JSON" | sed -n 's/.*"extra_args"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p')
 ARG1=$(echo "$ARGS" | sed -n 's/^[[:space:]]*"\([^"]*\)".*/\1/p')
 ARG2=$(echo "$ARGS" | sed -n 's/^[[:space:]]*"[^"]*"[[:space:]]*,[[:space:]]*"\([^"]*\)".*/\1/p')
@@ -60,89 +60,88 @@ else
 fi
 
 if [ -z "$TARGET" ]; then
-    log "ERREUR: aucun chemin de fichier fourni"
-    ar_result error "" "aucun chemin de fichier fourni ($ACTION)"
+    log "ERROR: no file path provided"
+    ar_result error "" "no file path provided ($ACTION)"
     exit 1
 fi
 
 case "$TARGET" in
     /*) ;;
     *)
-        log "ERREUR: chemin non absolu refusé: '$TARGET'"
-        ar_result error "$TARGET" "chemin non absolu ($ACTION)"
+        log "ERROR: non-absolute path refused: '$TARGET'"
+        ar_result error "$TARGET" "non-absolute path ($ACTION)"
         exit 1
         ;;
 esac
 
-# La liste PROTECTED plus bas est un test de PRÉFIXE : un segment « .. » suffit
-# à la contourner (/var/tmp/../../etc/shadow ne commence par aucun répertoire
-# protégé, et `mv` le résout quand même). On refuse donc tout chemin non
-# canonique plutôt que de tenter de le résoudre — cet AR tourne en root, et un
-# chemin qu'on ne sait pas nommer exactement n'est pas un chemin sur lequel on
-# agit.
+# The PROTECTED list below is a PREFIX test: a single ".." segment is enough
+# to bypass it (/var/tmp/../../etc/shadow doesn't start with any protected
+# directory, and `mv` resolves it anyway). We therefore refuse any
+# non-canonical path rather than trying to resolve it — this AR runs as
+# root, and a path we can't name exactly isn't a path we act on.
 case "$TARGET" in
     */../*|*/..|../*|..)
-        log "REFUS: chemin non canonique (segment ..) : '$TARGET'"
-        ar_result refused "$TARGET" "chemin non canonique (segment ..)"
+        log "REFUSED: non-canonical path (.. segment): '$TARGET'"
+        ar_result refused "$TARGET" "non-canonical path (.. segment)"
         exit 1
         ;;
 esac
 
-# Nom de stockage : chemin absolu avec les '/' remplacés par '_'.
+# Storage name: absolute path with '/' replaced by '_'.
 STORED="$QUARANTINE_DIR/$(echo "$TARGET" | sed 's|^/||; s|/|_|g')"
 
 if [ "$ACTION" = "quarantine" ]; then
     for dir in $PROTECTED; do
         case "$TARGET" in
             "$dir"/*)
-                log "REFUS: '$TARGET' est dans un répertoire système protégé ($dir)"
-                ar_result refused "$TARGET" "repertoire systeme protege ($dir)"
+                log "REFUSED: '$TARGET' is under a protected system directory ($dir)"
+                ar_result refused "$TARGET" "protected system directory ($dir)"
                 exit 1
                 ;;
         esac
     done
 
     if [ ! -f "$TARGET" ]; then
-        log "fichier '$TARGET' introuvable, rien à faire"
-        ar_result noop "$TARGET" "fichier introuvable sur cet hote"
+        log "file '$TARGET' not found, nothing to do"
+        ar_result noop "$TARGET" "file not found on this host"
         exit 0
     fi
 
     mkdir -p "$QUARANTINE_DIR" && chmod 700 "$QUARANTINE_DIR"
 
     if ! mv "$TARGET" "$STORED"; then
-        log "ERREUR: échec du déplacement de '$TARGET'"
-        ar_result error "$TARGET" "echec du deplacement vers $STORED"
+        log "ERROR: failed to move '$TARGET'"
+        ar_result error "$TARGET" "failed to move to $STORED"
         exit 1
     fi
     chmod 000 "$STORED"
     echo "$TARGET" > "$STORED.path"
-    log "fichier '$TARGET' mis en quarantaine ($STORED)"
-    ar_result applied "$TARGET" "mis en quarantaine ($STORED)"
+    log "file '$TARGET' quarantined ($STORED)"
+    ar_result applied "$TARGET" "quarantined ($STORED)"
     exit 0
 fi
 
 # restore
 if [ ! -f "$STORED" ]; then
-    log "ERREUR: '$TARGET' absent de la quarantaine"
-    ar_result noop "$TARGET" "absent de la quarantaine, rien a restaurer"
+    log "ERROR: '$TARGET' not in quarantine"
+    ar_result noop "$TARGET" "not in quarantine, nothing to restore"
     exit 1
 fi
 
 ORIG=$(cat "$STORED.path" 2>/dev/null || echo "$TARGET")
 if [ -e "$ORIG" ]; then
-    log "ERREUR: '$ORIG' existe déjà, restauration annulée"
-    ar_result error "$ORIG" "le chemin d'origine existe deja, restauration annulee"
+    log "ERROR: '$ORIG' already exists, restore cancelled"
+    ar_result error "$ORIG" "original path already exists, restore cancelled"
     exit 1
 fi
 
 if ! mv "$STORED" "$ORIG"; then
-    log "ERREUR: échec de la restauration vers '$ORIG'"
-    ar_result error "$ORIG" "echec du deplacement depuis la quarantaine"
+    log "ERROR: failed to restore to '$ORIG'"
+    ar_result error "$ORIG" "failed to move out of quarantine"
     exit 1
 fi
 chmod 600 "$ORIG"
 rm -f "$STORED.path"
-log "fichier '$ORIG' restauré depuis la quarantaine"
-ar_result applied "$ORIG" "restaure depuis la quarantaine"
+log "file '$ORIG' restored from quarantine"
+ar_result applied "$ORIG" "restored from quarantine"
 exit 0

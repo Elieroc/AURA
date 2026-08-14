@@ -1,13 +1,13 @@
 #!/bin/sh
-# Active response Wazuh : wrapper "host-isolation" pour le serveur MCP.
+# Wazuh active response: "host-isolation" wrapper for the MCP server.
 #
-# Le serveur MCP (Wazuh-MCP-Server) appelle une seule commande AR nommée
-# "host-isolation" : isolation quand extra_args est vide, dé-isolation quand
-# extra_args[0] == "undo". Nos scripts natifs sont séparés (host-isolate.sh /
-# host-unisolate.sh) ; ce wrapper route vers le bon en lui repassant le message
-# AR original sur stdin.
+# The MCP server (Wazuh-MCP-Server) calls a single AR command named
+# "host-isolation": isolation when extra_args is empty, de-isolation when
+# extra_args[0] == "undo". Our native scripts are separate (host-isolate.sh /
+# host-unisolate.sh); this wrapper routes to the right one, passing the
+# original AR message back on stdin.
 #
-# Déployé dans /var/ossec/active-response/bin/ sur les agents Linux.
+# Deployed in /var/ossec/active-response/bin/ on Linux agents.
 
 set -u
 
@@ -19,15 +19,15 @@ log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') host-isolation: $1" >> "$LOG_FILE"
 }
 
-# Compte rendu structuré, lu par le decodeur Wazuh 100930 puis par
-# soc_agent.reconcile. statut : applied | refused | noop | error.
+# Structured report, read by the Wazuh 100930 decoder and then by
+# soc_agent.reconcile. status: applied | refused | noop | error.
 #
-# Ce script n'est qu'un routeur : sur les deux chemins qui délèguent, c'est le
-# script appelé (host-isolate / host-unisolate) qui écrit SA ligne ar-result.
-# On n'en écrit pas une seconde ici, sinon reconcile verrait deux comptes rendus
-# pour une seule action. Seul le chemin d'argument invalide, qui ne délègue à
-# personne, produit sa propre ligne.
-ar_result() {   # $1 statut  $2 cible  $3 motif
+# This script is only a router: on both paths that delegate, it's the called
+# script (host-isolate / host-unisolate) that writes ITS ar-result line. We
+# don't write a second one here, otherwise reconcile would see two reports
+# for a single action. Only the invalid-argument path, which delegates to
+# nothing, produces its own line.
+ar_result() {   # $1 status  $2 target  $3 reason
     printf '%s ar-result: script=%s status=%s target="%s" reason="%s"\n' \
         "$(date '+%Y/%m/%d %H:%M:%S')" "$SCRIPT_NAME" "$1" \
         "$(printf '%s' "$2" | tr -d '\r\n"')" \
@@ -40,16 +40,16 @@ ARG=$(echo "$INPUT_JSON" | sed -n 's/.*"extra_args"[[:space:]]*:[[:space:]]*\[[[
 
 case "$ARG" in
     undo|UNDO)
-        log "route -> host-unisolate.sh"
+        log "routing -> host-unisolate.sh"
         echo "$INPUT_JSON" | "$BIN_DIR/host-unisolate.sh"
         ;;
     "")
-        log "route -> host-isolate.sh"
+        log "routing -> host-isolate.sh"
         echo "$INPUT_JSON" | "$BIN_DIR/host-isolate.sh"
         ;;
     *)
-        log "ERREUR: argument inattendu '$ARG' (attendu: vide ou 'undo')"
-        ar_result error "$ARG" "argument inattendu (attendu: vide ou undo)"
+        log "ERROR: unexpected argument '$ARG' (expected: empty or 'undo')"
+        ar_result error "$ARG" "unexpected argument (expected: empty or undo)"
         exit 1
         ;;
 esac

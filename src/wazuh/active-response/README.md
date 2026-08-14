@@ -1,40 +1,40 @@
-# Active response Aura-SOC
+# Aura-SOC active response
 
-Scripts de remédiation exécutés **sur l'agent**, appelés par l'API Wazuh, le
-serveur MCP ou `src/ai/soc_agent/mitigate.py`.
+Remediation scripts executed **on the agent**, called by the Wazuh API, the
+MCP server, or `src/ai/soc_agent/mitigate.py`.
 
-## Pourquoi des scripts maison
+## Why custom scripts
 
-Les binaires natifs livrés par le paquet (`firewall-drop`, `disable-account`, …)
-lisent la cible **dans l'alerte** (`alert.data.srcip`, `alert.data.dstuser`) et
-échouent sur tout appel piloté, qui passe la cible en `extra_args`
-(« Cannot read 'srcip' from data »). Ces scripts lisent `extra_args[0]`.
+The native binaries shipped with the package (`firewall-drop`, `disable-account`, …)
+read the target **from the alert** (`alert.data.srcip`, `alert.data.dstuser`) and
+fail on any driven call, which passes the target via `extra_args`
+("Cannot read 'srcip' from data"). These scripts read `extra_args[0]` instead.
 
-Chaque action a son inverse, par paire : `firewall-drop.sh` / `firewall-allow.sh`,
+Each action has its inverse, in pairs: `firewall-drop.sh` / `firewall-allow.sh`,
 `disable-account.sh` / `enable-account.sh`, `host-isolate.sh` /
-`host-unisolate.sh`. `kill-process.sh` n'en a pas (pas d'« unkill »).
+`host-unisolate.sh`. `kill-process.sh` has none (no "unkill").
 
-## Déploiement — obligatoire, et à échec silencieux
+## Deployment — mandatory, and fails silently
 
-Les scripts doivent être présents dans `/var/ossec/active-response/bin/` de
-**chaque agent** (root:wazuh, 750). `install-agent.sh` s'en charge à
-l'installation ; pour un agent déjà en place :
+The scripts must be present in `/var/ossec/active-response/bin/` on
+**every agent** (root:wazuh, 750). `install-agent.sh` handles this at
+install time; for an agent already in place:
 
 ```sh
-./scripts/deploy-active-response.sh <ip-agent> [<ip-agent> ...]
+./scripts/deploy-active-response.sh <agent-ip> [<agent-ip> ...]
 ```
 
-Sans ces fichiers, **toute remédiation échoue sans rien remonter** : l'`ar.conf`
-poussé par le manager déclare bien `firewall-drop.sh`, l'API Wazuh répond `200`
-(elle ne fait que transmettre la commande à l'agent), et rien ne s'exécute. Le
-seul indice est l'absence de ligne dans le `/var/ossec/logs/active-responses.log`
-de l'agent. C'est ce qui peut rendre le blocage d'IP inopérant en silence si le
-déploiement des scripts est oublié.
+Without these files, **every remediation fails without reporting anything**:
+the `ar.conf` pushed by the manager does declare `firewall-drop.sh`, the Wazuh
+API responds `200` (it only forwards the command to the agent), and nothing
+runs. The only clue is the absence of a line in the agent's
+`/var/ossec/logs/active-responses.log`. This is what can make IP blocking
+silently inoperative if deploying the scripts was forgotten.
 
-## Appel
+## Calling
 
-Le préfixe `!` est **obligatoire** : il désigne le nom de **fichier** littéral et
-court-circuite la résolution par `<command>` d'`ossec.conf`.
+The `!` prefix is **mandatory**: it designates the literal **file** name and
+bypasses resolution through `ossec.conf`'s `<command>`.
 
 ```sh
 curl -sk -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
@@ -42,28 +42,28 @@ curl -sk -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
   -d '{"command":"!firewall-drop.sh","arguments":["198.51.100.77"]}'
 ```
 
-Sans le `!`, l'API cherche un `<command>` d'`ossec.conf` et peut répondre
+Without the `!`, the API looks for a `<command>` in `ossec.conf` and may respond
 `1652 The command used is not defined in the configuration`.
 
-## Pare-feu : iptables ou nftables
+## Firewall: iptables or nftables
 
-`firewall-drop.sh` / `firewall-allow.sh` utilisent `iptables` quand il est
-présent, sinon **nftables** (table dédiée `inet soc_ai_block`, chaîne `input`
-priority -10). Le repli est nécessaire : certains hôtes Debian 12 récents
-n'embarquent que `nft`, sans le shim iptables.
+`firewall-drop.sh` / `firewall-allow.sh` use `iptables` when present, otherwise
+**nftables** (dedicated table `inet soc_ai_block`, chain `input`
+priority -10). The fallback is necessary: some recent Debian 12 hosts only
+ship `nft`, without the iptables shim.
 
-La table est **distincte** de `wazuh_isolation` (`host-isolate.sh`) : une
-dé-isolation supprime sa table entière et ne doit pas emporter au passage les
-blocages d'IP posés séparément.
+The table is **distinct** from `wazuh_isolation` (`host-isolate.sh`): a
+de-isolation removes its entire table and must not take the separately-set IP
+blocks down with it.
 
-## Vérification de bout en bout
+## End-to-end verification
 
-Ne jamais se fier à la table `mitigations` ni au code retour de l'API. Lire
-l'état réel de l'hôte :
+Never trust the `mitigations` table nor the API's return code. Read the
+actual state of the host:
 
 ```sh
 tail /var/ossec/logs/active-responses.log
-iptables -S INPUT           # ou : nft list table inet soc_ai_block
+iptables -S INPUT           # or: nft list table inet soc_ai_block
 chage -l <user>             # disable-account
 nft list table inet wazuh_isolation   # isolation
 ```

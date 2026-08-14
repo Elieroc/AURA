@@ -1,11 +1,11 @@
 #!/bin/sh
-# Active response Wazuh : réactivation d'un compte désactivé par disable-account.
+# Wazuh active response: re-enable an account disabled by disable-account.
 #
-# Le serveur MCP appelle la commande AR "enable-account" avec
-# extra_args = ["<user>"]. Wazuh natif ne fournit que disable-account (qui
-# réactive sur "command": "delete") ; ce script fait le rollback explicite.
+# The MCP server calls the "enable-account" AR command with
+# extra_args = ["<user>"]. Native Wazuh only ships disable-account (which
+# re-enables on "command": "delete"); this script does the explicit rollback.
 #
-# Déployé dans /var/ossec/active-response/bin/ sur les agents Linux.
+# Deployed in /var/ossec/active-response/bin/ on Linux agents.
 
 set -u
 
@@ -16,9 +16,9 @@ log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') enable-account: $1" >> "$LOG_FILE"
 }
 
-# Compte rendu structuré, lu par le decodeur Wazuh 100930 puis par
-# soc_agent.reconcile. statut : applied | refused | noop | error.
-ar_result() {   # $1 statut  $2 cible  $3 motif
+# Structured report, read by the Wazuh 100930 decoder and then by
+# soc_agent.reconcile. status: applied | refused | noop | error.
+ar_result() {   # $1 status  $2 target  $3 reason
     printf '%s ar-result: script=%s status=%s target="%s" reason="%s"\n' \
         "$(date '+%Y/%m/%d %H:%M:%S')" "$SCRIPT_NAME" "$1" \
         "$(printf '%s' "$2" | tr -d '\r\n"')" \
@@ -31,12 +31,12 @@ COMMAND=$(echo "$INPUT_JSON" | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\(
 case "$COMMAND" in
     add) ;;
     delete)
-        ar_result noop "" "commande delete (expiration timeout), aucune action"
+        ar_result noop "" "delete command (timeout expiry), no action"
         exit 0
         ;;
     *)
-        log "commande invalide: '$COMMAND'"
-        ar_result error "" "commande invalide: $COMMAND"
+        log "invalid command: '$COMMAND'"
+        ar_result error "" "invalid command: $COMMAND"
         exit 1
         ;;
 esac
@@ -44,27 +44,27 @@ esac
 USER=$(echo "$INPUT_JSON" | sed -n 's/.*"extra_args"[[:space:]]*:[[:space:]]*\[[[:space:]]*"\([^"]*\)".*/\1/p')
 
 if [ -z "$USER" ]; then
-    log "ERREUR: aucun utilisateur fourni (extra_args vide)"
-    ar_result error "" "aucun utilisateur fourni (extra_args vide)"
+    log "ERROR: no user provided (empty extra_args)"
+    ar_result error "" "no user provided (empty extra_args)"
     exit 1
 fi
 
 case "$USER" in
     root)
-        log "REFUS: réactivation de root refusée"
-        ar_result refused "$USER" "compte protege (root)"
+        log "REFUSED: re-enabling root refused"
+        ar_result refused "$USER" "protected account (root)"
         exit 1
         ;;
 esac
 
 if ! id "$USER" >/dev/null 2>&1; then
-    log "ERREUR: utilisateur '$USER' inexistant"
-    ar_result noop "$USER" "compte inexistant sur cet hote"
+    log "ERROR: user '$USER' does not exist"
+    ar_result noop "$USER" "account does not exist on this host"
     exit 1
 fi
 
-# usermod -U lève le lock du mot de passe ; chage -E -1 annule l'expiration
-# posée par disable-account.
+# usermod -U lifts the password lock; chage -E -1 cancels the expiry
+# set by disable-account.
 if command -v usermod >/dev/null 2>&1; then
     usermod -U "$USER" >/dev/null 2>&1
 fi
@@ -72,6 +72,6 @@ if command -v chage >/dev/null 2>&1; then
     chage -E -1 "$USER" >/dev/null 2>&1
 fi
 
-log "compte '$USER' réactivé"
-ar_result applied "$USER" "compte reactive (usermod -U, chage -E -1)"
+log "account '$USER' re-enabled"
+ar_result applied "$USER" "account re-enabled (usermod -U, chage -E -1)"
 exit 0

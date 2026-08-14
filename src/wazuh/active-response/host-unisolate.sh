@@ -1,35 +1,35 @@
 #!/bin/sh
-# Active response Wazuh : dé-isolation réseau de l'hôte.
-# Supprime la table nftables posée par host-isolate.sh.
+# Wazuh active response: network de-isolation of the host.
+# Removes the nftables table set up by host-isolate.sh.
 
 set -u
 
 NFT="/usr/sbin/nft"
 TABLE="wazuh_isolation"
 LOG_FILE="/var/ossec/logs/active-responses.log"
-# Miroir du marqueur posé par host-isolate.sh. On le retire à la dé-isolation
-# pour que fichier local et table nftables restent cohérents.
+# Mirrors the marker set by host-isolate.sh. Removed on de-isolation so the
+# local file and the nftables table stay consistent.
 MARKER="/var/ossec/isolated"
 SCRIPT_NAME="host-unisolate"
-# Cible du compte rendu : l'hôte lui-même (miroir de win-host-unisolate.ps1).
+# Report target: the host itself (mirrors win-host-unisolate.ps1).
 HOST_NAME=$(hostname 2>/dev/null || echo "unknown")
 
 log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') host-unisolate: $1" >> "$LOG_FILE"
 }
 
-# Compte rendu structuré, lu par le decodeur Wazuh 100930 puis par
-# soc_agent.reconcile. statut : applied | refused | noop | error.
-ar_result() {   # $1 statut  $2 cible  $3 motif
+# Structured report, read by the Wazuh 100930 decoder and then by
+# soc_agent.reconcile. status: applied | refused | noop | error.
+ar_result() {   # $1 status  $2 target  $3 reason
     printf '%s ar-result: script=%s status=%s target="%s" reason="%s"\n' \
         "$(date '+%Y/%m/%d %H:%M:%S')" "$SCRIPT_NAME" "$1" \
         "$(printf '%s' "$2" | tr -d '\r\n"')" \
         "$(printf '%s' "$3" | tr -d '\r\n"')" >> "$LOG_FILE"
 }
 
-lever_marqueur() {
+clear_marker() {
     rm -f "$MARKER"
-    log "Aura-SOC-ISOLATION-STATE=cleared (marqueur $MARKER retiré)"
+    log "Aura-SOC-ISOLATION-STATE=cleared (marker $MARKER removed)"
 }
 
 read -r INPUT_JSON
@@ -38,30 +38,30 @@ COMMAND=$(echo "$INPUT_JSON" | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\(
 case "$COMMAND" in
     add) ;;
     delete)
-        ar_result noop "$HOST_NAME" "commande delete (expiration timeout), aucune action"
+        ar_result noop "$HOST_NAME" "delete command (timeout expiry), no action"
         exit 0
         ;;
     *)
-        log "commande invalide: '$COMMAND'"
-        ar_result error "$HOST_NAME" "commande invalide: $COMMAND"
+        log "invalid command: '$COMMAND'"
+        ar_result error "$HOST_NAME" "invalid command: $COMMAND"
         exit 1
         ;;
 esac
 
 if ! "$NFT" list table inet "$TABLE" >/dev/null 2>&1; then
-    lever_marqueur
-    log "rien à faire (table $TABLE absente)"
-    ar_result noop "$HOST_NAME" "hote non isole (table $TABLE absente)"
+    clear_marker
+    log "nothing to do (table $TABLE absent)"
+    ar_result noop "$HOST_NAME" "host not isolated (table $TABLE absent)"
     exit 0
 fi
 
 if "$NFT" delete table inet "$TABLE"; then
-    lever_marqueur
-    log "hôte dé-isolé (table $TABLE supprimée)"
-    ar_result applied "$HOST_NAME" "de-isole (table $TABLE supprimee)"
+    clear_marker
+    log "host de-isolated (table $TABLE removed)"
+    ar_result applied "$HOST_NAME" "de-isolated (table $TABLE removed)"
     exit 0
 else
-    log "ERREUR: échec suppression table $TABLE"
-    ar_result error "$HOST_NAME" "echec suppression de la table $TABLE"
+    log "ERROR: failed to remove table $TABLE"
+    ar_result error "$HOST_NAME" "failed to remove table $TABLE"
     exit 1
 fi

@@ -1,12 +1,12 @@
 #!/bin/sh
-# Active response Wazuh : retrait d'un blocage posé par firewall-drop.
+# Wazuh active response: removal of a block set by firewall-drop.
 #
-# Le rollback upstream du serveur MCP appelle firewall-drop avec un argument
-# "delete", mais le binaire Wazuh attend la commande "delete" dans le message AR
-# et lit l'IP dans alert.data.srcip — inutilisable via l'API. Ce script fait le
-# retrait explicitement, l'IP étant passée dans extra_args[0].
+# The MCP server's upstream rollback calls firewall-drop with a "delete"
+# argument, but the Wazuh binary expects the "delete" command in the AR
+# message and reads the IP from alert.data.srcip — unusable via the API. This
+# script does the removal explicitly, with the IP passed in extra_args[0].
 #
-# Déployé dans /var/ossec/active-response/bin/ sur les agents Linux.
+# Deployed in /var/ossec/active-response/bin/ on Linux agents.
 
 set -u
 
@@ -21,9 +21,9 @@ log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') firewall-allow: $1" >> "$LOG_FILE"
 }
 
-# Compte rendu structuré, lu par le decodeur Wazuh 100930 puis par
-# soc_agent.reconcile. statut : applied | refused | noop | error.
-ar_result() {   # $1 statut  $2 cible  $3 motif
+# Structured report, read by the Wazuh 100930 decoder and then by
+# soc_agent.reconcile. status: applied | refused | noop | error.
+ar_result() {   # $1 status  $2 target  $3 reason
     printf '%s ar-result: script=%s status=%s target="%s" reason="%s"\n' \
         "$(date '+%Y/%m/%d %H:%M:%S')" "$SCRIPT_NAME" "$1" \
         "$(printf '%s' "$2" | tr -d '\r\n"')" \
@@ -36,30 +36,30 @@ COMMAND=$(echo "$INPUT_JSON" | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\(
 case "$COMMAND" in
     add) ;;
     delete)
-        ar_result noop "" "commande delete (expiration timeout), aucune action"
+        ar_result noop "" "delete command (timeout expiry), no action"
         exit 0
         ;;
     *)
-        log "commande invalide: '$COMMAND'"
-        ar_result error "" "commande invalide: $COMMAND"
+        log "invalid command: '$COMMAND'"
+        ar_result error "" "invalid command: $COMMAND"
         exit 1
         ;;
 esac
 
 IP=$(echo "$INPUT_JSON" | sed -n 's/.*"extra_args"[[:space:]]*:[[:space:]]*\[[[:space:]]*"\([^"]*\)".*/\1/p')
-# Tolère la forme "-srcip <ip>" utilisée par firewall-drop.
+# Tolerates the "-srcip <ip>" form used by firewall-drop.
 IP=$(echo "$IP" | sed 's/^-srcip[[:space:]]*//')
 
 if [ -z "$IP" ]; then
-    log "ERREUR: aucune IP fournie (extra_args vide)"
-    ar_result error "" "aucune IP fournie (extra_args vide)"
+    log "ERROR: no IP provided (empty extra_args)"
+    ar_result error "" "no IP provided (empty extra_args)"
     exit 1
 fi
 
 case "$IP" in
     *[!0-9.:a-fA-F]*)
-        log "ERREUR: IP invalide '$IP'"
-        ar_result error "$IP" "IP invalide"
+        log "ERROR: invalid IP '$IP'"
+        ar_result error "$IP" "invalid IP"
         exit 1
         ;;
 esac
@@ -69,16 +69,17 @@ case "$IP" in
     *)   BIN="$IPT";  FAM="ip"  ;;
 esac
 
-# Repli nftables, symétrique de firewall-drop.sh (hôtes sans shim iptables).
+# nftables fallback, symmetric with firewall-drop.sh (hosts without an
+# iptables shim).
 if [ ! -x "$BIN" ]; then
     if [ ! -x "$NFT" ]; then
-        log "ERREUR: ni $BIN ni $NFT trouvés"
-        ar_result error "$IP" "ni $BIN ni $NFT trouves"
+        log "ERROR: neither $BIN nor $NFT found"
+        ar_result error "$IP" "neither $BIN nor $NFT found"
         exit 1
     fi
     REMOVED=0
-    # Les handles se décalent après chaque suppression : on relit la chaîne à
-    # chaque tour plutôt que de collecter la liste une fois pour toutes.
+    # Handles shift after each removal: we re-read the chain on every
+    # iteration instead of collecting the list once and for all.
     i=0
     while [ $i -lt 20 ]; do
         H=$("$NFT" -a list chain inet "$NFT_TABLE" input 2>/dev/null \
@@ -89,18 +90,18 @@ if [ ! -x "$BIN" ]; then
         i=$((i + 1))
     done
     if [ "$REMOVED" -eq 0 ]; then
-        log "aucune règle nft drop pour '$IP', rien à faire"
-        ar_result noop "$IP" "aucune regle nft drop pour cette IP"
+        log "no nft drop rule for '$IP', nothing to do"
+        ar_result noop "$IP" "no nft drop rule for this IP"
         exit 0
     fi
-    log "IP '$IP' débloquée (nft, $REMOVED règle(s) supprimée(s))"
-    ar_result applied "$IP" "debloquee (nft, $REMOVED regle(s) supprimee(s))"
+    log "IP '$IP' unblocked (nft, $REMOVED rule(s) removed)"
+    ar_result applied "$IP" "unblocked (nft, $REMOVED rule(s) removed)"
     exit 0
 fi
 
 REMOVED=0
-# Une même IP peut avoir été bloquée plusieurs fois : on boucle jusqu'à ce que
-# la règle n'existe plus, avec une borne pour ne pas tourner indéfiniment.
+# The same IP may have been blocked several times: loop until the rule no
+# longer exists, with a bound so it doesn't run forever.
 i=0
 while [ $i -lt 20 ] && "$BIN" -C INPUT -s "$IP" -j DROP >/dev/null 2>&1; do
     "$BIN" -D INPUT -s "$IP" -j DROP >/dev/null 2>&1 || break
@@ -109,11 +110,11 @@ while [ $i -lt 20 ] && "$BIN" -C INPUT -s "$IP" -j DROP >/dev/null 2>&1; do
 done
 
 if [ "$REMOVED" -eq 0 ]; then
-    log "aucune règle DROP pour '$IP', rien à faire"
-    ar_result noop "$IP" "aucune regle iptables DROP pour cette IP"
+    log "no DROP rule for '$IP', nothing to do"
+    ar_result noop "$IP" "no iptables DROP rule for this IP"
     exit 0
 fi
 
-log "IP '$IP' débloquée ($REMOVED règle(s) supprimée(s))"
-ar_result applied "$IP" "debloquee ($REMOVED regle(s) supprimee(s))"
+log "IP '$IP' unblocked ($REMOVED rule(s) removed)"
+ar_result applied "$IP" "unblocked ($REMOVED rule(s) removed)"
 exit 0

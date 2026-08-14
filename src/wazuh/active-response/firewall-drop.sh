@@ -1,15 +1,15 @@
 #!/bin/sh
-# Active response Wazuh : blocage d'une IP hostile.
+# Wazuh active response: block a hostile IP.
 #
-# Remplace le binaire natif `firewall-drop`, qui lit l'IP dans alert.data.srcip
-# et échoue donc sur tout appel piloté (« Cannot read 'srcip' from data ») : le
-# soc-agent et le serveur MCP passent l'IP en extra_args, pas via une alerte.
-# Même défaut, même correctif que disable-account.sh.
+# Replaces the native `firewall-drop` binary, which reads the IP from
+# alert.data.srcip and therefore fails on any driven call ("Cannot read
+# 'srcip' from data"): soc-agent and the MCP server pass the IP via
+# extra_args, not through an alert. Same flaw, same fix as disable-account.sh.
 #
-# Symétrique de firewall-allow.sh, qui retire exactement la règle posée ici
+# Symmetric with firewall-allow.sh, which removes exactly the rule set here
 # (iptables -D INPUT -s <ip> -j DROP).
 #
-# Déployé dans /var/ossec/active-response/bin/ sur les agents Linux.
+# Deployed in /var/ossec/active-response/bin/ on Linux agents.
 
 set -u
 
@@ -18,9 +18,9 @@ SCRIPT_NAME="firewall-drop"
 IPT="/usr/sbin/iptables"
 IPT6="/usr/sbin/ip6tables"
 NFT="/usr/sbin/nft"
-# Table nftables dédiée au blocage d'IP, distincte de `wazuh_isolation`
-# (host-isolate.sh) : une dé-isolation supprime sa table entière, elle ne doit
-# pas emporter les blocages d'IP posés séparément.
+# nftables table dedicated to IP blocking, distinct from `wazuh_isolation`
+# (host-isolate.sh): a de-isolation removes its entire table, and must not
+# take the separately-set IP blocks down with it.
 NFT_TABLE="soc_ai_block"
 OSSEC_CONF="/var/ossec/etc/ossec.conf"
 
@@ -28,9 +28,9 @@ log() {
     echo "$(date '+%Y/%m/%d %H:%M:%S') firewall-drop: $1" >> "$LOG_FILE"
 }
 
-# Compte rendu structuré, lu par le decodeur Wazuh 100930 puis par
-# soc_agent.reconcile. statut : applied | refused | noop | error.
-ar_result() {   # $1 statut  $2 cible  $3 motif
+# Structured report, read by the Wazuh 100930 decoder and then by
+# soc_agent.reconcile. status: applied | refused | noop | error.
+ar_result() {   # $1 status  $2 target  $3 reason
     printf '%s ar-result: script=%s status=%s target="%s" reason="%s"\n' \
         "$(date '+%Y/%m/%d %H:%M:%S')" "$SCRIPT_NAME" "$1" \
         "$(printf '%s' "$2" | tr -d '\r\n"')" \
@@ -42,44 +42,44 @@ COMMAND=$(echo "$INPUT_JSON" | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\(
 
 case "$COMMAND" in
     add) ;;
-    # execd émet "delete" à l'expiration du timeout. On ne lève pas le blocage
-    # tout seul : seul firewall-allow.sh le fait, sur demande explicite.
+    # execd emits "delete" when the timeout expires. We do not lift the block
+    # on our own: only firewall-allow.sh does, on explicit request.
     delete)
-        ar_result noop "" "commande delete (expiration timeout), seul firewall-allow leve le blocage"
+        ar_result noop "" "delete command (timeout expiry), only firewall-allow lifts the block"
         exit 0
         ;;
     *)
-        log "commande invalide: '$COMMAND'"
-        ar_result error "" "commande invalide: $COMMAND"
+        log "invalid command: '$COMMAND'"
+        ar_result error "" "invalid command: $COMMAND"
         exit 1
         ;;
 esac
 
 IP=$(echo "$INPUT_JSON" | sed -n 's/.*"extra_args"[[:space:]]*:[[:space:]]*\[[[:space:]]*"\([^"]*\)".*/\1/p')
-# Tolère la forme "-srcip <ip>" héritée du binaire natif.
+# Tolerates the "-srcip <ip>" form inherited from the native binary.
 IP=$(echo "$IP" | sed 's/^-srcip[[:space:]]*//')
 
 if [ -z "$IP" ]; then
-    log "ERREUR: aucune IP fournie (extra_args vide)"
-    ar_result error "" "aucune IP fournie (extra_args vide)"
+    log "ERROR: no IP provided (empty extra_args)"
+    ar_result error "" "no IP provided (empty extra_args)"
     exit 1
 fi
 
 case "$IP" in
     *[!0-9.:a-fA-F]*)
-        log "ERREUR: IP invalide '$IP'"
-        ar_result error "$IP" "IP invalide"
+        log "ERROR: invalid IP '$IP'"
+        ar_result error "$IP" "invalid IP"
         exit 1
         ;;
 esac
 
-# Garde-fou local, en plus de ceux du soc-agent (actions.appliquer_garde_fous) :
-# l'AR est aussi joignable par l'API Wazuh et le serveur MCP, qui ne passent pas
-# par ce code. Bloquer la loopback ou le manager coupe l'agent de sa supervision
-# — et donc de toute possibilité de débloquer à distance.
+# Local guardrail, in addition to those in soc-agent (actions.apply_guardrails):
+# the AR is also reachable via the Wazuh API and the MCP server, which don't
+# go through this code. Blocking loopback or the manager would cut the agent
+# off from its own supervision — and thus from any way to unblock it remotely.
 case "$IP" in
     127.*|::1|0.0.0.0)
-        log "REFUS: blocage de '$IP' (loopback) refusé"
+        log "REFUSED: blocking '$IP' (loopback) refused"
         ar_result refused "$IP" "loopback"
         exit 1
         ;;
@@ -87,8 +87,8 @@ esac
 
 MANAGER=$(sed -n 's/.*<address>\([^<]*\)<\/address>.*/\1/p' "$OSSEC_CONF" 2>/dev/null | head -1)
 if [ -n "$MANAGER" ] && [ "$IP" = "$MANAGER" ]; then
-    log "REFUS: blocage du manager '$IP' refusé (couperait la supervision)"
-    ar_result refused "$IP" "IP du manager Wazuh"
+    log "REFUSED: blocking the manager '$IP' refused (would cut off supervision)"
+    ar_result refused "$IP" "Wazuh manager IP"
     exit 1
 fi
 
@@ -97,53 +97,53 @@ case "$IP" in
     *)   BIN="$IPT";  FAM="ip"  ;;
 esac
 
-# Repli nftables : les hôtes Debian récents (ex. adguard-home) n'embarquent que
-# `nft`, sans le shim iptables. Sans ce repli, le blocage échouait sur ces
-# agents — et l'échec ne remonte que dans active-responses.log.
+# nftables fallback: recent Debian hosts (e.g. adguard-home) only ship `nft`,
+# without the iptables shim. Without this fallback, blocking failed silently
+# on these agents — and the failure only shows up in active-responses.log.
 if [ ! -x "$BIN" ]; then
     if [ ! -x "$NFT" ]; then
-        log "ERREUR: ni $BIN ni $NFT trouvés"
-        ar_result error "$IP" "ni $BIN ni $NFT trouves"
+        log "ERROR: neither $BIN nor $NFT found"
+        ar_result error "$IP" "neither $BIN nor $NFT found"
         exit 1
     fi
     "$NFT" list table inet "$NFT_TABLE" >/dev/null 2>&1 \
         || "$NFT" add table inet "$NFT_TABLE" 2>/dev/null
-    # priority -10 : avant le filtre habituel (priority 0), pour que le DROP
-    # prime sur un ACCEPT posé par le pare-feu de l'hôte.
+    # priority -10: ahead of the usual filter (priority 0), so the DROP takes
+    # precedence over an ACCEPT set by the host's own firewall.
     "$NFT" add chain inet "$NFT_TABLE" input \
         '{ type filter hook input priority -10 ; policy accept ; }' 2>/dev/null
 
     if "$NFT" list chain inet "$NFT_TABLE" input 2>/dev/null \
             | grep -q "$FAM saddr $IP drop"; then
-        log "IP '$IP' déjà bloquée (nft), rien à faire"
-        ar_result noop "$IP" "deja bloquee (regle nft presente)"
+        log "IP '$IP' already blocked (nft), nothing to do"
+        ar_result noop "$IP" "already blocked (nft rule present)"
         exit 0
     fi
     if ! "$NFT" add rule inet "$NFT_TABLE" input "$FAM" saddr "$IP" drop 2>/dev/null; then
-        log "ERREUR: échec de l'ajout de la règle nft drop pour '$IP'"
-        ar_result error "$IP" "echec ajout regle nft drop"
+        log "ERROR: failed to add the nft drop rule for '$IP'"
+        ar_result error "$IP" "failed to add nft drop rule"
         exit 1
     fi
-    log "IP '$IP' bloquée (nft inet $NFT_TABLE input drop)"
-    ar_result applied "$IP" "bloquee (nft inet $NFT_TABLE input drop)"
+    log "IP '$IP' blocked (nft inet $NFT_TABLE input drop)"
+    ar_result applied "$IP" "blocked (nft inet $NFT_TABLE input drop)"
     exit 0
 fi
 
-# Idempotent : une IP déjà bloquée ne reçoit pas une seconde règle. Sinon un
-# incident qui retire plusieurs fois la même IP empile les règles, et
-# firewall-allow.sh doit boucler pour toutes les retirer.
+# Idempotent: an already-blocked IP does not get a second rule. Otherwise an
+# incident that removes the same IP several times would stack rules, and
+# firewall-allow.sh would have to loop to remove them all.
 if "$BIN" -C INPUT -s "$IP" -j DROP >/dev/null 2>&1; then
-    log "IP '$IP' déjà bloquée, rien à faire"
-    ar_result noop "$IP" "deja bloquee (regle iptables presente)"
+    log "IP '$IP' already blocked, nothing to do"
+    ar_result noop "$IP" "already blocked (iptables rule present)"
     exit 0
 fi
 
 if ! "$BIN" -I INPUT -s "$IP" -j DROP >/dev/null 2>&1; then
-    log "ERREUR: échec de l'ajout de la règle DROP pour '$IP'"
-    ar_result error "$IP" "echec ajout regle INPUT DROP"
+    log "ERROR: failed to add the DROP rule for '$IP'"
+    ar_result error "$IP" "failed to add INPUT DROP rule"
     exit 1
 fi
 
-log "IP '$IP' bloquée (INPUT DROP)"
-ar_result applied "$IP" "bloquee (INPUT DROP)"
+log "IP '$IP' blocked (INPUT DROP)"
+ar_result applied "$IP" "blocked (INPUT DROP)"
 exit 0
