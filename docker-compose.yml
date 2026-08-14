@@ -19,7 +19,7 @@ x-soc-agent: &soc-agent
   env_file: .env
   network_mode: host
   restart: unless-stopped
-  # Onze conteneurs partagent cette ancre, donc onze plafonds. Le plus gourmand
+  # Douze conteneurs partagent cette ancre, donc douze plafonds. Le plus gourmand
   # observé en fonctionnement est soc-agent-cycle, ~350 Mo (ingest + UEBA +
   # corrélation sur ~20 000 alertes par passe) ; 1 Go laisse la marge d'un
   # rattrapage après arrêt prolongé, où une seule passe traite tout l'arriéré.
@@ -437,6 +437,34 @@ services:
     volumes:
       - wazuh_queue:/wazuh-queue
     command: sh -c "while true; do python -m soc_agent.retention; sleep 86400; done"
+
+  # Archivage à froid vers S3 : la copie qui survit à la purge des 90 jours
+  # (cf. archive.py, docs/ARCHIVAGE.md).
+  #
+  # Un objet par (index set × mois), NDJSON compressé puis CHIFFRÉ côté client.
+  # La prod ne détient que la clé publique age : qui prend root sur cet hôte
+  # peut écrire de nouvelles archives, il ne peut pas relire les mois passés.
+  #
+  # Cadence QUOTIDIENNE pour un effet mensuel, et ce n'est pas un gaspillage :
+  #  - un mois ne devient archivable qu'une fois clos + ARCHIVE_DELAI_JOURS, donc
+  #    la plupart des passages n'ont rien à archiver et se terminent en quelques
+  #    secondes ;
+  #  - un passage qui échoue (S3 injoignable, clé révoquée) est retenté le
+  #    lendemain, pas le mois suivant — la fenêtre avant que la purge ISM
+  #    n'emporte la donnée est de 90 jours, la gaspiller en attendant serait
+  #    absurde ;
+  #  - le drill de restauration profite de chaque passage pour relire quelques
+  #    archives anciennes. C'est le seul moment où l'on apprend qu'une copie
+  #    d'il y a huit mois ne tient plus.
+  #
+  # Aucun volume : ce service ne touche ni les règles, ni la queue du manager.
+  # Il lit l'indexer, écrit dans S3 et tient son repère en Postgres. Son seul
+  # besoin local est du temporaire (ARCHIVE_TMP_DIR), où il n'écrit QUE du
+  # chiffré — le clair ne traverse que des tubes.
+  soc-agent-archive:
+    <<: *soc-agent
+    container_name: soc-agent-archive
+    command: sh -c "while true; do python -m soc_agent.archive; sleep 86400; done"
 
   # Serveur MCP AURA : un seul endpoint pour piloter le SOC depuis un client IA
   # (Claude Code, Claude Desktop, tout client MCP). Voir docs/MCP.md.

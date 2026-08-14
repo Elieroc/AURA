@@ -2,3 +2,6 @@ psycopg[binary]==3.3.4
 requests==2.32.5
 PyYAML==6.0.2
 dfir-iris-client>=2.0.4
+# Client S3 de l'archivage à froid (soc_agent.archive). Utilisé contre
+# l'endpoint S3-compatible de Backblaze B2, pas contre AWS.
+boto3==1.43.71

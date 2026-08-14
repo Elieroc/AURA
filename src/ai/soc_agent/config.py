@@ -1234,6 +1234,192 @@ WAZUH_QUEUE_DIR = os.environ.get("WAZUH_QUEUE_DIR", "/wazuh-queue")
 RETENTION_ISM_ENABLED = os.environ.get(
     "RETENTION_ISM_ENABLED", "true").lower() == "true"
 
+# --- Archivage à froid vers S3 (cf. archive.py, docs/ARCHIVAGE.md) -----------
+#
+# La rétention ci-dessus SUPPRIME à 90 jours. Un SOC doit pouvoir répondre plus
+# tard que ça : réquisition, audit, intrusion découverte six mois après son
+# début. L'archivage est la copie qui survit à la purge — pas une sauvegarde de
+# l'indexer, une copie AUTONOME, lisible sans lui.
+#
+# Trois principes portés par ces réglages, chacun contre une façon de perdre les
+# données :
+#
+#  - un objet par (index set × mois), en NDJSON compressé. Pas de snapshot
+#    OpenSearch : un snapshot ne se relit qu'avec un cluster de version
+#    compatible, et son arborescence est opaque. Une archive doit valoir seule.
+#  - chiffrement CÔTÉ CLIENT avant l'upload. La prod ne détient que la clé
+#    PUBLIQUE : qui prend root sur cet hôte peut écrire de nouvelles archives,
+#    il ne peut pas relire les douze mois précédents.
+#  - rien n'est déclaré archivé sans que l'objet ait été relu côté S3. Le repère
+#    vit en Postgres, jamais dans le système distant — même leçon que les pièces
+#    Evidence d'IRIS, qui se reposaient en boucle parce que la liste des « déjà
+#    posées » était demandée à IRIS et retombait à vide sur échec.
+ARCHIVAGE_ENABLED = os.environ.get("ARCHIVAGE_ENABLED", "false").lower() == "true"
+
+
+def _archive_requis(nom: str) -> str:
+    """Requis SEULEMENT si l'archivage est actif.
+
+    `config` est importé par les onze conteneurs du pipeline : un `_requis`
+    inconditionnel les empêcherait tous de démarrer pour une fonctionnalité que
+    personne n'a activée. Une fois ARCHIVAGE_ENABLED=true, en revanche, un
+    identifiant manquant DOIT arrêter le démarrage — un archivage qui échoue en
+    silence est pire que pas d'archivage : il fait croire que la copie existe.
+    """
+    return _requis(nom) if ARCHIVAGE_ENABLED else os.environ.get(nom, "")
+
+
+# Version du FORMAT d'archive, portée par le préfixe des clés S3. Le jour où le
+# codec, la projection ou la structure du manifeste changent, `v2/` cohabite
+# avec `v1/` sans ambiguïté et un outil de lecture sait à quoi il a affaire sans
+# le deviner. Ne pas l'incrémenter pour un changement de réglage.
+ARCHIVE_FORMAT_VERSION = os.environ.get("ARCHIVE_FORMAT_VERSION", "v1")
+
+# Endpoint S3 de Backblaze B2. La région fait partie du nom d'hôte ; prendre une
+# région UE (eu-central-003, Amsterdam) évite un transfert hors UE à documenter.
+# Ça ne met PAS la donnée hors de portée du CLOUD Act — Backblaze est une
+# société américaine — c'est le chiffrement client qui s'en charge.
+ARCHIVE_S3_ENDPOINT = os.environ.get(
+    "ARCHIVE_S3_ENDPOINT", "https://s3.eu-central-003.backblazeb2.com")
+ARCHIVE_S3_REGION = os.environ.get("ARCHIVE_S3_REGION", "eu-central-003")
+ARCHIVE_S3_BUCKET = _archive_requis("ARCHIVE_S3_BUCKET")
+ARCHIVE_S3_KEY_ID = _archive_requis("ARCHIVE_S3_KEY_ID")
+ARCHIVE_S3_APP_KEY = _archive_requis("ARCHIVE_S3_APP_KEY")
+
+# Préfixe racine facultatif, si le bucket est partagé avec autre chose. Vide par
+# défaut : un bucket DÉDIÉ à l'archivage est le bon réglage, il permet de scoper
+# la clé applicative à ce seul bucket.
+ARCHIVE_S3_PREFIX = os.environ.get("ARCHIVE_S3_PREFIX", "").strip("/")
+
+# Destinataires `age` (X25519), séparés par des virgules. La clé PRIVÉE ne doit
+# PAS être sur cet hôte.
+#
+# En mettre DEUX est la seule protection contre la perte : personne ne récupère
+# une archive age dont la clé est perdue, ni Backblaze ni nous. Deuxième
+# destinataire = clé de secours, hors ligne, en coffre.
+ARCHIVE_AGE_RECIPIENTS = [
+    r.strip() for r in os.environ.get("ARCHIVE_AGE_RECIPIENTS", "").split(",")
+    if r.strip()]
+
+if ARCHIVAGE_ENABLED:
+    if not ARCHIVE_AGE_RECIPIENTS:
+        sys.exit("ARCHIVE_AGE_RECIPIENTS est vide alors que ARCHIVAGE_ENABLED=true : "
+                 "refus d'archiver en clair. Générer une paire avec "
+                 "`age-keygen -o cle-archive.txt` et publier la ligne "
+                 "« public key: age1... » ici (cf. docs/ARCHIVAGE.md).")
+    # Un destinataire mal recopié rend illisibles tous les mois écrits d'ici à
+    # ce que quelqu'un s'en aperçoive. `age` refuserait de lui-même, mais à
+    # 2 h du matin dans un conteneur : autant échouer au démarrage.
+    mauvais = [r for r in ARCHIVE_AGE_RECIPIENTS
+               if not (r.startswith("age1") and len(r) >= 58)]
+    if mauvais:
+        sys.exit(f"ARCHIVE_AGE_RECIPIENTS : destinataire(s) invalide(s) {mauvais}. "
+                 "Attendu une clé publique age (« age1… », 62 caractères), pas "
+                 "un chemin de fichier ni une clé privée.")
+    if len(ARCHIVE_AGE_RECIPIENTS) == 1:
+        print("AVERTISSEMENT archivage : un seul destinataire age. Perdre cette "
+              "clé privée rend DÉFINITIVEMENT illisibles toutes les archives. "
+              "Ajouter une clé de secours hors ligne.", file=sys.stderr)
+
+# Identité age (clé PRIVÉE) pour le drill COMPLET, qui déchiffre et recompte les
+# documents. Vide par défaut, et c'est le bon réglage : la poser ici remet sur
+# la machine de prod la clé qui déverrouille douze mois d'archives, et annule
+# l'essentiel du bénéfice du chiffrement asymétrique. À n'utiliser que pour un
+# `--drill-complet` lancé à la main, avec un montage temporaire.
+ARCHIVE_AGE_IDENTITE = os.environ.get("ARCHIVE_AGE_IDENTITE", "") or None
+
+# Object Lock (WORM). C'est ce qui distingue un archivage d'une sauvegarde :
+# permet d'affirmer devant un auditeur que l'objet n'a pas pu être modifié.
+#
+# Ne s'active QUE sur un bucket créé avec Object Lock — la propriété ne se
+# rétro-applique pas à un bucket existant. En mode COMPLIANCE, plus AUCUNE
+# suppression n'est possible avant l'échéance, y compris par le propriétaire du
+# compte et y compris en cas d'erreur : la facture des douze mois est due.
+# D'où false par défaut, à basculer en connaissance de cause.
+ARCHIVE_OBJECT_LOCK = os.environ.get(
+    "ARCHIVE_OBJECT_LOCK", "false").lower() == "true"
+ARCHIVE_OBJECT_LOCK_MODE = os.environ.get(
+    "ARCHIVE_OBJECT_LOCK_MODE", "COMPLIANCE").upper()
+ARCHIVE_OBJECT_LOCK_JOURS = int(
+    os.environ.get("ARCHIVE_OBJECT_LOCK_JOURS", "365"))
+
+if ARCHIVAGE_ENABLED and ARCHIVE_OBJECT_LOCK_MODE not in ("COMPLIANCE", "GOVERNANCE"):
+    sys.exit("ARCHIVE_OBJECT_LOCK_MODE doit valoir COMPLIANCE ou GOVERNANCE, "
+             f"pas « {ARCHIVE_OBJECT_LOCK_MODE} ».")
+
+# Motifs d'index candidats. `wazuh-*` DÉLIBÉRÉMENT large : le piège maison est
+# la liste à tenir à jour qu'on oublie (trois fois pour INDEXER_ALERT_INDICES,
+# cf. docs/ROUTAGE.md). Un index set créé demain par routage.py doit être
+# archivé sans qu'on y pense.
+#
+# Ce qui borne réellement, c'est la forme du nom : seuls les index DATÉS AU JOUR
+# (`-AAAA.MM.JJ`) sont archivés. En sont donc exclus par construction, sans
+# aucune liste : `wazuh-voc-vulns` (index d'état non daté, il porte le MTTR),
+# `wazuh-monitoring-*` et `wazuh-statistics-*` (datés à la semaine, télémétrie
+# interne de Wazuh). Le mois se lit dans le NOM de l'index, jamais dans un
+# `@timestamp` : pas de fuseau horaire dans l'équation.
+ARCHIVE_INDEX_MOTIFS = os.environ.get("ARCHIVE_INDEX_MOTIFS", "wazuh-*")
+
+# Exclusions supplémentaires, en motifs glob sur le nom d'index complet.
+ARCHIVE_INDEX_EXCLUS = [
+    m.strip() for m in os.environ.get("ARCHIVE_INDEX_EXCLUS", "").split(",")
+    if m.strip()]
+
+# Champs retirés de `_source` avant écriture (motifs OpenSearch, `a.b.*`
+# accepté). VIDE par défaut, et c'est un choix : une archive amputée ne se
+# répare pas, et l'économie porterait sur quelques gigaoctets par an — l'ordre
+# de grandeur du prix d'un café. À ne remplir que si la volumétrie devient un
+# vrai problème, et à documenter dans le manifeste (ce que fait `champs_exclus`).
+ARCHIVE_CHAMPS_EXCLUS = [
+    c.strip() for c in os.environ.get("ARCHIVE_CHAMPS_EXCLUS", "").split(",")
+    if c.strip()]
+
+# Niveau zstd. 19 est le meilleur compromis sur du JSON d'alerte (~20-30x) ;
+# au-delà (`--ultra`) le gain est marginal et la mémoire explose.
+ARCHIVE_ZSTD_NIVEAU = int(os.environ.get("ARCHIVE_ZSTD_NIVEAU", "19"))
+
+# Délai de grâce après la fin du mois avant de l'archiver. Ce n'est pas de la
+# prudence décorative : le rattrapage des alertes indexées en retard
+# (cf. INGEST_RATTRAPAGE_*) et un index créé à cheval sur minuit peuvent encore
+# écrire dans le mois écoulé. Archiver trop tôt fige une copie incomplète.
+ARCHIVE_DELAI_JOURS = int(os.environ.get("ARCHIVE_DELAI_JOURS", "2"))
+
+# Rétention des archives, en mois. Sert de référence au manifeste et à la
+# vérification d'écart : la suppression elle-même appartient à la RÈGLE DE CYCLE
+# DE VIE du bucket, pas à ce code. Un cron qui meurt ne doit pas faire grossir
+# la facture indéfiniment, et le code n'a pas le droit de supprimer (la clé
+# applicative de prod ne porte pas `deleteFiles`).
+ARCHIVE_RETENTION_MOIS = int(os.environ.get("ARCHIVE_RETENTION_MOIS", "12"))
+
+# Marge de sécurité entre archivage et purge ISM, en jours. Un index qui entre
+# dans cette marge sans archive confirmée est RETIRÉ de la politique ISM par
+# `retention.py` : il cesse d'être candidat à la suppression jusqu'à ce que sa
+# copie existe. C'est le seul mécanisme qui empêche pour de vrai la perte —
+# suspendre la pose de la politique ne suffirait pas, elle est déjà attachée aux
+# index et continuerait de les supprimer.
+ARCHIVE_MARGE_JOURS = int(os.environ.get("ARCHIVE_MARGE_JOURS", "7"))
+
+# Taille de page de l'export (PIT + search_after). 5 000 documents d'alerte
+# Wazuh pèsent ~15 Mo en JSON : monter beaucoup plus fait grossir la réponse de
+# l'indexer sans accélérer l'export.
+ARCHIVE_TAILLE_LOT = int(os.environ.get("ARCHIVE_TAILLE_LOT", "5000"))
+
+# Drill de restauration. À chaque passage, les N archives vérifiées le moins
+# récemment sont retéléchargées et leur SHA-256 recalculé. Une archive non
+# testée est une croyance, pas une copie.
+#
+# Ce drill automatique prouve l'INTÉGRITÉ, pas la lisibilité : sans la clé
+# privée (qui n'a rien à faire ici) il ne peut pas déchiffrer. Le drill complet
+# est un geste humain — cf. `--drill-complet` et docs/ARCHIVAGE.md.
+ARCHIVE_DRILL_LOT = int(os.environ.get("ARCHIVE_DRILL_LOT", "3"))
+ARCHIVE_DRILL_JOURS = int(os.environ.get("ARCHIVE_DRILL_JOURS", "90"))
+
+# Répertoire de travail. L'archive y est écrite DÉJÀ CHIFFRÉE — le clair ne
+# touche jamais le disque, il ne traverse que des tubes. Prévoir de la place :
+# le module refuse de démarrer un export s'il n'a pas de quoi l'écrire, parce
+# qu'un disque plein arrête tout le SOC (cf. docs/RETENTION.md).
+ARCHIVE_TMP_DIR = os.environ.get("ARCHIVE_TMP_DIR", "/tmp")
+
 # --- Garde-fou disque (cf. watchdog.py) -------------------------------------
 #
 # Six gigaoctets par jour partaient sans que rien ne le dise. Un SOC qui ne

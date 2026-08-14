@@ -71,6 +71,7 @@ docker compose up -d
 | [`docs/REMEDIATION.md`](docs/REMEDIATION.md) | remédiation autonome de bout en bout + catalogue de toutes les active responses |
 | [`docs/MCP.md`](docs/MCP.md) | serveur MCP : administrer AURA depuis n'importe quel client IA (relaie Wazuh et IRIS) |
 | [`docs/RETENTION.md`](docs/RETENTION.md) | rétention et ménage : ce qui vieillit, ce qui est purgé, et les trois boucles d'écriture qui avaient rempli le disque |
+| [`docs/ARCHIVAGE.md`](docs/ARCHIVAGE.md) | archivage à froid vers S3 (Backblaze B2) : la copie chiffrée qui survit à la purge des 90 jours, et le garde-fou qui suspend la suppression tant qu'elle n'existe pas |
 
 ## Security principles
 

@@ -181,9 +181,33 @@ CAPTEUR_DISQUE = "disque"
 # automatique.
 PREFIXES_ROUTAGE = ("routage:", "source-muette:")
 
+# Pseudo-capteurs posés par `archive.py`. Une archive manquante est une perte de
+# visibilité FUTURE : la donnée est là aujourd'hui, elle ne sera plus là quand on
+# la cherchera. Même table d'état, même canal, même clôture automatique — et
+# comme le disque et le routage, ça se mesure contre l'HORLOGE et non contre
+# l'horizon d'ingestion.
+PREFIXE_ARCHIVAGE = "archivage:"
+
 
 def _est_routage(capteur: str) -> bool:
     return capteur.startswith(PREFIXES_ROUTAGE)
+
+
+def _est_archivage(capteur: str) -> bool:
+    return capteur.startswith(PREFIXE_ARCHIVAGE)
+
+
+def _hors_pipeline(capteur: str) -> bool:
+    """Ce capteur se mesure-t-il contre l'horloge plutôt que contre l'horizon
+    d'ingestion ?
+
+    Trois familles ne se déduisent pas des alertes ingérées : le disque, le
+    routage (mesuré sur l'indexer) et l'archivage (mesuré sur S3 et en base).
+    Les rapporter à un horizon en retard donnait des durées fausses, voire
+    négatives (« saturé pendant -2 min ») dans les alertes de rétablissement.
+    """
+    return (capteur == CAPTEUR_DISQUE or _est_routage(capteur)
+            or _est_archivage(capteur))
 
 # L'hôte du SOC n'est pas un agent surveillé comme un autre : c'est le manager
 # lui-même. Son id d'agent Wazuh est 000 par construction.
@@ -468,6 +492,7 @@ def _ouvrir_alerte(m: dict, minutes: int) -> int | None:
     nom_agent = m["agent_name"] or m["agent_id"]
     disque = m["capteur"] == CAPTEUR_DISQUE
     famille = ("disque-sature" if disque
+               else "archivage" if _est_archivage(m["capteur"])
                else "routage" if m.get("note") else "capteur-muet")
     tags = ["aura", famille, m["capteur"]]
     if m["agent_name"]:
@@ -537,6 +562,21 @@ def _fermer_alerte(alert_id: int, p: dict, minutes: int) -> None:
             "Vérifier que la résolution vient bien d'une correction du routage "
             "et non de la disparition de la source : une source qui se tait "
             "referme cette alerte sans que rien n'ait été réparé.",
+        ]
+    elif _est_archivage(p["capteur"]):
+        entete = [
+            "ARCHIVAGE RÉTABLI",
+            "",
+            f"L'anomalie d'archivage {p['capteur']} n'est plus constatée.",
+            "",
+            f"  Anomalie détectée le : {p['detectee_a']:%Y-%m-%d %H:%M} UTC",
+            f"  Durée                : {_duree(minutes)}",
+            "",
+            "Attention au sens de cette clôture selon l'anomalie : un péril de "
+            "purge se referme parce que la copie EXISTE désormais, mais un trou "
+            "de couverture se referme aussi si les mois qui l'encadraient ont "
+            "quitté la fenêtre de rétention des archives. Dans le second cas "
+            "rien n'a été réparé — la donnée manquante manque toujours.",
         ]
     elif p["capteur"] == CAPTEUR_DISQUE:
         entete = [
@@ -675,6 +715,31 @@ def _routage() -> list[dict]:
     return rapport.get("anomalies") or []
 
 
+def _archivage(conn) -> list[dict]:
+    """État de l'archivage à froid, rendu au format des capteurs muets.
+
+    LECTURE SEULE, contrairement à `_routage()` : l'archivage lui-même est fait
+    par `soc-agent-archive`, à sa cadence. Un export de plusieurs centaines de
+    mégaoctets n'a rien à faire dans un passage de watchdog qui tourne toutes les
+    deux minutes.
+
+    Ce qui remonte ici, c'est ce qu'un archivage « qui tourne » ne dit pas de
+    lui-même : de la donnée qui va être purgée sans copie, un mois manquant au
+    milieu d'une série, une archive qui ne se relit plus.
+    """
+    if not config.ARCHIVAGE_ENABLED:
+        return []
+    try:
+        from . import archive
+        return archive.anomalies(conn)
+    except Exception as e:                                        # noqa: BLE001
+        # Best-effort, comme le routage : un S3 injoignable ou une table absente
+        # ne doit pas emporter la surveillance des capteurs, qui est le cœur du
+        # watchdog.
+        log.warning("état de l'archivage illisible : %s", e)
+        return []
+
+
 def surveiller() -> dict:
     """Un passage complet : détecter, ouvrir, fermer. Renvoie le compte rendu.
 
@@ -698,13 +763,18 @@ def surveiller() -> dict:
             # ingérées, et une ingestion à l'arrêt est précisément ce que
             # produit un disque plein. S'en taire ici, c'est se taire au seul
             # moment qui compte.
-            muets = disque_sature()
+            # L'archivage est surveillé pour la même raison que le disque : son
+            # état ne se déduit pas des alertes ingérées, et une purge ISM
+            # continue de tourner pendant que l'ingestion est à l'arrêt. Se
+            # taire ici, c'est laisser partir de la donnée sans copie.
+            muets = disque_sature() + _archivage(conn)
             ingest_ok = False
         else:
             ingest_ok = True
             # Le disque du SOC entre dans la même liste que les capteurs muets :
             # même état, même canal, même clôture automatique (cf. disque_sature).
-            muets = capteurs_muets(conn) + disque_sature() + _routage()
+            muets = (capteurs_muets(conn) + disque_sature() + _routage()
+                     + _archivage(conn))
         vus = {(m["agent_id"], m["capteur"]) for m in muets}
         # OS connu de la CMDB, pour typer l'asset IRIS. Une seule requête, et
         # son absence n'empêche rien : `_type_asset` a un défaut.
@@ -715,6 +785,8 @@ def surveiller() -> dict:
             minutes = _minutes(m["dernier"], m["horizon"])
             if _est_routage(m["capteur"]):
                 log.warning("ANOMALIE DE ROUTAGE : %s", m["titre"])
+            elif _est_archivage(m["capteur"]):
+                log.error("ARCHIVAGE : %s", m["titre"])
             elif m["capteur"] == CAPTEUR_DISQUE:
                 log.error(
                     "DISQUE SATURÉ : %s à %d%% sur %s (%.1f Go libres, seuil "
@@ -774,14 +846,10 @@ def surveiller() -> dict:
             # l'absence d'un capteur de `vus` ne prouve RIEN. Le refermer ici
             # annoncerait un rétablissement qu'on n'a pas constaté. Seul le
             # disque, mesuré hors pipeline, peut se refermer dans cet état.
-            if not ingest_ok and p["capteur"] != CAPTEUR_DISQUE:
+            if not ingest_ok and not (p["capteur"] == CAPTEUR_DISQUE
+                                      or _est_archivage(p["capteur"])):
                 continue
-            # Les anomalies de routage se mesurent sur l'indexer, pas sur la
-            # base d'alertes : leur durée se compte contre l'horloge, comme le
-            # disque. Les rapporter à l'horizon d'ingestion donnerait des durées
-            # fausses, voire négatives.
-            hors_horizon = (p["capteur"] == CAPTEUR_DISQUE
-                            or _est_routage(p["capteur"]))
+            hors_horizon = _hors_pipeline(p["capteur"])
             # Le disque se mesure contre l'HORLOGE, pas contre l'horizon
             # d'ingestion : il ne se déduit pas des alertes ingérées. Mesurer sa
             # saturation contre un horizon en retard donnait une durée négative
@@ -818,6 +886,9 @@ def surveiller() -> dict:
             conn.commit()
             if _est_routage(p["capteur"]):
                 log.info("ROUTAGE RÉTABLI : %s (anomalie ouverte pendant %s)",
+                         p["capteur"], _duree(minutes))
+            elif _est_archivage(p["capteur"]):
+                log.info("ARCHIVAGE RÉTABLI : %s (anomalie ouverte pendant %s)",
                          p["capteur"], _duree(minutes))
             elif p["capteur"] == CAPTEUR_DISQUE:
                 log.info("DISQUE REVENU SOUS LE SEUIL : %s sur %s (saturé "

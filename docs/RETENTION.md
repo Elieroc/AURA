@@ -91,6 +91,24 @@ qui matche une règle de niveau ≥ 3 existe. Un événement non couvert par une
 règle est perdu à la seconde — pas de replay, pas de hunting rétroactif. C'est
 un choix de volumétrie assumé, pas un oubli.
 
+### Ce qui survit à la purge — l'archivage
+
+Supprimer à 90 jours est la bonne décision pour le disque et une mauvaise pour
+tout le reste : une réquisition arrive six mois après les faits, une intrusion se
+découvre en mars et a commencé en octobre. L'archivage à froid
+([ARCHIVAGE.md](ARCHIVAGE.md), **désactivé par défaut**) produit la copie qui
+survit : un objet chiffré par (index set × mois) dans S3, gardé douze mois.
+
+Le point d'articulation avec ce module : un index qui entre dans les 7 jours
+précédant sa suppression **sans archive confirmée** est *détaché* de la politique
+ISM (`_ism/remove`). Se contenter de ne pas reposer la politique ne protégerait
+rien — elle est déjà attachée aux index existants et les supprimerait à l'heure.
+Et ce détachement se fait **après** `appliquer_ism()`, jamais avant : le
+rattachement se fait par motif, il défairait la protection dans la seconde.
+
+Conséquence assumée : tant que l'archivage est en panne, le disque grossit. Perdre
+de la donnée est pire, et le garde-fou disque ouvrira son alerte de son côté.
+
 ## Ce qui n'est PAS automatisé, et pourquoi
 
 - **MISP.** Sa base pèse ~15 Go, mais c'est de la donnée CTI légitime : 21 M

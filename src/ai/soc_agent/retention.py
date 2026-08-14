@@ -295,6 +295,35 @@ def tourner(dry_run: bool = False) -> dict:
         except Exception as e:  # noqa: BLE001 — l'indexer ne bloque pas le reste
             log.warning("politique ISM non appliquée : %s", e)
             bilan["ism"] = f"échec : {e}"
+
+    # Garde-fou d'archivage, APRÈS la pose de la politique et jamais avant.
+    #
+    # `appliquer_ism()` rattache les index par MOTIF (`_ism/add`) : protéger
+    # d'abord puis appliquer défferait la protection dans la seconde. C'est
+    # exactement la classe de bug qui a déjà coûté cher ici — un ordre
+    # d'opérations qui annule silencieusement l'opération précédente.
+    #
+    # Et il faut bien DÉTACHER : se contenter de ne pas reposer la politique ne
+    # protégerait rien, elle est déjà attachée aux index existants et les
+    # supprimerait à l'heure prévue.
+    if config.ARCHIVAGE_ENABLED and not dry_run:
+        try:
+            from . import archive
+            with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
+                peril = archive.indices_en_peril(conn)
+            bilan["archivage_peril"] = [i["index"] for i in peril]
+            if peril:
+                bilan["archivage_proteges"] = archive.proteger(
+                    [i["index"] for i in peril])
+        except Exception as e:  # noqa: BLE001
+            # Le pire cas : on n'a pas su vérifier la couverture d'archivage ET
+            # la politique de suppression vient d'être (ré)appliquée. Le dire
+            # fort, c'est tout ce qu'on peut faire ici — le watchdog reprendra
+            # le constat et ouvrira l'alerte IRIS.
+            log.error("COUVERTURE D'ARCHIVAGE NON VÉRIFIÉE (%s) : la politique "
+                      "de suppression est active et rien ne garantit qu'une "
+                      "copie existe.", e)
+            bilan["archivage_peril"] = f"indéterminé : {e}"
     return bilan
 
 

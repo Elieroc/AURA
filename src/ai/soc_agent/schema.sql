@@ -777,3 +777,65 @@ CREATE TABLE IF NOT EXISTS routage_sources (
 CREATE INDEX IF NOT EXISTS routage_sources_statut ON routage_sources (statut);
 CREATE INDEX IF NOT EXISTS routage_sources_appliquees
     ON routage_sources (appliquee_a DESC) WHERE appliquee_a IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- Archivage à froid vers S3 (archive.py)
+-- ---------------------------------------------------------------------------
+--
+-- Le repère de « ce qui est archivé » vit ICI, jamais dans le système distant.
+-- C'est la leçon des pièces Evidence d'IRIS : `iris._evidences` demandait à
+-- IRIS la liste des pièces déjà posées ; passé quelques milliers l'appel
+-- échouait, l'échec était avalé, la liste retombait à vide et tout était
+-- reposté — 8,3 Go et jusqu'à 54 copies du même fichier. Un S3 qui ne répond
+-- pas doit produire un ÉCHEC VISIBLE, jamais un « rien n'est archivé » qui
+-- relance douze mois d'upload.
+--
+-- Une ligne n'est écrite qu'APRÈS relecture de l'objet côté S3 (HEAD, taille
+-- comparée). Si le processus meurt entre l'upload et l'INSERT, la clé est
+-- déterministe : le passage suivant retrouve l'objet orphelin, lit son
+-- manifeste, compare le nombre de documents au décompte vivant et ADOPTE la
+-- ligne au lieu de re-téléverser (cf. archive._adopter).
+CREATE TABLE IF NOT EXISTS archives_s3 (
+    id             bigserial PRIMARY KEY,
+    -- Version du FORMAT (préfixe des clés). Fait partie de la contrainte
+    -- d'unicité : passer en v2 doit permettre de réarchiver un mois déjà
+    -- couvert en v1 sans supprimer l'ancienne ligne ni l'ancien objet.
+    format_version text NOT NULL,
+    -- Préfixe d'index SANS la date : 'wazuh-firewall', 'wazuh-alerts-4.x'.
+    index_base     text NOT NULL,
+    periode        text NOT NULL,               -- 'AAAA-MM'
+    cle            text NOT NULL,               -- clé S3 de l'objet chiffré
+    cle_manifeste  text NOT NULL,
+    -- Index datés réellement lus. Gardés parce qu'ils ne seront plus là : une
+    -- fois la purge ISM passée, c'est la seule trace de ce que l'archive couvre.
+    indices        text[] NOT NULL DEFAULT '{}',
+    documents      bigint NOT NULL DEFAULT 0,
+    octets_clair   bigint NOT NULL DEFAULT 0,
+    octets_objet   bigint NOT NULL DEFAULT 0,
+    -- SHA-256 du NDJSON en clair : ce qui permet, dans deux ans, de prouver que
+    -- ce qu'on déchiffre est bien ce qui a été archivé. Sans lui on a une
+    -- sauvegarde, pas une preuve.
+    sha256_clair   text NOT NULL,
+    -- SHA-256 de l'objet tel qu'il est stocké. Seul vérifiable sans la clé
+    -- privée, donc seul utilisable par le drill automatique.
+    sha256_chiffre text NOT NULL,
+    -- Chaîne de traitement exacte et destinataires age, pour qu'un humain sache
+    -- comment relire sans lire le code de cette version.
+    chaine         text NOT NULL DEFAULT '',
+    destinataires  text[] NOT NULL DEFAULT '{}',
+    champs_exclus  text[] NOT NULL DEFAULT '{}',
+    object_lock_jusqu_a timestamptz,
+    archivee_a     timestamptz NOT NULL DEFAULT now(),
+    -- Drill : quand l'objet a été relu, et ce que la relecture a donné.
+    -- 'ok' | 'absent' | 'sha256-divergent' | 'documents-divergents' | 'erreur: …'
+    verifie_a      timestamptz,
+    verif_etat     text,
+    verif_complet  boolean NOT NULL DEFAULT false,
+    UNIQUE (format_version, index_base, periode)
+);
+-- Sélection du drill : les moins récemment vérifiées d'abord, jamais vérifiées
+-- en tête.
+CREATE INDEX IF NOT EXISTS archives_s3_drill
+    ON archives_s3 (verifie_a NULLS FIRST);
+CREATE INDEX IF NOT EXISTS archives_s3_couverture
+    ON archives_s3 (index_base, periode);
