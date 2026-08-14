@@ -46,7 +46,7 @@ GENERIC_ACCOUNTS = {"root", "administrator", "admin", "system", "guest",
 # asset, so it leaves verbatim. Any trait absent from this list is
 # pseudonymised — including a trait added later in ueba.py (see the default
 # branch in `anonymize`).
-UEBA_TRAIT_ATTRIBUTES = {"pays", "heure", "dst_port", "rule_id", "chaine_mitre"}
+UEBA_TRAIT_ATTRIBUTES = {"country", "hour", "dst_port", "rule_id", "mitre_chain"}
 
 _HASH = re.compile(r"^[A-Fa-f0-9]{32,64}$")
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -263,7 +263,7 @@ def anonymize(anon: Anonymizer, incident: dict,
             if v:
                 v = str(v)
                 trait = m.get("trait")
-                if trait == "compte":
+                if trait == "account":
                     if v.strip().lower() not in GENERIC_ACCOUNTS:
                         forbidden.add(v)
                     m["value"] = anon.account(v)

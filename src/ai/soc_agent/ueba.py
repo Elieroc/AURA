@@ -1,44 +1,44 @@
-"""Moteur UEBA — faire remonter les alertes LOW/MEDIUM qui le méritent.
+"""UEBA engine — surfacing the LOW/MEDIUM alerts that deserve it.
 
-Le pipeline n'ouvre un incident qu'à partir du niveau 12 (`MIN_LEVEL`). En
-dessous, tout est ingéré mais rien ne graine : une intrusion qui n'émet que du
-niveau 3-11 (énumération, exécution d'un binaire déposé, login depuis un pays
-jamais vu, persistance discrète) est invisible. La monter en seuil brut noierait
-le SOC et la facture LLM.
+The pipeline only opens an incident from level 12 up (`MIN_LEVEL`). Below that
+everything is ingested but nothing seeds: an intrusion emitting only level 3-11
+(enumeration, execution of a dropped binary, login from a country never seen,
+quiet persistence) is invisible. Raising the raw threshold would drown the SOC
+and the LLM bill.
 
-Ce module est le troisième étage de réduction, entre le noise filter et le
-filtre VT d'un côté, et le LLM de l'autre :
+This module is the third reduction stage, between the noise filter and the VT
+filter on one side, and the LLM on the other:
 
-    noise filter -> filtre VT -> **UEBA (0 token)** -> corrélation -> LLM
+    noise filter -> VT filter -> **UEBA (0 tokens)** -> correlation -> LLM
 
-Il ne juge pas : il **classe**. Chaque alerte basse reçoit un score en BITS
-d'information, les alertes voisines d'un même agent sont regroupées en
-« signal », et seuls les signaux les mieux notés — dans la limite d'un BUDGET
-explicite — sont promus en graine d'incident. À partir de là, le chemin est
-celui de tout le monde : `correlate` -> `triage` (verdict VP/FP par le LLM) ->
-case IRIS. Le LLM ne voit jamais une alerte basse isolée, il voit un incident
-déjà constitué, déjà scoré, avec l'explication du score.
+It does not judge: it **ranks**. Every low alert gets a score in BITS of
+information, neighbouring alerts of the same agent are grouped into a "signal",
+and only the best-scoring signals — within an explicit BUDGET — are promoted to
+incident seeds. From there the path is everyone's: `correlate` -> `triage`
+(TP/FP verdict by the LLM) -> IRIS case. The LLM never sees an isolated low
+alert, it sees an incident already formed, already scored, with the explanation
+of the score.
 
-Trois primitives, toutes déterministes et explicables à un analyste (même
-exigence que `correlate.py`) :
+Three primitives, all deterministic and explainable to an analyst (the same
+requirement as `correlate.py`):
 
-1. **Rareté (surprisal)** — `-log2(p)` de la valeur observée dans son scope.
-   En bits : c'est ce qui rend les composantes SOMMABLES. Sommer des « points »
-   n'a pas de sens, sommer des bits d'information si.
-2. **Première vue (first-seen)** — la valeur n'existe pas dans un profil MÛR.
-   Score plafond, MODULÉ par la rareté sur la flotte : un binaire inédit sur cet
-   hôte mais présent sur 10 autres est un déploiement d'admin, pas une intrusion.
-   C'est le principal anti-faux-positif du module.
-3. **Chaîne MITRE** — plusieurs tactiques distinctes dans la fenêtre, pondérées
-   (credential-access pèse plus que discovery) et bonifiées si elles progressent
-   dans l'ordre de la kill chain.
+1. **Rarity (surprisal)** — `-log2(p)` of the value observed in its scope. In
+   bits: that is what makes the components SUMMABLE. Summing "points" makes no
+   sense, summing bits of information does.
+2. **First seen** — the value does not exist in a MATURE profile. Ceiling score,
+   MODULATED by the rarity across the fleet: a binary unseen on this host but
+   present on 10 others is an admin rollout, not an intrusion. That is the
+   module's main anti-false-positive.
+3. **MITRE chain** — several distinct tactics inside the window, weighted
+   (credential-access weighs more than discovery) and bonused when they progress
+   along the kill chain order.
 
-Pas de ML non supervisé (isolation forest, autoencodeur) : sans jeu labellisé
-on ne saurait pas mesurer sa dérive, et un score inexplicable ne peut ni être
-contesté par un analyste ni justifier une remédiation. La surprisal donne le
-même résultat et se lit en une phrase.
+No unsupervised ML (isolation forest, autoencoder): without a labelled set we
+could not measure its drift, and an unexplainable score can neither be argued
+with by an analyst nor justify a remediation. Surprisal gives the same result and
+reads in one sentence.
 
-    python -m soc_agent.ueba --etat
+    python -m soc_agent.ueba --state
     python -m soc_agent.ueba --simulation
 """
 
@@ -54,37 +54,36 @@ from psycopg.rows import dict_row
 from . import alerts as alerts_mod
 from . import assets, config
 
-# --- Traits observés ---------------------------------------------------------
+# --- Observed traits ---------------------------------------------------------
 #
-# Volontairement peu nombreux. Chacun doit répondre à « qu'est-ce que ça change
-# au verdict que cette valeur soit inédite ? » ; un trait qui n'a pas de réponse
-# n'apporte que du bruit et du coût.
+# Deliberately few. Each must answer "what does it change to the verdict that
+# this value is unseen?"; a trait with no answer only brings noise and cost.
 #
-# Le POIDS multiplie les bits du trait. `parent_child` pèse plus que `exe` : un
-# `sh` seul est banal, un `nginx -> sh` est un webshell. `hour` pèse peu — un
-# horaire inhabituel est un indice, jamais une preuve.
+# The WEIGHT multiplies the trait's bits. `parent_child` weighs more than `exe`:
+# an `sh` alone is mundane, an `nginx -> sh` is a webshell. `hour` weighs little
+# — an unusual time is a hint, never proof.
 WEIGHT = {
-    "exe":          1.0,   # binaire exécuté
-    "fichier":      0.8,   # objet d'une alerte d'intégrité (FIM)
-    "parent_child": 1.3,   # couple parent -> enfant (Windows/Sysmon)
-    "srcip":        0.9,   # IP source de l'événement
-    "pays":         1.0,   # pays GeoIP de l'IP source
-    "dst_port":     0.7,   # port de destination (Suricata)
-    "compte":       1.0,   # compte impliqué
-    "rule_id":      0.5,   # règle qui a tiré
-    "heure":        0.4,   # tranche horaire (ouvré / hors ouvré)
+    "exe":          1.0,   # executed binary
+    "file":         0.8,   # object of an integrity alert (FIM)
+    "parent_child": 1.3,   # parent -> child pair (Windows/Sysmon)
+    "srcip":        0.9,   # source IP of the event
+    "country":      1.0,   # GeoIP country of the source IP
+    "dst_port":     0.7,   # destination port (Suricata)
+    "account":      1.0,   # account involved
+    "rule_id":      0.5,   # rule that fired
+    "hour":         0.4,   # time slot (business hours / outside)
 }
 
-# Scopes : à quoi on rapporte la fréquence.
-#   'host'      -> agent_id. Le comportement de la MACHINE.
-#   'user@host' -> compte + agent_id. Le comportement de la PERSONNE sur cette
-#                  machine — c'est là que vit la latéralisation (un compte
-#                  légitime qui apparaît sur un hôte où il n'a jamais servi).
-# On garde `agent_id` et pas `agent_name` : le nom peut changer, l'id non.
+# Scopes: what the frequency is relative to.
+#   'host'      -> agent_id. The behaviour of the MACHINE.
+#   'user@host' -> account + agent_id. The behaviour of the PERSON on that
+#                  machine — that is where lateral movement lives (a legitimate
+#                  account appearing on a host it never served on).
+# We keep `agent_id` and not `agent_name`: the name can change, the id cannot.
 
-# Ordre canonique de la kill chain. Sert au bonus d'ordre : un même ENSEMBLE de
-# tactiques vaut plus s'il PROGRESSE (accès -> exécution -> persistance ->
-# credentials -> exfiltration) que s'il est observé en désordre.
+# Canonical kill chain order. Used by the order bonus: the same SET of tactics is
+# worth more when it PROGRESSES (access -> execution -> persistence ->
+# credentials -> exfiltration) than when observed out of order.
 TACTICS_ORDER = [
     "Reconnaissance", "Resource Development", "Initial Access", "Execution",
     "Persistence", "Privilege Escalation", "Defense Evasion",
@@ -92,9 +91,9 @@ TACTICS_ORDER = [
     "Command and Control", "Exfiltration", "Impact",
 ]
 
-# Poids par tactique. Trois `Discovery` sont du bruit d'administration ;
-# `Credential Access` + `Persistence` + `Exfiltration` sont une intrusion. Sans
-# cette pondération, « 3 tactiques distinctes » remonte surtout des faux positifs.
+# Weight per tactic. Three `Discovery` are administration noise; `Credential
+# Access` + `Persistence` + `Exfiltration` are an intrusion. Without this
+# weighting, "3 distinct tactics" mostly surfaces false positives.
 TACTICS_WEIGHT = {
     "Reconnaissance": 1.0, "Resource Development": 1.0, "Initial Access": 3.0,
     "Execution": 2.0, "Persistence": 4.0, "Privilege Escalation": 4.0,
@@ -103,28 +102,28 @@ TACTICS_WEIGHT = {
     "Exfiltration": 5.0, "Impact": 5.0,
 }
 
-# Valeurs trop communes pour porter du signal, même inédites sur un hôte : les
-# scorer ferait remonter le premier `bash` d'une machine fraîchement observée.
-# Même logique que `correlate.ENTITES_GENERIQUES`, appliquée aux traits.
+# Values too common to carry signal, even when unseen on a host: scoring them
+# would surface the first `bash` of a freshly observed machine. Same logic as
+# `correlate.ENTITIES_GENERIC`, applied to traits.
 VALUES_IGNORED = {
     "/usr/bin/bash", "/bin/bash", "/usr/bin/sh", "/bin/sh", "/usr/bin/dash",
     "/bin/dash", "/usr/bin/zsh", "-", "", "unknown", "n/a", "none",
 }
 
-# Comptes qui ne désignent PAS une personne : comptes machine Active Directory
-# (`WIN-DC$`, `WIN-DC$@LAB.LOCAL` — le `$` final est la convention AD) et
-# pseudo-comptes du système d'exploitation. Ils authentifient en permanence,
-# pour le compte de services, et leur volume écrase tout le reste.
+# Accounts that do NOT designate a person: Active Directory machine accounts
+# (`WIN-DC$`, `WIN-DC$@LAB.LOCAL` — the trailing `$` is the AD convention) and
+# operating system pseudo-accounts. They authenticate constantly, on behalf of
+# services, and their volume crushes everything else.
 #
-# Mesuré en production : l'incident #2550 (case IRIS #193) comptait 4598
-# alertes dont 3856 portées par `WIN-DC$`, soit 85 % d'ouvertures/fermetures de
-# session du contrôleur de domaine. Le signal l'a promu, le LLM l'a raconté
-# comme une compromission avérée, et `marquer_tp` a ensuite figé `WIN-DC$` à
-# 12 bits À VIE — la boucle se refermait sur elle-même.
+# Measured in production: incident #2550 (IRIS case #193) counted 4598 alerts, of
+# which 3856 carried by `WIN-DC$`, that is 85 % of domain controller session
+# open/close events. The signal promoted it, the LLM told it as a confirmed
+# compromise, and `mark_tp` then froze `WIN-DC$` at 12 bits FOR LIFE — the loop
+# closed on itself.
 #
-# Le scope `user@host` disparaît aussi pour ces comptes : profiler « le
-# comportement de la personne WIN-DC$ » n'a pas de sens, et ce scope agrégerait
-# tout le trafic de service de la machine sous une identité unique.
+# The `user@host` scope also disappears for those accounts: profiling "the
+# behaviour of the person WIN-DC$" makes no sense, and that scope would aggregate
+# all the machine's service traffic under a single identity.
 _RE_ACCOUNT_MACHINE = re.compile(r"\$(@|$)")
 ACCOUNTS_NON_PERSON = {
     "system", "système", "local system", "système local",
@@ -136,7 +135,7 @@ _WIN_SEP = re.compile(r"[\\/]+")
 
 
 def _norm_account(value) -> str | None:
-    """Compte normalisé, ou None si ce n'est pas une identité de personne."""
+    """Normalised account, or None when it is not a person's identity."""
     v = _norm(value)
     if v is None:
         return None
@@ -146,7 +145,7 @@ def _norm_account(value) -> str | None:
 
 
 def _norm(value) -> str | None:
-    """Valeur normalisée, ou None si elle ne porte rien d'exploitable."""
+    """Normalised value, or None when it carries nothing usable."""
     if value is None:
         return None
     v = str(value).strip()
@@ -166,10 +165,10 @@ def _raw(a: dict) -> dict:
 
 
 def traits(a: dict) -> list[tuple[str, str, str, str]]:
-    """(scope, scope_key, trait, valeur) observés dans une alerte.
+    """(scope, scope_key, trait, value) observed in an alert.
 
-    Rien ici n'est collecté en plus : tout sort de `alerts` et de `alerts.raw`,
-    déjà en base. UEBA n'ajoute aucune ingestion, seulement une lecture.
+    Nothing extra is collected here: everything comes from `alerts` and
+    `alerts.raw`, already in database. UEBA adds no ingestion, only a read.
     """
     raw = _raw(a)
     data = raw.get("data") or {}
@@ -180,9 +179,9 @@ def traits(a: dict) -> list[tuple[str, str, str, str]]:
     agent = str(a.get("agent_id") or "?")
     account = _norm_account(a.get("srcuser"))
     host = ("host", agent)
-    # Le scope utilisateur n'existe que si l'événement porte un compte. Sinon on
-    # se rabat sur le seul scope machine : inventer un « inconnu@hôte » créerait
-    # un profil fourre-tout où tout finirait par paraître normal.
+    # The user scope only exists when the event carries an account. Otherwise we
+    # fall back on the machine scope alone: inventing an "unknown@host" would
+    # create a catch-all profile where everything would end up looking normal.
     personal = ("user@host", f"{account}@{agent}") if account else None
 
     out: list[tuple[str, str, str, str]] = []
@@ -195,113 +194,116 @@ def traits(a: dict) -> list[tuple[str, str, str, str]]:
         if personal and on_personal:
             out.append((personal[0], personal[1], trait, v))
 
-    # Binaire exécuté. UNIQUEMENT auditd et Sysmon — surtout pas le repli
-    # `entity`, qui vaut `syscheck.path` pour les alertes FIM : sur Windows
-    # c'est une clé de registre `HKEY_...`, sur Proxmox une archive LVM
-    # `pve_19796-1149630808.vg`. Ni l'un ni l'autre n'est un exécutable, et le
-    # second est unique par construction — donc « jamais vu » à chaque
-    # occurrence. Mesuré en recette : score 1434 sur l'hôte Proxmox, uniquement
-    # composé d'archives LVM.
+    # Executed binary. ONLY auditd and Sysmon — definitely not the `entity`
+    # fallback, which is `syscheck.path` for FIM alerts: on Windows a registry
+    # key `HKEY_...`, on Proxmox an LVM archive `pve_19796-1149630808.vg`.
+    # Neither is an executable, and the second is unique by construction — hence
+    # "never seen" on every occurrence. Measured in staging: score 1434 on the
+    # Proxmox host, made only of LVM archives.
     add("exe", audit.get("exe") or win.get("image"))
 
-    # Objet touché par une alerte d'intégrité (fichier déposé, clé modifiée).
-    # Trait séparé et moins pesant que `exe` : un fichier qui apparaît est un
-    # indice, un binaire qui s'exécute est un fait. Le garde-fou de cardinalité
-    # ci-dessous neutralise les chemins horodatés/rotatifs.
-    add("fichier", a.get("entity"))
+    # Object touched by an integrity alert (dropped file, modified key). A
+    # separate trait, weighing less than `exe`: a file appearing is a hint, a
+    # binary executing is a fact. The cardinality guardrail below neutralises the
+    # timestamped/rotating paths.
+    add("file", a.get("entity"))
 
-    # Couple parent -> enfant. Uniquement Windows/Sysmon : auditd ne donne pas
-    # le nom du parent, seulement son pid, qu'on ne peut pas résoudre après coup.
+    # Parent -> child pair. Windows/Sysmon only: auditd does not give the
+    # parent's name, only its pid, which cannot be resolved after the fact.
     parent, child = win.get("parentImage"), win.get("image")
     if parent and child:
         add("parent_child",
                 f"{_WIN_SEP.split(parent)[-1]}>{_WIN_SEP.split(child)[-1]}")
 
     add("srcip", a.get("srcip"))
-    add("pays", geo.get("country_name"))
+    add("country", geo.get("country_name"))
     add("dst_port", data.get("dstport"))
-    # Le compte est un trait DU SCOPE MACHINE seulement : sur le scope
-    # `user@host`, il est déjà dans la clé, l'observer serait tautologique.
-    add("compte", account, on_personal=False)
+    # The account is a trait OF THE MACHINE SCOPE only: on the `user@host` scope
+    # it is already in the key, observing it would be tautological.
+    add("account", account, on_personal=False)
     add("rule_id", a.get("rule_id"))
 
     ts = a.get("ts")
     if isinstance(ts, datetime):
-        # Tranche grossière et non l'heure exacte : 24 valeurs par profil
-        # demandent des mois pour être mûres, 4 suffisent à distinguer
-        # « 3 h du matin un dimanche » de l'activité de bureau.
-        opens = ts.weekday() < 5 and 7 <= ts.hour < 20
-        add("heure", "ouvre" if opens else "hors_ouvre")
+        # A coarse slot and not the exact hour: 24 values per profile take
+        # months to mature, 4 are enough to tell "3 a.m. on a Sunday" from office
+        # activity.
+        business = ts.weekday() < 5 and 7 <= ts.hour < 20
+        add("hour", "business" if business else "off_hours")
 
     return out
 
 
 # --- Scoring -----------------------------------------------------------------
 
-def surprisal(account: int, total: int, distinct: int) -> float:
-    """Information portée par une valeur vue `compte` fois sur `total`, en bits.
+def surprisal(count: int, total: int, distinct: int) -> float:
+    """Information carried by a value seen `count` times out of `total`, in bits.
 
-    Lissage de Laplace (alpha=0.5) : sans lui, une valeur jamais vue donne une
-    probabilité nulle, donc des bits infinis. Le lissage borne aussi le score
-    d'un profil encore maigre, ce qui est exactement ce qu'on veut — peu
-    d'observations, peu de confiance.
+    Laplace smoothing (alpha=0.5): without it a value never seen gives a
+    probability of zero, hence infinite bits. The smoothing also bounds the score
+    of a still-thin profile, which is exactly what we want — few observations,
+    little confidence.
     """
     alpha = 0.5
     denom = total + alpha * max(distinct, 1)
     if denom <= 0:
         return 0.0
-    p = (account + alpha) / denom
+    p = (count + alpha) / denom
     return max(0.0, -math.log2(min(p, 1.0)))
 
 
 def usable_cardinality(stats: dict | None) -> bool:
-    """Le trait porte-t-il une information, ou change-t-il de valeur à chaque fois ?
+    """Does the trait carry information, or change value every single time?
 
-    Un trait dont presque chaque observation est une valeur neuve (chemins
-    horodatés, archives rotatives, GUID, identifiants de session) est inédit par
-    construction : « jamais vu » n'y signifie rien. Sans ce garde-fou, ces
-    traits saturent le score en permanence et écrasent tout le reste.
+    A trait where nearly every observation is a new value (timestamped paths,
+    rotating archives, GUIDs, session identifiers) is unseen by construction:
+    "never seen" means nothing there. Without this guardrail, those traits
+    saturate the score permanently and crush everything else.
 
-    On juge sur le RATIO valeurs distinctes / observations, pas sur une liste de
-    motifs : aucune liste noire ne peut anticiper ce qu'un parc produit, alors
-    que la statistique se corrige seule quand le comportement change.
+    We judge on the RATIO of distinct values to observations, not on a list of
+    patterns: no blacklist can anticipate what an estate produces, whereas the
+    statistic corrects itself when the behaviour changes.
     """
     if not stats or stats.get("total", 0) < config.UEBA_CARDINALITY_MIN_OBS:
-        return True   # trop peu d'observations pour conclure : on n'exclut pas
+        return True   # too few observations to conclude: we do not exclude
     return (stats["distinct_values"] / stats["total"]) <= config.UEBA_CARDINALITY_MAX
 
 
 def _trait_bits(profil: dict | None, stats: dict | None, fleet: int,
                 mature: bool) -> tuple[float, str]:
-    """Bits d'un trait + la phrase qui l'explique. (0.0, "") si non scorable."""
+    """A trait's bits plus the sentence explaining it. (0.0, "") if unscorable.
+
+    The explanation stays in French: it lands in `ueba_traits`, then in the
+    prompt and in the IRIS case, which analysts read.
+    """
     if profil is not None and profil.get("seen_in_tp"):
-        # Trait déjà impliqué dans un vrai positif : il ne peut PAS devenir une
-        # habitude, quelle que soit sa fréquence. Sinon un attaquant patient
-        # normalise son propre outillage en le lançant tous les jours.
+        # Trait already involved in a true positive: it can NOT become a habit,
+        # whatever its frequency. Otherwise a patient attacker normalises their
+        # own tooling by running it every day.
         return config.UEBA_FIRSTSEEN_BITS, "déjà vu dans un vrai positif"
 
     if not usable_cardinality(stats):
-        # Le trait est unique PAR CONSTRUCTION sur ce scope : presque chaque
-        # observation apporte une valeur neuve (chemins horodatés, archives
-        # rotatives, identifiants de session, GUID). « Jamais vu » n'y veut donc
-        # rien dire, et la surprisal y est maximale en permanence. Mesuré en
-        # recette : les archives LVM de l'hôte Proxmox donnaient à elles seules
-        # un score de 1434, quarante fois le plancher.
+        # The trait is unique BY CONSTRUCTION on this scope: nearly every
+        # observation brings a new value (timestamped paths, rotating archives,
+        # session identifiers, GUIDs). "Never seen" therefore means nothing, and
+        # the surprisal is permanently maximal. Measured in staging: the LVM
+        # archives of the Proxmox host alone gave a score of 1434, forty times
+        # the floor.
         #
-        # Garde-fou GÉNÉRAL et non liste noire : on ne peut pas énumérer à
-        # l'avance tout ce qu'un parc produit de haute cardinalité, et une liste
-        # noire vieillit mal. La statistique, elle, se corrige seule.
+        # A GENERAL guardrail and not a blacklist: one cannot enumerate in
+        # advance everything an estate produces with high cardinality, and a
+        # blacklist ages badly. The statistic corrects itself.
         return 0.0, ""
 
     if not mature:
-        # Profil trop jeune : TOUT y est inédit. Scorer maintenant enverrait
-        # l'intégralité du parc au LLM le premier jour. On observe, on ne juge
-        # pas encore — même philosophie que le mode training.
+        # Profile too young: EVERYTHING is unseen in it. Scoring now would send
+        # the whole fleet to the LLM on day one. We observe, we do not judge
+        # yet — the same philosophy as training mode.
         return 0.0, ""
 
     if profil is None:
-        # Première vue. Modulée par la flotte : inédit ici mais banal ailleurs
-        # = déploiement/administration, pas intrusion.
+        # First seen. Modulated by the fleet: unseen here but mundane elsewhere
+        # = rollout/administration, not intrusion.
         bits = config.UEBA_FIRSTSEEN_BITS
         if fleet >= config.UEBA_FLEET_COMMON:
             bits *= 0.2
@@ -317,9 +319,9 @@ def _trait_bits(profil: dict | None, stats: dict | None, fleet: int,
         return 0.0, ""
 
     if profil["days_seen"] >= config.UEBA_DAYS_USUAL:
-        # Vu sur assez de jours DISTINCTS pour être une habitude. Le nombre
-        # d'occurrences ne suffit pas : 500 exécutions en un seul jour est un
-        # incident, pas une baseline.
+        # Seen on enough DISTINCT days to be a habit. The number of occurrences
+        # is not enough: 500 executions in a single day is an incident, not a
+        # baseline.
         return 0.0, ""
 
     bits = surprisal(profil["total"], stats["total"], stats["distinct_values"])
@@ -330,22 +332,21 @@ def _trait_bits(profil: dict | None, stats: dict | None, fleet: int,
 
 
 class _State:
-    """Profils + statistiques de scope chargés en mémoire pour un lot.
+    """Profiles plus scope statistics loaded in memory for one batch.
 
-    On score CHAQUE alerte contre l'état d'AVANT elle, puis on l'absorbe.
-    L'ordre est capital : absorber d'abord ferait disparaître tout first-seen
-    (la valeur serait déjà connue au moment de la scorer). C'est aussi ce qui
-    fait que la deuxième occurrence d'une même valeur dans un même lot ne
-    rapporte plus le score plein.
+    We score EVERY alert against the state BEFORE it, then absorb it. The order
+    is critical: absorbing first would make every first-seen disappear (the value
+    would already be known when scoring it). It is also what makes the second
+    occurrence of the same value inside one batch no longer worth the full score.
     """
 
     def __init__(self, profiles: dict, stats: dict, fleet: dict, maturity: dict):
-        self.profiles = profiles      # (scope, key, trait, valeur) -> {...}
-        self.stats = stats          # (scope, key, trait) -> {total, distincts}
-        self.fleet = fleet        # (trait, valeur) -> nb d'hôtes distincts
+        self.profiles = profiles    # (scope, key, trait, value) -> {...}
+        self.stats = stats          # (scope, key, trait) -> {total, distinct}
+        self.fleet = fleet          # (trait, value) -> number of distinct hosts
         self.maturity = maturity    # (scope, key, trait) -> bool
         self.affected: set[tuple] = set()
-        self.obs: dict[tuple, int] = {}   # (scope,key,trait,valeur,jour) -> n
+        self.obs: dict[tuple, int] = {}   # (scope,key,trait,value,day) -> n
 
     def mature(self, scope: str, key: str, trait: str) -> bool:
         return self.maturity.get((scope, key, trait), False)
@@ -390,7 +391,7 @@ SELECT id, ts, agent_id, agent_name, rule_id, rule_level, rule_groups,
 
 
 def _load_state(conn, keys: set[tuple]) -> _State:
-    """Un aller-retour par table, jamais une requête par alerte."""
+    """One round trip per table, never one query per alert."""
     profiles: dict[tuple, dict] = {}
     stats: dict[tuple, dict] = {}
     fleet: dict[tuple, int] = {}
@@ -398,9 +399,9 @@ def _load_state(conn, keys: set[tuple]) -> _State:
     if not keys:
         return _State(profiles, stats, fleet, maturity)
 
-    # Listes matérialisées : les quatre colonnes passées à `unnest` doivent être
-    # alignées ligne à ligne. Itérer un `set` quatre fois donnerait le même
-    # ordre en pratique, mais rien ne le garantit — on fige.
+    # Materialised lists: the four columns passed to `unnest` must be aligned
+    # row by row. Iterating a `set` four times would give the same order in
+    # practice, but nothing guarantees it — so we freeze it.
     keys_l = sorted(keys)
     scopes = sorted({(s, k, t) for s, k, t, _ in keys})
     values = sorted({(t, v) for _, _, t, v in keys})
@@ -429,9 +430,9 @@ def _load_state(conn, keys: set[tuple]) -> _State:
                          and l["first_obs"] <= threshold
                          and l["total"] >= config.UEBA_MATURITY_MIN_OBS)
 
-    # Rareté sur la flotte : sur combien d'HÔTES distincts cette valeur est-elle
-    # connue ? Uniquement le scope 'host' — compter les scopes utilisateur
-    # gonflerait le chiffre sans rien dire de la diffusion réelle.
+    # Fleet rarity: on how many distinct HOSTS is this value known? The 'host'
+    # scope only — counting the user scopes would inflate the figure without
+    # saying anything about the real spread.
     lines = conn.execute(
         "SELECT trait, value, count(DISTINCT scope_key) AS n "
         "  FROM ueba_profiles WHERE scope = 'host' AND (trait, value) IN "
@@ -445,9 +446,9 @@ def _load_state(conn, keys: set[tuple]) -> _State:
 
 
 def observe(limit: int | None = None) -> tuple[int, int]:
-    """Score les alertes non encore vues, puis les absorbe dans la baseline.
+    """Scores the alerts not yet seen, then absorbs them into the baseline.
 
-    Retourne (alertes observées, alertes ayant un score non nul).
+    Returns (alerts observed, alerts with a non-zero score).
     """
     limit = limit or config.UEBA_BATCH
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
@@ -476,7 +477,7 @@ def observe(limit: int | None = None) -> tuple[int, int]:
                     details.append({"trait": trait, "value": value,
                                     "scope": scope, "bits": round(weighted, 2),
                                     "note": note})
-                # Absorption APRÈS le score, y compris quand il est nul.
+                # Absorbed AFTER the score, including when it is zero.
                 state.absorb(scope, key, trait, value, a["ts"])
 
             total_bits = min(total_bits, config.UEBA_CAP_ALERT)
@@ -496,11 +497,11 @@ def observe(limit: int | None = None) -> tuple[int, int]:
 
 
 def _persist(conn, state: _State) -> None:
-    """Écrit observations, profils et statistiques de scope.
+    """Writes observations, profiles and scope statistics.
 
-    `days_seen` est RECALCULÉ depuis `ueba_observations` et non incrémenté à
-    l'aveugle : rejouer un lot ne doit pas gonfler le nombre de jours distincts,
-    sans quoi une valeur rejouée passerait pour une habitude.
+    `days_seen` is RECOMPUTED from `ueba_observations` and not incremented
+    blindly: replaying a batch must not inflate the number of distinct days,
+    otherwise a replayed value would pass for a habit.
     """
     for (scope, key, trait, value, day), n in state.obs.items():
         conn.execute(
@@ -539,14 +540,14 @@ def _persist(conn, state: _State) -> None:
             (scope, key, trait, scope, key, trait))
 
 
-# --- Signaux : regroupement et chaîne MITRE ----------------------------------
+# --- Signals: grouping and MITRE chain ---------------------------------------
 
-# `ueba_signal_id IS NULL` et non `NOT ueba_seed` : une alerte qui a DÉJÀ
-# appartenu à un signal est consommée, définitivement. `ueba_seed` dit
-# « corrélable comme graine » et `correlate` peut le remettre à false quand il
-# écarte le groupe (score sous le plancher) ; s'en servir ici comme filtre
-# rendrait ces alertes à nouveau candidates, et le budget quotidien tournerait
-# en rond sur le même bruit à chaque cycle.
+# `ueba_signal_id IS NULL` and not `NOT ueba_seed`: an alert that has ALREADY
+# belonged to a signal is consumed, definitively. `ueba_seed` says "correlatable
+# as a seed" and `correlate` can set it back to false when it drops the group
+# (score below the floor); using it as a filter here would make those alerts
+# candidates again, and the daily budget would go round in circles on the same
+# noise on every cycle.
 SELECT_CANDIDATES = """
 SELECT id, ts, agent_id, agent_name, rule_id, rule_level, mitre_tactics,
        srcuser, ueba_score, ueba_traits
@@ -561,14 +562,16 @@ SELECT id, ts, agent_id, agent_name, rule_id, rule_level, mitre_tactics,
 
 
 def chain_bonus(ordered_tactics: list[str]) -> tuple[float, str | None]:
-    """Bonus lié à la diversité ET à la progression des tactiques MITRE.
+    """Bonus tied to the diversity AND the progression of the MITRE tactics.
 
-    Le simple « 3 techniques de 3 tactiques » remonte surtout `Discovery` x3,
-    soit un admin qui inventorie sa machine. D'où deux corrections :
-      - chaque tactique DISTINCTE apporte son poids (credential-access = 5,
-        discovery = 1) ;
-      - un bonus s'ajoute si les tactiques progressent dans l'ordre de la kill
-        chain — c'est le signal le plus fort qu'on puisse tirer sans LLM.
+    A plain "3 techniques from 3 tactics" mostly surfaces `Discovery` x3, that
+    is, an admin inventorying their machine. Hence two corrections:
+      - every DISTINCT tactic brings its weight (credential-access = 5,
+        discovery = 1);
+      - a bonus is added when the tactics progress along the kill chain order —
+        that is the strongest signal obtainable without an LLM.
+
+    The returned sentence stays French: it lands in the prompt and in the case.
     """
     distinct = []
     for t in ordered_tactics:
@@ -579,8 +582,8 @@ def chain_bonus(ordered_tactics: list[str]) -> tuple[float, str | None]:
 
     bonus = sum(TACTICS_WEIGHT.get(t, 1.0) for t in distinct)
 
-    # Plus longue sous-suite croissante dans l'ordre canonique : mesure de
-    # progression, insensible aux tactiques hors chaîne.
+    # Longest increasing subsequence in the canonical order: a measure of
+    # progression, insensitive to tactics outside the chain.
     ranks = [TACTICS_ORDER.index(t) for t in ordered_tactics
              if t in TACTICS_ORDER]
     best = 0
@@ -599,23 +602,23 @@ def chain_bonus(ordered_tactics: list[str]) -> tuple[float, str | None]:
 
 
 def _group_signals(alerts: list[dict]) -> list[list[dict]]:
-    """Chaîne les alertes d'un même agent séparées de moins de la fenêtre.
+    """Chains the alerts of one agent separated by less than the window.
 
-    Même esprit que `correlate._grouper`, en beaucoup plus simple : ici on ne
-    cherche pas un point commun nommable (les alertes basses n'en partagent
-    souvent aucun), on cherche une CONCENTRATION anormale dans le temps sur une
-    machine. Le point commun, c'est la machine et la fenêtre.
+    Same spirit as `correlate._group`, far simpler: here we are not looking for
+    nameable common ground (low alerts often share none), we are looking for an
+    abnormal CONCENTRATION in time on one machine. The common ground is the
+    machine and the window.
     """
     gap = timedelta(minutes=config.UEBA_WINDOW_MINUTES)
     max_duration = timedelta(hours=config.UEBA_SIGNAL_MAX_HOURS)
     groups: list[list[dict]] = []
     current: list[dict] = []
     for a in alerts:
-        # Chaînage de proche en proche : une intrusion discrète est LENTE, et
-        # c'est bien elle qu'on cherche. Mais sans plafond de durée, un hôte
-        # bavard qui émet une alerte toutes les 50 minutes agglomère sa journée
-        # entière en un seul signal — le score enfle par accumulation et non par
-        # anomalie, et le prompt part avec des heures de bruit.
+        # Step-by-step chaining: a quiet intrusion is SLOW, and it is precisely
+        # what we are looking for. But without a duration cap, a chatty host
+        # emitting one alert every 50 minutes glues its whole day into a single
+        # signal — the score swells by accumulation rather than by anomaly, and
+        # the prompt leaves with hours of noise.
         if (current and a["agent_id"] == current[-1]["agent_id"]
                 and a["ts"] - current[-1]["ts"] <= gap
                 and a["ts"] - current[0]["ts"] <= max_duration):
@@ -630,12 +633,12 @@ def _group_signals(alerts: list[dict]) -> list[list[dict]]:
 
 
 def score_group(group: list[dict]) -> tuple[float, list[dict]]:
-    """Score d'un groupe + les motifs qui le composent.
+    """Score of a group plus the patterns making it up.
 
-    Somme plafonnée PAR TRAIT et non brute : quarante exécutions du même binaire
-    rare ne valent pas quarante fois le score, sinon une tâche planifiée rare
-    écrase tout le reste. On garde le meilleur de chaque trait, plus une part
-    décroissante des répétitions.
+    A sum capped PER TRAIT and not raw: forty executions of the same rare binary
+    are not worth forty times the score, otherwise a rare scheduled task crushes
+    everything else. We keep the best of each trait, plus a decreasing share of
+    the repetitions.
     """
     best_per_trait: dict[str, dict] = {}
     for a in group:
@@ -652,31 +655,32 @@ def score_group(group: list[dict]) -> tuple[float, list[dict]]:
     bonus, phrase = chain_bonus(tactics)
     if bonus:
         score += bonus
-        patterns.append({"trait": "chaine_mitre", "value": "", "scope": "host",
+        patterns.append({"trait": "mitre_chain", "value": "", "scope": "host",
                        "bits": round(bonus, 2), "note": phrase})
 
     return score, patterns[:8]
 
 
 def _remaining_budget(conn) -> int:
-    """Places de promotion restantes sur les 24 dernières heures.
+    """Promotion slots left over the last 24 hours.
 
-    Le seuil de score ne suffit pas à borner la facture : le volume d'alertes
-    varie d'un facteur dix entre une journée calme et une campagne. Le budget,
-    lui, est un nombre qu'on décide. Un signal non promu n'est pas perdu — il
-    est réévalué au cycle suivant, et son score aura grossi s'il continue.
+    The score threshold is not enough to bound the bill: the alert volume varies
+    by a factor of ten between a quiet day and a campaign. The budget, in
+    contrast, is a number we decide. A signal not promoted is not lost — it is
+    re-evaluated on the next cycle, and its score will have grown if it
+    continues.
     """
     n = conn.execute(
         "SELECT count(*) AS n FROM ueba_signals "
-        " WHERE status = 'promu' AND created_at >= now() - interval '24 hours'"
+        " WHERE status = 'promoted' AND created_at >= now() - interval '24 hours'"
     ).fetchone()["n"]
     return max(0, config.UEBA_BUDGET_PER_DAY - n)
 
 
 def evaluate(simulation: bool = False) -> list[dict]:
-    """Regroupe, score, et promeut les meilleurs signaux dans la limite du budget.
+    """Groups, scores, and promotes the best signals within the budget.
 
-    Retourne la liste des signaux promus.
+    Returns the list of promoted signals.
     """
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         alerts = conn.execute(
@@ -695,26 +699,27 @@ def evaluate(simulation: bool = False) -> list[dict]:
                 "score": round(score, 2), "patterns": patterns,
                 "alert_ids": [a["id"] for a in group],
             })
-        # Budget très serré (UEBA_BUDGET_PAR_CYCLE = 2) : l'ordre décide de ce
-        # qui devient un incident aujourd'hui. À score suffisant, l'asset le
-        # plus critique passe d'abord — le plancher reste le seul juge de
-        # l'éligibilité, la priorité n'arbitre qu'entre signaux déjà éligibles.
+        # A very tight budget (UEBA_BUDGET_PER_CYCLE = 2): the ordering decides
+        # what becomes an incident today. At a sufficient score, the most
+        # critical asset goes first — the floor stays the only judge of
+        # eligibility, the priority only arbitrates between already eligible
+        # signals.
         for s in signals:
             s["priority"] = assets.agent_priority(
                 conn, s["agent_id"])["priority"]
         signals.sort(key=lambda s: (s["priority"], -s["score"]))
 
-        # Les signaux non promus sont recalculés à chaque passage : on efface
-        # les « en attente » du tour précédent plutôt que de les mettre à jour,
-        # leur périmètre ayant pu changer (alertes nouvellement rattachées).
-        conn.execute("DELETE FROM ueba_signals WHERE status = 'en_attente'")
+        # Signals not promoted are recomputed on every pass: we delete the
+        # "pending" ones of the previous round rather than update them, since
+        # their scope may have changed (newly attached alerts).
+        conn.execute("DELETE FROM ueba_signals WHERE status = 'pending'")
 
         budget = min(_remaining_budget(conn), config.UEBA_BUDGET_PER_CYCLE)
         promoted: list[dict] = []
         for s in signals:
             eligible = (s["score"] >= config.UEBA_SCORE_FLOOR
                         and len(promoted) < budget and not simulation)
-            status = "promu" if eligible else "en_attente"
+            status = "promoted" if eligible else "pending"
             sid = conn.execute(
                 "INSERT INTO ueba_signals (agent_id, agent_name, start_ts, end_ts, "
                 " score, patterns, alert_ids, status) "
@@ -724,10 +729,9 @@ def evaluate(simulation: bool = False) -> list[dict]:
                                         default=str),
                  s["alert_ids"], status)).fetchone()["id"]
             if eligible:
-                # La promotion ne fabrique pas d'incident : elle rend les
-                # alertes GRAINABLES. C'est `correlate` qui décide ensuite du
-                # découpage, avec ses propres règles — une seule logique de
-                # regroupement dans le projet.
+                # Promotion does not manufacture an incident: it makes the
+                # alerts SEEDABLE. `correlate` then decides the slicing, with its
+                # own rules — a single grouping logic in the project.
                 conn.execute(
                     "UPDATE alerts SET ueba_seed = true, ueba_signal_id = %s "
                     " WHERE id = ANY(%s)", (sid, s["alert_ids"]))
@@ -738,19 +742,19 @@ def evaluate(simulation: bool = False) -> list[dict]:
 
 
 def mark_tp(incident_id: int) -> int:
-    """Interdit à la baseline d'absorber les traits d'un vrai positif.
+    """Forbids the baseline from absorbing the traits of a true positive.
 
-    Sans ça, un attaquant patient normalise son propre outillage : il suffit de
-    le lancer tous les jours pour qu'il devienne « habituel » et cesse d'être
-    scoré. Même garde-fou que la whitelist automatique, qui refuse toute
-    signature déjà vue dans un vrai positif.
+    Without it, a patient attacker normalises their own tooling: running it every
+    day is enough for it to become "usual" and stop being scored. The same
+    guardrail as the automatic whitelist, which refuses any signature already
+    seen in a true positive.
     """
     n = 0
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-        # Borné : `marquer_tp` est appelé à la création du case, donc aussi
-        # sur les incidents de flood (cf. alertes.py).
+        # Bounded: `mark_tp` is called on case creation, hence also on flood
+        # incidents (see alerts.py).
         alerts = alerts_mod.load_bounded(
-            conn, incident_id, alerts_mod.COLUMNS_UEBA, "ueba marquer_tp")
+            conn, incident_id, alerts_mod.COLUMNS_UEBA, "ueba mark_tp")
         keys = {t for a in alerts for t in traits(a)}
         for scope, key, trait, value in keys:
             n += conn.execute(
@@ -763,13 +767,13 @@ def mark_tp(incident_id: int) -> int:
 
 
 def purge() -> int:
-    """Fait vieillir la baseline.
+    """Ages the baseline.
 
-    Un profil qui ne vieillit jamais fige le comportement d'il y a six mois : un
-    serveur réinstallé resterait « normal » sur ses anciens binaires, et un
-    poste dont l'usage a changé produirait du bruit sans fin. On supprime les
-    observations au-delà de la fenêtre, puis on RECALCULE les profils depuis ce
-    qui reste — jamais de décrément à l'aveugle.
+    A profile that never ages freezes the behaviour of six months ago: a
+    reinstalled server would stay "normal" on its old binaries, and a workstation
+    whose usage changed would produce endless noise. We delete the observations
+    past the window, then RECOMPUTE the profiles from what is left — never a
+    blind decrement.
     """
     with psycopg.connect(config.PG_DSN) as conn:
         n = conn.execute(
@@ -786,9 +790,9 @@ def purge() -> int:
                          GROUP BY 1,2,3,4) a
                  WHERE p.scope=a.scope AND p.scope_key=a.scope_key
                    AND p.trait=a.trait AND p.value=a.value""")
-            # Profils dont plus aucune observation ne subsiste. `seen_in_tp` est
-            # préservé : un trait vu dans un vrai positif ne doit jamais
-            # redevenir vierge par simple péremption.
+            # Profiles with no observation left. `seen_in_tp` is preserved: a
+            # trait seen in a true positive must never become blank again through
+            # mere expiry.
             conn.execute(
                 "DELETE FROM ueba_profiles p WHERE NOT p.seen_in_tp AND NOT EXISTS "
                 "(SELECT 1 FROM ueba_observations o WHERE o.scope=p.scope "
@@ -799,14 +803,14 @@ def purge() -> int:
 
 
 def run() -> tuple[int, int, list[dict]]:
-    """Un passage complet : observation, scoring, promotion. Appelé par cycle.py."""
+    """One full pass: observation, scoring, promotion. Called by cycle.py."""
     if not config.UEBA_ENABLED:
         return 0, 0, []
     seen, scored = observe()
     promoted = evaluate()
-    # Vieillissement de la baseline. Appelé à chaque passage plutôt que par un
-    # job dédié : le DELETE est indexé sur `jour` et ne rend rien la plupart du
-    # temps ; le recalcul des profils n'a lieu que s'il a effectivement purgé.
+    # Ageing of the baseline. Called on every pass rather than by a dedicated
+    # job: the DELETE is indexed on `day` and returns nothing most of the time;
+    # the profile recomputation only happens when it actually purged.
     purge()
     return seen, scored, promoted
 
@@ -814,12 +818,12 @@ def run() -> tuple[int, int, list[dict]]:
 # --- CLI ---------------------------------------------------------------------
 
 def state_report(signals_limit: int = 15) -> dict:
-    """Maturité de la baseline, budget de promotion, derniers signaux."""
+    """Baseline maturity, promotion budget, latest signals."""
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         r = conn.execute(
-            "SELECT count(*) AS profils, count(DISTINCT scope_key) AS scopes, "
+            "SELECT count(*) AS profiles, count(DISTINCT scope_key) AS scopes, "
             "       coalesce(sum(total),0) AS obs FROM ueba_profiles").fetchone()
-        murs = conn.execute(
+        mature_scopes = conn.execute(
             "SELECT count(*) AS n FROM ueba_scopes "
             " WHERE first_obs <= now() - make_interval(days => %s) "
             "   AND total >= %s",
@@ -837,18 +841,18 @@ def state_report(signals_limit: int = 15) -> dict:
             (signals_limit,)).fetchall()
 
     return {
-        "profils": r["profils"],
+        "profiles": r["profiles"],
         "scopes": r["scopes"],
         "observations": r["obs"],
-        "scopes_murs": murs,
-        "scopes_total": total_scopes,
-        "maturite_jours": config.UEBA_MATURITY_DAYS,
-        "maturite_min_obs": config.UEBA_MATURITY_MIN_OBS,
-        "alertes_a_observer": remains,
-        "budget_restant": budget,
-        "budget_jour": config.UEBA_BUDGET_PER_DAY,
-        "plancher_score": config.UEBA_SCORE_FLOOR,
-        "signaux": [
+        "mature_scopes": mature_scopes,
+        "total_scopes": total_scopes,
+        "maturity_days": config.UEBA_MATURITY_DAYS,
+        "maturity_min_obs": config.UEBA_MATURITY_MIN_OBS,
+        "alerts_to_observe": remains,
+        "remaining_budget": budget,
+        "daily_budget": config.UEBA_BUDGET_PER_DAY,
+        "score_floor": config.UEBA_SCORE_FLOOR,
+        "signals": [
             {"id": s["id"], "agent_id": s["agent_id"],
              "agent_name": s["agent_name"], "score": float(s["score"]),
              "status": s["status"], "start_ts": s["start_ts"].isoformat(),
@@ -861,14 +865,14 @@ def state_report(signals_limit: int = 15) -> dict:
 
 def state() -> None:
     r = state_report()
-    print(f"profils : {r['profils']} ({r['scopes']} scopes, "
+    print(f"profiles: {r['profiles']} ({r['scopes']} scopes, "
           f"{r['observations']} observations)")
-    print(f"scopes mûrs : {r['scopes_murs']}/{r['scopes_total']} "
-          f"(>= {r['maturite_jours']} j et {r['maturite_min_obs']} observations)")
-    print(f"alertes à observer : {r['alertes_a_observer']}")
-    print(f"budget : {r['budget_restant']}/{r['budget_jour']} "
-          "promotions restantes sur 24 h")
-    for s in r["signaux"]:
+    print(f"mature scopes: {r['mature_scopes']}/{r['total_scopes']} "
+          f"(>= {r['maturity_days']} d and {r['maturity_min_obs']} observations)")
+    print(f"alerts to observe: {r['alerts_to_observe']}")
+    print(f"budget: {r['remaining_budget']}/{r['daily_budget']} "
+          "promotions left over 24 h")
+    for s in r["signals"]:
         phrases = "; ".join(
             f"{m['trait']}={m['value']} +{m['bits']}" for m in s["patterns"][:3])
         print(f"  #{s['id']:<5} {s['status']:<11} {s['score']:6.1f} "
@@ -878,33 +882,33 @@ def state() -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--etat", action="store_true",
-                    help="maturité des profils, budget, derniers signaux")
+    ap.add_argument("--state", action="store_true",
+                    help="profile maturity, budget, latest signals")
     ap.add_argument("--simulation", action="store_true",
-                    help="score et enregistre les signaux SANS rien promouvoir "
-                         "(calibrage du plancher, zéro token consommé)")
-    ap.add_argument("--purger", action="store_true",
-                    help="fait vieillir la baseline (UEBA_MEMOIRE_JOURS)")
+                    help="scores and records the signals WITHOUT promoting "
+                         "anything (floor calibration, zero tokens spent)")
+    ap.add_argument("--purge", action="store_true",
+                    help="ages the baseline (UEBA_MEMORY_DAYS)")
     args = ap.parse_args()
 
     if args.state:
         state()
         return
     if args.purge:
-        print(f"{purge()} observation(s) périmée(s) supprimée(s).")
+        print(f"{purge()} stale observation(s) deleted.")
         return
 
     seen, scored, _ = (0, 0, [])
     seen, scored = observe()
-    print(f"observation : {seen} alertes, {scored} avec un score non nul")
+    print(f"observation: {seen} alerts, {scored} with a non-zero score")
     promoted = evaluate(simulation=args.simulation)
     if args.simulation:
-        print("simulation : aucun signal promu.")
+        print("simulation: no signal promoted.")
     for s in promoted:
         print(f"  signal #{s['id']} {s['agent_name']} score {s['score']} "
-              f"-> {len(s['alert_ids'])} alertes graine")
+              f"-> {len(s['alert_ids'])} seed alerts")
     if not promoted and not args.simulation:
-        print("aucun signal au-dessus du plancher (ou budget épuisé).")
+        print("no signal above the floor (or budget exhausted).")
 
 
 if __name__ == "__main__":
