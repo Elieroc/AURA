@@ -254,6 +254,23 @@ IRIS_VERIFY_TLS = os.environ.get("IRIS_VERIFY_TLS", "false").lower() == "true"
 # Client IRIS (dossier « customer ») rattaché aux cases. 1 = client par défaut.
 IRIS_CUSTOMER = int(os.environ.get("IRIS_CUSTOMER", "1"))
 
+# Nombre maximum d'alertes CHARGÉES pour construire un dossier. Un incident de
+# flood en aligne des dizaines de milliers (le 2026-08-14 : 126 508 sur un seul
+# incident pfSense, 96 804 sur un autre) : les charger toutes, `raw` compris,
+# fait exploser la mémoire du cycle et produit un dossier qu'aucun analyste ne
+# peut lire. On prend les plus ANCIENNES et les plus RÉCENTES à parts égales —
+# le début de l'attaque porte la graine, la fin porte l'état courant ; c'est le
+# milieu d'une salve répétitive qui n'apprend rien. `alert_count` reste, lui,
+# le compte RÉEL et n'est jamais tronqué.
+INCIDENT_MAX_ALERTES = int(os.environ.get("INCIDENT_MAX_ALERTES", "2000"))
+
+# Nombre maximum de pièces Evidence posées sur un case. Une pièce par alerte est
+# la bonne granularité pour un incident normal (quelques dizaines) ; au-delà,
+# c'est l'onglet Evidence qui devient inexploitable et la base IRIS qui gonfle
+# (le 2026-08-14 : 8,3 Go pour un seul case). Le plafond porte sur le TOTAL du
+# case, cumulé entre deux passages, pas sur la salve.
+EVIDENCE_MAX_PAR_CASE = int(os.environ.get("EVIDENCE_MAX_PAR_CASE", "500"))
+
 # --- Lien pivot vers le dashboard Wazuh -------------------------------------
 #
 # Chaque évènement de timeline IRIS porte un lien Discover filtré sur sa règle
@@ -1117,3 +1134,48 @@ SOC_INFRA_IPS = {
 } | set(MITIGATE_ISOLATE_ALLOW) | {
     ip.strip() for ip in os.environ.get("SOC_INFRA_IPS", "").split(",")
     if ip.strip()}
+
+
+# --- Rétention des données (cf. retention.py, docs/RETENTION.md) -------------
+#
+# Le 2026-08-14, la prod était à 66 % de disque sans qu'aucune politique
+# n'existe nulle part : l'indexer gardait tout depuis l'installation, la table
+# `alerts` grossissait de ~150 Mo/jour, et rien ne surveillait le remplissage.
+# Ces bornes sont donc des DÉFAUTS EXPLICITES : aucune n'est neutre, chacune
+# jette de la donnée, et c'est le but.
+
+# Âge au-delà duquel une alerte est supprimée de Postgres. Les alertes d'un
+# incident encore actif sont épargnées quel que soit leur âge (cf.
+# retention.PURGE_ALERTES) : un dossier ouvert ne se vide pas tout seul.
+RETENTION_ALERTES_JOURS = int(os.environ.get("RETENTION_ALERTES_JOURS", "90"))
+
+# Âge au-delà duquel un index DATÉ de l'indexer est supprimé par la politique
+# ISM. Vaut pour les alertes comme pour les séries du VOC ; `wazuh-voc-vulns`,
+# index d'état non daté, en est exclu par construction.
+RETENTION_INDEX_JOURS = int(os.environ.get("RETENTION_INDEX_JOURS", "90"))
+
+# Âge minimum d'un résidu de mise à jour du feed CVE avant suppression. En
+# HEURES, et large : c'est ce qui garantit qu'on ne supprime pas les fichiers
+# d'une mise à jour en cours (elles durent des minutes).
+RETENTION_VD_TMP_HEURES = int(os.environ.get("RETENTION_VD_TMP_HEURES", "12"))
+
+# Répertoire `queue` du manager Wazuh, tel que monté dans le conteneur de
+# rétention. C'est le seul volume Wazuh qu'il touche, et en écriture — d'où un
+# chemin explicite plutôt qu'une découverte.
+WAZUH_QUEUE_DIR = os.environ.get("WAZUH_QUEUE_DIR", "/wazuh-queue")
+
+# Pose de la politique ISM à chaque passage. Coupable à mettre à false si la
+# rétention des index est gérée ailleurs (politique maison, snapshots S3).
+RETENTION_ISM_ENABLED = os.environ.get(
+    "RETENTION_ISM_ENABLED", "true").lower() == "true"
+
+# --- Garde-fou disque (cf. watchdog.py) -------------------------------------
+#
+# Six gigaoctets par jour partaient sans que rien ne le dise. Un SOC qui ne
+# surveille pas son propre disque s'arrête en silence : indexer en lecture
+# seule, Postgres qui refuse d'écrire, plus une alerte ne rentre.
+DISQUE_SURVEILLE = os.environ.get("DISQUE_SURVEILLE", "/")
+# Seuils d'occupation, en pourcentage. `alerte` ouvre une alerte IRIS Medium,
+# `critique` la passe en High — même canal, même cycle de vie.
+DISQUE_SEUIL_ALERTE = int(os.environ.get("DISQUE_SEUIL_ALERTE", "80"))
+DISQUE_SEUIL_CRITIQUE = int(os.environ.get("DISQUE_SEUIL_CRITIQUE", "90"))

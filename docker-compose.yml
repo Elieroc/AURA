@@ -412,6 +412,32 @@ services:
       - ${WAZUH_RULES_DIR:-./src/wazuh/config/wazuh_cluster/rules}:/wazuh-rules
     command: sh -c "while true; do python -m soc_agent.rule_tuning; sleep 3600; done"
 
+  # Rétention : fait vieillir ce que rien d'autre ne supprime (cf. retention.py,
+  # docs/RETENTION.md). Purge les alertes Postgres au-delà de leur fenêtre,
+  # nettoie les résidus de mise à jour du feed CVE de Wazuh, et (ré)applique la
+  # politique ISM de l'indexer.
+  #
+  # Ce service existe parce que le 2026-08-14 la prod était à 66 % de disque
+  # sans qu'aucune politique de rétention n'existe nulle part : l'indexer
+  # gardait tout depuis son installation, et la table `alerts` grossissait de
+  # ~150 Mo/jour sans plafond.
+  #
+  # Cadence QUOTIDIENNE : la rétention se compte en jours, la repasser toutes
+  # les heures ne supprimerait rien de plus et relancerait un DELETE massif sur
+  # `alerts` pendant que le cycle écrit dedans.
+  #
+  # Le montage du volume `queue` du manager est en ÉCRITURE et c'est le seul
+  # que ce service touche : c'est là que le vd_updater laisse son feed CVE
+  # décompressé (6,7 Go retrouvés le 2026-08-14, jamais repassés chercher).
+  soc-agent-retention:
+    <<: *soc-agent
+    container_name: soc-agent-retention
+    environment:
+      - WAZUH_QUEUE_DIR=/wazuh-queue
+    volumes:
+      - wazuh_queue:/wazuh-queue
+    command: sh -c "while true; do python -m soc_agent.retention; sleep 86400; done"
+
   # Serveur MCP AURA : un seul endpoint pour piloter le SOC depuis un client IA
   # (Claude Code, Claude Desktop, tout client MCP). Voir docs/MCP.md.
   #

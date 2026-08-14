@@ -524,6 +524,34 @@ CREATE INDEX IF NOT EXISTS capteur_pannes_recentes
 ALTER TABLE capteur_pannes ADD COLUMN IF NOT EXISTS iris_alert_id bigint;
 
 -- ---------------------------------------------------------------------------
+-- Pièces Evidence déjà posées dans IRIS (cf. iris._evidences)
+-- ---------------------------------------------------------------------------
+--
+-- L'idempotence des pièces Evidence était portée par IRIS lui-même : on relisait
+-- `list_evidences(cid)` et on sautait les alertes déjà présentes. Ça tient
+-- jusqu'à ce que le case en compte des dizaines de milliers — l'appel finit par
+-- échouer ou tronquer, l'échec était avalé en `log.debug`, la liste des « déjà
+-- posées » retombait à vide, et TOUTES les alertes de l'incident étaient
+-- reposées. À chaque cycle, soit toutes les 5 minutes.
+--
+-- Constaté le 2026-08-14 : 2 987 572 lignes dans `case_received_file` pour
+-- 217 542 pièces distinctes (facteur 14 ; jusqu'à 54 copies du même fichier),
+-- 8,3 Go de base IRIS. La cause n'était pas le volume d'alertes, c'était le
+-- fait de DEMANDER À IRIS ce qu'on avait déjà fait.
+--
+-- Le repère est donc local et transactionnel : la clé primaire porte
+-- l'idempotence, plus le réseau. `INSERT ... ON CONFLICT DO NOTHING` avant
+-- l'appel API — si l'insertion ne rend rien, la pièce existe déjà et on ne
+-- rappelle pas IRIS.
+CREATE TABLE IF NOT EXISTS iris_evidences (
+    incident_id bigint      NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+    -- Id de l'alerte Wazuh (texte : c'est un `timestamp.offset`, pas un entier).
+    alert_id    text        NOT NULL,
+    posee_a     timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (incident_id, alert_id)
+);
+
+-- ---------------------------------------------------------------------------
 -- CMDB : priorité des assets (cf. assets.py)
 -- ---------------------------------------------------------------------------
 --

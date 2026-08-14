@@ -166,10 +166,24 @@ SELECT id, agent_id, first_seen, last_seen, alert_count, max_level,
  ORDER BY last_seen DESC
 """
 
+# Membres d'un incident ouvrable, BORNÉS aux MEMBRES_RECENTS derniers de chaque
+# incident. `_rattacher` ne regarde de toute façon que la queue (`membres[-20:]`)
+# pour chercher un point commun, et la date de DÉBUT vient de l'incident
+# (`first_seen`), pas de la première ligne chargée.
+#
+# Sans cette borne, chaque cycle relisait TOUTES les alertes de chaque incident
+# ouvrable — 126 508 lignes pour un seul incident pfSense le 2026-08-14, toutes
+# les 5 minutes, pour n'en exploiter que 20.
+MEMBRES_RECENTS = 50
+
 SELECT_MEMBRES = """
 SELECT id, ts, agent_id, rule_id, rule_level, rule_groups, mitre_tactics,
        srcip, srcuser, entity, audit_uid, incident_id, ueba_signal_id
-  FROM alerts WHERE incident_id = ANY(%s) ORDER BY ts
+  FROM (SELECT *, row_number() OVER (PARTITION BY incident_id
+                                         ORDER BY ts DESC, id DESC) rang
+          FROM alerts WHERE incident_id = ANY(%s)) t
+ WHERE rang <= %s
+ ORDER BY ts
 """
 
 INSERT_INCIDENT = """
@@ -354,7 +368,8 @@ def _rattacher_existants(conn, alertes: list[dict]) -> tuple[list[dict], dict[in
     if not incs:
         return alertes, {}, incs_par_id
 
-    membres = conn.execute(SELECT_MEMBRES, ([i["id"] for i in incs],)).fetchall()
+    membres = conn.execute(SELECT_MEMBRES,
+                           ([i["id"] for i in incs], MEMBRES_RECENTS)).fetchall()
     par_inc: dict[int, dict] = {i["id"]: {"inc": i, "membres": []} for i in incs}
     for m in membres:
         par_inc[m["incident_id"]]["membres"].append(m)
@@ -369,7 +384,10 @@ def _rattacher_existants(conn, alertes: list[dict]) -> tuple[list[dict], dict[in
         for iid, e in par_inc.items():
             if e["inc"]["agent_id"] != a["agent_id"] or not e["membres"]:
                 continue
-            debut = e["membres"][0]["ts"]
+            # Début lu sur l'INCIDENT, pas sur la première ligne chargée : les
+            # membres sont bornés aux plus récents (cf. SELECT_MEMBRES), leur
+            # tête n'est donc plus le début de l'incident.
+            debut = e["inc"]["first_seen"]
             last = e["membres"][-1]["ts"]
             if a["ts"] - debut > duree_max:
                 continue

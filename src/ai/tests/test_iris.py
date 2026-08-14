@@ -5,6 +5,8 @@ doivent l'être : c'est ce qui atterrit dans le dossier d'incident lu par un
 analyste.
 """
 
+import datetime as _dt
+
 from soc_agent import iris
 from soc_agent.iris import (
     CLASSIF_BRUTE,
@@ -583,3 +585,112 @@ def test_severite_posee_avec_le_bon_champ(monkeypatch):
     uri, data = c._s.appels[0]
     assert uri == "/manage/cases/update/42"
     assert data == {"severity_id": 5}
+
+
+# --- boucle de duplication des pièces Evidence (incident du 2026-08-14) -------
+#
+# 2 987 572 lignes dans `case_received_file` pour 217 542 pièces distinctes.
+# La cause : l'idempotence était demandée à IRIS (`list_evidences`), dont
+# l'échec était avalé — la liste des « déjà posées » retombait à vide et tout
+# l'incident était reposé à chaque cycle. Le repère est désormais local.
+
+_TS = _dt.datetime(2026, 8, 14, 9, 30, tzinfo=_dt.timezone.utc)
+
+
+class _ConnEvidences:
+    """conn minimal portant réellement la table `iris_evidences` en mémoire."""
+
+    def __init__(self):
+        self.posees: set[tuple[int, str]] = set()
+        self._resultat: list[dict] = []
+
+    def execute(self, sql, params=None):
+        params = params or ()
+        if "SELECT alert_id FROM iris_evidences" in sql:
+            self._resultat = [{"alert_id": a} for (i, a) in self.posees
+                              if i == params[0]]
+        elif "INSERT INTO iris_evidences" in sql:
+            cle = (params[0], params[1])
+            if cle in self.posees:
+                self._resultat = []          # ON CONFLICT DO NOTHING
+            else:
+                self.posees.add(cle)
+                self._resultat = [{"alert_id": params[1]}]
+        elif "DELETE FROM iris_evidences" in sql:
+            self.posees.discard((params[0], params[1]))
+            self._resultat = []
+        return self
+
+    def fetchall(self):
+        return self._resultat
+
+    def fetchone(self):
+        return self._resultat[0] if self._resultat else None
+
+
+class _CaseEvidences:
+    """Client IRIS factice : compte les pièces réellement envoyées."""
+
+    def __init__(self, echoue_sur=()):
+        self.envoyees: list[str] = []
+        self._echoue_sur = set(echoue_sur)
+
+    def add_evidence(self, filename=None, **kw):
+        if filename in self._echoue_sur:
+            raise RuntimeError("IRIS indisponible")
+        self.envoyees.append(filename)
+        return _Rep({"evidence_id": len(self.envoyees)})
+
+
+def _alerte_ev(aid, ts):
+    return {"id": aid, "ts": ts, "rule_id": 80730, "rule_level": 3,
+            "rule_desc": "Auditd: SELinux permission check",
+            "raw": {"full_log": "log brut"}}
+
+
+def test_evidences_ne_repose_pas_les_memes_pieces(monkeypatch):
+    """Deux passages sur le même incident : la 2e fois, rien n'est renvoyé.
+
+    C'est la régression qui a produit 54 copies du même fichier : chaque cycle
+    de 5 minutes reposait l'intégralité des alertes de l'incident.
+    """
+    monkeypatch.setattr(iris, "_lien_wazuh_alerte", lambda *a, **k: "http://x")
+    conn, case = _ConnEvidences(), _CaseEvidences()
+    alertes = [_alerte_ev(f"17862515{i:02d}.1583", _TS) for i in range(5)]
+
+    assert iris._evidences(conn, case, 196, 2555, alertes, "003") == 5
+    assert iris._evidences(conn, case, 196, 2555, alertes, "003") == 0
+    assert len(case.envoyees) == 5
+
+
+def test_evidences_plafonnees_par_case(monkeypatch):
+    """Au-delà du plafond, on n'archive plus : un onglet Evidence à 100 k
+    pièces n'est lisible par personne et fait gonfler la base IRIS."""
+    monkeypatch.setattr(iris, "_lien_wazuh_alerte", lambda *a, **k: "http://x")
+    monkeypatch.setattr(iris.config, "EVIDENCE_MAX_PAR_CASE", 3)
+    conn, case = _ConnEvidences(), _CaseEvidences()
+    alertes = [_alerte_ev(f"17862515{i:02d}.1583", _TS) for i in range(10)]
+
+    assert iris._evidences(conn, case, 196, 2555, alertes, "003") == 3
+    assert len(case.envoyees) == 3
+
+
+def test_evidence_en_echec_est_retentee(monkeypatch):
+    """Un échec IRIS retire le repère : la pièce repart au passage suivant.
+
+    Poser le repère sans jamais le retirer perdrait la preuve en silence ; ne
+    le poser qu'après l'appel ferait boucler dès que l'écriture échoue.
+    """
+    monkeypatch.setattr(iris, "_lien_wazuh_alerte", lambda *a, **k: "http://x")
+    conn = _ConnEvidences()
+    alertes = [_alerte_ev("1786251501.1583", _TS)]
+    nom = ("wazuh 1786251501.1583 r80730 L3 "
+           "Auditd: SELinux permission check.json")
+
+    assert iris._evidences(conn, _CaseEvidences(echoue_sur=[nom]), 196, 2555,
+                           alertes, "003") == 0
+    assert conn.posees == set()          # repère retiré, pièce non perdue
+
+    case = _CaseEvidences()
+    assert iris._evidences(conn, case, 196, 2555, alertes, "003") == 1
+    assert case.envoyees == [nom]

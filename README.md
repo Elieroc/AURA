@@ -70,6 +70,7 @@ docker compose up -d
 | [`docs/VOC.md`](docs/VOC.md) | gestion des vulnérabilités : l'index d'état de Wazuh est destructif, ce module en fait un historique (burn-down, MTTR, SLA) et l'injecte dans les cases IRIS |
 | [`docs/REMEDIATION.md`](docs/REMEDIATION.md) | remédiation autonome de bout en bout + catalogue de toutes les active responses |
 | [`docs/MCP.md`](docs/MCP.md) | serveur MCP : administrer AURA depuis n'importe quel client IA (relaie Wazuh et IRIS) |
+| [`docs/RETENTION.md`](docs/RETENTION.md) | rétention et ménage : ce qui vieillit, ce qui est purgé, et les trois boucles d'écriture qui avaient rempli le disque |
 
 ## Security principles
 
@@ -83,7 +84,7 @@ docker compose up -d
 AURA/
 ├── docker-compose.yml   # compose racine unique — les 4 stacks
 ├── .env.example         # config racine unique (copier en .env)
-├── docs/                # INSTALL, TRAINING, UEBA, CMDB, CTI, VOC, REMEDIATION, MCP
+├── docs/                # INSTALL, TRAINING, UEBA, CMDB, CTI, VOC, REMEDIATION, MCP, RETENTION
 ├── scripts/             # install-agent.sh, déploiement AR...
 ├── db/                  # bases de données (Postgres/OpenSearch), gitignoré
 └── src/                 # les 4 stacks buildables : ai/ · iris/ · shuffle/ · wazuh/

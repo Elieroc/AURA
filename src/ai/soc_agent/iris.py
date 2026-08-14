@@ -2196,12 +2196,48 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict],
     return "\n".join(lignes)
 
 
+_COLONNES_ALERTE = ("id, ts, rule_id, rule_level, rule_desc, rule_groups, "
+                    "mitre_ids, mitre_tactics, srcip, srcuser, entity, raw")
+
+
 def _alertes(conn, incident_id: int) -> list[dict]:
+    """Alertes d'un incident, BORNÉES à `config.INCIDENT_MAX_ALERTES`.
+
+    Un incident de flood en aligne des dizaines de milliers (126 508 sur un
+    incident pfSense le 2026-08-14). Les charger toutes — `raw` compris, donc le
+    JSON entier de chaque alerte — se paie trois fois : la mémoire du cycle, la
+    timeline, et une pièce Evidence par alerte.
+
+    On garde les plus ANCIENNES et les plus RÉCENTES à parts égales. Le début
+    porte la graine de l'incident (ce qui a déclenché la corrélation, ce que lit
+    le triage) et la fin porte l'état courant ; c'est le milieu d'une salve
+    répétitive qui n'apprend rien. Prendre « les N dernières » perdrait le début
+    de l'attaque, qui est précisément ce qu'un analyste cherche.
+
+    Le compte réel n'est jamais tronqué : il vit dans `incidents.alert_count`.
+    """
+    n = conn.execute("SELECT count(*) c FROM alerts WHERE incident_id = %s",
+                     (incident_id,)).fetchone()["c"]
+    plafond = config.INCIDENT_MAX_ALERTES
+    if n <= plafond:
+        return conn.execute(
+            f"SELECT {_COLONNES_ALERTE} FROM alerts WHERE incident_id = %s "
+            "ORDER BY ts", (incident_id,)).fetchall()
+    moitie = plafond // 2
+    log.warning("incident #%s : %d alertes, chargement borné à %d "
+                "(%d plus anciennes + %d plus récentes)",
+                incident_id, n, plafond, moitie, plafond - moitie)
     return conn.execute(
-        "SELECT id, ts, rule_id, rule_level, rule_desc, rule_groups, "
-        "mitre_ids, mitre_tactics, srcip, srcuser, entity, raw "
-        "FROM alerts WHERE incident_id = %s "
-        "ORDER BY ts", (incident_id,)).fetchall()
+        f"(SELECT {_COLONNES_ALERTE} FROM alerts WHERE incident_id = %(i)s "
+        f" ORDER BY ts ASC LIMIT %(debut)s)"
+        # UNION ALL, pas UNION : les deux moitiés sont disjointes par
+        # construction (on n'entre ici que si n > plafond), et dédupliquer
+        # imposerait un tri sur le `raw` jsonb entier de chaque ligne.
+        " UNION ALL "
+        f"(SELECT {_COLONNES_ALERTE} FROM alerts WHERE incident_id = %(i)s "
+        f" ORDER BY ts DESC LIMIT %(fin)s)"
+        " ORDER BY ts",
+        {"i": incident_id, "debut": moitie, "fin": plafond - moitie}).fetchall()
 
 
 def _traits(conn, incident_id: int) -> list[dict]:
@@ -2494,7 +2530,8 @@ def _timeline(case, case_id: int, alertes: list[dict], agent_id: str,
 _EVIDENCE_PREFIXE = "wazuh"
 
 
-def _evidences(case, case_id: int, alertes: list[dict], agent_id: str) -> int:
+def _evidences(conn, case, case_id: int, incident_id: int,
+               alertes: list[dict], agent_id: str) -> int:
     """Une pièce Evidence par alerte Wazuh brute : le log réel conservé.
 
     Contrairement à la timeline (regroupée par règle) et au lien Discover (qui
@@ -2503,30 +2540,49 @@ def _evidences(case, case_id: int, alertes: list[dict], agent_id: str) -> int:
     (JSON), plus un deep-link vers cette alerte précise. Auto-suffisant — la
     preuve survit à la purge de l'indexer.
 
-    Idempotent par **ajout seul** : une alerte n'est jamais mutée, seulement
-    rattachée à un incident. On relit donc les pièces déjà posées et on saute
-    les id d'alerte déjà présents. Le repère est l'id Wazuh, encodé comme 2e
-    champ du nom de fichier (`wazuh <id> ...`), jamais un tag (l'API evidence
-    n'en porte pas). Best-effort : une pièce en échec ne fait pas capoter le
-    case.
+    Idempotent par **ajout seul**, et le repère est LOCAL : la table
+    `iris_evidences` (cf. schema.sql). L'idempotence reposait auparavant sur une
+    relecture d'IRIS (`list_evidences`) ; passé quelques milliers de pièces,
+    l'appel échoue ou tronque, l'échec était avalé, et tout l'incident était
+    reposé à chaque cycle — 2,99 M de lignes pour 217 k pièces distinctes, 8,3 Go
+    de base IRIS le 2026-08-14. On ne demande donc plus à IRIS ce qu'on a déjà
+    fait : la clé primaire (incident, alerte) le dit, en transaction.
+
+    Bornée par `config.EVIDENCE_MAX_PAR_CASE` : au-delà, l'onglet Evidence
+    n'est de toute façon plus lisible, et les alertes restent intégralement
+    consultables dans l'indexer via le lien Discover de la timeline.
+
+    Best-effort sur chaque pièce : un échec IRIS n'interrompt pas le case, mais
+    il est journalisé en WARNING (et la ligne de repère retirée pour que la
+    pièce soit retentée) — jamais silencieux.
     """
-    try:
-        existants = case.list_evidences(cid=case_id).get_data() or {}
-        existants = existants.get("evidences") or []
-    except Exception as e:  # noqa: BLE001
-        log.debug("liste evidence case #%s : %s", case_id, e)
-        existants = []
-    deja = set()
-    for ev in existants:
-        m = re.match(rf"{_EVIDENCE_PREFIXE} (\S+) ", ev.get("filename") or "")
-        if m:
-            deja.add(m.group(1))
+    deja = {r["alert_id"] for r in conn.execute(
+        "SELECT alert_id FROM iris_evidences WHERE incident_id = %s",
+        (incident_id,)).fetchall()}
+    reste = config.EVIDENCE_MAX_PAR_CASE - len(deja)
+    if reste <= 0:
+        log.info("case #%s : plafond de %d pièces Evidence atteint, %d alerte(s) "
+                 "non archivée(s) (consultables dans l'indexer)", case_id,
+                 config.EVIDENCE_MAX_PAR_CASE, len(alertes) - len(deja))
+        return 0
     n = 0
     for a in alertes:
+        if n >= reste:
+            log.info("case #%s : plafond de %d pièces Evidence atteint",
+                     case_id, config.EVIDENCE_MAX_PAR_CASE)
+            break
         aid = str(a.get("id") or "").strip()
         if not aid or aid in deja:
             continue
         deja.add(aid)  # garde-fou anti-doublon si l'alerte apparaît deux fois
+        # Le repère est posé AVANT l'appel : si le process meurt entre les deux,
+        # on perd une pièce ; l'inverse (poser après) reposte à l'infini dès que
+        # l'écriture en base échoue. C'est le sens du correctif.
+        pose = conn.execute(
+            "INSERT INTO iris_evidences (incident_id, alert_id) VALUES (%s, %s) "
+            "ON CONFLICT DO NOTHING RETURNING alert_id", (incident_id, aid))
+        if not pose.fetchone():
+            continue  # déjà posée par un passage concurrent
         raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
         brut = json.dumps(raw, ensure_ascii=False, indent=2, sort_keys=True)
         full_log = raw.get("full_log") or ""
@@ -2548,16 +2604,25 @@ def _evidences(case, case_id: int, alertes: list[dict], agent_id: str) -> int:
         nom = f"{_EVIDENCE_PREFIXE} {aid} r{rid} L{lvl} {desc[:60]}".strip()
         blob = brut.encode("utf-8")
         try:
-            case.add_evidence(
+            r = case.add_evidence(
                 filename=nom[:250] + ".json",
                 file_size=len(blob),
                 description="\n".join(corps),
                 file_hash=hashlib.sha256(blob).hexdigest(),
                 cid=case_id,
             )
+            if not r.is_success():
+                raise RuntimeError(r.get_msg())
             n += 1
         except Exception as exc:  # noqa: BLE001
-            log.debug("evidence ignorée (alerte %s) : %s", aid, exc)
+            # Le repère est retiré pour que la pièce soit retentée au passage
+            # suivant, et l'échec est VISIBLE : c'est son étouffement en debug
+            # qui a masqué la boucle de duplication pendant quatre jours.
+            conn.execute("DELETE FROM iris_evidences WHERE incident_id = %s "
+                         "AND alert_id = %s", (incident_id, aid))
+            deja.discard(aid)
+            log.warning("evidence non posée (case #%s, alerte %s) : %s",
+                        case_id, aid, exc)
     return n
 
 
@@ -2793,7 +2858,8 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
         _timeline(case, case_id, alertes, incident["agent_id"],
                   asset_ids, ioc_ids, _assets_case(case, case_id))
         # Onglet Evidence : chaque alerte brute archivée (log réel + deep-link).
-        _evidences(case, case_id, alertes, incident["agent_id"])
+        _evidences(conn, case, case_id, incident["id"], alertes,
+                   incident["agent_id"])
 
     conn.commit()
     return case_id
@@ -2898,7 +2964,8 @@ def rafraichir_case(conn, incident: dict, triage: dict) -> int:
         _reconstruire_timeline(case, case_id, alertes, incident["agent_id"],
                                asset_ids, ioc_ids, _assets_case(case, case_id))
         # Evidence : ajout seul des alertes nouvellement rattachées (idempotent).
-        _evidences(case, case_id, alertes, incident["agent_id"])
+        _evidences(conn, case, case_id, incident["id"], alertes,
+                   incident["agent_id"])
 
     conn.execute(
         "UPDATE incidents SET needs_refresh = false, status = %s WHERE id = %s",

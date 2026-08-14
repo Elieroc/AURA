@@ -8,6 +8,7 @@ couverte par son usage réel — elle n'a pas de branche.
 from datetime import datetime, timedelta, timezone
 
 from soc_agent import config
+from soc_agent import watchdog
 from soc_agent.watchdog import _duree, _minutes, _note_panne
 
 
@@ -289,3 +290,59 @@ def test_rendu_brut_aligne_les_faits():
     colonnes = {ligne.index(":") for ligne in brut.splitlines()
                 if ligne.startswith("  ") and ":" in ligne}
     assert len(colonnes) == 1
+
+
+# --- garde-fou disque --------------------------------------------------------
+#
+# Le 2026-08-14, 6 Go/jour partaient sans que rien ne le signale. Le disque est
+# traité comme un capteur : même état, même canal d'alerte, même clôture.
+
+def _usage(total_go, pct):
+    """Retour de shutil.disk_usage pour une occupation donnée."""
+    total = int(total_go * 1073741824)
+    used = int(total * pct / 100)
+    return _NamedUsage(total=total, used=used, free=total - used)
+
+
+class _NamedUsage:
+    def __init__(self, total, used, free):
+        self.total, self.used, self.free = total, used, free
+
+
+def test_disque_sous_le_seuil_ne_dit_rien(monkeypatch):
+    monkeypatch.setattr(watchdog.shutil, "disk_usage",
+                        lambda p: _usage(148, 45))
+    assert watchdog.disque_sature() == []
+
+
+def test_disque_au_dessus_du_seuil_sort_une_entree(monkeypatch):
+    monkeypatch.setattr(watchdog.shutil, "disk_usage",
+                        lambda p: _usage(148, 84))
+    d = watchdog.disque_sature()
+    assert len(d) == 1
+    assert d[0]["capteur"] == watchdog.CAPTEUR_DISQUE
+    assert d[0]["pct"] == 84
+    # Format d'un capteur muet : c'est ce qui lui permet de traverser la boucle
+    # d'ouverture/clôture de `surveiller` sans cas particulier.
+    assert {"agent_id", "agent_name", "capteur", "dernier", "horizon",
+            "volume", "seuil"} <= set(d[0])
+
+
+def test_severite_disque_suit_le_seuil_critique(monkeypatch):
+    """Au seuil d'alerte il reste du temps pour agir, au seuil critique non."""
+    monkeypatch.setattr(config, "DISQUE_SEUIL_CRITIQUE", 90)
+    assert watchdog._severite_panne(watchdog.CAPTEUR_DISQUE, {"pct": 84}) == "Medium"
+    assert watchdog._severite_panne(watchdog.CAPTEUR_DISQUE, {"pct": 93}) == "High"
+
+
+def test_note_disque_en_texte_brut_sans_markdown(monkeypatch):
+    """L'onglet Alerts d'IRIS ne rend pas le markdown : la description ne doit
+    porter ni dièse de titre, ni gras, ni backtick (cf. _note_panne)."""
+    monkeypatch.setattr(watchdog.shutil, "disk_usage",
+                        lambda p: _usage(148, 93))
+    txt = watchdog._note_disque(watchdog.disque_sature()[0], markdown=False)
+    assert "DISQUE DU SOC SATURÉ" in txt
+    assert "93 %" in txt
+    assert "CRITIQUE" in txt
+    for interdit in ("# ", "**", "`"):
+        assert interdit not in txt
