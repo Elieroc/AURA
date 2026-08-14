@@ -1,24 +1,24 @@
-"""Whitelist automatique à partir des faux positifs récurrents.
+"""Automatic whitelist built from recurring false positives.
 
-Boucle fermée du POC autonome : quand le triage LLM juge false_positive, de
-façon répétée, sur une même signature d'événement, on crée une exception. Les
-alertes qui matcheront cette signature seront écartées avant même la
-corrélation et le triage — l'IA cesse de rejuger sans fin le même faux positif.
+The closed loop of the autonomous POC: when LLM triage repeatedly judges
+false_positive on the same event signature, we create an exception. Alerts
+matching that signature are dropped before correlation and triage even happen —
+the AI stops endlessly re-judging the same false positive.
 
-    python -m soc_agent.whitelist                 # crée les exceptions dues
-    python -m soc_agent.whitelist --simulation    # montre sans rien créer
-    python -m soc_agent.whitelist --lister        # exceptions actives
-    python -m soc_agent.whitelist --min-fp 1       # seuil abaissé (POC/démo)
+    python -m soc_agent.whitelist                # creates the due exceptions
+    python -m soc_agent.whitelist --simulation   # shows without creating
+    python -m soc_agent.whitelist --list         # active exceptions
+    python -m soc_agent.whitelist --min-fp 1     # lowered threshold (POC/demo)
 
-Trois garde-fous, hérités de la même logique que le triage :
+Three guardrails, inherited from the same logic as triage:
 
-- Signature PRÉCISE exigée : rule_id seul ne suffit pas (il neutraliserait
-  toute une règle). Il faut au moins un compte, une commande ou un fichier.
-- Jamais de whitelist auto au-dessus de WHITELIST_MAX_LEVEL : une règle qui
-  tire en critique mérite un humain. C'est aussi le mur contre un attaquant qui
-  provoquerait des FP répétés pour se faire whitelister.
-- Une signature vue AU MOINS une fois en true_positive n'est jamais
-  whitelistée, même si elle apparaît par ailleurs en FP : signal contradictoire.
+- A PRECISE signature is required: rule_id alone is not enough (it would
+  neutralise a whole rule). At least an account, a command or a file is needed.
+- Never an automatic whitelist above WHITELIST_MAX_LEVEL: a rule firing at
+  critical deserves a human. It is also the wall against an attacker who would
+  cause repeated FPs to get themselves whitelisted.
+- A signature seen AT LEAST once as true_positive is never whitelisted, even if
+  it appears elsewhere as an FP: contradictory signal.
 """
 
 import argparse
@@ -31,37 +31,37 @@ from psycopg.rows import dict_row, tuple_row
 from . import config
 from .noise import _value_field
 
-# Champs candidats d'une signature de whitelist. Volontairement restreint :
-# - rule_id situe la détection ;
-# - src_user / command / file discriminent l'activité précise.
-# dst_user et agent_name sont exclus : trop larges (dst root, ou tout un hôte).
+# Candidate fields of a whitelist signature. Deliberately restricted:
+# - rule_id locates the detection;
+# - src_user / command / file discriminate the precise activity.
+# dst_user and agent_name are excluded: too broad (dst root, or a whole host).
 DISCRIMINANT_FIELDS = ("src_user", "command", "file")
 FIELDS_SIGNATURE = ("rule_id",) + DISCRIMINANT_FIELDS
 
 
 def _signature(raw_alerts: Iterable[dict],
                discriminant: tuple[str, ...] = DISCRIMINANT_FIELDS) -> dict | None:
-    """Signature d'un incident : champs constants sur toutes ses alertes.
+    """Signature of an incident: fields constant across all its alerts.
 
-    Un champ n'entre dans la signature que s'il a une seule valeur non nulle,
-    identique sur toutes les alertes de l'incident. Retourne None si la
-    signature n'est pas assez précise pour une whitelist sûre.
+    A field only enters the signature when it has a single non-null value,
+    identical across every alert of the incident. Returns None when the
+    signature is not precise enough for a safe whitelist.
 
-    `discriminants` est paramétrable pour `rule_tuning.py`, qui en accepte un de
-    plus (`url`) : une exception écrite dans le moteur de règles peut discriminer
-    sur l'URL, ce que le filtre post-retrieval ne sait pas faire.
+    `discriminant` is parameterised for `rule_tuning.py`, which accepts one more
+    (`url`): an exception written into the rule engine can discriminate on the
+    URL, which the post-retrieval filter cannot do.
 
-    Prend un ITÉRABLE et ne le parcourt qu'une fois : l'appelant peut donc lui
-    passer un curseur serveur au lieu d'une liste. Chaque champ ne retient que
-    DEUX valeurs distinctes, parce que c'est tout ce que la décision demande —
-    « une seule valeur » ou « plusieurs ». Sans ce plafond, la matérialisation
-    des alertes d'un incident de flood (126 508 `raw`) coûtait 1 Go et a fait
-    OOM-killer le cycle le 2026-08-14, arrêtant l'ingestion.
+    Takes an ITERABLE and walks it only once: the caller can therefore hand it a
+    server-side cursor instead of a list. Each field only keeps TWO distinct
+    values, because that is all the decision needs — "a single value" or
+    "several". Without that cap, materialising the alerts of a flood incident
+    (126,508 `raw`) cost 1 GB and got the cycle OOM-killed on 2026-08-14,
+    stopping ingestion.
 
-    Ne PAS remplacer ce parcours par un échantillon borné : un champ jugé
-    constant sur les 2 000 premières alertes alors qu'il varie sur la 2 001e
-    produirait une exception de whitelist plus large que l'incident observé.
-    La borne est sur la mémoire retenue, jamais sur ce qui est examiné.
+    Do NOT replace this walk by a bounded sample: a field judged constant over
+    the first 2,000 alerts while it varies on the 2,001st would produce a
+    whitelist exception broader than the incident observed. The bound is on the
+    memory retained, never on what is examined.
     """
     fields = ("rule_id",) + tuple(discriminant)
     values: dict[str, set] = {c: set() for c in fields}
@@ -70,7 +70,7 @@ def _signature(raw_alerts: Iterable[dict],
         seen = True
         for field in fields:
             if len(values[field]) > 1:
-                continue  # déjà multivalué : la suite ne peut plus rien changer
+                continue  # already multi-valued: the rest cannot change anything
             if (v := _value_field(a, field)) is not None:
                 values[field].add(v)
     if not seen:
@@ -78,8 +78,8 @@ def _signature(raw_alerts: Iterable[dict],
 
     signature = {c: str(next(iter(s))) for c, s in values.items() if len(s) == 1}
 
-    # Précision : au moins un discriminant, sinon on neutraliserait trop large
-    # (rule_id seul = toute la règle).
+    # Precision: at least one discriminant, otherwise we would neutralise far
+    # too broadly (rule_id alone = the whole rule).
     if not any(c in signature for c in discriminant):
         return None
     return signature
@@ -92,10 +92,10 @@ def _canonical(signature: dict) -> str:
 def _incidents_by_verdict(
         conn,
         discriminant: tuple[str, ...] = DISCRIMINANT_FIELDS) -> tuple[dict, set]:
-    """(FP par signature, ensemble des signatures vues en TP).
+    """(FPs per signature, set of signatures seen as TP).
 
-    On ne considère que le DERNIER triage de chaque incident : les passages
-    précédents reflètent des prompts abandonnés.
+    Only the LAST triage of each incident counts: earlier passes reflect prompts
+    we have abandoned.
     """
     lines = conn.execute("""
         SELECT DISTINCT ON (t.incident_id)
@@ -109,13 +109,13 @@ def _incidents_by_verdict(
     sig_tp: set[str] = set()
 
     for l in lines:
-        # Curseur SERVEUR (`name=`) : les lignes arrivent par paquets et ne sont
-        # jamais toutes en mémoire. Un incident de flood en compte 126 508, dont
-        # le `raw` complet — 1 Go matérialisé d'un coup, au-delà de la limite du
-        # conteneur (cf. _signature).
-        # `row_factory` explicite : la connexion est en `dict_row`, dont le
-        # curseur hériterait — on ne veut qu'une colonne, autant la lire par
-        # position sans construire un dict par ligne.
+        # SERVER-side cursor (`name=`): rows arrive in packets and are never
+        # all in memory. A flood incident holds 126,508 of them, each with its
+        # full `raw` — 1 GB materialised at once, past the container limit (see
+        # _signature).
+        # Explicit `row_factory`: the connection is in `dict_row`, which the
+        # cursor would inherit — we only want one column, so read it by position
+        # without building a dict per row.
         with conn.cursor(name=f"sig_{l['incident_id']}",
                          row_factory=tuple_row) as cur:
             cur.itersize = 2000
@@ -138,7 +138,7 @@ def _incidents_by_verdict(
 
 
 def analyze(min_fp: int, simulation: bool) -> list[dict]:
-    """Crée (ou simule) les exceptions dues. Retourne les décisions."""
+    """Creates (or simulates) the due exceptions. Returns the decisions."""
     decisions: list[dict] = []
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         fp_by_sig, sig_tp = _incidents_by_verdict(conn)
@@ -150,20 +150,20 @@ def analyze(min_fp: int, simulation: bool) -> list[dict]:
             if canon in existing:
                 continue
             if canon in sig_tp:
-                decisions.append({"signature": canon, "action": "refusé",
-                                  "raison": "vue aussi en true_positive"})
+                decisions.append({"signature": canon, "action": "refused",
+                                  "reason": "also seen as true_positive"})
                 continue
             if e["max_level"] >= config.WHITELIST_MAX_LEVEL:
-                decisions.append({"signature": canon, "action": "refusé",
-                                  "raison": f"niveau {e['max_level']} >= "
+                decisions.append({"signature": canon, "action": "refused",
+                                  "reason": f"level {e['max_level']} >= "
                                             f"{config.WHITELIST_MAX_LEVEL}"})
                 continue
             if n < min_fp:
-                decisions.append({"signature": canon, "action": "en attente",
-                                  "raison": f"{n}/{min_fp} FP"})
+                decisions.append({"signature": canon, "action": "pending",
+                                  "reason": f"{n}/{min_fp} FP"})
                 continue
 
-            reason = (f"FP récurrent ({n} incidents) jugé par l'IA — "
+            reason = (f"recurring FP ({n} incidents) judged by the AI — "
                       f"{canon}")
             if not simulation:
                 conn.execute("""
@@ -174,47 +174,48 @@ def analyze(min_fp: int, simulation: bool) -> list[dict]:
                     ON CONFLICT (signature) DO NOTHING
                 """, (canon, json.dumps(e["signature"]), reason,
                       e["incidents"], n))
-                # Les incidents à l'origine passent en 'whitelisted' : ils ne
-                # seront plus recomptés, et le statut trace le pourquoi.
+                # The originating incidents move to 'whitelisted': they will
+                # not be counted again, and the status records why.
                 conn.execute(
                     "UPDATE incidents SET status = 'whitelisted' "
                     "WHERE id = ANY(%s)", (e["incidents"],))
                 conn.commit()
-            decisions.append({"signature": canon, "action": "créé",
+            decisions.append({"signature": canon, "action": "created",
                               "match_all": e["signature"], "fp": n})
 
     return decisions
 
 
 def signatures_seen_tp(conn) -> set[str]:
-    """Signatures (forme canonique) vues au moins une fois en true_positive.
+    """Signatures (canonical form) seen at least once as true_positive.
 
-    Réutilisé par whitelist_task.py : une whitelist demandée manuellement par
-    l'analyste obéit au même garde-fou qu'une whitelist automatique — jamais
-    sur une signature contredite par un vrai positif.
+    Reused by whitelist_task.py: a whitelist requested by hand by the analyst
+    obeys the same guardrail as an automatic one — never on a signature
+    contradicted by a true positive.
     """
     return _incidents_by_verdict(conn)[1]
 
 
 def validate_signature(signature: dict, level: int, sig_tp: set[str]) -> str | None:
-    """Garde-fous déterministes avant toute création de whitelist_rules.
+    """Deterministic guardrails before any whitelist_rules creation.
 
-    Retourne la raison de refus, ou None si la signature est acceptable. Le
-    LLM (auto ou tâche manuelle) PROPOSE ; ce garde-fou DÉCIDE — mêmes trois
-    règles que `analyser()` : signature précise, niveau borné, jamais vue en
+    Returns the reason for refusal, or None when the signature is acceptable. The
+    LLM (automatic or manual task) PROPOSES; this guardrail DECIDES — the same
+    three rules as `analyze()`: precise signature, bounded level, never seen as
     true_positive.
     """
     if not any(c in signature for c in DISCRIMINANT_FIELDS):
-        return "signature trop large : rule_id seul ne suffit pas"
+        return "signature too broad: rule_id alone is not enough"
     if level >= config.WHITELIST_MAX_LEVEL:
-        return f"niveau {level} >= {config.WHITELIST_MAX_LEVEL} (whitelist auto interdite)"
+        return (f"level {level} >= {config.WHITELIST_MAX_LEVEL} "
+                "(automatic whitelist forbidden)")
     if _canonical(signature) in sig_tp:
-        return "signature déjà vue en true_positive"
+        return "signature already seen as true_positive"
     return None
 
 
 def exceptions() -> list[dict]:
-    """Les exceptions de whitelist, actives ou révoquées, plus récentes d'abord."""
+    """The whitelist exceptions, active or revoked, most recent first."""
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         lines = conn.execute("""
             SELECT id, signature, match_all, reason, source, fp_count, active,
@@ -224,13 +225,13 @@ def exceptions() -> list[dict]:
     return [dict(r, created_at=r["created_at"].isoformat()) for r in lines]
 
 
-def list() -> None:
+def list_exceptions() -> None:
     lines = exceptions()
     if not lines:
-        print("Aucune exception de whitelist.")
+        print("No whitelist exception.")
         return
     for r in lines:
-        state = "actif " if r["active"] else "inactif"
+        state = "active  " if r["active"] else "inactive"
         print(f"  #{r['id']:<3} [{state}] {r['source']:<6} "
               f"{r['fp_count']} FP  {json.dumps(r['match_all'], ensure_ascii=False)}")
 
@@ -240,27 +241,27 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--min-fp", type=int, default=config.WHITELIST_MIN_FP)
     ap.add_argument("--simulation", action="store_true",
-                    help="montre les décisions sans rien créer")
-    ap.add_argument("--lister", action="store_true")
+                    help="shows the decisions without creating anything")
+    ap.add_argument("--list", action="store_true")
     args = ap.parse_args()
 
     if args.list:
-        list()
+        list_exceptions()
         return
 
     decisions = analyze(args.min_fp, args.simulation)
     if not decisions:
-        print("Aucun faux positif à examiner.")
+        print("No false positive to examine.")
         return
 
     prefix = "[simulation] " if args.simulation else ""
     for d in decisions:
-        if d["action"] == "créé":
-            print(f"{prefix}CRÉÉ   {d['signature']}  ({d['fp']} FP)")
-        elif d["action"] == "en attente":
-            print(f"       attente {d['signature']}  ({d['raison']})")
+        if d["action"] == "created":
+            print(f"{prefix}CREATED {d['signature']}  ({d['fp']} FP)")
+        elif d["action"] == "pending":
+            print(f"        pending {d['signature']}  ({d['reason']})")
         else:
-            print(f"       refusé  {d['signature']}  ({d['raison']})")
+            print(f"        refused {d['signature']}  ({d['reason']})")
 
 
 if __name__ == "__main__":

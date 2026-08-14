@@ -242,7 +242,7 @@ def declare_role(agent_name: str, role: str | None) -> dict:
         # Inscription quand même : un asset connu et sans rôle est une dette
         # d'inventaire VISIBLE, alors qu'un asset absent de la table est un
         # angle mort. Il sera de toute façon revu au prochain --sync.
-        soc_assets.definir(agent_id, priority=_default_priority(),
+        soc_assets.set_asset(agent_id, priority=_default_priority(),
                            source="defaut",
                            notes="enrôlé sans rôle déclaré")
         return {"etape": "role", "ok": True, "role": None,
@@ -278,7 +278,7 @@ def declare_role(agent_name: str, role: str | None) -> dict:
     groups = {str(g).lower()
                for g in (state_on_manager(agent_name).get("groups") or [])}
     tenu = group.lower() in groups
-    line = soc_assets.definir(agent_id, role=role,
+    line = soc_assets.set_asset(agent_id, role=role,
                                source="groupe" if tenu else "operateur",
                                notes=None if tenu else
                                f"agent {agent_id} : le manager n'accepte pas "

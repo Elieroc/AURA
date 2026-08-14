@@ -47,7 +47,7 @@ def aura_assets_list(priority: int | None = None,
                       "réaligne toute seule au cycle suivant.",
         })
     return output.jsonifiable({
-        "assets": soc_assets.list(priority),
+        "assets": soc_assets.list_assets(priority),
         "repartition": coverage["par_priorite"],
         "dette": coverage["dette"],
         "roles_connus": dict(sorted(soc_config.PRIORITY_ROLES.items(),
@@ -73,7 +73,7 @@ def aura_asset_set(agent_id: str, role: str | None = None,
         notes: justification, lue par le prochain analyste qui s'interrogera.
     """
     try:
-        line = soc_assets.definir(agent_id, role=role, priority=priority,
+        line = soc_assets.set_asset(agent_id, role=role, priority=priority,
                                    notes=notes)
     except ValueError as e:
         return {"error": str(e)}

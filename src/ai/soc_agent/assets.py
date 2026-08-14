@@ -1,19 +1,19 @@
-"""CMDB : rôle et priorité des machines surveillées.
+"""CMDB: role and priority of the monitored machines.
 
-Le pipeline ne connaissait que `rule_level` — une propriété de la RÈGLE. Deux
-incidents de niveau 12, l'un sur le contrôleur de domaine, l'autre sur un poste
-de test, arrivaient dans la même file, dans le même ordre, avec les mêmes
-garde-fous. Ce module apporte la seconde moitié de l'information : *sur quoi*.
+The pipeline only knew `rule_level` — a property of the RULE. Two level-12
+incidents, one on the domain controller and one on a test box, landed in the
+same queue, in the same order, with the same guardrails. This module brings the
+other half of the information: *on what*.
 
-Source de vérité : les **groupes Wazuh** préfixés `role-` (cf.
-`config.CMDB_GROUPE_PREFIXE`). C'est le mécanisme d'inventaire natif, il survit
-au redéploiement de la stack, et l'opérateur qui enrôle une machine y déclare son
-rôle au même endroit que le reste de sa configuration. La table `assets` en est
-un MIROIR interrogeable — jamais l'inverse : ce que dit le manager gagne, sauf
-sur une ligne posée à la main par l'opérateur (`priorite_source = 'operateur'`).
+Source of truth: the **Wazuh groups** prefixed `role-` (see
+`config.CMDB_GROUP_PREFIX`). It is the native inventory mechanism, it survives a
+redeploy of the stack, and the operator enrolling a machine declares its role in
+the same place as the rest of its configuration. The `assets` table is a
+queryable MIRROR of it — never the other way round: what the manager says wins,
+except on a row set by hand by the operator (`priority_source = 'operator'`).
 
-    python -m soc_agent.assets --sync        # aligne la CMDB sur le manager
-    python -m soc_agent.assets --couverture  # dette d'inventaire (P4 par défaut)
+    python -m soc_agent.assets --sync       # aligns the CMDB on the manager
+    python -m soc_agent.assets --coverage   # inventory debt (P4 by default)
 """
 
 import argparse
@@ -29,23 +29,22 @@ from . import config
 log = logging.getLogger("assets")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Sources de priorité, de la plus forte à la plus faible. `operateur` est une
-# décision humaine explicite : la synchronisation ne l'écrase jamais, sinon le
-# prochain passage effacerait la correction qu'un analyste vient de faire.
-SOURCES = ("operateur", "groupe", "defaut")
+# Priority sources, strongest first. `operator` is an explicit human decision:
+# the synchronisation never overwrites it, otherwise the next pass would erase
+# the correction an analyst has just made.
+SOURCES = ("operator", "group", "default")
 
 
 # --------------------------------------------------------------------------
-# Calcul de la priorité
+# Computing the priority
 # --------------------------------------------------------------------------
 
 def role_from_groups(groups) -> str | None:
-    """Rôle déclaré par les groupes Wazuh de l'agent, ou None.
+    """Role declared by the agent's Wazuh groups, or None.
 
-    Une machine peut porter plusieurs rôles (`role-web` + `role-db` sur un LAMP
-    mutualisé) : c'est le plus critique qui l'emporte. Sous-estimer un asset
-    mixte serait le pire des deux mondes — on le traiterait comme sa moitié la
-    moins importante.
+    A machine can carry several roles (`role-web` + `role-db` on a shared LAMP):
+    the most critical one wins. Underestimating a mixed asset would be the worst
+    of both worlds — we would treat it as its least important half.
     """
     prefix = config.CMDB_GROUP_PREFIX
     roles = [str(g).lower()[len(prefix):] for g in (groups or [])
@@ -57,31 +56,29 @@ def role_from_groups(groups) -> str | None:
 
 
 def role_priority(role: str | None) -> int:
-    """Priorité d'un rôle, ou PRIORITE_DEFAUT s'il est inconnu."""
+    """Priority of a role, or DEFAULT_PRIORITY when it is unknown."""
     if not role:
         return config.DEFAULT_PRIORITY
     return config.PRIORITY_ROLES.get(str(role).lower(), config.DEFAULT_PRIORITY)
 
 
 def severity(max_level: int, priority: int) -> int:
-    """Sévérité EFFECTIVE d'un incident : niveau Wazuh corrigé par l'asset.
+    """EFFECTIVE severity of an incident: Wazuh level corrected by the asset.
 
-    Fonction pure, bornée à l'échelle Wazuh (1-15) pour rester lisible à côté de
-    `max_level` et comparable d'un incident à l'autre. On ne modifie jamais
-    `max_level` lui-même : la corrélation, UEBA et `RULES_COMPROMISSION_HOTE`
-    s'appuient dessus, et un décalage silencieux changerait le sens de tous les
-    seuils existants.
+    A pure function, bounded to the Wazuh scale (1-15) so it stays readable next
+    to `max_level` and comparable from one incident to the next. We never modify
+    `max_level` itself: correlation, UEBA and `RULES_COMPROMISE_HOST` rely on it,
+    and a silent shift would change the meaning of every existing threshold.
     """
     bonus = config.SEVERITY_BONUS_PRIORITY.get(priority, 0)
     return max(1, min(15, int(max_level) + bonus))
 
 
-# La table est-elle là ? Testé une fois par processus, et par une requête qui
-# ne peut pas ÉCHOUER (`to_regclass` rend NULL au lieu de lever). Sans cela, un
-# déploiement où la migration de `schema.sql` a été oubliée verrait la
-# corrélation lever au premier incident — donc plus d'incidents du tout, pour
-# une colonne d'agrément. Une priorisation absente doit dégrader le tri, jamais
-# arrêter le SOC.
+# Is the table there? Tested once per process, with a query that cannot FAIL
+# (`to_regclass` returns NULL instead of raising). Without it, a deployment where
+# the `schema.sql` migration was forgotten would see correlation raise on the
+# first incident — hence no incidents at all, over a convenience column. A
+# missing prioritisation must degrade the ordering, never stop the SOC.
 _TABLE_READY: bool | None = None
 
 
@@ -93,29 +90,29 @@ def _available(conn) -> bool:
         ).fetchone()["ok"])
         if not _TABLE_READY:
             log.warning(
-                "table `assets` absente : tous les incidents naîtront en P%d. "
-                "Appliquer soc_agent/schema.sql (cf. docs/CMDB.md).",
+                "`assets` table missing: every incident will be born at P%d. "
+                "Apply soc_agent/schema.sql (see docs/CMDB.md).",
                 config.DEFAULT_PRIORITY)
     return _TABLE_READY
 
 
 def agent_priority(conn, agent_id: str, container: str | None = None) -> dict:
-    """Priorité applicable aux alertes de cet agent : {priorite, role, source}.
+    """Priority applying to this agent's alerts: {priority, role, source}.
 
-    Deux corrections par rapport à la lecture brute de la CMDB, dans cet ordre :
+    Two corrections on top of a raw CMDB read, in this order:
 
-    1. **agent capteur** (`AGENTS_CAPTEURS`) : sa télémétrie décrit l'activité
-       d'AUTRES machines. Le pare-feu qui porte Suricata *est* un asset P1, mais
-       l'alerte qu'il remonte parle d'un poste du LAN. On rabat donc sur
-       `PRIORITE_CAPTEUR`, sauf si l'alerte porte le conteneur d'origine
-       (`alerts.container`) — auquel cas c'est CE dernier qui est résolu, et on
-       retombe sur le cas normal.
-    2. **agent absent de la CMDB** : `PRIORITE_DEFAUT`, source `defaut`. Jamais
-       une erreur — un agent enrôlé hors d'AURA doit passer, pas bloquer.
+    1. **sensor agent** (`AGENTS_SENSORS`): its telemetry describes the activity
+       of OTHER machines. The firewall carrying Suricata *is* a P1 asset, but the
+       alert it reports talks about a LAN workstation. So we fall back to
+       `PRIORITY_SENSOR`, unless the alert carries the originating container
+       (`alerts.container`) — in which case THAT one is resolved and we are back
+       to the normal case.
+    2. **agent absent from the CMDB**: `DEFAULT_PRIORITY`, source `default`.
+       Never an error — an agent enrolled outside AURA must pass, not block.
     """
     if not _available(conn):
         return {"priority": config.DEFAULT_PRIORITY, "role": None,
-                "source": "defaut"}
+                "source": "default"}
 
     if container:
         line = _read(conn, name=container)
@@ -132,7 +129,7 @@ def agent_priority(conn, agent_id: str, container: str | None = None) -> dict:
         return {"priority": line["priority"], "role": line["role"],
                 "source": line["priority_source"]}
     return {"priority": config.DEFAULT_PRIORITY, "role": None,
-            "source": "defaut"}
+            "source": "default"}
 
 
 def _read(conn, agent_id: str | None = None, name: str | None = None):
@@ -146,17 +143,17 @@ def _read(conn, agent_id: str | None = None, name: str | None = None):
 
 
 def label(priority: int, role: str | None) -> str:
-    """« P1 — contrôleur de domaine (dc) », pour le prompt et les cases IRIS."""
+    """"P1 (dc)", for the prompt and the IRIS cases — French, like both."""
     return f"P{priority}" + (f" ({role})" if role else " (rôle non déclaré)")
 
 
 # --------------------------------------------------------------------------
-# Synchronisation depuis le manager Wazuh
+# Synchronisation from the Wazuh manager
 # --------------------------------------------------------------------------
 #
-# Client API minimal, volontairement local au module : `mitigate` a le sien, mais
-# l'importer d'ici créerait un cycle (mitigate -> iris -> ... ) pour deux appels
-# GET en lecture seule.
+# Minimal API client, deliberately local to this module: `mitigate` has its own,
+# but importing it from here would create a cycle (mitigate -> iris -> ...) for
+# two read-only GET calls.
 
 def _token() -> str:
     r = requests.post(
@@ -168,7 +165,7 @@ def _token() -> str:
 
 
 def manager_inventory() -> list[dict]:
-    """Agents connus du manager, avec leurs groupes. Lecture seule."""
+    """Agents known to the manager, with their groups. Read-only."""
     tok = _token()
     r = requests.get(
         f"{config.WAZUH_API_URL}/agents",
@@ -190,29 +187,28 @@ ON CONFLICT (agent_id) DO UPDATE SET
     os       = EXCLUDED.os,
     groups  = EXCLUDED.groups,
     seen_at     = now(),
-    -- Une priorité posée à la main par l'opérateur n'est JAMAIS écrasée par la
-    -- synchronisation : elle exprime une connaissance métier que les groups
-    -- Wazuh n'ont pas. Pour la reprendre, il faut la retirer explicitement
-    -- (`--reprendre <agent>`).
-    role     = CASE WHEN assets.priority_source = 'operateur'
+    -- A priority set by hand by the operator is NEVER overwritten by the
+    -- synchronisation: it expresses business knowledge the Wazuh groups do not
+    -- have. To take it back, it must be removed explicitly.
+    role     = CASE WHEN assets.priority_source = 'operator'
                     THEN assets.role ELSE EXCLUDED.role END,
-    priority = CASE WHEN assets.priority_source = 'operateur'
+    priority = CASE WHEN assets.priority_source = 'operator'
                     THEN assets.priority ELSE EXCLUDED.priority END,
-    priority_source = CASE WHEN assets.priority_source = 'operateur'
-                    THEN 'operateur' ELSE EXCLUDED.priority_source END,
+    priority_source = CASE WHEN assets.priority_source = 'operator'
+                    THEN 'operator' ELSE EXCLUDED.priority_source END,
     updated_at    = now()
 RETURNING (xmax = 0) AS cree
 """
 
 
 def sync() -> dict:
-    """Aligne la CMDB sur ce que le manager déclare. Retourne un récapitulatif.
+    """Aligns the CMDB on what the manager declares. Returns a summary.
 
-    Best-effort par construction : appelée dans le cycle, une API Wazuh
-    injoignable ne doit pas coûter un tour de pipeline. L'appelant décide.
+    Best-effort by construction: called inside the cycle, an unreachable Wazuh
+    API must not cost a pipeline round. The caller decides.
     """
     agents = manager_inventory()
-    resume = {"vus": len(agents), "crees": 0, "maj": 0, "par_priorite": {}}
+    summary = {"seen": len(agents), "created": 0, "updated": 0, "by_priority": {}}
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         for a in agents:
             groups = [str(g).lower() for g in (a.get("group") or [])]
@@ -227,47 +223,47 @@ def sync() -> dict:
                 "groups": groups,
                 "role": role,
                 "priority": priority,
-                "source": "groupe" if role else "defaut",
+                "source": "group" if role else "default",
             }).fetchone()
-            resume["crees" if r["cree"] else "maj"] += 1
-            resume["par_priorite"][priority] = (
-                resume["par_priorite"].get(priority, 0) + 1)
+            summary["created" if r["cree"] else "updated"] += 1
+            summary["by_priority"][priority] = (
+                summary["by_priority"].get(priority, 0) + 1)
         conn.commit()
-    return resume
+    return summary
 
 
-def definir(agent_id: str, role: str | None = None,
-            priority: int | None = None, notes: str | None = None,
-            source: str = "operateur") -> dict:
-    """Pose ou corrige la priorité d'un asset. `role` OU `priorite`.
+def set_asset(agent_id: str, role: str | None = None,
+              priority: int | None = None, notes: str | None = None,
+              source: str = "operator") -> dict:
+    """Sets or corrects an asset's priority. `role` OR `priority`.
 
-    Une priorité posée ici est marquée `operateur` et survit aux
-    synchronisations : c'est l'échappatoire quand les groupes Wazuh ne suffisent
-    pas (machine qu'on ne peut pas regrouper, exception temporaire).
+    A priority set here is marked `operator` and survives synchronisations: it is
+    the escape hatch when the Wazuh groups are not enough (a machine that cannot
+    be grouped, a temporary exception).
     """
     if role is not None:
         role = str(role).lower()
         if role not in config.PRIORITY_ROLES:
             raise ValueError(
-                f"rôle inconnu : « {role} ». Rôles connus : "
-                f"{', '.join(sorted(config.PRIORITY_ROLES))} (en ajouter un via "
-                f"PRIORITE_ROLES).")
+                f"unknown role: \"{role}\". Known roles: "
+                f"{', '.join(sorted(config.PRIORITY_ROLES))} (add one through "
+                f"PRIORITY_ROLES).")
         if priority is None:
             priority = config.PRIORITY_ROLES[role]
     if priority is None:
-        raise ValueError("préciser au moins un rôle ou une priorité")
+        raise ValueError("give at least a role or a priority")
     if not 1 <= int(priority) <= 4:
-        raise ValueError(f"priorité hors échelle P1-P4 : {priority}")
+        raise ValueError(f"priority outside the P1-P4 scale: {priority}")
 
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         line = conn.execute(
             "INSERT INTO assets (agent_id, role, priority, priority_source, "
             "                    notes, seen_at, updated_at) "
             "VALUES (%s, %s, %s, %s, %s, now(), now()) "
-            # COALESCE sur le rôle : forcer une priorité seule (échappatoire
-            # hors catalogue) ne doit pas effacer le rôle déjà connu — l'asset
-            # deviendrait « non déclaré » dans le rapport de couverture alors
-            # qu'on vient justement de le classer.
+            # COALESCE on the role: forcing a priority alone (the
+            # off-catalogue escape hatch) must not erase the role already known —
+            # the asset would turn "undeclared" in the coverage report just as we
+            # were classifying it.
             "ON CONFLICT (agent_id) DO UPDATE "
             "SET role = COALESCE(EXCLUDED.role, assets.role), "
             "  priority = EXCLUDED.priority, "
@@ -279,7 +275,7 @@ def definir(agent_id: str, role: str | None = None,
     return dict(line)
 
 
-def list(priority: int | None = None) -> list[dict]:
+def list_assets(priority: int | None = None) -> list[dict]:
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         return [dict(r) for r in conn.execute(
             "SELECT agent_id, name, ip, os, role, priority, priority_source, "
@@ -289,56 +285,56 @@ def list(priority: int | None = None) -> list[dict]:
 
 
 def coverage() -> dict:
-    """Dette d'inventaire : qui tourne sans rôle déclaré.
+    """Inventory debt: what runs without a declared role.
 
-    Le complément indispensable du choix « P4 par défaut ». Sans cette vue, une
-    machine critique jamais déclarée est traitée comme un poste jetable, et rien
-    ne le dit.
+    The indispensable counterpart of the "P4 by default" choice. Without this
+    view, a critical machine that was never declared is treated as a disposable
+    workstation, and nothing says so.
     """
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         by_prio = {r["priority"]: r["n"] for r in conn.execute(
             "SELECT priority, count(*) AS n FROM assets GROUP BY priority")}
-        sans_role = [dict(r) for r in conn.execute(
+        without_role = [dict(r) for r in conn.execute(
             "SELECT agent_id, name, ip, os FROM assets "
-            " WHERE priority_source = 'defaut' ORDER BY name").fetchall()]
-    return {"par_priorite": by_prio, "sans_role_declare": sans_role,
-            "dette": len(sans_role)}
+            " WHERE priority_source = 'default' ORDER BY name").fetchall()]
+    return {"by_priority": by_prio, "without_declared_role": without_role,
+            "debt": len(without_role)}
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--sync", action="store_true",
-                    help="aligne la CMDB sur les groupes du manager Wazuh")
-    ap.add_argument("--couverture", action="store_true",
-                    help="agents sans rôle déclaré (traités en P%d)"
+                    help="aligns the CMDB on the Wazuh manager groups")
+    ap.add_argument("--coverage", action="store_true",
+                    help="agents with no declared role (handled at P%d)"
                          % config.DEFAULT_PRIORITY)
-    ap.add_argument("--lister", action="store_true")
-    ap.add_argument("--definir", metavar="AGENT_ID",
-                    help="pose une priorité d'opérateur sur un agent")
+    ap.add_argument("--list", action="store_true")
+    ap.add_argument("--set", metavar="AGENT_ID",
+                    help="sets an operator priority on an agent")
     ap.add_argument("--role")
-    ap.add_argument("--priorite", type=int)
+    ap.add_argument("--priority", type=int)
     ap.add_argument("--notes")
     args = ap.parse_args()
 
     if args.sync:
         r = sync()
-        print(f"{r['vus']} agents : {r['crees']} créés, {r['maj']} mis à jour")
-        for p in sorted(r["par_priorite"]):
-            print(f"  P{p} : {r['par_priorite'][p]}")
-    if args.definir:
-        print(definir(args.definir, args.role, args.priority, args.notes))
+        print(f"{r['seen']} agents: {r['created']} created, {r['updated']} updated")
+        for p in sorted(r["by_priority"]):
+            print(f"  P{p}: {r['by_priority'][p]}")
+    if args.set:
+        print(set_asset(args.set, args.role, args.priority, args.notes))
     if args.list:
-        for a in list():
+        for a in list_assets():
             print(f"P{a['priority']} {a['name'] or a['agent_id']:<20} "
                   f"{a['role'] or '-':<12} {a['priority_source']}")
     if args.coverage:
         c = coverage()
-        print(f"répartition : "
-              + ", ".join(f"P{p}={n}" for p, n in sorted(c["par_priorite"].items())))
-        if c["dette"]:
-            print(f"\n{c['dette']} agent(s) SANS rôle déclaré — traités en "
-                  f"P{config.DEFAULT_PRIORITY}, donc en fin de file :")
-            for a in c["sans_role_declare"]:
+        print("breakdown: "
+              + ", ".join(f"P{p}={n}" for p, n in sorted(c["by_priority"].items())))
+        if c["debt"]:
+            print(f"\n{c['debt']} agent(s) with NO declared role — handled at "
+                  f"P{config.DEFAULT_PRIORITY}, so at the back of the queue:")
+            for a in c["without_declared_role"]:
                 print(f"  {a['agent_id']:<5} {a['name'] or '?':<24} {a['ip'] or ''}")
 
 

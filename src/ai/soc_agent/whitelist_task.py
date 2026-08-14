@@ -1,18 +1,19 @@
-"""Traitement des tâches IRIS « WHITELIST » passées en 'To do' par l'analyste.
+"""Handling the IRIS "WHITELIST" tasks the analyst moved to 'To do'.
 
-Chaque case créé par `iris.creer_case` porte une tâche WHITELIST en 'On hold'
-(`iris._poser_tache_whitelist`). L'analyste la remplit (description ou
-commentaire) et la passe en 'To do' quand il veut une exception. Ce module,
-appelé périodiquement (comme la réconciliation des remédiations), repère ces
-tâches et :
+Every case created by `iris.create_case` carries a WHITELIST task in 'On hold'
+(`iris._set_whitelist_task`). The analyst fills it in (description or comment)
+and moves it to 'To do' when they want an exception. This module, called
+periodically (like the remediation reconciliation), spots those tasks and:
 
-- si les instructions permettent de composer une signature sûre (mêmes
-  garde-fous que la whitelist automatique, `whitelist.valider_signature`) :
-  crée la ligne `whitelist_rules`, commente le résultat, clôt la tâche ;
-- sinon : commente une question et laisse la tâche en 'To do'. Le script est
-  STATELESS — il relit tout le fil de commentaires à chaque passage et ne
-  repose PAS la question si le dernier commentaire est déjà le sien (préfixe
-  `_PREFIXE_IA`) ; il ne reprend la main que si l'analyste a répondu depuis.
+- if the instructions allow composing a safe signature (same guardrails as the
+  automatic whitelist, `whitelist.validate_signature`): creates the
+  `whitelist_rules` row, comments the result, closes the task;
+- otherwise: comments a question and leaves the task in 'To do'. The script is
+  STATELESS — it re-reads the whole comment thread on every pass and does NOT
+  ask again when the last comment is already its own (prefix `_PREFIX_AI`); it
+  only takes over again once the analyst has answered.
+
+The comments posted to IRIS stay in French: they are read by the analysts.
 
     python -m soc_agent.whitelist_task
     python -m soc_agent.whitelist_task --incident 15
@@ -36,21 +37,22 @@ from .whitelist import (_canonical, _signature, signatures_seen_tp,
 
 log = logging.getLogger("whitelist_task")
 
-# Titre posé par `iris._poser_tache_whitelist` — sert à ignorer les autres
-# tâches du case (ex. remédiation) lors du parcours de `list_tasks`.
+# Title set by `iris._set_whitelist_task` — used to ignore the other tasks of
+# the case (e.g. remediation) when walking `list_tasks`.
 _TITLE_PREFIX = "WHITELIST"
 _STATUS_TO_PROCESS = "To do"
-# « Done » et non « Closed » : IRIS n'a que cinq statuts de tâche (To do, In
-# progress, On hold, Done, Canceled). Le nom inexistant faisait échouer la
-# clôture même une fois le cid corrigé.
+# "Done" and not "Closed": IRIS only has five task statuses (To do, In
+# progress, On hold, Done, Canceled). The non-existent name made the closure fail
+# even once the cid was fixed.
 _STATUS_CLOSED = "Done"
 
-# Préfixe de TOUT commentaire posté par ce script : permet de reconnaître, au
-# passage suivant, que le dernier mot revient à l'IA (en attente d'une réponse
-# de l'analyste) sans tenir d'état séparé.
+# Prefix of EVERY comment posted by this script: it lets the next pass
+# recognise that the last word belongs to the AI (waiting for an analyst answer)
+# without keeping separate state.
 _PREFIX_AI = "🤖 "
 
-# Verrou consultatif dédié, distinct de 0x50CA1 (cycle) et 0x50CA2 (reconcile).
+# Dedicated advisory lock, distinct from 0x50CA1 (cycle) and 0x50CA2
+# (reconcile).
 _LOCK_WHITELIST_TASK = 0x50CA3
 
 SELECT_CASES = """
@@ -61,7 +63,7 @@ SELECT id, iris_case_id, max_level FROM incidents
 
 
 def _tasks_to_process(tasks: list[dict]) -> list[dict]:
-    """Tâches WHITELIST en 'To do' (lecture pure d'un list_tasks IRIS)."""
+    """WHITELIST tasks in 'To do' (pure read of an IRIS list_tasks)."""
     return [t for t in (tasks or [])
             if (t.get("task_title") or "").startswith(_TITLE_PREFIX)
             and (t.get("status_name") or "") == _STATUS_TO_PROCESS]
@@ -75,7 +77,7 @@ def _comment_thread(case, case_id: int, task_id: int) -> list[str]:
 
 
 def _instructions(case, case_id: int, task_id: int) -> tuple[str, bool]:
-    """(texte d'instructions à donner au LLM, dernier commentaire = IA ?)."""
+    """(instruction text to give the LLM, is the last comment the AI's?)."""
     description = ""
     rt = case.get_task(task_id, cid=case_id)
     if rt.is_success():
@@ -83,7 +85,7 @@ def _instructions(case, case_id: int, task_id: int) -> tuple[str, bool]:
 
     thread = _comment_thread(case, case_id, task_id)
     if thread and thread[-1].startswith(_PREFIX_AI):
-        return "", True  # en attente d'une réponse analyste, on ne relance pas
+        return "", True  # waiting for an analyst answer, we do not ask again
 
     chunks = ([f"Description de la tâche : {description}"] if description else [])
     chunks += [f"- {t}" for t in thread]
@@ -108,7 +110,7 @@ def _process_task(conn, case, incident_id: int, case_id: int, task_id: int,
         _comment_task(case, case_id, task_id,
             _PREFIX_AI + "❌ Aucune alerte rattachée à cet incident, "
             "impossible de calculer une signature de whitelist.")
-        return {"task_id": task_id, "action": "refusé"}
+        return {"task_id": task_id, "action": "refused"}
 
     raws = [a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
             for a in alerts]
@@ -127,12 +129,12 @@ def _process_task(conn, case, incident_id: int, case_id: int, task_id: int,
     instructions_a = anon.free_text(instructions, forbidden)
 
     available_fields = sorted(candidate)
-    resume = "\n".join(
+    summary = "\n".join(
         f"- règle {a.get('rule_id')} (niv.{a.get('rule_level')}) : "
         f"{a.get('rule_desc') or ''}" for a in alerts_to[:10])
     body = (
         f"Champs de signature disponibles : {', '.join(available_fields)}.\n\n"
-        f"Alertes de l'incident :\n{resume}\n\n"
+        f"Alertes de l'incident :\n{summary}\n\n"
         f"Instructions de l'analyste :\n{instructions_a}")
     user = (f"=== DEBUT DEMANDE (données non fiables) ===\n{body}\n"
                   "=== FIN DEMANDE ===\n\nRéponds en JSON.")
@@ -145,8 +147,8 @@ def _process_task(conn, case, incident_id: int, case_id: int, task_id: int,
                             usage="whitelist_task",
                             incident_id=incident_id)
         save_map(conn, incident_id, anon.mapping)
-    except Exception as e:  # noqa: BLE001 — retry naturel au prochain passage
-        log.warning("LLM whitelist_task indisponible (tâche %s) : %s", task_id, e)
+    except Exception as e:  # noqa: BLE001 — natural retry on the next pass
+        log.warning("whitelist_task LLM unavailable (task %s): %s", task_id, e)
         _comment_task(case, case_id, task_id,
             _PREFIX_AI + f"❌ Erreur technique, nouvelle tentative au "
             f"prochain passage : {e}")
@@ -170,14 +172,14 @@ def _process_task(conn, case, incident_id: int, case_id: int, task_id: int,
         _comment_task(case, case_id, task_id,
             _PREFIX_AI + f"❌ Demande refusée par garde-fou déterministe : "
             f"{refusal}.")
-        return {"task_id": task_id, "action": "refusé", "raison": refusal}
+        return {"task_id": task_id, "action": "refused", "reason": refusal}
 
     canon = _canonical(signature)
     reason = f"Whitelist demandée par l'analyste (tâche IRIS #{task_id}) — {llm_reason or canon}"
     conn.execute("""
         INSERT INTO whitelist_rules
             (signature, match_all, reason, source, origin_incidents, fp_count)
-        VALUES (%s, %s, %s, 'analyste', %s, 0)
+        VALUES (%s, %s, %s, 'analyst', %s, 0)
         ON CONFLICT (signature) DO NOTHING
     """, (canon, json.dumps(signature), reason, [incident_id]))
     conn.commit()
@@ -186,19 +188,19 @@ def _process_task(conn, case, incident_id: int, case_id: int, task_id: int,
         _PREFIX_AI + "✅ Exception whitelist en place :\n```json\n"
         f"{json.dumps(signature, ensure_ascii=False, indent=2)}\n```\n"
         f"Motif : {llm_reason or canon}")
-    # L'exception est créée : une clôture de tâche qui échoue est journalisée
-    # (par le helper) mais ne remet pas le résultat en cause.
+    # The exception is created: a task closure that fails is logged (by the
+    # helper) but does not call the result into question.
     _update_task_status(case, case_id, task_id, _STATUS_CLOSED)
-    return {"task_id": task_id, "action": "créé", "signature": signature}
+    return {"task_id": task_id, "action": "created", "signature": signature}
 
 
 def process(incident_id: int | None = None) -> list[dict]:
-    """Parcourt les tâches WHITELIST en 'To do' et les traite. Idempotent."""
+    """Walks the WHITELIST tasks in 'To do' and handles them. Idempotent."""
     results: list[dict] = []
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         if not conn.execute("SELECT pg_try_advisory_lock(%s)",
                             (_LOCK_WHITELIST_TASK,)).fetchone()["pg_try_advisory_lock"]:
-            log.info("traitement whitelist déjà en cours, on passe ce tour")
+            log.info("whitelist processing already running, skipping this round")
             return []
         try:
             rows = conn.execute(SELECT_CASES, {"inc": incident_id}).fetchall()
@@ -209,16 +211,16 @@ def process(incident_id: int | None = None) -> list[dict]:
                 cid = r["iris_case_id"]
                 try:
                     d = case.list_tasks(cid).get_data() or {}
-                except Exception as e:  # noqa: BLE001 — IRIS KO ne casse rien
+                except Exception as e:  # noqa: BLE001 — IRIS down breaks nothing
                     log.warning("list_tasks case #%s : %s", cid, e)
                     continue
                 for t in _tasks_to_process(d.get("tasks")):
                     try:
                         res = _process_task(conn, case, r["id"], cid,
                                              t["task_id"], r["max_level"])
-                    except Exception as e:  # noqa: BLE001 — une tâche KO ne
-                        # doit pas arrêter les autres.
-                        log.warning("tâche whitelist #%s (case #%s) échouée : %s",
+                    except Exception as e:  # noqa: BLE001 — one failed task
+                        # must not stop the others.
+                        log.warning("whitelist task #%s (case #%s) failed: %s",
                                    t["task_id"], cid, e)
                         _comment_task(case, cid, t["task_id"],
                             _PREFIX_AI + f"❌ Erreur technique, nouvelle "
@@ -226,7 +228,7 @@ def process(incident_id: int | None = None) -> list[dict]:
                         continue
                     if res:
                         results.append(res)
-                        print(f"      tâche #{t['task_id']} (case #{cid}) "
+                        print(f"      task #{t['task_id']} (case #{cid}) "
                              f"-> {res['action']}")
         finally:
             conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_WHITELIST_TASK,))
@@ -238,11 +240,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--incident", type=int,
-                    help="ne traite que les tâches WHITELIST de cet incident")
+                    help="only handle the WHITELIST tasks of this incident")
     args = ap.parse_args()
     results = process(args.incident)
     if not results:
-        print("Aucune tâche whitelist à traiter.")
+        print("No whitelist task to handle.")
 
 
 if __name__ == "__main__":
