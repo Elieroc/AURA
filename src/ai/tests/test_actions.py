@@ -1,8 +1,8 @@
-"""Tests des actions dérivées et du contrôle de cohérence.
+"""Tests for derived actions and consistency checking.
 
-Ces deux modules sont la barrière entre une sortie de modèle et une action sur
-la production. Ils doivent être vérifiables sans modèle ni base — c'est
-précisément ce qui les rend fiables.
+These two modules are the barrier between a model output and an action on
+production. They must be verifiable without a model or a database — that is
+exactly what makes them reliable.
 """
 
 from soc_agent.actions import (apply_guardrails, infer,
@@ -10,33 +10,33 @@ from soc_agent.actions import (apply_guardrails, infer,
 from soc_agent.coherence import check
 
 
-# --- actions dérivées -------------------------------------------------------
+# --- derived actions ---------------------------------------------------------
 
-def test_vrai_positif_ouvre_toujours_un_case():
-    """Le modèle omettait open_case deux fois sur quatre — d'où la déduction."""
+def test_true_positive_always_opens_a_case():
+    """The model omitted open_case two times out of four — hence the deduction."""
     assert "open_case" in infer("true_positive", ["propose_block_ip"])
     assert "open_case" in infer("true_positive", [])
 
 
-def test_faux_positif_ecarte_toute_remediation():
-    """Si l'activité est légitime, il n'y a rien à couper."""
+def test_false_positive_discards_any_remediation():
+    """If the activity is legitimate, there is nothing to cut."""
     actions = infer("false_positive",
                       ["propose_block_ip", "propose_isolate_host"])
     assert actions == ["close_false_positive"]
 
 
-def test_doute_escalade_a_un_humain():
-    """La collecte forensique n'est pas une action de l'IA : le doute escalade."""
+def test_doubt_escalates_to_a_human():
+    """Forensic collection is not an AI action: doubt escalates."""
     assert infer("needs_investigation", []) == ["escalate_human"]
 
 
-def test_doute_ne_cloture_jamais():
+def test_doubt_never_closes():
     actions = infer("needs_investigation", ["escalate_human"])
     assert "close_false_positive" not in actions
 
 
-def test_kill_process_passe_avant_isolation():
-    """Ordre d'urgence : tuer le process prime (chirurgical), isoler ensuite."""
+def test_kill_process_comes_before_isolation():
+    """Emergency order: killing the process comes first (surgical), isolation next."""
     actions = infer("true_positive",
                       ["propose_block_ip", "propose_isolate_host",
                        "propose_kill_process"])
@@ -44,45 +44,45 @@ def test_kill_process_passe_avant_isolation():
     assert actions.index("propose_kill_process") < actions.index("propose_isolate_host")
 
 
-def test_actions_a_fort_impact_signalees():
+def test_high_impact_actions_flagged():
     actions = infer("true_positive",
                       ["propose_isolate_host", "propose_kill_process"])
     high = high_impact_actions(actions)
     assert "propose_isolate_host" in high
-    assert "propose_kill_process" in high          # tuer un process = fort impact
-    # open_case est sans effet sur la production : pas une action à fort impact.
+    assert "propose_kill_process" in high          # killing a process = high impact
+    # open_case has no effect on production: not a high-impact action.
     assert "open_case" not in high
 
 
-# --- garde-fous déterministes -----------------------------------------------
+# --- deterministic guardrails ------------------------------------------------
 
-def test_isolation_retiree_si_confinement_moins_invasif_suffit():
-    """Cas nominal : un scanner qui tape une URL (pas de compromission active)
-    -> bloquer l'IP suffit, l'isolation est retirée et un humain tranche."""
+def test_isolation_dropped_if_less_invasive_containment_suffices():
+    """Nominal case: a scanner hitting a URL (no active compromise)
+    -> blocking the IP suffices, isolation is dropped and a human decides."""
     actions, patterns = apply_guardrails(
         "true_positive", ["propose_isolate_host", "propose_block_ip"],
         max_level=12, suspected_injection=False, active_compromise=False)
     assert "propose_isolate_host" not in actions
     assert "propose_block_ip" in actions
     assert "escalate_human" in actions
-    assert any("isolation retirée" in m for m in patterns)
+    assert any("isolation dropped" in m for m in patterns)
 
 
-def test_isolation_maintenue_si_compromission_active():
-    """Compromission active de l'hôte (webshell/reverse shell/rootkit) :
-    l'isolation est MAINTENUE malgré le block_ip — couper l'IP ne déloge pas un
-    attaquant déjà installé. Régression mesurée à un exercice purple-team."""
+def test_isolation_kept_if_active_compromise():
+    """Active host compromise (webshell/reverse shell/rootkit):
+    isolation is KEPT despite block_ip — cutting the IP does not dislodge an
+    attacker already in place. Regression measured on a purple-team exercise."""
     actions, patterns = apply_guardrails(
         "true_positive", ["propose_isolate_host", "propose_block_ip"],
         max_level=13, suspected_injection=False, active_compromise=True)
     assert "propose_isolate_host" in actions
     assert "propose_block_ip" in actions
-    assert any("isolation MAINTENUE" in m for m in patterns)
+    assert any("isolation KEPT" in m for m in patterns)
 
 
-def test_cloture_refusee_sur_niveau_critique_meme_avec_compromission():
-    """La barrière anti-clôture prime : un FP de niveau >= 14 n'est jamais clos,
-    quel que soit le drapeau de compromission."""
+def test_closure_refused_on_critical_level_even_with_compromise():
+    """The anti-closure barrier takes precedence: an FP of level >= 14 is never
+    closed, whatever the compromise flag."""
     actions, patterns = apply_guardrails(
         "false_positive", ["close_false_positive"],
         max_level=15, suspected_injection=False, active_compromise=True)
@@ -90,30 +90,30 @@ def test_cloture_refusee_sur_niveau_critique_meme_avec_compromission():
     assert patterns
 
 
-# --- cohérence --------------------------------------------------------------
+# --- consistency --------------------------------------------------------------
 
-def test_faux_positif_avec_blocage_est_incoherent():
-    """Cas réellement observé au premier passage."""
+def test_false_positive_with_blocking_is_inconsistent():
+    """Case actually observed on the first pass."""
     issues = check("false_positive", ["propose_block_ip"])
     assert issues and "propose_block_ip" in issues[0]
 
 
-def test_faux_positif_sans_action_est_coherent():
+def test_false_positive_without_action_is_consistent():
     assert check("false_positive", []) == []
 
 
-def test_couper_sur_doute_est_incoherent():
-    """Sur un simple doute, aucune action irréversible ne se justifie."""
+def test_cutting_on_doubt_is_inconsistent():
+    """On simple doubt, no irreversible action is justified."""
     assert check("needs_investigation", ["propose_isolate_host"])
     assert check("needs_investigation", ["propose_kill_process"])
-    # Escalader (pas une coupure) reste cohérent sur un doute.
+    # Escalating (not a cut) stays consistent on a doubt.
     assert check("needs_investigation", ["escalate_human"]) == []
 
 
-def test_vrai_positif_sans_action_est_signale():
+def test_true_positive_without_action_is_flagged():
     assert check("true_positive", []) != []
 
 
-def test_sortie_nominale_est_coherente():
+def test_nominal_output_is_consistent():
     assert check("true_positive",
                     ["propose_isolate_host", "propose_block_ip"]) == []

@@ -1,9 +1,9 @@
-"""Tests du regroupement en incidents.
+"""Tests for grouping alerts into incidents.
 
-`_grouper` est une fonction pure : elle prend une liste d'alertes et rend des
-groupes, sans base de données. C'est délibéré — la logique qui décide qu'une
-attaque est un incident et pas trente est la partie du code où une erreur coûte
-le plus cher, et elle doit rester vérifiable sans infrastructure.
+`_group` is a pure function: it takes a list of alerts and returns groups,
+with no database. That is deliberate — the logic that decides an attack is
+one incident and not thirty is the part of the code where a mistake costs the
+most, and it must stay verifiable without infrastructure.
 
     ~/.local/share/soc-ai/venv/bin/python -m pytest ai/tests -q
 """
@@ -29,28 +29,28 @@ def alert(minutes=0, agent="001", rule="100670", level=15,
     }
 
 
-def test_rafale_meme_tactique_donne_un_incident():
-    """Les 25 alertes canari du ransomware sont un incident, pas 25."""
+def test_burst_same_tactic_makes_one_incident():
+    """The 25 canary ransomware alerts are one incident, not 25."""
     alerts = [alert(minutes=i, entity=f"/data/f{i}.docx") for i in range(25)]
     assert len(_group(alerts)) == 1
 
 
-def test_agents_differents_jamais_fusionnes():
+def test_different_agents_never_merged():
     alerts = [alert(agent="001"), alert(minutes=1, agent="002")]
     assert len(_group(alerts)) == 2
 
 
-def test_lien_faible_hors_fenetre_separe():
-    """Même tactique mais 45 min plus tard : deux incidents (fenêtre 30 min)."""
+def test_weak_link_outside_window_separates():
+    """Same tactic but 45 min later: two incidents (30 min window)."""
     alerts = [alert(minutes=0), alert(minutes=45)]
     assert len(_group(alerts)) == 2
 
 
-def test_lien_fort_survit_a_une_fenetre_large():
-    """Même IP hostile à 68 min d'écart : une seule campagne.
+def test_strong_link_survives_a_wide_window():
+    """Same hostile IP 68 min apart: a single campaign.
 
-    C'est le cas réel qui a motivé la fenêtre à deux vitesses — trois alertes
-    AbuseIPDB de 185.220.101.34 réparties sur l'après-midi.
+    This is the real case that motivated the two-speed window — three
+    AbuseIPDB alerts from 185.220.101.34 spread over the afternoon.
     """
     alerts = [
         alert(minutes=0, rule="100622", tactics=(), groups=("abuseipdb",),
@@ -61,12 +61,12 @@ def test_lien_fort_survit_a_une_fenetre_large():
     assert len(_group(alerts)) == 1
 
 
-def test_alerte_etrangere_intercalee_ne_coupe_pas_l_incident():
-    """Plusieurs incidents restent ouverts en parallèle sur un même agent.
+def test_foreign_alert_in_between_does_not_cut_the_incident():
+    """Several incidents stay open in parallel on the same agent.
 
-    Avec un seul incident ouvert par agent, l'alerte étrangère du milieu
-    refermait le premier et les deux alertes de la même IP finissaient
-    séparées.
+    With only one incident open per agent, the foreign alert in the middle
+    used to close the first one and the two alerts from the same IP ended up
+    separated.
     """
     alerts = [
         alert(minutes=0, rule="100622", tactics=(), groups=("abuseipdb",),
@@ -81,29 +81,29 @@ def test_alerte_etrangere_intercalee_ne_coupe_pas_l_incident():
     assert sorted(len(g) for g in groups) == [1, 2]
 
 
-def test_ip_differentes_restent_separees():
+def test_different_ips_stay_separate():
     alerts = [
         alert(minutes=0, rule="100622", tactics=(), groups=("abuseipdb",),
                srcip="1.2.3.4"),
         alert(minutes=5, rule="100622", tactics=(), groups=("abuseipdb",),
                srcip="9.9.9.9"),
     ]
-    # Le groupe « abuseipdb » n'est pas générique : il les relie malgré tout,
-    # ce qui est voulu — deux IP signalées coup sur coup relèvent du même
-    # sujet. Le test fige ce comportement pour qu'un changement soit délibéré.
+    # The "abuseipdb" group is not generic: it links them anyway, and that is
+    # intended — two IPs reported back to back belong to the same subject.
+    # The test pins this behaviour so a change can only be deliberate.
     assert len(_group(alerts)) == 1
 
 
-def test_groupes_generiques_ne_relient_rien():
-    """`syscheck` ou `pci_dss` sont sur la moitié des règles."""
+def test_generic_groups_link_nothing():
+    """`syscheck` or `pci_dss` sit on half the rules."""
     a = alert(rule="550", groups=("syscheck", "pci_dss"), tactics=())
     b = alert(minutes=5, rule="554", groups=("syscheck", "gdpr"), tactics=())
     assert common_ground(a, b) is None
     assert len(_group([a, b])) == 2
 
 
-def test_duree_maximale_coupe_le_chainage():
-    """Une alerte toutes les 10 min pendant 10 h ne fait pas un incident de 10 h."""
+def test_max_duration_cuts_the_chain():
+    """One alert every 10 min for 10 h is not a single 10 h incident."""
     alerts = [alert(minutes=10 * i) for i in range(60)]
     groups = _group(alerts)
     assert len(groups) > 1
@@ -111,88 +111,89 @@ def test_duree_maximale_coupe_le_chainage():
         assert g[-1]["ts"] - g[0]["ts"] <= timedelta(hours=6)
 
 
-def test_lien_fort_prioritaire_sur_lien_faible():
+def test_strong_link_takes_priority_over_weak_link():
     a = alert(srcip="1.2.3.4")
     b = alert(minutes=1, srcip="1.2.3.4")
-    assert common_ground(a, b) == ("même IP source", True)
+    assert common_ground(a, b) == ("same source IP", True)
 
 
-# --- Filtrage des graines : le bruit structurel n'ouvre pas d'incident -------
+# --- Seed filtering: structural noise never opens an incident ---------------
 
-def test_graine_bruit_sca_refusee():
-    """Un check de conformité CIS/SCA ne fonde jamais un case, même remonté."""
+def test_sca_noise_seed_rejected():
+    """A CIS/SCA compliance check never founds a case, even at a high level."""
     a = alert(rule="19001", level=12, groups=("sca",), tactics=(),
                entity=None)
     a["rule_desc"] = "CIS Debian benchmark: ensure X"
     assert _is_valid_seed(a) is False
 
 
-def test_graine_bruit_statut_agent_refusee():
+def test_agent_status_noise_seed_rejected():
     a = alert(rule="503", level=12, groups=("ossec",), tactics=())
     a["rule_desc"] = "Wazuh agent stopped."
     assert _is_valid_seed(a) is False
 
 
-def test_graine_bruit_login_reussi_refusee():
+def test_successful_login_noise_seed_rejected():
     a = alert(rule="5715", level=12, groups=("authentication_success",),
                tactics=())
     a["rule_desc"] = "sshd: authentication success."
     assert _is_valid_seed(a) is False
 
 
-def test_graine_intrusion_reelle_acceptee():
-    """Un vrai signal d'intrusion (reverse shell) reste une graine valide."""
+def test_real_intrusion_seed_accepted():
+    """A genuine intrusion signal (reverse shell) stays a valid seed."""
     a = alert(rule="100721", level=12, groups=("attack",),
                tactics=("Execution",))
     a["rule_desc"] = "Reverse shell probable : /dev/tcp"
     assert _is_valid_seed(a) is True
 
 
-# --- correctif #2 : needs_refresh ne repart que sur un signal décisif --------
+# --- fix #2: needs_refresh only fires again on a decisive signal ------------
 
-def test_signal_repetition_de_bruit_ne_declenche_pas():
-    """Une salve qui répète des règles déjà présentes, sans hausse de niveau,
-    n'est PAS un signal décisif : pas de re-triage + rapport (boucle tokens)."""
+def test_repeated_noise_signal_does_not_trigger():
+    """A burst repeating already-seen rules, with no level increase, is NOT a
+    decisive signal: no re-triage + report (token loop)."""
     old = {"100670", "100710"}
     new = [alert(rule="100670", level=12, groups=("attack",))]
     assert _signal_decisive(old, new, max_old=15) is False
 
 
-def test_signal_bruit_structurel_meme_regle_inedite_ne_declenche_pas():
-    """Une règle inédite MAIS structurelle (rootcheck/SCA/statut d'agent, ex.
-    100801 auditd absent) n'ouvre pas un refresh : ce n'est pas une graine."""
+def test_structural_noise_signal_even_with_a_new_rule_does_not_trigger():
+    """A rule never seen before but STRUCTURAL (rootcheck/SCA/agent status,
+    e.g. 100801 auditd missing) does not open a refresh: it is not a seed."""
     a = alert(rule="510", level=12, groups=("rootcheck",), tactics=())
     a["rule_desc"] = "Host-based anomaly detection event (rootcheck)."
     assert _signal_decisive({"100670"}, [a], max_old=15) is False
 
 
-def test_signal_regle_inedite_reelle_declenche():
-    """Une règle d'intrusion inédite (non structurelle) = signal décisif."""
+def test_real_new_rule_signal_triggers():
+    """A genuinely new intrusion rule (non structural) is a decisive signal."""
     a = alert(rule="100721", level=12, groups=("attack",),
                tactics=("Execution",))
     a["rule_desc"] = "Reverse shell probable : /dev/tcp"
     assert _signal_decisive({"100670"}, [a], max_old=15) is True
 
 
-def test_signal_hausse_de_niveau_declenche():
-    """Une escalade de sévérité rouvre toujours un refresh, même règle connue."""
+def test_level_increase_signal_triggers():
+    """A severity escalation always reopens a refresh, even on a known rule."""
     new = [alert(rule="100670", level=14, groups=("attack",))]
     assert _signal_decisive({"100670"}, new, max_old=12) is True
 
 
-def test_signal_ueba_reste_un_seul_incident():
-    """Un signal promu ne doit pas se faire réémietter par la corrélation.
+def test_ueba_signal_stays_a_single_incident():
+    """A promoted signal must not get re-fragmented by correlation.
 
-    Mesuré à la mise en service : un signal de 239 alertes ressortait en 8
-    incidents — 8 triages LLM au lieu d'un, chacun amputé du contexte des autres
-    et portant un score sans rapport avec celui du signal.
+    Measured at rollout: a signal of 239 alerts came out as 8 incidents — 8
+    LLM triages instead of one, each stripped of the others' context and
+    carrying a score unrelated to the signal's.
     """
     from datetime import datetime, timedelta, timezone
     from soc_agent import correlate
 
     t0 = datetime(2026, 8, 7, 6, 0, tzinfo=timezone.utc)
-    # Rien de commun entre elles hors le signal : règles, objets et comptes
-    # tous différents, et un écart supérieur à la fenêtre faible (30 min).
+    # Nothing in common between them beyond the signal: different rules,
+    # objects and accounts throughout, and a gap larger than the weak window
+    # (30 min).
     alerts = [{
         "id": str(i), "ts": t0 + timedelta(minutes=45 * i), "agent_id": "014",
         "agent_name": "winsrv", "rule_id": f"9{i}000", "rule_level": 3,
@@ -203,8 +204,9 @@ def test_signal_ueba_reste_un_seul_incident():
 
     assert len(correlate._group(alerts)) == 1
 
-    # Sans le lien de signal, les mêmes alertes se seraient bien émiettées :
-    # c'est ce lien qui les tient, pas une coïncidence de la fixture.
+    # Without the signal link, the same alerts would have genuinely
+    # fragmented: it is that link which holds them, not a coincidence of the
+    # fixture.
     for a in alerts:
         a["ueba_signal_id"] = None
     assert len(correlate._group(alerts)) > 1

@@ -1,14 +1,14 @@
-"""VOC : score d'exposition, SLA, clôture, rapprochement avec un incident.
+"""VOC: exposure score, SLA, closure, matching against an incident.
 
-Ce qui est testé ici est PUR (pas d'indexer, pas de base) sauf la partie
-clôture, couverte par un faux curseur. Deux propriétés valent tout le reste et
-justifient à elles seules ce fichier :
+Everything tested here is PURE (no indexer, no database) except the closure
+part, covered with a fake cursor. Two properties are worth all the rest and
+justify this file on their own:
 
-- une machine qui a cessé de répondre ne doit JAMAIS produire de remédiation
-  (`test_cloture_ne_touche_que_les_agents_vus`) — c'est le seul mensonge que ce
-  module peut raconter, et il serait invisible : un burn-down parfait ;
-- une CVE n'est « liée à l'incident » que si elle y est CITÉE, jamais parce
-  qu'elle est grave et que la machine est attaquée.
+- a machine that stopped answering must NEVER produce a remediation
+  (`test_closure_only_touches_seen_agents`) — it is the only lie this module
+  could tell, and it would be invisible: a perfect burn-down;
+- a CVE is only "linked to the incident" if it is CITED there, never because
+  it is severe and the machine is under attack.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -20,106 +20,107 @@ from soc_agent import config, vulns
 T0 = datetime(2026, 8, 12, 10, 0, tzinfo=timezone.utc)
 
 
-# --- Sévérité effective -----------------------------------------------------
+# --- Effective severity -------------------------------------------------------
 
-def test_severite_du_feed_prioritaire_sur_le_score():
+def test_feed_severity_takes_priority_over_the_score():
     assert vulns.effective_severity("High", 2.0) == "high"
 
 
-def test_severite_vide_deduite_du_score_cvss():
-    # 334 CVE par hôte Debian arrivent sans sévérité mais avec un score : les
-    # jeter au poids « inconnu » serait perdre une information qu'on a.
+def test_empty_severity_deduced_from_the_cvss_score():
+    # 334 CVEs per Debian host arrive with no severity but with a score:
+    # discarding them all at "unknown" weight would throw away information we
+    # actually have.
     assert vulns.effective_severity("", 9.8) == "critical"
     assert vulns.effective_severity(None, 7.5) == "high"
     assert vulns.effective_severity("untriaged", 5.0) == "medium"
     assert vulns.effective_severity("", 1.0) == "low"
 
 
-def test_severite_absente_et_score_absent_reste_indeterminee():
+def test_absent_severity_and_absent_score_stays_undetermined():
     assert vulns.effective_severity("", None) == ""
     assert vulns.weight("") == pytest.approx(0.5)
 
 
-# --- Score d'exposition -----------------------------------------------------
+# --- Exposure score -------------------------------------------------------------
 
-def test_score_nul_sans_vulnerabilite():
+def test_score_zero_without_vulnerability():
     assert vulns.risk_score(0) == 0
 
 
-def test_score_croit_avec_la_charge():
+def test_score_grows_with_the_load():
     scores = [vulns.risk_score(c) for c in (10, 100, 1000, 10000)]
     assert scores == sorted(scores)
     assert all(0 <= s <= 100 for s in scores)
 
 
-def test_score_sature_au_plafond():
-    # Propriété assumée, écrite partout où le score s'affiche : deux machines à
-    # 100 ne sont plus comparables entre elles.
+def test_score_saturates_at_the_ceiling():
+    # Assumed property, written wherever the score is displayed: two machines
+    # at 100 are no longer comparable to each other.
     assert vulns.risk_score(config.VOC_MAX_LOAD) == 100
     assert vulns.risk_score(config.VOC_MAX_LOAD * 10) == 100
 
 
-def test_echelle_de_poids_tres_non_lineaire():
-    # Sinon le score serait dominé par le bruit de fond des distributions et
-    # classerait les machines par nombre de paquets installés.
+def test_weight_scale_very_non_linear():
+    # Otherwise the score would be dominated by the background noise of the
+    # distributions and rank machines by number of installed packages.
     assert vulns.weight("critical") >= 10 * vulns.weight("medium")
     assert vulns.weight("critical") >= 50 * vulns.weight("low")
     assert vulns.weight("high") > vulns.weight("medium") > vulns.weight("low")
 
 
-def test_niveau_lisible_borne():
+def test_readable_level_bounded():
     assert vulns.risk_level(0) == "nulle"
     assert vulns.risk_level(90) == "critique"
     assert vulns.risk_level(65) == "élevée"
 
 
-# --- SLA --------------------------------------------------------------------
+# --- SLA -------------------------------------------------------------------------
 
-def test_sla_plus_court_sur_asset_critique():
+def test_sla_shorter_on_a_critical_asset():
     assert vulns.sla_days("critical", 1) < vulns.sla_days("critical", 4)
 
 
-def test_sla_plus_court_pour_une_severite_plus_grave():
+def test_sla_shorter_for_a_more_severe_severity():
     assert vulns.sla_days("critical", 2) < vulns.sla_days("low", 2)
 
 
-def test_pas_de_sla_sur_severite_non_classee():
-    # On ne réclame pas le respect d'une échéance qu'on n'a pas su fixer.
+def test_no_sla_on_unclassified_severity():
+    # We do not demand compliance with a deadline we were unable to set.
     assert vulns.sla_days("", 1) is None
 
 
-def test_priorite_hors_echelle_bornee():
-    # Une priorité aberrante (0, 9) ne doit pas lever un IndexError en plein
-    # calcul d'exposition : elle est rabattue dans P1..P4.
+def test_out_of_range_priority_clamped():
+    # An aberrant priority (0, 9) must not raise an IndexError in the middle of
+    # an exposure computation: it is clamped into P1..P4.
     assert vulns.sla_days("high", 0) == vulns.sla_days("high", 1)
     assert vulns.sla_days("high", 9) == vulns.sla_days("high", 4)
 
 
-# --- Rapprochement avec un incident -----------------------------------------
+# --- Matching against an incident ---------------------------------------------
 
 def _alert(desc="", raw=None, mitre=None):
     return {"rule_desc": desc, "raw": raw or {},
             "mitre_ids": mitre or []}
 
 
-def test_cve_citee_dans_la_description_reperee():
+def test_cve_cited_in_the_description_spotted():
     assert vulns.cited_cves([_alert("Exploit CVE-2021-4034 detected")]) == {
         "CVE-2021-4034"}
 
 
-def test_cve_citee_dans_le_log_brut_reperee_et_normalisee():
+def test_cve_cited_in_the_raw_log_spotted_and_normalised():
     a = _alert(raw={"full_log": "curl -O poc-cve-2024-3094.sh"})
     assert vulns.cited_cves([a]) == {"CVE-2024-3094"}
 
 
-def test_texte_sans_cve_ne_produit_rien():
+def test_text_without_cve_produces_nothing():
     assert vulns.cited_cves([_alert("ssh brute force"),
                              _alert(raw={"full_log": "CVE- incomplet"})]) == set()
 
 
 class _FakeCursor:
-    """Connexion Postgres réduite à ce que `lien_incident` en fait : une seule
-    requête, celle des vulnérabilités ouvertes de l'agent."""
+    """Postgres connection reduced to what `incident_link` does with it: a
+    single query, the open vulnerabilities of the agent."""
 
     def __init__(self, open_by_cve):
         self._open = open_by_cve
@@ -129,83 +130,84 @@ class _FakeCursor:
 
 
 def _vuln(cve, severity="critical", score=9.8, age=10.0):
-    return {"cve": cve, "package": "openssl", "version": "1.1", "age_jours": age,
+    return {"cve": cve, "package": "openssl", "version": "1.1", "age_days": age,
             "severity": severity, "base_score": score, "published_at": None,
             "first_seen": T0 - timedelta(days=age)}
 
 
-_EXPO_EMPTY = {"pires": [], "couverte": True}
+_EXPO_EMPTY = {"worst": [], "covered": True}
 
 
-def test_cve_citee_et_ouverte_est_confirmee():
+def test_cve_cited_and_open_is_confirmed():
     conn = _FakeCursor([_vuln("CVE-2021-4034")])
     link = vulns.incident_link(conn, "013",
                                [_alert("exploit CVE-2021-4034")], _EXPO_EMPTY)
-    assert [v["cve"] for v in link["confirmees"]] == ["CVE-2021-4034"]
-    assert link["citees_non_ouvertes"] == []
+    assert [v["cve"] for v in link["confirmed"]] == ["CVE-2021-4034"]
+    assert link["quoted_not_open"] == []
 
 
-def test_cve_citee_mais_non_ouverte_reste_a_part():
-    # Tentative contre une version non vulnérable : information sur la MÉTHODE
-    # de l'attaquant, pas sur l'exposition de l'hôte. Ne doit pas remonter dans
-    # `confirmees`, sur quoi le rapport écrit « le même accès reste
-    # reproductible ».
+def test_cve_cited_but_not_open_stays_apart():
+    # Attempt against a non-vulnerable version: information about the
+    # attacker's METHOD, not about the host's exposure. Must not surface in
+    # `confirmed`, on which the report writes "the same access remains
+    # reproducible".
     conn = _FakeCursor([_vuln("CVE-2021-4034")])
     link = vulns.incident_link(conn, "013",
                                [_alert("scan CVE-2017-0144")], _EXPO_EMPTY)
-    assert link["confirmees"] == []
-    assert link["citees_non_ouvertes"] == ["CVE-2017-0144"]
+    assert link["confirmed"] == []
+    assert link["quoted_not_open"] == ["CVE-2017-0144"]
 
 
-def test_pas_de_vecteur_propose_sans_technique_d_exploitation():
-    # Le piège que cette règle évite : lister les pires CVE de la machine à côté
-    # d'un incident qui n'a rien à voir. L'analyste ferait le lien à notre place.
-    expo = {"pires": [_vuln("CVE-2024-0001")], "couverte": True}
+def test_no_vector_proposed_without_an_exploit_technique():
+    # The trap this rule avoids: listing the machine's worst CVEs next to an
+    # incident that has nothing to do with them. The analyst would make the
+    # link on our behalf.
+    expo = {"worst": [_vuln("CVE-2024-0001")], "covered": True}
     link = vulns.incident_link(_FakeCursor([]), "013",
                                [_alert("ssh brute force", mitre=["T1110"])],
                                expo)
-    assert link["vecteurs_possibles"] == []
-    assert link["techniques_exploit"] == []
+    assert link["possible_vectors"] == []
+    assert link["exploit_techniques"] == []
 
 
-def test_vecteurs_proposes_sur_technique_d_exploitation():
-    expo = {"pires": [_vuln("CVE-2024-0001"),
+def test_vectors_proposed_on_an_exploit_technique():
+    expo = {"worst": [_vuln("CVE-2024-0001"),
                       _vuln("CVE-2024-0002", "medium", 5.0)],
-            "couverte": True}
+            "covered": True}
     link = vulns.incident_link(
         _FakeCursor([]), "013",
         [_alert("privilege escalation", mitre=["T1068"])], expo)
-    assert link["techniques_exploit"] == ["T1068"]
-    # Seules les graves : proposer une medium comme vecteur d'une privesc
-    # noierait la piste.
-    assert [v["cve"] for v in link["vecteurs_possibles"]] == ["CVE-2024-0001"]
+    assert link["exploit_techniques"] == ["T1068"]
+    # Only the severe ones: proposing a medium as the vector of a privesc
+    # would drown the lead.
+    assert [v["cve"] for v in link["possible_vectors"]] == ["CVE-2024-0001"]
 
 
-# --- Clôture : le garde-fou qui compte --------------------------------------
+# --- Closure: the guardrail that matters ---------------------------------------
 
-def test_cloture_ne_touche_que_les_agents_vus():
-    """La requête de clôture DOIT être bornée aux agents ayant répondu.
+def test_closure_only_touches_seen_agents():
+    """The closure query MUST be bounded to the agents that answered.
 
-    Sans cette borne, un agent arrêté (ou dont syscollector est cassé) sort de
-    l'index d'état avec toutes ses vulnérabilités, et le diff conclut à une
-    remédiation massive : burn-down parfait, MTTR magnifique, parc invisible.
-    Test sur le texte du SQL faute de base : c'est la clause dont l'absence ne
-    produirait aucune erreur, seulement un mensonge.
+    Without this bound, a stopped agent (or one whose syscollector is broken)
+    drops out of the state index with all its vulnerabilities, and the diff
+    concludes a mass remediation: perfect burn-down, magnificent MTTR,
+    invisible estate. Tested on the SQL text for lack of a database: it is the
+    clause whose absence would produce no error, only a lie.
     """
     assert "agent_id = ANY(%(agents)s)" in vulns.CLOSURE
-    assert "statut = 'fixed'" in vulns.CLOSURE
+    assert "status = 'fixed'" in vulns.CLOSURE
 
 
-def test_upsert_ne_reecrit_pas_la_date_de_premiere_vue():
-    """`first_seen` fait courir le SLA : la réécrire à chaque scan remettrait tous
-    les compteurs de retard à zéro à chaque passage, et le VOC se féliciterait
-    tout seul. Seule une vulnérabilité qui RÉAPPARAÎT après correction
-    redémarre."""
-    assert "first_seen        = CASE WHEN vulnerabilites.statut = 'fixed'" \
+def test_upsert_does_not_rewrite_the_first_seen_date():
+    """`first_seen` is what makes the SLA run: rewriting it on every scan would
+    reset all the overdue counters to zero on every pass, and the VOC would
+    congratulate itself. Only a vulnerability that REAPPEARS after being fixed
+    restarts."""
+    assert "first_seen        = CASE WHEN vulnerabilities.status = 'fixed'" \
         in vulns.UPSERT
 
 
-# --- Aplatissement d'un document Wazuh --------------------------------------
+# --- Flattening a Wazuh document -------------------------------------------------
 
 _DOC = {
     "agent": {"id": "013", "name": "debian2"},
@@ -217,7 +219,7 @@ _DOC = {
 }
 
 
-def test_aplatir_document_complet():
+def test_flatten_full_document():
     v = vulns._flatten(_DOC)
     assert v["agent_id"] == "013"
     assert v["cve"] == "CVE-2026-43105"
@@ -226,12 +228,12 @@ def test_aplatir_document_complet():
     assert v["base_score"] == pytest.approx(5.5)
 
 
-def test_paquet_absent_remplace_par_un_libelle_stable():
-    # Vulnérabilité de l'OS lui-même (Windows, corrigée par un hotfix) : NULL
-    # casserait la clé d'unicité (agent, cve, paquet).
+def test_missing_package_replaced_by_a_stable_label():
+    # Vulnerability of the OS itself (Windows, fixed by a hotfix): NULL would
+    # break the uniqueness key (agent, cve, package).
     doc = {**_DOC, "package": {}}
     assert vulns._flatten(doc)["package"] == "(système)"
 
 
-def test_document_sans_cve_ignore():
+def test_document_without_cve_ignored():
     assert vulns._flatten({**_DOC, "vulnerability": {}}) is None

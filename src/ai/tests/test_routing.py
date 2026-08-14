@@ -1,10 +1,9 @@
-"""Tests du contrôle de routage (sans indexer, sans base, sans LLM).
+"""Tests of the routing control logic (no indexer, no database, no LLM).
 
-Ce qui est testé ici est ce qui DÉCIDE : la validation d'un nom d'index, le
-rendu du script painless (dont la stabilité octet pour octet, sans laquelle le
-pipeline serait réécrit toutes les deux minutes), le point d'insertion dans le
-pipeline et la lecture d'une simulation. Les appels réseau, eux, n'ont pas de
-branche à couvrir.
+What is tested here is what DECIDES: validating an index name, rendering the
+painless script (including its byte-for-byte stability, without which the
+pipeline would be rewritten every two minutes), the insertion point in the
+pipeline, and reading a simulation. Network calls have no branch to cover.
 """
 
 import json
@@ -15,58 +14,58 @@ from soc_agent import config, routing
 
 
 # --------------------------------------------------------------------------
-# Nommage
+# Naming
 # --------------------------------------------------------------------------
 
-def test_generique_hors_vocabulaire_est_refuse():
-    """Le cœur de la convention : un pare-feu ne s'appelle pas « pfsense ».
+def test_generic_outside_vocabulary_is_refused():
+    """The heart of the convention: a firewall is not named "pfsense".
 
-    Sans vocabulaire fermé, chaque produit ouvre son index et la même question
-    (« qu'a bloqué le pare-feu ? ») demande d'interroger autant d'index que de
-    marques présentes dans le SI.
+    Without a closed vocabulary, every product opens its own index and the
+    same question ("what did the firewall block?") requires querying as many
+    indices as there are brands present in the estate.
     """
-    assert routing._validate("generique", "pfsense", {"pfsense"}) is not None
-    assert routing._validate("generique", "fortinet", {"fortinet"}) is not None
-    assert routing._validate("generique", "firewall", set()) is None
+    assert routing._validate("generic", "pfsense", {"pfsense"}) is not None
+    assert routing._validate("generic", "fortinet", {"fortinet"}) is not None
+    assert routing._validate("generic", "firewall", set()) is None
 
 
-def test_application_doit_etre_attestee_par_les_donnees():
-    """Un nom d'application que rien n'atteste est une hallucination coûteuse :
-    l'index créé ne se renomme pas, il se double."""
-    assert routing._validate("applicative", "jellyfin", {"jellyfin", "media"}) is None
-    assert routing._validate("applicative", "grafana", {"jellyfin"}) is not None
+def test_application_must_be_attested_by_the_data():
+    """An application name nothing attests is a costly hallucination: the
+    created index is not renamed, it is duplicated."""
+    assert routing._validate("application", "jellyfin", {"jellyfin", "media"}) is None
+    assert routing._validate("application", "grafana", {"jellyfin"}) is not None
 
 
-def test_nom_de_metier_refuse_comme_application():
-    """« web » est une famille, pas un produit : l'accepter comme applicative
-    contournerait le vocabulaire fermé par la porte de service."""
-    assert routing._validate("applicative", "web", {"web"}) is not None
+def test_business_name_refused_as_an_application():
+    """"web" is a family, not a product: accepting it as an application would
+    bypass the closed vocabulary through the back door."""
+    assert routing._validate("application", "web", {"web"}) is not None
 
 
-def test_formes_invalides():
+def test_invalid_shapes():
     for suffix in ("", "a", "Web", "web-proxy", "proxy2", "x" * 21):
-        assert routing._validate("generique", suffix, set()) is not None
+        assert routing._validate("generic", suffix, set()) is not None
 
 
-def test_suffixes_reserves_par_la_stack():
-    """`wazuh-alerts-*` ou `wazuh-monitoring-*` existent déjà : un index set
-    homonyme en avalerait le contenu."""
+def test_suffixes_reserved_by_the_stack():
+    """`wazuh-alerts-*` or `wazuh-monitoring-*` already exist: a homonymous
+    index set would swallow their content."""
     for suffix in ("alerts", "monitoring", "statistics", "ai", "voc"):
-        assert routing._validate("generique", suffix, set()) is not None
+        assert routing._validate("generic", suffix, set()) is not None
 
 
-def test_inconnu_nest_pas_un_nom():
-    assert routing._validate("inconnu", "", set()) is not None
+def test_unknown_is_not_a_name():
+    assert routing._validate("unknown", "", set()) is not None
 
 
-def test_repli_reste_deterministe_et_conforme():
+def test_fallback_stays_deterministic_and_compliant():
     r = routing._fallback({"criterion_value": "npm-access"}, "pattern")
     assert r["index_base"] == "wazuh-npmaccess"
-    assert r["named_by"] == "fallback"      # -> jamais auto-appliqué
+    assert r["named_by"] == "fallback"      # -> never auto-applied
 
 
 # --------------------------------------------------------------------------
-# Rendu du pipeline
+# Pipeline rendering
 # --------------------------------------------------------------------------
 
 ROUTES = [
@@ -77,27 +76,27 @@ ROUTES = [
 ]
 
 
-def test_script_appris_teste_le_decodeur_avant_les_groupes():
-    """Le décodeur identifie la source, le groupe ne fait que la caractériser.
-    Une alerte Suricata portant le groupe `dns` doit partir chez le pare-feu —
-    c'est le piège que documente déjà le routage statique."""
+def test_learned_script_tests_decoder_before_groups():
+    """The decoder identifies the source, the group only characterizes it. A
+    Suricata alert carrying the `dns` group must go to the firewall — this is
+    the trap the static routing already documents."""
     src = routing._learned_script(ROUTES)["script"]["source"]
     assert src.index("dn == 'npm-access'") < src.index("g.contains('adguard')")
 
 
-def test_rendu_stable_octet_pour_octet():
-    """Deux rendus identiques ne doivent produire AUCUNE différence : la
-    réconciliation compare le pipeline attendu à celui qui tourne, et la
-    moindre instabilité (ordre, espace) déclencherait un PUT toutes les deux
-    minutes, sur le pipeline qui porte toutes les alertes du SOC."""
+def test_rendering_stable_byte_for_byte():
+    """Two identical renders must produce NO difference: reconciliation
+    compares the expected pipeline to the running one, and the slightest
+    instability (order, spacing) would trigger a PUT every two minutes, on
+    the pipeline that carries every SOC alert."""
     a = json.dumps(routing._learned_script(ROUTES), sort_keys=True)
     b = json.dumps(routing._learned_script(list(ROUTES)), sort_keys=True)
     assert a == b
 
 
-def test_valeurs_non_conformes_refusees_avant_de_generer_du_painless():
-    """Ces valeurs viennent des données indexées et finissent dans une chaîne
-    entre quotes au milieu d'un script exécuté par l'indexer."""
+def test_non_compliant_values_refused_before_generating_painless():
+    """These values come from indexed data and end up in a quoted string in
+    the middle of a script executed by the indexer."""
     for bad in ("npm'access", "a b", "x" * 65, "év", ""):
         with pytest.raises(ValueError):
             routing._learned_script([{"criterion_type": "decoder",
@@ -105,64 +104,65 @@ def test_valeurs_non_conformes_refusees_avant_de_generer_du_painless():
                                      "index_base": "wazuh-proxy"}])
 
 
-def test_index_base_non_conforme_refuse():
+def test_non_compliant_index_base_refused():
     with pytest.raises(ValueError):
         routing._learned_script([{"criterion_type": "decoder",
                                  "criterion_value": "npm-access",
-                                 "index_base": "autre-chose"}])
+                                 "index_base": "something-else"}])
 
 
 PIPELINE = {
     "description": "Wazuh alerts pipeline",
     "processors": [
         {"json": {"field": "message", "add_to_root": True}},
-        {"script": {"tag": "routage-statique", "source": "..."}},
+        {"script": {"tag": "routing-static", "source": "..."}},
         {"script": {"description": "YARITRUST", "source": "..."}},
     ],
     "on_failure": [{"drop": {}}],
 }
 
 
-def test_insertion_apres_le_routage_statique():
-    """Contre-intuitif, et vérifié sur le pipeline de prod : le `return` du
-    painless ne sort que du script courant, pas du pipeline. Une branche
-    apprise placée AVANT le routage statique écrit bien `ctx._index`, puis le
-    script statique le réécrit derrière elle — sans la moindre erreur. Mesuré
-    le 2026-08-14 : `pam -> wazuh-endpoint` repartait dans wazuh-linux."""
+def test_insertion_after_static_routing():
+    """Counter-intuitive, and verified on the prod pipeline: painless's
+    `return` only exits the current script, not the pipeline. A learned
+    branch placed BEFORE the static routing does write `ctx._index`, then the
+    static script overwrites it right after — with no error at all. Measured
+    on 2026-08-14: `pam -> wazuh-endpoint` kept landing back in
+    wazuh-linux."""
     rendered = routing.render(PIPELINE, ROUTES)
     tags = [next(iter(p.values())).get("tag") for p in rendered["processors"]]
     assert tags.index(routing.TAG_LEARNED) > tags.index(routing.TAG_STATIC)
     assert len(rendered["processors"]) == len(PIPELINE["processors"]) + 1
 
 
-def test_le_script_yara_garde_le_dernier_mot():
-    """Il est volontairement le dernier processor du pipeline : les matches YARA
-    sortent dans wazuh-yara-* quelle que soit la source qui les a produits."""
+def test_yara_script_keeps_the_last_word():
+    """It is deliberately the last processor of the pipeline: YARA matches go
+    out into wazuh-yara-* regardless of the source that produced them."""
     rendered = routing.render(PIPELINE, ROUTES)
     last = next(iter(rendered["processors"][-1].values()))
     assert "YARITRUST" in last["description"]
 
 
-def test_insertion_par_defaut_sur_la_description():
-    """La prod tourne peut-être encore avec un pipeline antérieur au tag."""
-    sans_tag = {**PIPELINE, "processors": [
+def test_insertion_falls_back_to_the_description():
+    """Prod may still be running a pipeline that predates the tag."""
+    no_tag = {**PIPELINE, "processors": [
         {"json": {}},
-        {"script": {"description": "Aura-SOC: route les alertes des agents ..."}},
+        {"script": {"description": "Aura-SOC: routes the agent alerts ..."}},
     ]}
-    assert routing._insert_position(sans_tag["processors"]) == 2
+    assert routing._insert_position(no_tag["processors"]) == 2
 
 
-def test_refus_d_inserer_a_l_aveugle():
-    """Aucun repère trouvé = aucune écriture. Insérer au hasard dans le
-    pipeline qui porte toutes les alertes du SOC n'est pas rattrapable."""
+def test_refuses_to_insert_blindly():
+    """No landmark found = no write. Inserting at random into the pipeline
+    that carries every SOC alert cannot be undone."""
     with pytest.raises(RuntimeError):
         routing.render({"processors": [{"json": {}}]}, ROUTES)
 
 
-def test_le_processor_appris_est_retirable():
-    """La base, c'est le pipeline vivant MOINS notre processor : c'est ce qui
-    permet de repartir de ce que filebeat a réellement poussé, sans jamais lire
-    le fichier sur disque."""
+def test_learned_processor_is_removable():
+    """The baseline is the live pipeline MINUS our processor: that is what
+    allows starting again from what filebeat actually pushed, without ever
+    reading the file on disk."""
     rendered = routing.render(PIPELINE, ROUTES)
     assert routing._without_learned(rendered)["processors"] == PIPELINE["processors"]
     assert routing._without_learned(PIPELINE)["processors"] == PIPELINE["processors"]
@@ -172,25 +172,26 @@ def test_le_processor_appris_est_retirable():
 # Simulation
 # --------------------------------------------------------------------------
 
-def test_message_repose_le_prefixe_efface_a_l_indexation():
-    """`date_index_name` lit `fields.index_prefix` et c'est le SEUL processor du
-    pipeline en `ignore_failure: false` : sans ce champ, tout document simulé
-    part dans le `drop` du `on_failure` et chaque témoin ressort « perdu ». Le
-    champ est effacé par un `remove` avant l'écriture, donc il n'est dans aucun
-    document indexé et ne peut pas venir du témoin."""
+def test_message_puts_back_the_prefix_erased_at_indexing():
+    """`date_index_name` reads `fields.index_prefix` and it is the ONLY
+    processor of the pipeline with `ignore_failure: false`: without this
+    field, every simulated document goes into the `on_failure` `drop` and
+    every witness comes back "lost". The field is erased by a `remove` before
+    writing, so it is in no indexed document and cannot come from the
+    witness."""
     m = routing._message({"timestamp": "2026-08-14T10:00:00.000+0000"})
     assert m["fields"]["index_prefix"] == routing.DEFAULT_PREFIX
-    already = {"fields": {"index_prefix": "autre-"}}
-    assert routing._message(already)["fields"]["index_prefix"] == "autre-"
+    already = {"fields": {"index_prefix": "other-"}}
+    assert routing._message(already)["fields"]["index_prefix"] == "other-"
 
 
-def test_simulation_sans_temoin_ne_bloque_rien():
+def test_simulation_with_no_witness_blocks_nothing():
     assert routing.simulate({}, []) == []
 
 
-def test_lecture_d_une_simulation(monkeypatch):
-    """Trois verdicts à distinguer : routé comme attendu, routé ailleurs (la
-    régression qu'on cherche), et document perdu (painless invalide)."""
+def test_reading_a_simulation(monkeypatch):
+    """Three verdicts to distinguish: routed as expected, routed elsewhere
+    (the regression being hunted), and document lost (invalid painless)."""
     response = {
         "docs": [
             {"doc": {"_index": "wazuh-proxy-2026.08.14"}},
@@ -215,48 +216,48 @@ def test_lecture_d_une_simulation(monkeypatch):
             "example": {}}]
     failures = routing.simulate({}, cases)
     assert len(failures) == 2
-    assert "attendu wazuh-jellyfin, obtenu wazuh-alerts-4.x" in failures[0]
-    assert "PERDU" in failures[1]
+    assert "expected wazuh-jellyfin, got wazuh-alerts-4.x" in failures[0]
+    assert "LOST" in failures[1]
 
 
-def test_base_index_retire_la_date():
+def test_base_index_strips_the_date():
     assert routing._base_index("wazuh-linux-2026.08.14") == "wazuh-linux"
     assert routing._base_index("wazuh-voc-vulns") == "wazuh-voc-vulns"
 
 
 # --------------------------------------------------------------------------
-# Ce qui n'est pas une source de log
+# What is not a log source
 # --------------------------------------------------------------------------
 
-def test_le_bruit_transverse_nest_pas_une_source():
-    """FIM, SCA, rootcheck et l'état des agents produisent ~1 800 alertes par
-    jour dans l'index par défaut, sur TOUS les agents. Sans cette liste
-    blanche, le module proposerait de leur créer un index dès le premier
-    passage."""
+def test_cross_cutting_noise_is_not_a_source():
+    """FIM, SCA, rootcheck and agent state produce ~1,800 alerts a day in the
+    default index, across ALL agents. Without this whitelist, the module
+    would propose creating an index for them on the very first pass."""
     for d in ("ossec", "rootcheck", "sca", "wazuh"):
         assert d in routing.DECODERS_CROSS_CUTTING
     for g in ("syscheck", "sca", "virustotal", "vulnerability-detector"):
         assert g in routing.GROUPS_CROSS_CUTTING
 
 
-def test_windows_eventchannel_nest_pas_traite_comme_ambigu():
-    """Ses alertes portent des dizaines de groupes qui deviendraient autant de
-    fausses sources pour un seul index — elles sont déjà routées par OS."""
+def test_windows_eventchannel_is_not_treated_as_ambiguous():
+    """Its alerts carry dozens of groups that would each become a false
+    source for a single index — they are already routed by OS."""
     assert "windows_eventchannel" not in routing.DECODERS_AMBIGUOUS
     assert "json" in routing.DECODERS_AMBIGUOUS
 
 
 # --------------------------------------------------------------------------
-# Garde-fous de configuration
+# Configuration guardrails
 # --------------------------------------------------------------------------
 
-def test_plafond_de_creation_est_bas():
-    """Dix index sets créés le même jour, ce n'est pas dix index sets qu'il
-    faut : c'est un humain qui regarde ce qui vient de changer dans le SI."""
+def test_creation_cap_is_low():
+    """Ten index sets created the same day is not ten index sets that are
+    needed: it is a human who should look at what just changed in the
+    estate."""
     assert 1 <= config.ROUTING_MAX_NEW_PER_DAY <= 3
 
 
-def test_seuil_de_silence_est_en_jours_pas_en_minutes():
-    """Une source de log n'est pas un capteur continu : un proxy peut ne rien
-    logger d'alertable d'une nuit entière."""
+def test_silence_threshold_is_in_days_not_minutes():
+    """A log source is not a continuous sensor: a proxy may log nothing
+    alertable for a whole night."""
     assert config.ROUTING_SILENCE_HOURS >= 24

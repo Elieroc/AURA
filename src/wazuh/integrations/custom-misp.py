@@ -49,7 +49,7 @@ OUR_RULES = range(100950, 100960)
 #   bulk      liste de réputation de masse              -> 100953
 WEIGHT_CONFIDENCE = {"curated": 3, "extracted": 2, "bulk": 1}
 ORDER_CONFIDENCE_SQL = (
-    "CASE confiance WHEN 'curated' THEN 0 WHEN 'extracted' THEN 1 ELSE 2 END ASC")
+    "CASE confidence WHEN 'curated' THEN 0 WHEN 'extracted' THEN 1 ELSE 2 END ASC")
 
 
 def send(event):
@@ -217,7 +217,7 @@ def open_cache():
 def cache_age(conn):
     """Âge du cache en heures, ou None si la métadonnée manque."""
     line = conn.execute(
-        "SELECT value FROM meta WHERE key = 'synchronise_a'").fetchone()
+        "SELECT value FROM meta WHERE key = 'synced_at'").fetchone()
     if not line or not line[0]:
         return None
     timestamp = datetime.fromisoformat(line[0])
@@ -329,9 +329,9 @@ def main():
         total = 0
         for type_cache, value, field, direction in found:
             lines = conn.execute(
-                "SELECT source, categorie, evenement, event_id, tags, "
-                "niveau_menace, confiance FROM ioc WHERE value = ? AND type = ? "
-                "ORDER BY " + ORDER_CONFIDENCE_SQL + ", niveau_menace ASC",
+                "SELECT source, category, event, event_id, tags, "
+                "threat_level, confidence FROM ioc WHERE value = ? AND type = ? "
+                "ORDER BY " + ORDER_CONFIDENCE_SQL + ", threat_level ASC",
                 (value, type_cache)).fetchall()
             if not lines:
                 continue

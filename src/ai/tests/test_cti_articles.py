@@ -1,18 +1,18 @@
-"""CTI : extraction d'IOC depuis des articles publics.
+"""CTI: IOC extraction from public articles.
 
-Le LLM n'est pas testé ici (il est appelé pour de vrai, ou pas du tout) : ce
-qui est couvert est tout ce qui l'ENCADRE, et c'est là que se joue la qualité du
-renseignement produit :
+The LLM is not tested here (it is called for real, or not at all): what is
+covered is everything that SURROUNDS it, and that is where the quality of the
+produced intelligence is decided:
 
-- `test_ioc_invente_par_le_modele_est_rejete` : le seul mode de défaillance qui
-  fabriquerait des indicateurs de toutes pièces. Un IOC absent du texte source
-  doit être jeté, pas discuté ;
-- `test_defanging_*` : sans réécriture des IOC neutralisés (hxxp, [.]), la
-  quasi-totalité de ce que publient ces sources reste invisible — l'extraction
-  paraîtrait fonctionner en ne trouvant jamais rien ;
-- `test_domaine_du_media_jamais_retenu` et les exclusions d'IP : un faux IOC à
-  niveau 12 fait alerter sur du trafic normal, et l'IP du SOC en IOC ferait
-  agir le SOC contre lui-même.
+- `test_ioc_invented_by_the_model_is_rejected`: the one failure mode that
+  would fabricate indicators out of thin air. An IOC absent from the source
+  text must be dropped, not discussed;
+- `test_defanging_*`: without rewriting neutralised IOCs (hxxp, [.]), almost
+  everything these sources publish stays invisible — the extraction would
+  look like it works while never finding anything;
+- `test_media_domain_never_kept` and the IP exclusions: a false IOC at level
+  12 makes normal traffic alert, and the SOC's own IP as an IOC would make
+  the SOC act against itself.
 """
 
 import json
@@ -23,7 +23,7 @@ import pytest
 from soc_agent import cti, cti_articles as ca
 
 
-# --- Défanging et candidats -------------------------------------------------
+# --- Defanging and candidates ------------------------------------------------
 
 @pytest.mark.parametrize("raw,expected", [
     ("hxxp://evil.example/payload", "http://evil.example/payload"),
@@ -38,7 +38,7 @@ def test_defanging(raw, expected):
     assert ca.defanger(raw) == expected
 
 
-def test_candidats_trouve_les_ioc_defanges():
+def test_candidates_find_defanged_iocs():
     text = ("The loader contacts hxxp://malicious-c2[.]top/gate.php and "
              "resolves second-stage[.]xyz from 203.0.113.9, dropping a file "
              "with SHA256 " + "ab" * 32 + ".")
@@ -46,12 +46,12 @@ def test_candidats_trouve_les_ioc_defanges():
     assert "http://malicious-c2.top/gate.php" in found["url"]
     assert "second-stage.xyz" in found["domain"]
     assert "ab" * 32 in found["hash"]
-    # 203.0.113.0/24 est le réseau de DOCUMENTATION (RFC 5737) : les rapports
-    # s'en servent pour illustrer sans exposer une vraie cible.
+    # 203.0.113.0/24 is the DOCUMENTATION network (RFC 5737): reports use it
+    # to illustrate without exposing a real target.
     assert "203.0.113.9" not in found["ip"]
 
 
-def test_domaine_du_media_jamais_retenu():
+def test_media_domain_never_kept():
     text = ("As reported by bleepingcomputer.com and confirmed on github.com, "
              "the group used real-c2-server.top for command and control.")
     found = ca.candidates(text)
@@ -59,78 +59,78 @@ def test_domaine_du_media_jamais_retenu():
     assert not {"bleepingcomputer.com", "github.com"} & set(found["domain"])
 
 
-def test_sous_domaine_dun_media_exclu_aussi():
-    # L'exclusion se fait par SUFFIXE : sans ça, elle ne tient que sur le
-    # domaine nu et tout CDN de la source repasse.
+def test_subdomain_of_a_media_outlet_excluded_too():
+    # The exclusion is by SUFFIX: without that, it would only hold on the
+    # bare domain and any CDN of the outlet would slip back in.
     found = ca.candidates("see cdn.bleepingcomputer.com and unit42.paloaltonetworks.com")
     assert found["domain"] == []
 
 
-def test_ip_privee_et_infra_soc_exclues(monkeypatch):
+def test_private_ip_and_soc_infra_excluded(monkeypatch):
     monkeypatch.setattr(cti_config := ca.config, "SOC_INFRA_IPS", {"51.15.1.2"})
-    assert cti_config.SOC_INFRA_IPS  # garde-fou du test lui-même
+    assert cti_config.SOC_INFRA_IPS  # the test's own guardrail
     found = ca.candidates("hosts 10.0.0.5, 127.0.0.1, 51.15.1.2 and 45.77.1.9")
     assert found["ip"] == ["45.77.1.9"]
 
 
-def test_texte_brut_retire_scripts_et_balises():
+def test_plain_text_strips_scripts_and_tags():
     html_source = ("<html><head><script>var c2='fake-c2.top';</script></head>"
                    "<body><p>Real IOC: bad-domain.xyz</p>"
                    "<nav><a href='https://twitter.com/x'>x</a></nav></body></html>")
     text = ca.plain_text(html_source)
-    # Le contenu des <script> est du code, pas du texte d'article : les
-    # domaines qui y figurent sont des artefacts de la page.
+    # The content of <script> is code, not article text: any domain in it is
+    # a page artefact.
     assert "fake-c2.top" not in text
     assert "bad-domain.xyz" in text
 
 
-def test_tronquer_garde_le_debut_et_la_fin():
-    # La section « Indicators of Compromise » est presque toujours en FIN de
-    # corps : une troncature qui ne garderait que le début la perdrait
-    # systématiquement.
-    text = "DEBUT" + "x" * 50000 + "FIN"
+def test_truncate_keeps_the_start_and_the_end():
+    # The "Indicators of Compromise" section is almost always at the END of
+    # the body: a truncation that only kept the start would lose it
+    # systematically.
+    text = "START" + "x" * 50000 + "END"
     cut = ca.truncate(text, 1000)
-    assert cut.startswith("DEBUT") and cut.endswith("FIN")
+    assert cut.startswith("START") and cut.endswith("END")
     assert len(cut) < 1200
 
 
-# --- Validation de la sortie du modèle --------------------------------------
+# --- Validating the model's output -------------------------------------------
 
 FOUND = {"ip": ["45.77.1.9"], "domain": ["bad-domain.xyz"], "url": [], "hash": []}
 
 
-def test_ioc_invente_par_le_modele_est_rejete():
+def test_ioc_invented_by_the_model_is_rejected():
     response = {"iocs": [
         {"value": "bad-domain.xyz", "type": "domain", "role": "C2"},
-        # Jamais vu dans le texte : le modèle l'a fabriqué.
-        {"value": "invente-par-le-modele.com", "type": "domain", "role": "C2"},
+        # Never seen in the text: the model made it up.
+        {"value": "invented-by-the-model.com", "type": "domain", "role": "C2"},
     ]}
     kept = ca.validate(response, FOUND)
     assert [i["value"] for i in kept] == ["bad-domain.xyz"]
 
 
-def test_type_annonce_faux_est_corrige_par_la_valeur():
-    # On ne fait pas confiance au type annoncé : c'est la valeur qui décide.
+def test_announced_type_wrong_is_corrected_from_the_value():
+    # The announced type is not trusted: the value decides.
     kept = ca.validate(
         {"iocs": [{"value": "45.77.1.9", "type": "domain", "role": "C2"}]}, FOUND)
     assert kept[0]["type"] == "ip"
 
 
-def test_doublons_ecartes():
+def test_duplicates_dropped():
     response = {"iocs": [{"value": "45.77.1.9", "type": "ip", "role": "C2"},
                         {"value": "45.77.1.9", "type": "ip", "role": "C2 again"}]}
     assert len(ca.validate(response, FOUND)) == 1
 
 
-def test_sortie_vide_ou_malformee_ne_casse_rien():
+def test_empty_or_malformed_output_does_not_break_anything():
     assert ca.validate({}, FOUND) == []
     assert ca.validate({"iocs": None}, FOUND) == []
-    assert ca.validate({"iocs": ["pas un objet"]}, FOUND) == []
+    assert ca.validate({"iocs": ["not an object"]}, FOUND) == []
 
 
-# --- Découpage en lots ------------------------------------------------------
+# --- Batching -----------------------------------------------------------------
 
-def test_lots_bornes_par_max_lots():
+def test_batches_bounded_by_max_batches():
     found = {"ip": [f"45.77.1.{n}" for n in range(1, 255)],
                "domain": [], "url": [], "hash": []}
     batches = ca._batches(found)
@@ -138,24 +138,24 @@ def test_lots_bornes_par_max_lots():
     assert all(len(batch) <= ca.BATCH_CANDIDATES for batch in batches)
 
 
-def test_arbitrage_survit_a_un_lot_en_echec(monkeypatch, tmp_path):
-    # Mesuré en vrai : sur un digest de 403 candidats, plusieurs lots ont
-    # échoué (budget épuisé par le raisonnement, coupure réseau) et 148 IOC
-    # valides ont quand même été récupérés. Sans cette tolérance : zéro.
+def test_arbitration_survives_a_failed_batch(monkeypatch, tmp_path):
+    # Measured for real: on a digest of 403 candidates, several batches
+    # failed (budget exhausted by reasoning, network cut) and 148 valid IOCs
+    # were still recovered. Without this tolerance: zero.
     calls = {"n": 0}
 
     def _completion(system, user, usage, max_tokens=0):
         calls["n"] += 1
         if calls["n"] == 1:
-            raise RuntimeError("timeout de l'API")
+            raise RuntimeError("API timeout")
         return {"iocs": [{"value": "bad-domain.xyz", "type": "domain",
                           "role": "C2"}], "threat": "TestCampaign",
-                "resume": "r", "confiance": "haute"}, {}
+                "summary": "r", "confidence": "haute"}, {}
 
     monkeypatch.setattr(ca.llm, "completion", _completion)
     monkeypatch.setattr(ca, "BATCH_CANDIDATES", 1)
-    article = {"url": "https://exemple/rapport", "titre": "T", "texte": "texte",
-               "contexte": ""}
+    article = {"url": "https://example/report", "title": "T", "text": "text",
+               "context": ""}
     merge = ca.arbitrate(article, {"ip": ["45.77.1.9"],
                                    "domain": ["bad-domain.xyz"],
                                    "url": [], "hash": []})
@@ -163,10 +163,10 @@ def test_arbitrage_survit_a_un_lot_en_echec(monkeypatch, tmp_path):
     assert merge["threat"] == "TestCampaign"
 
 
-def test_lot_trop_lourd_est_redecoupe(monkeypatch):
-    # Le budget épuisé n'est pas un échec définitif : le lot est rejoué en deux
-    # moitiés. Surdimensionner le budget de TOUS les appels pour les rares qui
-    # débordent coûterait beaucoup plus cher.
+def test_oversized_batch_gets_split(monkeypatch):
+    # Exhausted budget is not a definitive failure: the batch is replayed in
+    # two halves. Oversizing the budget of EVERY call for the rare ones that
+    # overflow would cost far more.
     seen = []
 
     def _completion(system, user, usage, max_tokens=0):
@@ -174,55 +174,56 @@ def test_lot_trop_lourd_est_redecoupe(monkeypatch):
         n = batch_candidates.count(".")
         seen.append(n)
         if n > 3:
-            raise RuntimeError("réponse sans content (finish_reason=length, ...)")
-        return {"iocs": [], "threat": "", "resume": "", "confiance": ""}, {}
+            raise RuntimeError("no content in response (finish_reason=length, ...)")
+        return {"iocs": [], "threat": "", "summary": "", "confidence": ""}, {}
 
     monkeypatch.setattr(ca.llm, "completion", _completion)
     monkeypatch.setattr(ca, "BATCH_CANDIDATES", 8)
-    ca.arbitrate({"url": "u", "titre": "t", "texte": "x", "contexte": ""},
+    ca.arbitrate({"url": "u", "title": "t", "text": "x", "context": ""},
                 {"ip": [f"45.77.1.{n}" for n in range(1, 9)],
                  "domain": [], "url": [], "hash": []})
-    # Le premier appel (lot entier) échoue, puis deux appels sur des moitiés.
+    # The first call (whole batch) fails, then two calls on the halves.
     assert len(seen) >= 3
 
 
-# --- Publication MISP -------------------------------------------------------
+# --- MISP publication ---------------------------------------------------------
 
-def test_evenement_porte_le_tag_qui_degrade_la_confiance(monkeypatch):
+def test_event_carries_the_tag_that_downgrades_confidence(monkeypatch):
     sent = {}
 
     def _misp(method, path, body=None):
-        sent.update({"methode": method, "chemin": path, "corps": body})
+        sent.update({"method": method, "path": path, "body": body})
         return {"Event": {"id": "77"}}
 
     monkeypatch.setattr(cti, "_misp", _misp)
-    article = {"url": "https://exemple/rapport", "titre": "Rapport",
-               "publie": datetime(2026, 8, 12, tzinfo=timezone.utc), "contexte": ""}
+    article = {"url": "https://example/report", "title": "Report",
+               "published": datetime(2026, 8, 12, tzinfo=timezone.utc), "context": ""}
     iocs = [{"value": "bad-domain.xyz", "type": "domain", "role": "C2 server"},
             {"value": "ab" * 32, "type": "hash", "role": "payload"}]
     event_id = ca.create_event(article, iocs, {"threat": "TestCampaign",
-                                                  "resume": "r",
-                                                  "confiance": "haute"},
+                                                  "summary": "r",
+                                                  "confidence": "haute"},
                                   {"name": "thehackernews"})
     assert event_id == 77
-    event = sent["corps"]["Event"]
+    event = sent["body"]["Event"]
     tags = {t["name"] for t in event["Tag"]}
-    # SANS ce tag, cti.py classerait l'IOC en `curated` : une extraction
-    # automatique d'article déclencherait au même niveau qu'un IOC du CERT-FR.
+    # WITHOUT this tag, cti.py would classify the IOC as `curated`: an
+    # automatic extraction from an article would fire at the same level as a
+    # CERT-FR IOC.
     assert cti.TAG_EXTRACTION in tags
     assert "aura:feed:thehackernews" in tags
-    # Le lien vers l'article est le premier attribut : c'est ce qui permet de
-    # juger si l'extraction était fondée.
+    # The link to the article is the first attribute: it is what lets one
+    # judge whether the extraction was warranted.
     assert event["Attribute"][0]["type"] == "link"
-    assert event["Attribute"][0]["value"] == "https://exemple/rapport"
+    assert event["Attribute"][0]["value"] == "https://example/report"
     assert event["published"] is True
     types = {a["type"] for a in event["Attribute"][1:]}
     assert types == {"domain", "sha256"}
     assert all(a["to_ids"] for a in event["Attribute"][1:])
 
 
-def test_tag_extraction_degrade_bien_la_confiance_au_relecture(monkeypatch):
-    """Boucle complète : le tag posé ici doit être relu par cti.py."""
+def test_extraction_tag_correctly_downgrades_confidence_on_reread(monkeypatch):
+    """Full loop: the tag set here must be read back correctly by cti.py."""
     attributes = [{
         "type": "domain", "value": "bad-domain.xyz", "category": "Network activity",
         "event_id": "77", "to_ids": True,
@@ -236,34 +237,34 @@ def test_tag_extraction_degrade_bien_la_confiance_au_relecture(monkeypatch):
                         lambda m, c, body=None: pages.pop(0) if pages else
                         {"response": {"Attribute": []}})
     iocs = list(cti.misp_attributes())
-    assert iocs[0]["confiance"] == cti.CONFIDENCE_EXTRACTED
+    assert iocs[0]["confidence"] == cti.CONFIDENCE_EXTRACTED
 
 
-def test_warninglists_injoignables_ne_jettent_rien(monkeypatch):
+def test_unreachable_warninglists_drop_nothing(monkeypatch):
     def _misp(*a, **k):
-        raise RuntimeError("MISP indisponible")
+        raise RuntimeError("MISP unavailable")
     monkeypatch.setattr(cti, "_misp", _misp)
-    # Ne rien filtrer plutôt que tout jeter : la perte serait invisible.
+    # Filter nothing rather than drop everything: the loss would be invisible.
     assert ca.filter_warninglists(["bad-domain.xyz"]) == set()
 
 
-def test_warninglists_ecartent_ce_que_misp_connait(monkeypatch):
+def test_warninglists_drop_what_misp_knows(monkeypatch):
     monkeypatch.setattr(cti, "_misp", lambda m, c, body=None: {
         "1.1.1.1": ["List of known public DNS resolvers"], "bad-domain.xyz": []})
     assert ca.filter_warninglists(["1.1.1.1", "bad-domain.xyz"]) == {"1.1.1.1"}
 
 
-# --- Sources ----------------------------------------------------------------
+# --- Sources ------------------------------------------------------------------
 
-def test_catalogue_articles_declare_les_quatre_sources():
+def test_shipped_catalog_declares_the_four_sources():
     names = {s["name"] for s in ca.sources()}
     assert names == {"thehackernews", "bleepingcomputer", "rst-cloud", "malpedia"}
 
 
-def test_malpedia_ne_rend_que_les_urls_nouvelles(monkeypatch):
+def test_malpedia_only_returns_new_urls(monkeypatch):
     response = {"references": {
-        "https://rapport-connu/a.pdf": [{"type": "family", "common_name": "Emotet"}],
-        "https://rapport-neuf/b.html": [{"type": "family", "common_name": "Qakbot"},
+        "https://known-report/a.pdf": [{"type": "family", "common_name": "Emotet"}],
+        "https://new-report/b.html": [{"type": "family", "common_name": "Qakbot"},
                                         {"type": "actor", "common_name": "TA577"}],
     }}
 
@@ -273,26 +274,26 @@ def test_malpedia_ne_rend_que_les_urls_nouvelles(monkeypatch):
 
     monkeypatch.setattr(ca, "_http", lambda url: R())
     entries = ca.malpedia_entries({"name": "malpedia", "url": "u"},
-                                  {"https://rapport-connu/a.pdf"})
-    assert [e["url"] for e in entries] == ["https://rapport-neuf/b.html"]
-    # L'attribution est la valeur propre de Malpedia : elle part au modèle
-    # comme contexte, aucun article ne la donne de lui-même.
-    assert entries[0]["contexte"] == "Qakbot, TA577"
+                                  {"https://known-report/a.pdf"})
+    assert [e["url"] for e in entries] == ["https://new-report/b.html"]
+    # The attribution is Malpedia's own value: it goes to the model as
+    # context, no article gives it on its own.
+    assert entries[0]["context"] == "Qakbot, TA577"
 
 
-def test_date_rss_formats_reels():
+def test_rss_date_real_formats():
     assert ca._rss_date("Tue, 12 Aug 2026 10:30:00 +0000").year == 2026
     assert ca._rss_date("2026-08-12T10:30:00Z").month == 8
-    assert ca._rss_date("n'importe quoi") is None
+    assert ca._rss_date("not a date at all") is None
 
 
-def test_amorcage_ne_grille_pas_les_flux_rss(monkeypatch):
-    # L'amorçage n'existe que pour les sources SANS date (Malpedia). Marquer un
-    # flux RSS au passage reviendrait à condamner ses articles récents — ceux
-    # qu'on veut justement traiter à la première vraie passe. Constaté en prod
-    # le 2026-08-12 : 40 articles perdus au premier amorçage.
+def test_bootstrap_does_not_burn_the_rss_feeds(monkeypatch):
+    # Bootstrapping only exists for sources WITHOUT a date (Malpedia). Marking
+    # an RSS feed along the way would condemn its recent articles — exactly
+    # the ones we want to process on the first real pass. Observed in
+    # production on 2026-08-12: 40 articles lost on the first bootstrap.
     monkeypatch.setattr(ca, "rss_entries",
-                        lambda source, since: [{"url": "https://neuf", "title": "t",
+                        lambda source, since: [{"url": "https://new", "title": "t",
                                                  "published": None, "content": "",
                                                  "context": ""}])
     rss = ca.collect({"name": "thehackernews", "type": "rss"}, set(),
@@ -300,9 +301,9 @@ def test_amorcage_ne_grille_pas_les_flux_rss(monkeypatch):
     assert rss == []
 
     monkeypatch.setattr(ca, "malpedia_entries",
-                        lambda source, already: [{"url": "https://rapport", "title": "",
+                        lambda source, already: [{"url": "https://report", "title": "",
                                                "published": None, "content": "",
                                                "context": "Emotet"}])
     malpedia = ca.collect({"name": "malpedia", "type": "malpedia_references"},
                             set(), datetime.now(timezone.utc), 10, True, True)
-    assert [r["pattern"] for r in malpedia] == ["amorçage"]
+    assert [r["pattern"] for r in malpedia] == ["bootstrap"]

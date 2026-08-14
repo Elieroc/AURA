@@ -1,9 +1,9 @@
-"""Moteur UEBA : extraction des traits, rareté, chaîne MITRE, regroupement.
+"""UEBA engine: trait extraction, rarity, MITRE chain, grouping.
 
-Tout ce qui est testé ici est PUR (pas de base) : c'est justement la partie qui
-décide ce qui part au LLM, donc celle qui doit rester vérifiable sans monter une
-infra. Les accès Postgres (`observer`, `evaluer`, `purger`) sont couverts en
-recette sur le serveur, pas ici.
+Everything tested here is PURE (no database): this is precisely the part that
+decides what goes to the LLM, hence the part that must stay verifiable without
+standing up an infra. The Postgres-backed functions (`observe`, `evaluate`,
+`purge`) are covered against the real server, not here.
 """
 
 import json
@@ -29,27 +29,27 @@ def alert(**kw):
     return base
 
 
-# --- Extraction des traits ---------------------------------------------------
+# --- Trait extraction ---------------------------------------------------------
 
-def test_traits_exe_et_scope_utilisateur():
+def test_traits_exe_and_user_scope():
     a = alert(srcuser="jdupont",
                raw={"data": {"audit": {"exe": "/usr/bin/nc"}}})
     t = ueba.traits(a)
     assert ("host", "002", "exe", "/usr/bin/nc") in t
-    # Le même trait est observé DEUX fois : une fois pour la machine, une fois
-    # pour le couple compte/machine. C'est ce second scope qui voit la
-    # latéralisation (un compte légitime sur un hôte où il n'a jamais servi).
+    # The same trait is observed TWICE: once for the machine, once for the
+    # account/machine pair. It is this second scope that sees lateral
+    # movement (a legitimate account on a host it never served on).
     assert ("user@host", "jdupont@002", "exe", "/usr/bin/nc") in t
 
 
-def test_traits_sans_compte_pas_de_scope_fourre_tout():
-    """Un « inconnu@hôte » créerait un profil où tout finit par sembler normal."""
+def test_traits_without_account_no_catch_all_scope():
+    """An "unknown@host" would create a profile where everything ends up looking normal."""
     a = alert(raw={"data": {"audit": {"exe": "/usr/bin/nc"}}})
     assert all(s == "host" for s, _, _, _ in ueba.traits(a))
 
 
-def test_traits_shell_generique_ignore():
-    """Le premier `bash` d'une machine ne doit pas valoir 12 bits."""
+def test_traits_generic_shell_ignored():
+    """The first `bash` of a machine must not be worth 12 bits."""
     a = alert(raw={"data": {"audit": {"exe": "/bin/bash"}}})
     assert not [t for t in ueba.traits(a) if t[2] == "exe"]
 
@@ -62,74 +62,74 @@ def test_traits_parent_child_windows():
     assert ("host", "010", "parent_child", "nginx.exe>cmd.exe") in t
 
 
-def test_traits_heure_tranche_ouvre_ou_non():
+def test_traits_hour_slot_business_or_not():
     opens = ueba.traits(alert(ts=T0))
-    nuit = ueba.traits(alert(ts=T0.replace(hour=3)))
-    assert ("host", "002", "heure", "ouvre") in opens
-    assert ("host", "002", "heure", "hors_ouvre") in nuit
+    night = ueba.traits(alert(ts=T0.replace(hour=3)))
+    assert ("host", "002", "hour", "business") in opens
+    assert ("host", "002", "hour", "off_hours") in night
 
 
-def test_traits_raw_json_serialise():
-    """`alerts.raw` revient tantôt en dict, tantôt en texte selon l'appelant."""
+def test_traits_raw_json_serialized():
+    """`alerts.raw` comes back sometimes as a dict, sometimes as text depending on the caller."""
     a = alert(raw=json.dumps({"data": {"audit": {"exe": "/opt/x/impl"}}}))
     assert ("host", "002", "exe", "/opt/x/impl") in ueba.traits(a)
 
 
-# --- Rareté ------------------------------------------------------------------
+# --- Rarity --------------------------------------------------------------------
 
-def test_surprisal_decroit_avec_la_frequence():
+def test_surprisal_decreases_with_frequency():
     rare = ueba.surprisal(1, 10_000, 50)
     current = ueba.surprisal(5_000, 10_000, 50)
     assert rare > current
     assert current < 2.0
 
 
-def test_surprisal_jamais_infinie():
-    """Le lissage de Laplace borne le score d'un profil encore maigre."""
+def test_surprisal_never_infinite():
+    """Laplace smoothing bounds the score of a still-thin profile."""
     assert ueba.surprisal(0, 0, 0) < 2.0
     assert ueba.surprisal(0, 100, 3) < 10.0
 
 
-def test_profil_immature_ne_score_pas():
-    """Le premier jour, tout est inédit : scorer enverrait le parc entier au LLM."""
+def test_immature_profile_does_not_score():
+    """On day one, everything is unseen: scoring would send the whole fleet to the LLM."""
     bits, _ = ueba._trait_bits(None, None, 0, mature=False)
     assert bits == 0.0
 
 
-def test_first_seen_module_par_la_flotte():
-    """Inédit ici mais banal ailleurs = déploiement d'admin, pas intrusion."""
-    seul, note_seul = ueba._trait_bits(None, None, 0, mature=True)
-    partout, _ = ueba._trait_bits(None, None, 12, mature=True)
-    assert seul == config.UEBA_FIRSTSEEN_BITS
-    assert "flotte" in note_seul
-    assert partout < seul / 4
+def test_first_seen_moderated_by_the_fleet():
+    """Unseen here but mundane elsewhere = admin rollout, not intrusion."""
+    alone, note_alone = ueba._trait_bits(None, None, 0, mature=True)
+    everywhere, _ = ueba._trait_bits(None, None, 12, mature=True)
+    assert alone == config.UEBA_FIRSTSEEN_BITS
+    assert "flotte" in note_alone
+    assert everywhere < alone / 4
 
 
-def test_habitude_ne_score_plus():
-    """Vu sur assez de jours DISTINCTS : c'est une routine."""
-    profil = {"total": 40, "days_seen": config.UEBA_DAYS_USUAL + 1,
+def test_habit_no_longer_scores():
+    """Seen on enough DISTINCT days: it is a routine."""
+    profile = {"total": 40, "days_seen": config.UEBA_DAYS_USUAL + 1,
               "seen_in_tp": False}
-    bits, _ = ueba._trait_bits(profil, {"total": 100, "distinct_values": 5}, 0, True)
+    bits, _ = ueba._trait_bits(profile, {"total": 100, "distinct_values": 5}, 0, True)
     assert bits == 0.0
 
 
-def test_vu_en_vrai_positif_ne_devient_jamais_une_habitude():
-    """Sinon un attaquant normalise son outillage en le lançant tous les jours."""
-    profil = {"total": 5_000, "days_seen": 300, "seen_in_tp": True}
-    bits, note = ueba._trait_bits(profil, {"total": 5_000, "distinct_values": 2},
+def test_seen_in_true_positive_never_becomes_a_habit():
+    """Otherwise an attacker normalises their tooling by running it every day."""
+    profile = {"total": 5_000, "days_seen": 300, "seen_in_tp": True}
+    bits, note = ueba._trait_bits(profile, {"total": 5_000, "distinct_values": 2},
                                   40, True)
     assert bits == config.UEBA_FIRSTSEEN_BITS
     assert "vrai positif" in note
 
 
-# --- Chaîne MITRE ------------------------------------------------------------
+# --- MITRE chain ---------------------------------------------------------------
 
-def test_chaine_sous_le_minimum_ne_bonifie_pas():
+def test_chain_below_minimum_does_not_bonus():
     assert ueba.chain_bonus(["Discovery", "Discovery"]) == (0.0, None)
 
 
-def test_trois_discovery_valent_moins_qu_une_vraie_chaine():
-    """Le brut « 3 tactiques » remonte surtout l'admin qui inventorie sa machine."""
+def test_three_discovery_worth_less_than_a_real_chain():
+    """The raw "3 tactics" mostly surfaces the admin inventorying their machine."""
     weak, _ = ueba.chain_bonus(["Discovery", "Execution", "Reconnaissance"])
     high, phrase = ueba.chain_bonus(
         ["Initial Access", "Persistence", "Credential Access", "Exfiltration"])
@@ -137,7 +137,7 @@ def test_trois_discovery_valent_moins_qu_une_vraie_chaine():
     assert "progression kill-chain" in phrase
 
 
-def test_bonus_ordre_recompense_la_progression():
+def test_order_bonus_rewards_progression():
     ordered, _ = ueba.chain_bonus(
         ["Initial Access", "Execution", "Persistence", "Exfiltration"])
     disorder, _ = ueba.chain_bonus(
@@ -145,26 +145,26 @@ def test_bonus_ordre_recompense_la_progression():
     assert ordered > disorder
 
 
-# --- Regroupement et score d'un signal ---------------------------------------
+# --- Grouping and scoring of a signal ------------------------------------------
 
-def test_groupement_coupe_sur_l_agent_et_sur_la_fenetre():
-    loin = T0 + timedelta(minutes=config.UEBA_WINDOW_MINUTES + 10)
+def test_grouping_cuts_on_agent_and_on_window():
+    far = T0 + timedelta(minutes=config.UEBA_WINDOW_MINUTES + 10)
     alerts = [
         alert(id="a", ts=T0),
         alert(id="b", ts=T0 + timedelta(minutes=5)),
-        alert(id="c", ts=loin),                 # trop loin -> nouveau groupe
-        alert(id="d", ts=loin, agent_id="003"),  # autre agent -> nouveau groupe
+        alert(id="c", ts=far),                 # too far -> new group
+        alert(id="d", ts=far, agent_id="003"),  # other agent -> new group
     ]
     groups = ueba._group_signals(alerts)
     assert [len(g) for g in groups] == [2, 1, 1]
 
 
-def test_groupement_borne_la_duree_totale():
-    """Le chaînage est de proche en proche : sans plafond, un hôte qui émet une
-    alerte toutes les 50 min agglomère sa journée entière en un seul signal."""
-    pas = timedelta(minutes=config.UEBA_WINDOW_MINUTES - 1)
-    n = int(config.UEBA_SIGNAL_MAX_HOURS * 60 / (pas.seconds / 60)) + 3
-    alerts = [alert(id=str(i), ts=T0 + pas * i) for i in range(n)]
+def test_grouping_bounds_the_total_duration():
+    """Chaining is step-by-step: without a cap, a host emitting one alert every
+    50 min agglomerates its whole day into a single signal."""
+    step = timedelta(minutes=config.UEBA_WINDOW_MINUTES - 1)
+    n = int(config.UEBA_SIGNAL_MAX_HOURS * 60 / (step.seconds / 60)) + 3
+    alerts = [alert(id=str(i), ts=T0 + step * i) for i in range(n)]
     groups = ueba._group_signals(alerts)
     assert len(groups) > 1
     for g in groups:
@@ -172,40 +172,40 @@ def test_groupement_borne_la_duree_totale():
         assert span <= timedelta(hours=config.UEBA_SIGNAL_MAX_HOURS)
 
 
-def test_score_signal_sature_les_repetitions():
-    """Quarante fois le même binaire rare ne valent pas quarante fois le score."""
+def test_signal_score_saturates_repetitions():
+    """Forty times the same rare binary is not worth forty times the score."""
     trait = {"trait": "exe", "value": "/opt/impl", "scope": "host",
              "bits": 12.0, "note": "jamais vu"}
-    un = ueba.score_group([alert(ueba_traits=[trait])])[0]
+    one = ueba.score_group([alert(ueba_traits=[trait])])[0]
     forty = ueba.score_group(
         [alert(id=str(i), ueba_traits=[trait]) for i in range(40)])[0]
-    assert un == forty
+    assert one == forty
 
 
-def test_score_signal_cumule_des_traits_distincts():
+def test_signal_score_accumulates_distinct_traits():
     a = alert(ueba_traits=[{"trait": "exe", "value": "/opt/impl",
                              "scope": "host", "bits": 12.0, "note": ""}])
-    b = alert(id="2", ueba_traits=[{"trait": "pays", "value": "Russia",
+    b = alert(id="2", ueba_traits=[{"trait": "country", "value": "Russia",
                                      "scope": "host", "bits": 9.0, "note": ""}])
     score, patterns = ueba.score_group([a, b])
     assert score == pytest.approx(21.0)
-    assert {m["trait"] for m in patterns} == {"exe", "pays"}
+    assert {m["trait"] for m in patterns} == {"exe", "country"}
 
 
-def test_score_signal_ajoute_le_bonus_de_chaine():
+def test_signal_score_adds_the_chain_bonus():
     traits = [{"trait": "exe", "value": "/opt/impl", "scope": "host",
                "bits": 12.0, "note": ""}]
-    sans = ueba.score_group([alert(ueba_traits=traits)])[0]
-    avec, patterns = ueba.score_group([
+    without = ueba.score_group([alert(ueba_traits=traits)])[0]
+    withit, patterns = ueba.score_group([
         alert(ueba_traits=traits, mitre_tactics=["Initial Access"]),
         alert(id="2", mitre_tactics=["Persistence"], ueba_traits=[]),
         alert(id="3", mitre_tactics=["Exfiltration"], ueba_traits=[]),
     ])
-    assert avec > sans
-    assert any(m["trait"] == "chaine_mitre" for m in patterns)
+    assert withit > without
+    assert any(m["trait"] == "mitre_chain" for m in patterns)
 
 
-# --- Intégration prompt : rendu, pseudonymisation, garde-fou de fuite --------
+# --- Prompt integration: rendering, pseudonymisation, leak guardrail ----------
 
 def _incident_ueba():
     return {
@@ -217,29 +217,30 @@ def _incident_ueba():
             {"trait": "exe", "value": "/home/jdupont/.cache/impl",
              "scope": "host", "bits": 12.0,
              "note": "jamais vu ici ni ailleurs sur la flotte"},
-            {"trait": "compte", "value": "jdupont", "scope": "host",
+            {"trait": "account", "value": "jdupont", "scope": "host",
              "bits": 7.2, "note": "rare : 2x sur 4000 observations"},
             {"trait": "srcip", "value": "192.168.10.12", "scope": "host",
              "bits": 6.0, "note": "inédit ici"},
-            {"trait": "pays", "value": "Russia", "scope": "host",
+            {"trait": "country", "value": "Russia", "scope": "host",
              "bits": 9.0, "note": "jamais vu ici ni ailleurs sur la flotte"},
         ],
     }
 
 
-def test_rendu_explique_pourquoi_un_incident_de_niveau_5_est_ouvert():
-    """Sans ça, le modèle voit du niveau 5 et conclut mécaniquement au FP."""
+def test_rendering_explains_why_a_level_5_incident_is_opened():
+    """Without this, the model sees level 5 and mechanically concludes FP."""
     text = render(_incident_ueba(), [alert(id="a")])
     assert "UEBA" in text
     assert "41.5" in text
     assert "jamais vu ici ni ailleurs" in text
 
 
-def test_motifs_ueba_pseudonymises_avant_envoi_cloud():
-    """Les motifs portent des valeurs BRUTES de logs : chemins, comptes, IP.
+def test_ueba_patterns_pseudonymised_before_cloud_submission():
+    """The patterns carry RAW log values: paths, accounts, IPs.
 
-    Sans pseudonymisation, `verifier_fuite` (fail-closed) refuserait l'incident
-    et TOUT ce que le moteur remonte serait silencieusement écarté du triage.
+    Without pseudonymisation, `check_leak` (fail-closed) would refuse the
+    incident and EVERYTHING the engine surfaces would be silently dropped from
+    triage.
     """
     anon = Anonymizer()
     alerts = [alert(id="a", srcuser="jdupont", srcip="192.168.10.12",
@@ -247,100 +248,101 @@ def test_motifs_ueba_pseudonymises_avant_envoi_cloud():
     inc, alerts_to, forbidden = anonymize(anon, _incident_ueba(), alerts)
 
     text = render(inc, alerts_to)
-    check_leak(text, forbidden)   # ne doit pas lever
+    check_leak(text, forbidden)   # must not raise
 
     assert "jdupont" not in text
     assert "192.168.10.12" not in text
-    # L'ATTRIBUT reste : c'est lui qui porte le signal, et il n'identifie personne.
+    # The ATTRIBUTE stays: it carries the signal and identifies no one.
     assert "Russia" in text
 
 
-def test_pays_et_attributs_non_tokenises():
+def test_country_and_attributes_not_tokenised():
     anon = Anonymizer()
     inc, _, _ = anonymize(anon, _incident_ueba(), [])
     by_trait = {m["trait"]: m["value"] for m in inc["ueba_patterns"]}
-    assert by_trait["pays"] == "Russia"
-    assert by_trait["compte"].startswith("<COMPTE_")
+    assert by_trait["country"] == "Russia"
+    assert by_trait["account"].startswith("<COMPTE_")
     assert by_trait["srcip"].startswith("<IP_")
 
 
-# --- Garde-fou de remédiation ------------------------------------------------
+# --- Remediation guardrail ----------------------------------------------------
 
-def test_incident_ueba_ne_declenche_pas_de_remediation_autonome(monkeypatch):
-    """Le pipeline agit seul parce qu'il part d'une règle Wazuh de niveau >= 12.
+def test_ueba_incident_does_not_trigger_autonomous_remediation(monkeypatch):
+    """The pipeline acts alone because it starts from a Wazuh rule of level >= 12.
 
-    Un incident UEBA part d'un score statistique NON calibré : le laisser isoler
-    un hôte reviendrait à confier la production à un seuil qu'on n'a pas mesuré.
+    A UEBA incident starts from an UNCALIBRATED statistical score: letting it
+    isolate a host would mean handing production over to a threshold we never
+    measured.
     """
     from soc_agent import iris
 
     monkeypatch.setattr(config, "UEBA_MITIGATE", False)
     assert iris._remediation_allowed(
         {"id": 1, "ueba": True, "ueba_score": 41}) is False
-    # Le pipeline normal (graine de niveau >= 12) n'est PAS affecté : il continue
-    # d'agir de façon autonome, c'est le but du projet.
+    # The normal pipeline (level >= 12 seed) is NOT affected: it keeps acting
+    # autonomously, which is the whole point of the project.
     assert iris._remediation_allowed({"id": 1, "ueba": False}) is True
 
 
-def test_remediation_ueba_reactivable_par_configuration(monkeypatch):
+def test_ueba_remediation_reactivatable_by_configuration(monkeypatch):
     from soc_agent import iris
 
     monkeypatch.setattr(config, "UEBA_MITIGATE", True)
     assert iris._remediation_allowed({"id": 1, "ueba": True}) is True
 
 
-# --- Garde-fou de cardinalité ------------------------------------------------
+# --- Cardinality guardrail -----------------------------------------------------
 
-def test_trait_a_cardinalite_explosive_est_mute():
-    """Archives LVM, chemins horodatés, GUID : inédits PAR CONSTRUCTION.
+def test_trait_with_explosive_cardinality_is_muted():
+    """LVM archives, timestamped paths, GUIDs: unseen BY CONSTRUCTION.
 
-    Mesuré à la mise en service : les archives LVM de l'hôte Proxmox donnaient à
-    elles seules un signal à 1434 points, quarante fois le plancher.
+    Measured at commissioning: the LVM archives of the Proxmox host alone gave
+    a signal at 1434 points, forty times the floor.
     """
-    explosif = {"total": 5_000, "distinct_values": 4_900}
-    assert ueba.usable_cardinality(explosif) is False
-    bits, _ = ueba._trait_bits(None, explosif, 0, mature=True)
+    explosive = {"total": 5_000, "distinct_values": 4_900}
+    assert ueba.usable_cardinality(explosive) is False
+    bits, _ = ueba._trait_bits(None, explosive, 0, mature=True)
     assert bits == 0.0
 
 
-def test_trait_normal_reste_scorable():
+def test_normal_trait_stays_scorable():
     normal = {"total": 5_000, "distinct_values": 60}
     assert ueba.usable_cardinality(normal) is True
     bits, _ = ueba._trait_bits(None, normal, 0, mature=True)
     assert bits == config.UEBA_FIRSTSEEN_BITS
 
 
-def test_cardinalite_ne_conclut_pas_sans_recul():
-    """Peu d'observations : on n'exclut pas un trait faute de données."""
+def test_cardinality_does_not_conclude_without_enough_history():
+    """Few observations: we do not exclude a trait for lack of data."""
     assert ueba.usable_cardinality({"total": 10, "distinct_values": 10}) is True
     assert ueba.usable_cardinality(None) is True
 
 
-def test_exe_ne_prend_pas_les_chemins_fim():
-    """`entity` vaut syscheck.path : clé de registre sur Windows, archive LVM
-    sur Proxmox. Ni l'un ni l'autre n'est un exécutable."""
+def test_exe_does_not_take_fim_paths():
+    """`entity` is syscheck.path: a registry key on Windows, an LVM archive on
+    Proxmox. Neither is an executable."""
     a = alert(entity=r"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\Run")
     traits_ = ueba.traits(a)
     assert not [t for t in traits_ if t[2] == "exe"]
-    # Conservé, mais comme trait `fichier`, moins pesant et soumis au garde-fou
-    # de cardinalité.
-    assert [t for t in traits_ if t[2] == "fichier"]
+    # Kept, but as a `file` trait, weighing less and subject to the
+    # cardinality guardrail.
+    assert [t for t in traits_ if t[2] == "file"]
 
 
-def test_tout_trait_non_attribut_est_pseudonymise():
-    """Verrou de non-régression sur l'ajout d'un trait.
+def test_every_non_attribute_trait_is_pseudonymised():
+    """Non-regression lock on adding a new trait.
 
-    Le trait `fichier` a été ajouté à ueba.py sans être déclaré ici : les
-    chemins sont partis en clair, `verifier_fuite` a refusé l'incident
-    (fail-closed) et le triage UEBA s'est tu. La pseudonymisation fonctionne
-    donc par liste d'EXCLUSION — un trait inconnu est masqué, pas laissé passer.
+    The `file` trait was added to ueba.py without being declared here: paths
+    went out in clear text, `check_leak` refused the incident (fail-closed)
+    and UEBA triage went silent. Pseudonymisation therefore works by an
+    EXCLUSION list — an unknown trait is masked, not let through.
     """
     from soc_agent.anonymize import UEBA_TRAIT_ATTRIBUTES
 
     unknown = [t for t in ueba.WEIGHT if t not in UEBA_TRAIT_ATTRIBUTES]
     patterns = [{"trait": t, "value": r"C:\Users\jdupont\secret.exe",
                "scope": "host", "bits": 9.0, "note": ""} for t in unknown]
-    patterns.append({"trait": "trait_invente_demain",
+    patterns.append({"trait": "trait_invented_tomorrow",
                    "value": "/home/jdupont/x.sh", "scope": "host",
                    "bits": 9.0, "note": ""})
 
@@ -349,32 +351,32 @@ def test_tout_trait_non_attribut_est_pseudonymise():
     inc_a, _, forbidden = anonymize(anon, inc, [])
 
     text = render(inc_a, [])
-    check_leak(text, forbidden)      # ne doit pas lever
+    check_leak(text, forbidden)      # must not raise
     assert "jdupont" not in text
     assert "secret" not in text
 
 
-def test_compte_machine_ne_porte_pas_de_trait():
-    """Un compte machine AD (`WIN-DC$`) n'est pas une personne.
+def test_machine_account_carries_no_trait():
+    """An AD machine account (`WIN-DC$`) is not a person.
 
-    Il authentifie en continu pour le compte de services : le profiler revient à
-    profiler le bruit de fond de la machine. Mesuré en production : l'incident
-    #2550 (case IRIS #193) comptait 4598 alertes dont 3856 portées par
-    `WIN-DC$` — des ouvertures/fermetures de session du contrôleur de domaine,
-    racontées par le LLM comme une compromission avérée.
+    It authenticates continuously on behalf of services: profiling it amounts
+    to profiling the machine's background noise. Measured in production:
+    incident #2550 (IRIS case #193) counted 4598 alerts, of which 3856 carried
+    by `WIN-DC$` — domain controller session open/close events, told by the
+    LLM as a confirmed compromise.
     """
     for account in ("WIN-DC$", "WIN-DC$@LAB.LOCAL", "SERVICE LOCAL",
                    "Système", "ANONYMOUS LOGON"):
         traits_ = ueba.traits(alert(srcuser=account))
-        assert not [t for t in traits_ if t[2] == "compte"], account
-        # Le scope `user@host` disparaît aussi : il agrégerait tout le trafic
-        # de service de la machine sous une identité unique.
+        assert not [t for t in traits_ if t[2] == "account"], account
+        # The `user@host` scope also disappears: it would aggregate all the
+        # machine's service traffic under a single identity.
         assert not [t for t in traits_ if t[0] == "user@host"], account
 
 
-def test_compte_de_personne_reste_score():
-    """Le garde-fou ne doit pas emporter les vrais comptes — c'est là que vit
-    la latéralisation (un compte légitime sur un hôte où il n'a jamais servi)."""
+def test_person_account_stays_scored():
+    """The guardrail must not sweep away real accounts — that is where lateral
+    movement lives (a legitimate account on a host it never served on)."""
     traits_ = ueba.traits(alert(srcuser="j.dupont"))
-    assert [t for t in traits_ if t[2] == "compte"]
+    assert [t for t in traits_ if t[2] == "account"]
     assert [t for t in traits_ if t[0] == "user@host"]
