@@ -990,9 +990,9 @@ def anomalies(conn) -> list[dict]:
         " WHERE format_version=%s ORDER BY index_base, period",
         (config.ARCHIVE_FORMAT_VERSION,)).fetchall()
 
-    # Trous dans une série : un mois absent ENTRE deux mois présents. Borné aux
-    # séries déjà commencées — un index set créé le mois dernier n'a pas de
-    # trou, il a juste un passé qui n'existe pas.
+    # Gaps in a series: a month absent BETWEEN two present months. Bounded to
+    # series already started — an index set created last month has no gap, it
+    # just has a past that does not exist.
     by_base: dict[str, list[str]] = {}
     for l in lines:
         by_base.setdefault(l["index_base"], []).append(l["period"])
@@ -1051,8 +1051,8 @@ def anomalies(conn) -> list[dict]:
         days=config.ARCHIVE_DRILL_DAYS)
     old = [l for l in lines
                 if l["verified_at"] is None or l["verified_at"] < limit]
-    # Une archive du mois en cours n'a pas encore eu son tour : on ne compte
-    # comme « en retard » que ce qui a dépassé la fenêtre de drill.
+    # An archive of the current month has not had its turn yet: we only count
+    # as "late" what has exceeded the drill window.
     if len(old) > config.ARCHIVE_DRILL_BATCH:
         output.append(_anomaly(
             "drill-late",
