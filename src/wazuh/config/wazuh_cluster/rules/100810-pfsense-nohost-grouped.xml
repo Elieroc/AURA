@@ -1,13 +1,13 @@
 <!--
-  Pendant décodeur de decoders/pfsense-nohostname.xml (syslogd FreeBSD sans
-  hostname, cf. commentaire là-bas). Miroir de 0540-pfsense_rules.xml
-  (87700-87702), mais sur decoded_as="pf-nohost" au lieu de program_name.
-  Groupe "pfsense," conservé : c'est lui que lit le routage d'index
-  wazuh-firewall-* (alerts-pipeline.json) et create_index_patterns.py.
+  Rule side of decoders/pfsense-nohostname.xml (FreeBSD syslogd without a
+  hostname, see the comment there). Mirrors 0540-pfsense_rules.xml
+  (87700-87702), but on decoded_as="pf-nohost" instead of program_name.
+  Group "pfsense," kept: it's what index routing wazuh-firewall-*
+  (alerts-pipeline.json) and create_index_patterns.py read.
 -->
 <group name="local,pfsense,">
   <rule id="100810" level="0">
     <decoded_as>pf-nohost</decoded_as>
-    <description>pfSense firewall rules grouped (syslog sans hostname).</description>
+    <description>pfSense firewall rules grouped (syslog without hostname).</description>
   </rule>
 </group>

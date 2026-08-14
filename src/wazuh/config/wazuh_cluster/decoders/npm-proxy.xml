@@ -1,54 +1,52 @@
 <!--
-  Nginx Proxy Manager (jc21/nginx-proxy-manager) — format d'access log custom,
-  pas le combined log format standard nginx :
+  Nginx Proxy Manager (jc21/nginx-proxy-manager) — custom access log format,
+  not nginx's standard combined log format:
     [27/Jul/2026:17:26:34 +0000] - 200 200 - GET https pve.example.lab "/uri" [Client 1.2.3.4] [Length 582] [Gzip -] [Sent-to 10.0.0.1] "UA" "referer"
-  Le décodeur natif nginx (program_name) ne matche pas ce format ; pire, le
-  format coïncide avec le prematch du décodeur natif "zeus"
-  (0390-zeus_decoders.xml : `^[\d\d/\w\w\w/\d\d\d\d:\d\d:\d\d:\d\d \S+] `,
-  qui matche n'importe quelle ligne commençant par un timestamp entre
-  crochets, quel que soit ce qui suit) — zeus la capture EN PREMIER (chargé
-  depuis ruleset/decoders, avant tout decoder local dans etc/decoders, quel
-  que soit l'ordre des <decoder_dir> dans wazuh_manager.conf : testé, l'ordre
-  de déclaration n'a aucun effet sur la priorité de matching).
+  The native nginx decoder (program_name) does not match this format; worse,
+  the format collides with the prematch of the native "zeus" decoder
+  (0390-zeus_decoders.xml: `^[\d\d/\w\w\w/\d\d\d\d:\d\d:\d\d:\d\d \S+] `,
+  which matches any line starting with a timestamp in brackets, whatever
+  follows) — zeus captures it FIRST (loaded from ruleset/decoders, before
+  any local decoder in etc/decoders, regardless of the order of
+  <decoder_dir> in wazuh_manager.conf: tested, declaration order has no
+  effect on matching priority).
 
-  Solution : exclure zeus (decoder ET rules, sinon les rules zeus natives
-  plantent le chargement en référençant un decoder qui n'existe plus) via
-  <decoder_exclude>/<rule_exclude> dans wazuh_manager.conf. Zeus (panel C2
-  historique, cf. commentaire natif) n'a aucun usage réel dans cet
-  environnement — perte acceptée pour débloquer NPM.
+  Solution: exclude zeus (decoder AND rules, otherwise the native zeus
+  rules break the load by referencing a decoder that no longer exists) via
+  <decoder_exclude>/<rule_exclude> in wazuh_manager.conf. Zeus (historic C2
+  panel, cf. native comment) has no real use in this environment — an
+  acceptable loss to unblock NPM.
 
-  Piège regex (même moteur limité que pfsense-nohostname.xml, cf. son
-  commentaire) : `[^"]*` (classe négative) casse le decoder silencieusement
-  (aucune erreur au chargement, juste 0 champ extrait) — les crochets sont
-  TOUJOURS des caractères littéraux ici, jamais des classes de caractères.
-  `\S*` fait le travail pour capturer l'URI (pas d'espace dans une URL de
-  toute façon).
+  Regex gotcha (same limited engine as pfsense-nohostname.xml, see its
+  comment): `[^"]*` (negative class) silently breaks the decoder (no error
+  at load time, just 0 fields extracted) — brackets are ALWAYS literal
+  characters here, never character classes. `\S*` does the job for
+  capturing the URI (no spaces in a URL anyway).
 
-  `status` est un nom de champ Wazuh statique réservé (erreur au chargement :
-  "Field 'status' is static") — pas utilisé, cf. `id` plus bas.
+  `status` is a reserved static Wazuh field name (load error: "Field
+  'status' is static") — not used, see `id` below instead.
 
-  `<type>web-log</type>` + champs nommés `id`/`url` (pas `http_status`/`uri`) :
-  fait exprès. Ça fait hériter tout le ruleset natif basé sur
-  `<category>web-log</category>` (0245-web_rules.xml : erreurs 4xx/5xx,
-  SQLi, XSS, LFI, CGI/PHP — 31101-31106, 31109, 31110) ET les règles locales
-  déjà écrites dessus (100700-100702, domaine `web,attack,web_attack_soc,` —
-  command injection, web shell, confirmed attack) SANS rien réécrire : elles
-  matchent par `<category>`/`<url>`/`<id>`, indifférentes à quel décodeur a
-  produit ces champs.
+  `<type>web-log</type>` + fields named `id`/`url` (not `http_status`/`uri`):
+  intentional. This makes the event inherit the whole native ruleset based
+  on `<category>web-log</category>` (0245-web_rules.xml: 4xx/5xx errors,
+  SQLi, XSS, LFI, CGI/PHP — 31101-31106, 31109, 31110) AND the local rules
+  already written on top of it (100700-100702, domain
+  `web,attack,web_attack_soc,` — command injection, web shell, confirmed
+  attack) WITHOUT rewriting anything: they match on `<category>`/`<url>`/
+  `<id>`, indifferent to which decoder produced these fields.
 
-  Effet de bord mesuré, important pour la suite : la règle racine native
-  31100 (condition inconditionnelle sur `<category>web-log</category>`) et
-  notre propre règle racine 100820 (`<decoded_as>npm-access</decoded_as>`)
-  sont deux règles SŒURS sans `if_sid` sur le MÊME événement — une seule
-  gagne (la première chargée : ruleset avant etc/rules), donc 31100 gagne
-  systématiquement et 100820 ne "gagne" jamais en pratique. Conséquence :
-  le tag `rule.groups` "npm-proxy" que porte 100820 n'est jamais posé sur
-  l'alerte finale. **Le routage d'index (`wazuh-proxy-*` dans
-  alerts-pipeline.json) teste donc `decoder.name=='npm-access'`, pas
-  `rule.groups` — le décodeur, lui, reste stable quelle que soit la règle
-  qui gagne.** Voir rules/100820-npm-proxy-rules.xml pour le détail côté
-  règles (100823 chaîne sur la native 31101, pas sur 100820, pour la même
-  raison).
+  Measured side effect, important for what follows: the native root rule
+  31100 (unconditional on `<category>web-log</category>`) and our own root
+  rule 100820 (`<decoded_as>npm-access</decoded_as>`) are two SIBLING rules
+  without `if_sid` on the SAME event — only one wins (whichever loads
+  first: ruleset before etc/rules), so 31100 always wins and 100820 never
+  "wins" in practice. Consequence: the `rule.groups` tag "npm-proxy" carried
+  by 100820 is never applied to the final alert. **Index routing
+  (`wazuh-proxy-*` in alerts-pipeline.json) therefore tests
+  `decoder.name=='npm-access'`, not `rule.groups` — the decoder itself
+  stays stable regardless of which rule wins.** See
+  rules/100820-npm-proxy-rules.xml for the rule-side detail (100823 chains
+  on the native 31101, not on 100820, for the same reason).
 -->
 <decoder name="npm-access">
   <type>web-log</type>

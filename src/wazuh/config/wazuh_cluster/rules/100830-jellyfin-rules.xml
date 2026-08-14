@@ -1,10 +1,10 @@
 <!--
-  Jellyfin (Emby-based, Kestrel embarqué) — pas de nginx, pas de log HTTP
-  structuré par défaut (vérifié : 0 requête loguée). Log applicatif Serilog
-  ingéré tel quel dans son propre index (wazuh-jellyfin-*, pas wazuh-web-*) :
-  décodeur decoders/jellyfin.xml extrait level (INF/WRN/ERR/FTL/DBG) + classe
-  émettrice, utile pour l'auth/les erreurs même sans visibilité sur les
-  requêtes HTTP individuelles.
+  Jellyfin (Emby-based, embedded Kestrel) — no nginx, no structured HTTP
+  log by default (verified: 0 requests logged). Serilog application log
+  ingested as-is into its own index (wazuh-jellyfin-*, not wazuh-web-*):
+  decoder decoders/jellyfin.xml extracts level (INF/WRN/ERR/FTL/DBG) +
+  emitting class, useful for auth/errors even without visibility on
+  individual HTTP requests.
 -->
 <group name="local,jellyfin,">
   <rule id="100830" level="0">

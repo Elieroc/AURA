@@ -1,31 +1,31 @@
-# Catalogue CTI d'Aura-SOC — source de vérité unique.
+# Aura-SOC CTI catalog — single source of truth.
 #
-# Deux familles, traitées différemment PARCE QU'ELLES N'ONT PAS LA MÊME NATURE :
+# Two families, handled differently BECAUSE THEY ARE NOT THE SAME NATURE:
 #
-#   misp_feeds : renseignement CURÉ (quelques milliers d'IOC, contextualisés,
-#     rattachés à un événement, à une campagne, à un acteur). Ingéré dans MISP
-#     comme des événements, donc corrélable, taggable, consultable. Ce sont
-#     eux qui justifient un niveau >= 12 : un IOC CERT-FR qui matche est un
-#     incident, pas une statistique.
+#   misp_feeds: CURATED intelligence (a few thousand IOCs, contextualized,
+#     attached to an event, a campaign, an actor). Ingested into MISP as
+#     events, so correlatable, taggable, browsable. These are what justify
+#     a level >= 12: a matching CERT-FR IOC is an incident, not a statistic.
 #
-#   blocklists : réputation de MASSE (100 000 à 300 000 IP, sans contexte,
-#     tournantes). Elles ne passent PAS par la base MISP : 300 000 attributs
-#     réécrits toutes les six heures dans MariaDB ruinent l'instance pour zéro
-#     gain analytique — aucun de ces IOC ne porte d'événement à corréler. Elles
-#     sont tirées directement par cti.py dans le cache de lookup, et déclarées
-#     à MISP en `cache_seulement` (cache Redis) pour rester interrogeables
-#     depuis l'UI. Elles matchent au niveau 10 : hors du pipeline d'incident
-#     (MIN_LEVEL=12), visibles au dashboard. Une IP de scanner qui frappe le SSH
-#     exposé n'est pas un incident, c'est le bruit de fond d'internet.
+#   blocklists: BULK reputation (100,000 to 300,000 IPs, no context,
+#     rotating). They do NOT go through the MISP database: rewriting
+#     300,000 attributes every six hours in MariaDB would wreck the
+#     instance for zero analytical gain — none of these IOCs carry an
+#     event to correlate. They are pulled directly by cti.py into the
+#     lookup cache, and declared to MISP as `cache_only` (Redis cache) to
+#     stay queryable from the UI. They match at level 10: outside the
+#     incident pipeline (MIN_LEVEL=12), visible on the dashboard. A scanner
+#     IP hitting an exposed SSH port is not an incident, it's internet
+#     background noise.
 #
-# Vérifié joignable le 2026-08-12. Un feed mort ne fait pas d'erreur : il fait
-# une CTI qui vieillit en silence — d'où le contrôle de fraîcheur de cti.py et
-# la règle 100956.
+# Verified reachable on 2026-08-12. A dead feed doesn't raise an error: it
+# produces CTI that silently ages — hence cti.py's freshness check and
+# rule 100956.
 
 misp_feeds:
-  # --- Demandé : le feed public du CERT-FR (TLP:CLEAR). Peu volumineux, très
-  # ciblé, et c'est le seul feed de cette liste qui parle des campagnes visant
-  # spécifiquement des organisations françaises.
+  # --- Requested: CERT-FR's public feed (TLP:CLEAR). Low volume, very
+  # targeted, and the only feed in this list that covers campaigns aimed
+  # specifically at French organizations.
   - name: CERT-FR OSINT
     url: https://misp.cert.ssi.gouv.fr/feed-misp/
     provider: CERT-FR / ANSSI
@@ -33,8 +33,8 @@ misp_feeds:
     active: true
     tags: [cti:certfr, tlp:clear]
 
-  # --- Le feed OSINT historique de MISP, maintenu par le CIRCL. C'est la
-  # référence de fait : rapports APT, campagnes, malware, avec le contexte.
+  # --- MISP's historic OSINT feed, maintained by CIRCL. The de facto
+  # reference: APT reports, campaigns, malware, with context.
   - name: CIRCL OSINT Feed
     url: https://www.circl.lu/doc/misp/feed-osint/
     provider: CIRCL
@@ -42,8 +42,8 @@ misp_feeds:
     active: true
     tags: [cti:circl, tlp:clear]
 
-  # --- Botvrij.eu : IOC extraits de rapports publics, faible taux de faux
-  # positif, complémentaire du CIRCL (recouvrement partiel seulement).
+  # --- Botvrij.eu: IOCs extracted from public reports, low false-positive
+  # rate, complements CIRCL (only partial overlap).
   - name: Botvrij.eu OSINT
     url: https://www.botvrij.eu/data/feed-osint/
     provider: Botvrij.eu
@@ -51,9 +51,9 @@ misp_feeds:
     active: true
     tags: [cti:botvrij, tlp:clear]
 
-  # --- ThreatFox (abuse.ch) : IOC de C2 en activité, avec la famille de
-  # malware. Le plus utile des feeds « chauds » : un match ici veut dire
-  # « cette machine parle à un C2 connu », c'est-à-dire déjà compromise.
+  # --- ThreatFox (abuse.ch): active C2 IOCs, with the malware family. The
+  # most useful of the "hot" feeds: a match here means "this machine is
+  # talking to a known C2", i.e. already compromised.
   - name: ThreatFox (abuse.ch)
     url: https://threatfox.abuse.ch/downloads/misp/
     provider: abuse.ch
@@ -61,8 +61,8 @@ misp_feeds:
     active: true
     tags: [cti:threatfox, malware:c2]
 
-  # --- URLhaus (abuse.ch) : URL de distribution de malware. Match sur une URL
-  # vue dans un log proxy/web = téléchargement de charge utile.
+  # --- URLhaus (abuse.ch): malware distribution URLs. A match on a URL
+  # seen in a proxy/web log = payload download.
   - name: URLhaus (abuse.ch)
     url: https://urlhaus.abuse.ch/downloads/misp/
     provider: abuse.ch
@@ -71,14 +71,14 @@ misp_feeds:
     tags: [cti:urlhaus, malware:distribution]
 
 blocklists:
-  # --- Demandé : Data-Shield IPv4 (duggytuxy). Fenêtre glissante de 15 jours,
-  # rafraîchie toutes les 6 h. Deux jeux :
-  #   prod_*          -> scanners/attaquants visant les applis web
-  #   prod_critical_* -> ciblant DMZ, API et infra exposée
-  # Les fichiers `prod_data-shield_*.txt` et `prod_critical_data-shield_*.txt`
-  # sont les listes complètes (~100 000 IP chacune) ; les variantes aa/ab/ac
-  # sont les mêmes découpées en tranches de 30 000 pour les pare-feux qui
-  # plafonnent. On prend les listes complètes : pas de découpage nécessaire ici.
+  # --- Requested: Data-Shield IPv4 (duggytuxy). 15-day sliding window,
+  # refreshed every 6h. Two sets:
+  #   prod_*          -> scanners/attackers targeting web apps
+  #   prod_critical_* -> targeting DMZ, API and exposed infra
+  # The `prod_data-shield_*.txt` and `prod_critical_data-shield_*.txt`
+  # files are the full lists (~100,000 IPs each); the aa/ab/ac variants
+  # are the same data split into 30,000-entry chunks for firewalls with a
+  # size cap. We use the full lists: no splitting needed here.
   - name: data-shield
     provider: duggytuxy
     type: ip
@@ -89,9 +89,9 @@ blocklists:
     comment: Scanner or attacker seen against web targets and exposed infrastructure
     tags: [cti:data-shield, reputation:scanner]
 
-  # --- blocklist.de : IP ayant attaqué (SSH, mail, web) un capteur du réseau
-  # fail2ban mondial. Recouvre en partie data-shield, mais avec une fenêtre
-  # plus courte : bon signal de fraîcheur.
+  # --- blocklist.de: IPs that attacked a sensor in the worldwide fail2ban
+  # network (SSH, mail, web). Overlaps partly with data-shield, but with a
+  # shorter window: good freshness signal.
   - name: blocklist.de
     provider: blocklist.de
     type: ip
@@ -100,8 +100,8 @@ blocklists:
     comment: IP that attacked a fail2ban sensor (SSH, mail, web)
     tags: [cti:blocklist-de, reputation:bruteforce]
 
-  # --- CINS Army (Sentinel IPS) : IP à mauvaise réputation confirmée par de
-  # multiples capteurs, seuil de confiance élevé, peu de bruit.
+  # --- CINS Army (Sentinel IPS): IPs with bad reputation confirmed by
+  # multiple sensors, high confidence threshold, low noise.
   - name: cins-army
     provider: CINS Score
     type: ip
@@ -110,9 +110,9 @@ blocklists:
     comment: Bad reputation confirmed by multiple sensors (CINS)
     tags: [cti:cins, reputation:malicious]
 
-  # --- Nœuds de sortie Tor. NE PAS confondre avec de la malveillance : c'est
-  # un attribut de provenance. Retombe volontairement au niveau 5 (règle
-  # 100954) — utile en contexte d'investigation, inutile en alerte.
+  # --- Tor exit nodes. Do NOT confuse with malicious activity: this is a
+  # provenance attribute. Deliberately falls back to level 5 (rule
+  # 100954) — useful during investigation, useless as an alert.
   - name: tor-exit
     provider: Tor Project
     type: ip
@@ -121,8 +121,8 @@ blocklists:
     comment: Tor exit node (provenance, not maliciousness)
     tags: [cti:tor, anonymizer:tor]
 
-  # --- OpenPhish (flux gratuit) : URL de phishing actives. Volume modéré,
-  # rotation rapide.
+  # --- OpenPhish (free feed): active phishing URLs. Moderate volume, fast
+  # rotation.
   - name: openphish
     provider: OpenPhish
     type: url
@@ -131,20 +131,21 @@ blocklists:
     comment: Active phishing URL (OpenPhish community feed)
     tags: [cti:openphish, phishing]
 
-#   articles : renseignement NON STRUCTURÉ (presse et blogs de sécurité). Les
-#     IOC sont dans la prose, souvent « défangés », sans format commun. Un
-#     étage déterministe trouve les candidats, le LLM tranche lesquels sont des
-#     indicateurs de la menace, et le résultat est publié comme ÉVÉNEMENT MISP
-#     tagué `aura:source:extracted` -> règle 100957, niveau 12. Voir
-#     cti_articles.py. Ni curé (extraction automatique, média sans mandat de
-#     CERT) ni de masse (la menace décrite est réelle et contextualisée).
+#   articles: UNSTRUCTURED intelligence (security press and blogs). The
+#     IOCs are in the prose, often "defanged", with no common format. A
+#     deterministic stage finds candidates, the LLM decides which are
+#     genuine threat indicators, and the result is published as a MISP
+#     EVENT tagged `aura:source:extracted` -> rule 100957, level 12. See
+#     cti_articles.py. Neither curated (automatic extraction, media with
+#     no CERT mandate) nor bulk (the described threat is real and
+#     contextualized).
 
 articles:
-  # --- Presse généraliste de sécurité. Beaucoup de volume, peu d'IOC par
-  # article : la plupart des billets ne décrivent aucune infrastructure et
-  # ressortent donc à vide. C'est le régime NORMAL de ces deux sources, pas un
-  # dysfonctionnement — le rendement se joue sur les quelques articles qui
-  # publient une section « Indicators of Compromise ».
+  # --- General security press. High volume, few IOCs per article: most
+  # posts describe no infrastructure and so come back empty. This is the
+  # NORMAL regime for these two sources, not a malfunction — the yield
+  # comes from the few articles that publish an "Indicators of
+  # Compromise" section.
   - name: thehackernews
     url: https://feeds.feedburner.com/TheHackersNews
     type: rss
@@ -155,45 +156,46 @@ articles:
     type: rss
     active: true
 
-  # --- RST Cloud publie des rapports de veille avec des listes d'IOC
-  # explicites, et Medium livre le CONTENU COMPLET dans le flux : pas de page à
-  # télécharger, et le taux de rendement le plus élevé des quatre sources.
-  # Plafond relevé : un seul « RST TI Report Digest » porte 400 candidats, dont
-  # la majorité sont de vrais indicateurs — c'est le format de la source, pas
-  # une extraction folle. Le plafond par défaut (300) rejetterait en bloc
-  # l'article le plus riche des quatre sources.
+  # --- RST Cloud publishes threat-watch reports with explicit IOC lists,
+  # and Medium delivers the FULL CONTENT in the feed: no page to
+  # download, and the highest yield of the four sources. Cap raised: a
+  # single "RST TI Report Digest" carries 400 candidates, most of which
+  # are genuine indicators — that's the format of the source, not a
+  # runaway extraction. The default cap (300) would reject outright the
+  # richest article of the four sources.
   - name: rst-cloud
     url: https://medium.com/feed/@rst_cloud
     type: rss
     active: true
     max_iocs: 450
 
-  # --- Malpedia : sa bibliographie (`/api/get/references`) est un annuaire
-  # rapport -> familles de malware et acteurs. Les IOC eux-mêmes ne sont PAS
-  # accessibles sans clé d'API (`/api/list/samples` répond 403), mais cet
-  # annuaire apporte deux choses qu'aucune autre source ne donne : une file de
-  # rapports techniques (pas de la presse), et l'ATTRIBUTION faite par des
-  # chercheurs, passée au modèle comme contexte.
+  # --- Malpedia: its bibliography (`/api/get/references`) is a directory
+  # mapping reports to malware families and actors. The IOCs themselves
+  # are NOT accessible without an API key (`/api/list/samples` returns
+  # 403), but this directory brings two things no other source gives: a
+  # queue of technical reports (not press), and the ATTRIBUTION made by
+  # researchers, passed to the model as context.
   #
-  # Il n'y a ni date ni flux de nouveautés : c'est le curseur des URL déjà vues
-  # qui en tient lieu. D'où l'AMORÇAGE OBLIGATOIRE au premier lancement
-  # (`--amorcage`), qui marque les dizaines de milliers d'entrées existantes
-  # comme vues sans les traiter. Sans lui, la première passe essaierait de faire
-  # lire au modèle toute la littérature du domaine.
+  # There is neither a date nor a "what's new" feed: the cursor of
+  # already-seen URLs stands in for it. Hence the MANDATORY BOOTSTRAP on
+  # first run (`--bootstrap`), which marks the tens of thousands of
+  # existing entries as seen without processing them. Without it, the
+  # first pass would try to make the model read the entire literature of
+  # the field.
   - name: malpedia
     url: https://malpedia.caad.fkie.fraunhofer.de/api/get/references
     type: malpedia_references
     active: true
 
-# --- Écartés délibérément, pour ne pas laisser croire à une omission ---
+# --- Deliberately left out, so it doesn't look like an omission ---
 #
-# firehol_level1 / Spamhaus DROP : excellents, mais publiés en CIDR. Le cache de
-#   lookup fait une égalité exacte sur la valeur, il ne sait pas dire « cette IP
-#   est dans ce /24 ». Les intégrer donnerait une liste chargée qui ne matche
-#   jamais — pire qu'absente. Leur place est une CDB list Wazuh
-#   (`lookup="address_match_key"`, qui gère le CIDR) : cf. docs/CTI.md.
+# firehol_level1 / Spamhaus DROP: excellent, but published as CIDR. The
+#   lookup cache does an exact match on the value, it can't say "this IP
+#   is within this /24". Including them would give a loaded list that
+#   never matches — worse than absent. Their place is a Wazuh CDB list
+#   (`lookup="address_match_key"`, which handles CIDR): see docs/CTI.md.
 #
-# Feodo Tracker : le blocklist n'a plus bougé depuis le 2026-03-04 (vérifié le
-#   2026-08-12). Un feed figé donne une fausse impression de couverture.
+# Feodo Tracker: the blocklist hasn't moved since 2026-03-04 (verified on
+#   2026-08-12). A frozen feed gives a false sense of coverage.
 #
-# DigitalSide Threat-Intel : injoignable au 2026-08-12.
+# DigitalSide Threat-Intel: unreachable as of 2026-08-12.

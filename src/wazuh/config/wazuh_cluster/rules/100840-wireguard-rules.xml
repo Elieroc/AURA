@@ -1,13 +1,14 @@
 <!--
-  WireGuard n'a pas d'audit natif (module noyau, pas de journal par pair).
-  wg-monitor.py (systemd timer 30s sur l'agent, wazuh/agents/wireguard/) lit
-  la base SQLite de WGDashboard — déjà installé sur wireguard.lab, déjà en
-  train de suivre l'état des pairs, pas de raison d'interroger `wg show`
-  nous-mêmes en parallèle. Deux sources dans cette base :
-    - table <iface> : status running/stopped par pair (calcul WGDashboard).
-    - table <iface>_history_endpoint : changement d'IP source d'un pair
-      (roaming/nouvelle session), même si le statut running n'a pas bougé.
-  Décodé par decoders/wireguard.xml, événements dans
+  WireGuard has no native audit (kernel module, no per-peer journal).
+  wg-monitor.py (30s systemd timer on the agent, wazuh/agents/wireguard/)
+  reads WGDashboard's SQLite database — already installed on
+  wireguard.lab, already tracking peer state, no reason to poll `wg show`
+  ourselves in parallel. Two sources in this database:
+    - table <iface>: running/stopped status per peer (WGDashboard's
+      computation).
+    - table <iface>_history_endpoint: a peer's source IP change
+      (roaming/new session), even if the running status hasn't changed.
+  Decoded by decoders/wireguard.xml, events in
   /var/log/wireguard-events.log.
 -->
 <group name="local,vpn,">
@@ -31,26 +32,27 @@
   <rule id="100844" level="3">
     <if_sid>100840</if_sid>
     <field name="event">^endpoint_changed$</field>
-    <description>WireGuard: peer $(peer_name) ($(peer_ip)) reconnecté depuis une nouvelle IP $(endpoint).</description>
+    <description>WireGuard: peer $(peer_name) ($(peer_ip)) reconnected from a new IP $(endpoint).</description>
   </rule>
 
-  <!-- Nouveau pair (jamais vu avant) qui se connecte : plus intéressant qu'une
-       reconnexion habituelle, mais on n'a pas d'inventaire des pairs "connus"
-       ici — se contente de la fréquence : beaucoup de connexions/déconnexions
-       rapprochées du même pair, signe d'un lien instable ou d'un scan de la
-       clé publique (peu probable vu Curve25519, mais coût nul à couvrir). -->
+  <!-- A new peer (never seen before) connecting: more interesting than a
+       routine reconnection, but we have no inventory of "known" peers
+       here — falls back to frequency: many connections/disconnections in
+       quick succession from the same peer, a sign of an unstable link or
+       a public-key scan (unlikely given Curve25519, but zero-cost to
+       cover). -->
   <rule id="100843" level="7" frequency="6" timeframe="120" ignore="300">
     <if_matched_sid>100841</if_matched_sid>
     <same_field>peer_ip</same_field>
-    <description>WireGuard: reconnexions répétées du pair $(peer_name) ($(peer_ip)) (lien instable ou anomalie).</description>
+    <description>WireGuard: repeated reconnections from peer $(peer_name) ($(peer_ip)) (unstable link or anomaly).</description>
   </rule>
 
-  <!-- Changements d'IP source répétés et rapprochés du même pair : roaming
-       normal (wifi <-> 4G) ou un signe qu'une clé privée circule sur
-       plusieurs machines/réseaux à la fois. -->
+  <!-- Repeated, closely-spaced source IP changes for the same peer:
+       normal roaming (wifi <-> 4G) or a sign that a private key is
+       circulating on several machines/networks at once. -->
   <rule id="100845" level="7" frequency="4" timeframe="120" ignore="300">
     <if_matched_sid>100844</if_matched_sid>
     <same_field>peer_ip</same_field>
-    <description>WireGuard: changements d'IP source répétés pour le pair $(peer_name) ($(peer_ip)) (roaming ou clé partagée).</description>
+    <description>WireGuard: repeated source IP changes for peer $(peer_name) ($(peer_ip)) (roaming or shared key).</description>
   </rule>
 </group>

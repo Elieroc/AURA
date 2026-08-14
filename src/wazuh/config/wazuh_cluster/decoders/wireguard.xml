@@ -1,15 +1,15 @@
 <!--
-  WireGuard (module noyau) n'a pas d'audit natif — pas de log par pair, `wg
-  show` donne seulement un état instantané. `dynamic_debug` noyau
-  indisponible sur wireguard.lab (LXC Proxmox, /sys/kernel/debug inaccessible
-  même root — même contrainte que le manager Aura-SOC).
+  WireGuard (kernel module) has no native audit — no per-peer log, `wg show`
+  only gives a point-in-time snapshot. Kernel `dynamic_debug` is unavailable
+  on wireguard.lab (Proxmox LXC, /sys/kernel/debug inaccessible even as
+  root — same constraint as the Aura-SOC manager).
 
-  wg-monitor.py (wazuh/agents/wireguard/) lit la base SQLite de WGDashboard —
-  déjà installé sur cet hôte, déjà en train de suivre l'état des pairs
-  (status running/stopped calculé par WGDashboard, historique des IP source
-  par pair) : pas de raison d'interroger `wg show` nous-mêmes en parallèle
-  quand ces données existent déjà, avec en prime les noms de pairs.
-  Événements dans /var/log/wireguard-events.log, décodés ici.
+  wg-monitor.py (wazuh/agents/wireguard/) reads WGDashboard's SQLite
+  database — already installed on this host, already tracking peer state
+  (running/stopped status computed by WGDashboard, source IP history per
+  peer): no reason to poll `wg show` ourselves in parallel when this data
+  already exists, with peer names as a bonus. Events in
+  /var/log/wireguard-events.log, decoded here.
 -->
 <decoder name="wg-monitor">
   <prematch>wg-monitor: event=</prematch>

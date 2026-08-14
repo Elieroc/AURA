@@ -1,14 +1,14 @@
 <!--
-  cf. 100810-pfsense-nohost-grouped.xml. no_log : comme la règle native 87701,
-  on ne veut pas une alerte par paquet bloqué (volume), seulement la
-  fréquence anormale (100812).
+  cf. 100810-pfsense-nohost-grouped.xml. no_log: like the native rule 87701,
+  we don't want one alert per blocked packet (volume), only the abnormal
+  frequency (100812).
 -->
 <group name="local,pfsense,">
   <rule id="100811" level="5">
     <if_sid>100810</if_sid>
     <action>block</action>
     <options>no_log</options>
-    <description>pfSense firewall drop event (syslog sans hostname).</description>
+    <description>pfSense firewall drop event (syslog without hostname).</description>
     <group>firewall_block,pfsense,</group>
   </rule>
 </group>

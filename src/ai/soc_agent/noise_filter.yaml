@@ -1,44 +1,46 @@
-# Filtrage du bruit avant corrélation et triage.
+# Noise filtering before correlation and triage.
 #
-# Idée reprise de majiinB/Wazuh-AI-Integration (config/exclude_in_query.yaml),
-# adaptée à notre pipeline en pull. Deux niveaux, c'est tout l'intérêt :
+# Idea taken from majiinB/Wazuh-AI-Integration (config/exclude_in_query.yaml),
+# adapted to our pull pipeline. Two levels, that's the whole point:
 #
-#   query_level: true   -> l'alerte est écartée AVANT l'ingestion, via un
-#                          must_not dans la requête à l'indexer. Elle n'entre
-#                          jamais en base. Pour le bruit certain et volumineux.
-#   query_level: false  -> l'alerte est ingérée et CONSERVÉE (audit), mais
-#                          marquée suppressed et exclue de la corrélation. Pour
-#                          ce qu'on veut pouvoir relire en cas de doute.
+#   query_level: true   -> the alert is dropped BEFORE ingestion, via a
+#                          must_not in the indexer query. It never enters
+#                          the database. For certain, high-volume noise.
+#   query_level: false  -> the alert is ingested and KEPT (audit), but
+#                          marked suppressed and excluded from correlation.
+#                          For what we want to be able to re-read in case
+#                          of doubt.
 #
-# Régle de prudence : query_level: true seulement quand on est sûr que l'alerte
-# n'a aucune valeur, jamais. Dans le doute, false — on garde la trace.
+# Caution rule: query_level: true only when we're sure the alert has no
+# value, never otherwise. When in doubt, false — we keep the trace.
 #
-# Ce fichier est un POINT DE DÉPART. Les faux positifs récurrents se
-# découvrent en exploitation (et bientôt via le clustering de whitelist). À
-# tenir à jour, avec un `reason` sur chaque ligne pour l'audit.
+# This file is a STARTING POINT. Recurring false positives are discovered
+# in operation (and soon via whitelist clustering). Keep it up to date,
+# with a `reason` on each line for the audit trail.
 
 version: 1
 
 filters:
 
-  # Par identifiant de règle Wazuh.
+  # By Wazuh rule ID.
   rules:
     ignore_rule_ids:
-      # 242 409 événements en 24 h à elle seule, soit 99,6 % de wazuh-proxy-*.
-      # nginx-proxy-manager expose tout le lab sur internet : son access log est
-      # un flux continu de scan non ciblé, et un 400 signifie précisément que
-      # rien n'a été servi. Écartée AVANT ingestion, sinon l'ajout de
-      # wazuh-proxy-* aux indices lus fait entrer un quart de million de lignes
-      # par jour en base.
-      # Le signal utile de ces événements n'est pas perdu : la règle 100823
-      # (12 erreurs 4xx en 60 s depuis la même IP -> niveau 10, scan probable)
-      # est agrégée CÔTÉ MANAGER, donc en amont de ce filtre, et elle est
-      # ingérée normalement.
+      # 242,409 events in 24h for this one alone, i.e. 99.6% of
+      # wazuh-proxy-*. nginx-proxy-manager exposes the whole lab to the
+      # internet: its access log is a continuous stream of untargeted
+      # scanning, and a 400 means precisely that nothing was served.
+      # Dropped BEFORE ingestion, otherwise adding wazuh-proxy-* to the
+      # indices read would bring a quarter million lines a day into the
+      # database.
+      # The useful signal from these events isn't lost: rule 100823
+      # (12 4xx errors in 60s from the same IP -> level 10, probable
+      # scan) is aggregated ON THE MANAGER SIDE, i.e. upstream of this
+      # filter, and it is ingested normally.
       - id: "31101"
         reason: "Erreur 4xx du serveur web — bruit de scan internet sur le reverse proxy, agrégé par 100823"
         query_level: true
 
-  # Par compte source (data.srcuser).
+  # By source account (data.srcuser).
   actors:
     ignore_src_users:
       - user: "_apt"
@@ -51,27 +53,27 @@ filters:
         query_level: true
         reason: "Démon de journalisation"
 
-  # Par compte cible (data.dstuser).
+  # By target account (data.dstuser).
   destinations:
     ignore_dst_users:
       - user: "messagebus"
         query_level: true
         reason: "Bus système D-Bus"
 
-  # Par commande (data.command).
+  # By command (data.command).
   commands:
     ignore_commands: []
 
-  # Par hôte. À NE PAS remplir à la légère : exclure un agent aveugle le SOC
-  # sur cette machine. Réservé aux hôtes de test.
+  # By host. Do NOT fill in lightly: excluding an agent blinds the SOC on
+  # that machine. Reserved for test hosts.
   hosts:
     ignore_agent_names: []
     ignore_agent_ids: []
 
-  # Filtres composites : toutes les conditions doivent matcher la même alerte.
-  # Toujours post-retrieval (query_level: false) — trop spécifiques pour un
-  # must_not, et c'est justement le genre de suppression qu'on veut pouvoir
-  # relire.
+  # Composite filters: all conditions must match the same alert. Always
+  # post-retrieval (query_level: false) — too specific for a must_not,
+  # and this is exactly the kind of suppression we want to be able to
+  # re-read.
   composite:
     - name: "apt_daily_root"
       description: "Maintenance quotidienne d'APT lancée par root"

@@ -1,17 +1,17 @@
 <!--
-  Jellyfin (Emby-based, serveur Kestrel embarqué, network_mode host) — pas de
-  nginx devant, et pas de log HTTP structuré par défaut : vérifié sur
-  jellyfin.lab, 0 ligne "GET "/"POST " dans le log applicatif à verbosité par
-  défaut. Ce n'est donc PAS un flux "web" comme NPM/BookStack/Nextcloud — index
-  dédié wazuh-jellyfin-*, pas wazuh-web-*.
+  Jellyfin (Emby-based, embedded Kestrel server, network_mode host) — no
+  nginx in front, and no structured HTTP log by default: verified on
+  jellyfin.lab, 0 "GET "/"POST " lines in the application log at default
+  verbosity. This is therefore NOT a "web" flow like NPM/BookStack/Nextcloud
+  — its own index wazuh-jellyfin-*, not wazuh-web-*.
 
-  Format Serilog : "[2026-07-27 18:08:49.972 +02:00] [INF] [30]
-  Emby.Server.Implementations.IO.LibraryMonitor: message". Niveaux standard
-  Serilog : VRB/DBG/INF/WRN/ERR/FTL.
+  Serilog format: "[2026-07-27 18:08:49.972 +02:00] [INF] [30]
+  Emby.Server.Implementations.IO.LibraryMonitor: message". Standard Serilog
+  levels: VRB/DBG/INF/WRN/ERR/FTL.
 
-  Brackets littéraux (jamais des classes de caractères ici, cf.
-  pfsense-nohostname.xml et npm-proxy.xml pour le détail de ce moteur regex
-  limité) — "[" et "]" utilisés tels quels, pas échappés.
+  Literal brackets (never character classes here, see
+  pfsense-nohostname.xml and npm-proxy.xml for details on this limited
+  regex engine) — "[" and "]" used as-is, unescaped.
 -->
 <decoder name="jellyfin">
   <prematch>[\d+-\d+-\d+ \d+:\d+:\d+.\d+ \S+] [</prematch>
