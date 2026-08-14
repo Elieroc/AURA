@@ -695,7 +695,12 @@ def surveiller() -> dict:
             # disque, mesuré hors pipeline, peut se refermer dans cet état.
             if not ingest_ok and p["capteur"] != CAPTEUR_DISQUE:
                 continue
-            minutes = _minutes(p["dernier_event"], horizon)
+            # Le disque se mesure contre l'HORLOGE, pas contre l'horizon
+            # d'ingestion : il ne se déduit pas des alertes ingérées. Mesurer sa
+            # saturation contre un horizon en retard donnait une durée négative
+            # (« -2 min ») dans l'alerte de rétablissement.
+            minutes = _minutes(p["dernier_event"],
+                               None if p["capteur"] == CAPTEUR_DISQUE else horizon)
             # On ferme dans le canal où la panne a été OUVERTE, lu sur la ligne
             # et jamais sur la configuration courante : basculer `case` ->
             # `alert` ne doit pas abandonner les cases déjà ouverts.
@@ -724,9 +729,15 @@ def surveiller() -> dict:
                 "UPDATE capteur_pannes SET statut='retablie', retablie_a=now() "
                 "WHERE id=%s", (p["id"],))
             conn.commit()
-            log.info("CAPTEUR RÉTABLI : %s sur %s (silence %s)",
-                     p["capteur"], p["agent_name"] or p["agent_id"],
-                     _duree(minutes))
+            if p["capteur"] == CAPTEUR_DISQUE:
+                log.info("DISQUE REVENU SOUS LE SEUIL : %s sur %s (saturé "
+                         "pendant %s, pic à %d%%)", config.DISQUE_SURVEILLE,
+                         p["agent_name"] or p["agent_id"], _duree(minutes),
+                         p["volume_ref"])
+            else:
+                log.info("CAPTEUR RÉTABLI : %s sur %s (silence %s)",
+                         p["capteur"], p["agent_name"] or p["agent_id"],
+                         _duree(minutes))
             fermees.append(p)
 
     return {"muets": muets, "ouvertes": ouvertes, "fermees": fermees,

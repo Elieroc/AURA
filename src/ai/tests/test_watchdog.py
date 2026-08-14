@@ -346,3 +346,13 @@ def test_note_disque_en_texte_brut_sans_markdown(monkeypatch):
     assert "CRITIQUE" in txt
     for interdit in ("# ", "**", "`"):
         assert interdit not in txt
+
+
+def test_duree_disque_mesuree_contre_l_horloge():
+    """La saturation disque se mesure contre l'horloge, pas contre l'horizon
+    d'ingestion : celui-ci est en retard par construction et produisait une
+    durée NÉGATIVE dans l'alerte de rétablissement (« -2 min » en prod)."""
+    debut = datetime.now(timezone.utc) - timedelta(minutes=17)
+    assert _minutes(debut) == 17
+    horizon_en_retard = datetime.now(timezone.utc) - timedelta(minutes=19)
+    assert _minutes(debut, horizon_en_retard) < 0
