@@ -528,14 +528,14 @@ def _persist(conn, state: _State) -> None:
     for (scope, key, trait) in {(c[0], c[1], c[2]) for c in state.affected}:
         conn.execute(
             "INSERT INTO ueba_scopes (scope, scope_key, trait, total, distinct_values,"
-            " premiere_obs, derniere_obs) "
+            " first_obs, last_obs) "
             "SELECT %s, %s, %s, coalesce(sum(total),0), count(*), "
             "       min(first_seen), max(last_seen) FROM ueba_profiles "
             " WHERE scope=%s AND scope_key=%s AND trait=%s "
             "ON CONFLICT (scope, scope_key, trait) DO UPDATE "
             "   SET total = EXCLUDED.total, distinct_values = EXCLUDED.distinct_values, "
-            "       premiere_obs = EXCLUDED.premiere_obs, "
-            "       derniere_obs = EXCLUDED.derniere_obs",
+            "       first_obs = EXCLUDED.first_obs, "
+            "       last_obs = EXCLUDED.last_obs",
             (scope, key, trait, scope, key, trait))
 
 
@@ -717,7 +717,7 @@ def evaluate(simulation: bool = False) -> list[dict]:
             status = "promu" if eligible else "en_attente"
             sid = conn.execute(
                 "INSERT INTO ueba_signals (agent_id, agent_name, start_ts, end_ts, "
-                " score, motifs, alert_ids, statut) "
+                " score, patterns, alert_ids, status) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                 (s["agent_id"], s["agent_name"], s["start_ts"], s["end_ts"],
                  s["score"], json.dumps(s["patterns"], ensure_ascii=False,
@@ -793,7 +793,7 @@ def purge() -> int:
                 "DELETE FROM ueba_profiles p WHERE NOT p.seen_in_tp AND NOT EXISTS "
                 "(SELECT 1 FROM ueba_observations o WHERE o.scope=p.scope "
                 " AND o.scope_key=p.scope_key AND o.trait=p.trait "
-                " AND o.valeur=p.valeur)")
+                " AND o.value=p.value)")
         conn.commit()
     return n
 

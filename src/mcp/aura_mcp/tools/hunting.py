@@ -61,7 +61,7 @@ def aura_archives_list(index_set: str | None = None,
             f"SELECT count(*) AS n FROM archives_s3 {where}",
             params).fetchone()["n"]
         lines = conn.execute(
-            f"""SELECT index_base, periode, documents, octets_clair,
+            f"""SELECT index_base, periode, documents, plain_bytes,
                        octets_objet, indices, archivee_a, verifie_a,
                        verif_etat, verif_complet, object_lock_jusqu_a
                   FROM archives_s3 {where}

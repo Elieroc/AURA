@@ -1,18 +1,18 @@
-"""Ping de l'API DeepSeek.
+"""Ping of the DeepSeek API.
 
-Nommée `ping_` et non `test_` : sous le préfixe `test_`, pytest ramassait ce
-module, dont l'import charge `config` — donc `SystemExit` sur toute machine sans
-`.env` complet, et la collecte de TOUTE la suite partait en INTERNALERROR. Ce
-n'est de toute façon pas un test : ça consomme du crédit et ça sort du réseau.
+Named `ping_` and not `test_`: under the `test_` prefix pytest collected this
+module, whose import loads `config` — hence `SystemExit` on any machine without
+a complete `.env`, and collection of the WHOLE suite ended in INTERNALERROR. It
+is not a test anyway: it burns credit and leaves the network.
 
-Sonde minimale, hors pipeline : vérifie que la clé, l'URL et le modèle
-répondent, et mesure la latence d'un aller-retour. Aucune donnée SOC ici —
-un simple ping applicatif.
+Minimal probe, outside the pipeline: checks that the key, the URL and the model
+answer, and measures the latency of one round trip. No SOC data here — a plain
+application-level ping.
 
     python -m soc_agent.ping_deepseek
 
-Lit DEEPSEEK_API_KEY depuis l'environnement (ou ai/.env, chargé au préalable).
-DeepSeek expose une API compatible OpenAI : /chat/completions, Bearer token.
+Reads DEEPSEEK_API_KEY from the environment (or ai/.env, loaded beforehand).
+DeepSeek exposes an OpenAI-compatible API: /chat/completions, Bearer token.
 """
 
 import os
@@ -28,7 +28,7 @@ MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 def main() -> int:
     key = os.environ.get("DEEPSEEK_API_KEY")
     if not key:
-        print("DEEPSEEK_API_KEY absente de l'environnement.", file=sys.stderr)
+        print("DEEPSEEK_API_KEY missing from the environment.", file=sys.stderr)
         return 2
 
     start = time.monotonic()
@@ -39,7 +39,7 @@ def main() -> int:
             json={
                 "model": MODEL,
                 "messages": [
-                    {"role": "user", "content": "réponds uniquement par: pong"},
+                    {"role": "user", "content": "answer with just: pong"},
                 ],
                 "max_tokens": 8,
                 "temperature": 0,
@@ -48,20 +48,20 @@ def main() -> int:
             timeout=30,
         )
     except requests.RequestException as e:
-        print(f"Échec réseau : {e}", file=sys.stderr)
+        print(f"Network failure: {e}", file=sys.stderr)
         return 1
 
     duration_ms = int((time.monotonic() - start) * 1000)
 
     if rep.status_code != 200:
-        print(f"HTTP {rep.status_code} : {rep.text[:300]}", file=sys.stderr)
+        print(f"HTTP {rep.status_code}: {rep.text[:300]}", file=sys.stderr)
         return 1
 
     body = rep.json()
     content = body["choices"][0]["message"]["content"]
     usage = body.get("usage", {})
-    print(f"OK  modèle={body.get('model', '?')}  latence={duration_ms} ms")
-    print(f"    réponse={content!r}")
+    print(f"OK  model={body.get('model', '?')}  latency={duration_ms} ms")
+    print(f"    answer={content!r}")
     print(f"    tokens: prompt={usage.get('prompt_tokens')} "
           f"completion={usage.get('completion_tokens')}")
     return 0

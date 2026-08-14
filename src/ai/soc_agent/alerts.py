@@ -1,30 +1,30 @@
-"""Charger les alertes d'un incident sans jamais y laisser la mémoire du cycle.
+"""Loading an incident's alerts without ever burning the cycle's memory.
 
-Un incident de flood aligne des dizaines de milliers d'alertes (126 508 sur un
-incident pfSense le 2026-08-14), et chacune porte son `raw` — le JSON complet de
-l'alerte Wazuh. `SELECT ... FROM alerts WHERE incident_id = X` est donc une
-requête à 186 Mo de JSON en base, bien davantage une fois matérialisée en objets
-Python : au-delà du plafond mémoire du conteneur (1 Go), le process est
-OOM-killé.
+A flood incident lines up tens of thousands of alerts (126,508 on one pfSense
+incident on 2026-08-14), and each carries its `raw` — the full JSON of the Wazuh
+alert. `SELECT ... FROM alerts WHERE incident_id = X` is therefore a 186 MB
+query of JSON in database, far more once materialised into Python objects: past
+the container memory cap (1 GB), the process is OOM-killed.
 
-Cette panne s'est produite QUATRE fois, au même endroit logique et à chaque fois
-dans un module différent — `iris._alertes`, `whitelist._signature`,
-`rule_tuning._exemple_fp`, puis `mitigate.executer`. Chacune a été corrigée
-séparément, ce qui n'a jamais empêché la suivante. D'où ce module : le bornage
-est un invariant du pipeline, pas une précaution locale à réinventer.
+That failure happened FOUR times, at the same logical spot and each time in a
+different module — `iris._alerts`, `whitelist._signature`,
+`rule_tuning._fp_example`, then `mitigate.run`. Each was fixed separately, which
+never prevented the next one. Hence this module: bounding is a pipeline
+invariant, not a local precaution to reinvent.
 
-Et la panne est particulièrement sournoise : les jobs tournent dans une boucle
-shell (`while true; do python -m soc_agent.X; sleep N; done`), qui SURVIT au kill
-du process. Le conteneur reste `Up`, `docker ps` est vert, et le cycle meurt à
-chaque passe au même endroit sans jamais rien terminer — ni triage, ni case, ni
-remédiation. C'est ce qui s'est produit entre le 2026-08-14 11:24 et 14:20.
+And the failure is especially insidious: the jobs run inside a shell loop
+(`while true; do python -m soc_agent.X; sleep N; done`), which SURVIVES the
+process being killed. The container stays `Up`, `docker ps` is green, and the
+cycle dies on every pass at the same place without ever finishing anything —
+no triage, no case, no remediation. That is what happened between 2026-08-14
+11:24 and 14:20.
 
-Deux stratégies, selon ce que l'appelant fait des lignes :
+Two strategies, depending on what the caller does with the rows:
 
-- `charger_bornees()` quand il lui faut une LISTE en mémoire (ciblage d'une
-  remédiation, construction d'un prompt, rendu d'un rapport) ;
-- `parcourir()` quand il ne fait que balayer (calcul d'une signature, mise à
-  day ligne à ligne) : curseur serveur, rien n'est matérialisé.
+- `load_bounded()` when it needs a LIST in memory (targeting a remediation,
+  building a prompt, rendering a report);
+- `iterate()` when it only scans (computing a signature, updating row by row):
+  server-side cursor, nothing is materialised.
 """
 
 from __future__ import annotations
@@ -37,9 +37,9 @@ from . import config
 
 log = logging.getLogger(__name__)
 
-# Jeux de colonnes utilisés dans le pipeline. Nommés plutôt que passés en clair
-# : une chaîne de colonnes construite par l'appelant finirait tôt ou tard par
-# être concaténée depuis une variable.
+# Column sets used across the pipeline. Named rather than passed inline: a
+# column string built by the caller would sooner or later be concatenated from
+# a variable.
 COLUMNS_REPORT = ("id, ts, rule_id, rule_level, rule_desc, rule_groups, "
                     "mitre_ids, mitre_tactics, srcip, srcuser, entity, raw")
 COLUMNS_TRIAGE = ("id, ts, rule_id, rule_level, rule_desc, srcip, srcuser, "
@@ -50,26 +50,25 @@ COLUMNS_UEBA = ("id, ts, agent_id, agent_name, rule_id, srcip, srcuser, "
 
 
 def _carries_ts(columns: str) -> bool:
-    """La colonne `ts` est-elle déjà projetée ? Comparaison sur les noms
-    découpés, pas une recherche de sous-chaîne : « rule_groups, mitre_tactics »
-    contient « ts » sans porter la colonne."""
+    """Is the `ts` column already projected? Compared on split names, not by
+    substring search: "rule_groups, mitre_tactics" contains "ts" without
+    carrying the column."""
     return "ts" in {c.strip() for c in columns.split(",")}
 
 
 def load_bounded(conn, incident_id: int, columns: str,
                     label: str = "") -> list[dict]:
-    """Alertes d'un incident, bornées à `config.INCIDENT_MAX_ALERTES`.
+    """An incident's alerts, bounded to `config.INCIDENT_MAX_ALERTS`.
 
-    On garde les plus ANCIENNES et les plus RÉCENTES à parts égales. Le début
-    porte la graine de l'incident (ce qui a déclenché la corrélation, les cibles
-    de l'attaque initiale) et la fin porte l'état courant ; c'est le milieu
-    d'une salve répétitive qui n'apprend rien. Prendre « les N dernières »
-    perdrait le début de l'attaque, qui est précisément ce qu'un analyste
-    cherche.
+    We keep the OLDEST and the most RECENT in equal shares. The beginning
+    carries the seed of the incident (what triggered correlation, the targets of
+    the initial attack) and the end carries the current state; it is the middle
+    of a repetitive burst that teaches nothing. Taking "the last N" would lose
+    the start of the attack, which is precisely what an analyst looks for.
 
-    La troncature est journalisée en WARNING, jamais silencieuse : sur un
-    incident de flood, ce qui est au milieu de la salve n'est pas examiné, et
-    cela doit rester lisible. Le compte réel n'est jamais perdu — il vit dans
+    Truncation is logged at WARNING, never silently: on a flood incident, what
+    sits in the middle of the burst is not examined, and that must stay
+    readable. The real count is never lost — it lives in
     `incidents.alert_count`.
     """
     n = conn.execute("SELECT count(*) c FROM alerts WHERE incident_id = %s",
@@ -80,38 +79,38 @@ def load_bounded(conn, incident_id: int, columns: str,
             f"SELECT {columns} FROM alerts WHERE incident_id = %s ORDER BY ts",
             (incident_id,)).fetchall()
     half = cap // 2
-    log.warning("incident #%s%s : %d alertes, chargement borné à %d "
-                "(%d plus anciennes + %d plus récentes) — %d non examinée(s)",
+    log.warning("incident #%s%s: %d alerts, loading bounded to %d "
+                "(%d oldest + %d newest) — %d not examined",
                 incident_id, f" ({label})" if label else "",
                 n, cap, half, cap - half, n - cap)
-    # `ts` doit figurer dans le SELECT des deux branches, puisque l'ORDER BY
-    # final porte dessus — mais SEULEMENT s'il n'y est pas déjà : l'ajouter en
-    # aveugle le projette deux fois et Postgres refuse la requête entière
-    # (« ORDER BY "ts" is ambiguous »). Trois des quatre jeux de colonnes du
-    # pipeline contiennent déjà `ts`, donc le cas nominal est celui-là.
+    # `ts` must appear in the SELECT of both branches, since the final ORDER BY
+    # is on it — but ONLY if it is not there already: adding it blindly projects
+    # it twice and Postgres rejects the whole query ("ORDER BY \"ts\" is
+    # ambiguous"). Three of the pipeline's four column sets already contain
+    # `ts`, so that is the nominal case.
     projection = columns if _carries_ts(columns) else f"{columns}, ts"
     return conn.execute(
         f"(SELECT {projection} FROM alerts WHERE incident_id = %(i)s "
-        f" ORDER BY ts ASC LIMIT %(debut)s)"
-        # UNION ALL, pas UNION : les deux moitiés sont disjointes par
-        # construction (on n'entre ici que si n > plafond), et dédupliquer
-        # imposerait un tri sur le `raw` jsonb entier de chaque ligne.
+        f" ORDER BY ts ASC LIMIT %(head)s)"
+        # UNION ALL, not UNION: the two halves are disjoint by construction (we
+        # only get here if n > cap), and deduplicating would force a sort on the
+        # whole jsonb `raw` of every row.
         " UNION ALL "
         f"(SELECT {projection} FROM alerts WHERE incident_id = %(i)s "
-        f" ORDER BY ts DESC LIMIT %(fin)s)"
+        f" ORDER BY ts DESC LIMIT %(tail)s)"
         " ORDER BY ts",
-        {"i": incident_id, "start_ts": half, "end_ts": cap - half}).fetchall()
+        {"i": incident_id, "head": half, "tail": cap - half}).fetchall()
 
 
 def iterate(conn, incident_id: int, columns: str, itersize: int = 2000):
-    """Générateur sur TOUTES les alertes d'un incident, sans les matérialiser.
+    """Generator over ALL the alerts of an incident, without materialising them.
 
-    Curseur serveur nommé : Postgres garde le jeu de résultats, le client n'en
-    tient que `itersize` lignes à la fois. À préférer à `charger_bornees` dès
-    que l'appelant ne fait que balayer — il voit alors l'incident ENTIER sans
-    plafond mémoire, ce qui est strictement mieux qu'un échantillon.
+    Named server-side cursor: Postgres keeps the result set, the client only
+    holds `itersize` rows at a time. Prefer it over `load_bounded` as soon as
+    the caller merely scans — it then sees the WHOLE incident with no memory
+    cap, which is strictly better than a sample.
     """
-    with conn.cursor(name=f"alertes_{incident_id}", row_factory=tuple_row) as cur:
+    with conn.cursor(name=f"alerts_{incident_id}", row_factory=tuple_row) as cur:
         cur.itersize = itersize
         cur.execute(f"SELECT {columns} FROM alerts WHERE incident_id = %s "
                     "ORDER BY ts", (incident_id,))

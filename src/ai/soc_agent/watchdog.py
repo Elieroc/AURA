@@ -827,7 +827,7 @@ def monitor() -> dict:
                                 channel, m["agent_id"], m["sensor"], e)
             if trace_id:
                 conn.execute(
-                    f"UPDATE capteur_pannes SET {column}=%s WHERE id=%s",
+                    f"UPDATE sensor_outages SET {column}=%s WHERE id=%s",
                     (trace_id, r["id"]))
                 conn.commit()
             log.error("PANNE OUVERTE : %s sur %s — %s IRIS %s",

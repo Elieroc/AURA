@@ -245,8 +245,8 @@ def aura_triage_history(incident_id: int) -> dict:
     with base() as conn:
         lines = conn.execute(
             "SELECT id, verdict, confidence, mitre, actions, reason, model, "
-            "       prompt_sha, prompt_tokens, duree_ms, mode, incoherences, "
-            "       injection_motifs, garde_fous, created_at "
+            "       prompt_sha, prompt_tokens, duration_ms, mode, inconsistencies, "
+            "       injection_patterns, guardrails, created_at "
             "  FROM triages WHERE incident_id = %s ORDER BY created_at DESC",
             (incident_id,)).fetchall()
         human = conn.execute(
@@ -302,7 +302,7 @@ def aura_mitigations_list(
             filters).fetchone()["n"]
         lines = conn.execute(
             "SELECT id, incident_id, action, target, agent_id, status, details, "
-            "       undo, iris_task_id, tentatives, executed_at "
+            "       undo, iris_task_id, attempts, executed_at "
             "  FROM mitigations" + where +
             " ORDER BY executed_at DESC NULLS LAST, id DESC "
             " LIMIT %(limite)s OFFSET %(offset)s",

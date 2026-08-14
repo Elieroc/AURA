@@ -1,16 +1,16 @@
-"""Filtrage du bruit, à deux niveaux (cf. noise_filter.yaml).
+"""Noise filtering, on two levels (see noise_filter.yaml).
 
-Séparation nette entre les deux étages :
+A clean split between the two stages:
 
-- `clauses_must_not()` produit les filtres poussés dans la requête à l'indexer.
-  Ces alertes ne sont jamais ingérées. On les écarte au plus tôt, là où c'est
-  le moins cher.
-- `raison_suppression()` juge une alerte déjà récupérée. Elle sera ingérée et
-  conservée pour l'audit, mais marquée et exclue de la corrélation.
+- `clauses_must_not()` produces the filters pushed into the query to the
+  indexer. Those alerts are never ingested. We drop them as early as possible,
+  where it is cheapest.
+- `deletion_reason()` judges an alert we already fetched. It will be ingested
+  and kept for audit, but marked and excluded from correlation.
 
-Le même critère (une IP, un compte, une règle) peut appartenir à l'un ou
-l'autre étage selon son `query_level`, décidé dans le YAML. Ici on ne fait
-qu'appliquer ; la politique est dans le fichier de config.
+The same criterion (an IP, an account, a rule) can belong to either stage
+depending on its `query_level`, decided in the YAML. Here we only apply it; the
+policy lives in the config file.
 """
 
 from __future__ import annotations
@@ -21,27 +21,27 @@ import yaml
 
 CONFIG_DEFAULT = Path(__file__).parent / "noise_filter.yaml"
 
-# Champ Wazuh visé par chaque type d'entrée simple. Sert des deux côtés : à
-# construire le must_not (chemin OpenSearch) et à lire la valeur dans le
-# document brut (même chemin, notation pointée).
+# Wazuh field targeted by each simple entry type. Used on both sides: to build
+# the must_not (OpenSearch path) and to read the value out of the raw document
+# (same path, dotted notation).
 FIELD = {
     "rule_id": "rule.id",
     "src_user": "data.srcuser",
     "dst_user": "data.dstuser",
     "command": "data.command",
-    # Discriminant des règles web. Réservé à rule_tuning.py : dans le moteur de
-    # règles, `<url>` est une option native, alors qu'un filtre post-retrieval
-    # sur l'URL n'aurait aucun intérêt (l'alerte est déjà produite et indexée).
+    # Discriminant of web rules. Reserved for rule_tuning.py: in the rule
+    # engine `<url>` is a native option, whereas a post-retrieval filter on the
+    # URL would be pointless (the alert is already produced and indexed).
     "url": "data.url",
     "agent_name": "agent.name",
     "agent_id": "agent.id",
 }
 
-# Le fichier concerné n'a pas un emplacement unique : selon le décodeur, c'est
-# syscheck.path, le fichier VirusTotal, la cible auditd… « file » est donc un
-# champ VIRTUEL, résolu par essais successifs. Réservé aux composites
-# (post-retrieval) : il permet de whitelister un chemin précis sans aveugler
-# toute une règle — p.ex. /tmp/eicar.com sans neutraliser la règle VirusTotal.
+# The file at stake has no single location: depending on the decoder it is
+# syscheck.path, the VirusTotal file, the auditd target... so "file" is a
+# VIRTUAL field, resolved by trying each in turn. Reserved for composites
+# (post-retrieval): it lets us whitelist one precise path without blinding a
+# whole rule — e.g. /tmp/eicar.com without neutralising the VirusTotal rule.
 FILE_PATHS = [
     "syscheck.path",
     "data.virustotal.source.file",
@@ -50,12 +50,12 @@ FILE_PATHS = [
     "data.win.eventdata.image",
 ]
 
-# Champs autorisés dans un match_all de composite (simples + le virtuel).
+# Fields allowed in a composite match_all (simple ones plus the virtual one).
 FIELD_COMPOSITE = set(FIELD) | {"file"}
 
 
 def _read(src: dict, path: str):
-    """Valeur d'un champ Wazuh en notation pointée dans le document brut."""
+    """Value of a Wazuh field in dotted notation inside the raw document."""
     node = src
     for key in path.split("."):
         if not isinstance(node, dict):
@@ -67,7 +67,7 @@ def _read(src: dict, path: str):
 
 
 def _value_field(src: dict, field: str):
-    """Valeur d'un champ de composite, y compris le virtuel « file »."""
+    """Value of a composite field, including the virtual "file" one."""
     if field == "file":
         for path in FILE_PATHS:
             v = _read(src, path)
@@ -78,10 +78,10 @@ def _value_field(src: dict, field: str):
 
 
 class NoiseFilter:
-    """Règles de filtrage chargées depuis le YAML.
+    """Filtering rules loaded from the YAML.
 
-    Chaque entrée simple devient un triplet (type, valeur, reason) rangé selon
-    son query_level. Les composites sont toujours post-retrieval.
+    Each simple entry becomes a (type, value, reason) triple, filed according to
+    its query_level. Composites are always post-retrieval.
     """
 
     def __init__(self, config: dict):
@@ -95,10 +95,10 @@ class NoiseFilter:
         target.append((field_type, str(value), reason or field_type))
 
     def add_composite(self, match_all: dict, name: str) -> None:
-        """Ajoute une règle composite (utilisé pour les exceptions en base).
+        """Adds a composite rule (used for the exceptions stored in database).
 
-        Toujours post-retrieval : une exception large doit rester rattrapable,
-        donc jamais écartée côté indexer.
+        Always post-retrieval: a broad exception must stay recoverable, so it is
+        never dropped on the indexer side.
         """
         self.composites.append({"name": name, "match_all": match_all})
 
@@ -127,17 +127,17 @@ class NoiseFilter:
                 self.composites.append(c)
 
     def clauses_must_not(self) -> list[dict]:
-        """Clauses OpenSearch pour les entrées query_level: true."""
+        """OpenSearch clauses for the query_level: true entries."""
         return [{"term": {FIELD[field_type]: value}}
                 for field_type, value, _ in self.query_level
                 if field_type in FIELD]
 
     def deletion_reason(self, src: dict) -> str | None:
-        """Raison de suppression post-retrieval, ou None.
+        """Post-retrieval deletion reason, or None.
 
-        Une alerte matchée query_level ne devrait pas arriver ici (le must_not
-        l'a écartée), mais on la revérifie : si le filtre a été ajouté après
-        coup, l'ancienne alerte déjà en base doit être suppressible au rejeu.
+        An alert matched at query_level should not reach here (the must_not
+        dropped it), but we re-check anyway: if the filter was added afterwards,
+        the older alert already in database must be suppressible on replay.
         """
         for field_type, value, reason in self.post + self.query_level:
             path = FIELD.get(field_type)
@@ -146,9 +146,9 @@ class NoiseFilter:
 
         for c in self.composites:
             conditions = c["match_all"]
-            # Toutes les clés doivent être connues ET matcher. Sans le premier
-            # test, un composite aux clés inconnues donnerait un all() vide,
-            # donc vrai, et supprimerait toutes les alertes.
+            # Every key must be known AND match. Without the first test, a
+            # composite with unknown keys would give an empty all(), hence
+            # true, and would suppress every alert.
             if conditions and all(k in FIELD_COMPOSITE for k in conditions) and all(
                     str(_value_field(src, k)) == str(v)
                     for k, v in conditions.items()):
@@ -157,19 +157,18 @@ class NoiseFilter:
 
 
 def load_with_db(conn, path: str | None = None) -> NoiseFilter:
-    """Filtre complet : noise_filter.yaml (humain) + whitelist_rules (auto).
+    """Full filter: noise_filter.yaml (human) + whitelist_rules (automatic).
 
-    Reconstruit à chaque appel, sans cache : les exceptions auto évoluent à
-    chaque cycle. À appeler une fois par run et passer aux fonctions, pas par
-    alerte.
+    Rebuilt on every call, with no cache: the automatic exceptions change on
+    every cycle. Call it once per run and pass it down, not once per alert.
     """
     p = Path(path) if path else CONFIG_DEFAULT
     with open(p, encoding="utf-8") as fh:
         noise_filter = NoiseFilter(yaml.safe_load(fh) or {})
 
-    # Curseur tuple explicite : si la connexion appelante utilise dict_row,
-    # déballer « for sig, match_all, reason in ... » itérerait les CLÉS de
-    # chaque ligne, pas ses valeurs, et chargerait des composites cassés.
+    # Explicit tuple cursor: if the calling connection uses dict_row,
+    # unpacking "for sig, match_all, reason in ..." would iterate each row's
+    # KEYS rather than its values, and load broken composites.
     from psycopg.rows import tuple_row
     with conn.cursor(row_factory=tuple_row) as cur:
         cur.execute("SELECT signature, match_all, reason FROM whitelist_rules "

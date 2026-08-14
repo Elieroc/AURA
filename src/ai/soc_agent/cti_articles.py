@@ -664,7 +664,7 @@ def mark(conn, source: str, url: str, nb_iocs: int, event_id: int | None,
         "threat, pattern) VALUES (%s, %s, %s, %s, %s, %s) "
         "ON CONFLICT (url) DO UPDATE SET iocs_kept = EXCLUDED.iocs_kept, "
         "misp_event_id = COALESCE(EXCLUDED.misp_event_id, cti_articles.misp_event_id), "
-        "menace = EXCLUDED.menace, motif = EXCLUDED.motif",
+        "threat = EXCLUDED.threat, pattern = EXCLUDED.pattern",
         (source, url, nb_iocs, event_id, threat[:200], pattern[:200]))
     conn.commit()
 

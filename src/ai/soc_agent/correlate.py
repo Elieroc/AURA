@@ -458,7 +458,7 @@ def _apply_additions(conn, incs_by_id: dict[int, dict],
         conn.execute(
             "UPDATE incidents SET last_seen = %s, first_seen = %s, "
             "alert_count = alert_count + %s, max_level = %s, rule_ids = %s, "
-            "mitre_tactics = %s, entities = %s, severite = %s, "
+            "mitre_tactics = %s, entities = %s, severity = %s, "
             "needs_refresh = needs_refresh OR %s WHERE id = %s",
             (max([inc["last_seen"]] + [a["ts"] for a in new]),
              min([inc["first_seen"]] + [a["ts"] for a in new]),

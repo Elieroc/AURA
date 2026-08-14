@@ -1,15 +1,14 @@
-"""Un cycle complet du pipeline : ingest -> correlate -> triage.
+"""One full pipeline cycle: ingest -> correlate -> triage.
 
-Point d'entrée du déclenchement périodique (conteneur soc-agent-cycle, cf.
-ai/docker-compose.yml — boucle shell toutes les 5 min). Enchaîne les trois
-étapes déjà écrites, dans une seule exécution, avec un verrou pour qu'un cycle
-lent ne se superpose pas au suivant.
+Entry point of the periodic trigger (soc-agent-cycle container, see
+ai/docker-compose.yml — shell loop every 5 min). Chains the three steps already
+written, in a single run, with a lock so a slow cycle does not overlap the next.
 
     python -m soc_agent.cycle
 
-Conçu pour être lancé en boucle : chaque étape reprend là où elle en est
-(curseur d'ingestion, alertes non corrélées, incidents non triés), donc rejouer
-le cycle ne duplique rien.
+Designed to be run in a loop: each step resumes where it left off (ingest
+cursor, uncorrelated alerts, untriaged incidents), so replaying the cycle
+duplicates nothing.
 """
 
 import argparse
@@ -21,7 +20,7 @@ import psycopg
 from . import (assets, config, correlate, ingest, iris, training, triage, ueba,
                vt, watchdog, whitelist)
 
-# Journalisé sur stderr -> capté par `docker compose logs` du conteneur.
+# Logged to stderr -> picked up by the container's `docker compose logs`.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -29,133 +28,134 @@ logging.basicConfig(
 )
 log = logging.getLogger("cycle")
 
-# Clé arbitraire du verrou consultatif Postgres. Un seul cycle à la fois :
-# l'ingestion et le triage écrivent les mêmes tables, et le triage sature déjà
-# le CPU. Deux cycles en parallèle se marcheraient dessus sans rien gagner.
+# Arbitrary key of the Postgres advisory lock. One cycle at a time: ingestion
+# and triage write the same tables, and triage already saturates the CPU. Two
+# cycles in parallel would step on each other for no gain.
 LOCK = 0x50CA1
 
 
 def run(since: str, batch_size: int, triage_limit: int) -> int:
-    """Enchaîne les trois étapes. Retourne un code de sortie."""
-    # Connexion dédiée au verrou, maintenue ouverte toute la durée du cycle :
-    # le verrou consultatif de session est libéré à la fermeture.
+    """Chains the three steps. Returns an exit code."""
+    # Connection dedicated to the lock, kept open for the whole cycle: a session
+    # advisory lock is released when it closes.
     with psycopg.connect(config.PG_DSN) as guard:
         taken = guard.execute(
             "SELECT pg_try_advisory_lock(%s)", (LOCK,)).fetchone()[0]
         if not taken:
-            # Cas normal si le cycle précédent déborde sur l'intervalle du
-            # timer. On sort proprement, le prochain déclenchement reprendra.
-            log.info("cycle déjà en cours, on passe ce tour")
+            # Normal case when the previous cycle overruns the timer interval.
+            # We exit cleanly; the next trigger will pick up.
+            log.info("cycle already running, skipping this round")
             return 0
 
         try:
-            # CMDB d'abord : la corrélation fige la priorité de l'asset dans
-            # l'incident qu'elle ouvre. Une machine enrôlée entre deux cycles
-            # doit donc être connue AVANT, sinon son premier incident — souvent
-            # le plus intéressant — naît en P4 par défaut et le reste.
-            # Best-effort : une API Wazuh injoignable ne coûte pas un cycle.
+            # CMDB first: correlation freezes the asset priority into the
+            # incident it opens. A machine enrolled between two cycles must
+            # therefore be known BEFORE, otherwise its first incident — often
+            # the most interesting one — is born at the default P4 and stays
+            # there. Best-effort: an unreachable Wazuh API does not cost a
+            # cycle.
             try:
                 r = assets.sync()
-                log.info("cmdb : %d assets (%d créés)", r["vus"], r["crees"])
+                log.info("cmdb: %d assets (%d created)", r["seen"], r["created"])
             except Exception as e:  # noqa: BLE001
-                log.warning("synchronisation CMDB sautée : %s", e)
+                log.warning("CMDB sync skipped: %s", e)
 
-            n = ingest.ingerer(since, batch_size)
-            log.info("ingest : %d alertes traitées", n)
+            n = ingest.ingest(since, batch_size)
+            log.info("ingest: %d alerts processed", n)
 
-            # Fenêtre de training ouverte : on INGÈRE et rien de plus. Pas de
-            # corrélation, pas de triage, pas de case, donc pas de remédiation
-            # (elle part de iris.creer_case). Le SI n'a pas encore été appris ;
-            # juger et agir maintenant reviendrait à isoler des serveurs sains
-            # sur du bruit métier. Le conteneur soc-training apprend de ces
-            # alertes ; à la clôture il réapplique le noise filter à tout
-            # l'existant, et la corrélation reprend sur ce qui reste.
+            # Training window open: we INGEST and nothing more. No correlation,
+            # no triage, no case, hence no remediation (it starts from
+            # iris.create_case). The estate has not been learned yet; judging
+            # and acting now would isolate healthy servers on business noise.
+            # The soc-training container learns from those alerts; on closing it
+            # reapplies the noise filter to everything already stored, and
+            # correlation resumes on what is left.
             if training.in_progress(guard):
-                log.info("training en cours : corrélation, triage, cases et "
-                         "remédiation suspendus (cf. soc_agent.training --etat)")
+                log.info("training in progress: correlation, triage, cases and "
+                         "remediation suspended (see soc_agent.training --state)")
                 return 0
 
-            # Filtre VT AVANT corrélation : un exécutable jugé légitime est
-            # suppressé, donc il ne graine ni ne rejoint un case (correlate lit
-            # NOT suppressed). Best-effort : une panne VT ne casse pas le cycle.
+            # VT filter BEFORE correlation: an executable judged legitimate is
+            # suppressed, so it neither seeds nor joins a case (correlate reads
+            # NOT suppressed). Best-effort: a VT outage does not break the cycle.
             try:
                 n_vt = vt.filter()
                 if n_vt:
-                    log.info("vt : %d alerte(s) écartée(s) (exe légitime)", n_vt)
+                    log.info("vt: %d alert(s) dropped (legitimate exe)", n_vt)
             except Exception as e:  # noqa: BLE001
-                log.warning("filtre VT sauté : %s", e)
+                log.warning("VT filter skipped: %s", e)
 
-            # UEBA entre le filtre VT et la corrélation : il observe les alertes
-            # fraîches, met à jour la baseline comportementale, et PROMEUT en
-            # graine les concentrations LOW/MEDIUM les mieux notées — dans la
-            # limite d'un budget quotidien. Zéro token : le moteur ne juge pas,
-            # il classe. Ce qu'il promeut suit ensuite le chemin de tout le
-            # monde (corrélation -> triage LLM -> case IRIS).
+            # UEBA between the VT filter and correlation: it observes the fresh
+            # alerts, updates the behavioural baseline, and PROMOTES the
+            # best-scoring LOW/MEDIUM concentrations to seeds — within a daily
+            # budget. Zero tokens: the engine does not judge, it ranks. What it
+            # promotes then follows everyone else's path (correlation -> LLM
+            # triage -> IRIS case).
             #
-            # Best-effort, comme VT : un moteur comportemental en panne ne doit
-            # pas empêcher le pipeline de niveau >= 12 de tourner.
+            # Best-effort, like VT: a broken behavioural engine must not stop
+            # the level >= 12 pipeline from running.
             try:
                 seen, scored, promoted = ueba.run()
                 if seen:
-                    log.info("ueba : %d alertes observées, %d scorées, "
-                             "%d signal/signaux promus", seen, scored,
+                    log.info("ueba: %d alerts observed, %d scored, "
+                             "%d signal(s) promoted", seen, scored,
                              len(promoted))
                 for s in promoted:
-                    log.info("ueba : signal #%s %s score %.1f -> %d alertes "
-                             "graine", s["id"], s["agent_name"], s["score"],
+                    log.info("ueba: signal #%s %s score %.1f -> %d seed "
+                             "alerts", s["id"], s["agent_name"], s["score"],
                              len(s["alert_ids"]))
             except Exception as e:  # noqa: BLE001
-                log.warning("ueba sauté : %s", e)
+                log.warning("ueba skipped: %s", e)
 
             n_inc, n_alerts = correlate.correlate(config.MIN_LEVEL)
-            log.info("correlate : %d alertes -> %d incidents", n_alerts, n_inc)
+            log.info("correlate: %d alerts -> %d incidents", n_alerts, n_inc)
 
-            # Capteur muet : un flux établi qui se tait (Suricata étouffé, lecteur
-            # journald figé, audit coupé) rend des pans du ruleset inertes sans la
-            # moindre alerte. Détecté côté base, donc pas soumis au backlog de
-            # l'agent. Log-only pour l'instant (escalade IRIS = revue à part).
+            # Silent sensor: an established feed that goes quiet (Suricata
+            # smothered, journald reader stuck, audit cut off) makes whole
+            # swathes of the ruleset inert without a single alert. Detected on
+            # the database side, so it does not depend on the agent's backlog.
+            # Log-only for now (IRIS escalation = separate review).
             try:
-                watchdog.check()  # journalise chaque capteur muet en WARNING
-            except Exception as e:  # noqa: BLE001 — un watchdog ne casse pas le cycle
-                log.warning("watchdog capteur muet sauté : %s", e)
+                watchdog.check()  # logs every silent sensor at WARNING
+            except Exception as e:  # noqa: BLE001 — a watchdog never breaks the cycle
+                log.warning("silent-sensor watchdog skipped: %s", e)
 
-            # Le triage dépend du serveur LLM. S'il est indisponible, on ne fait
-            # pas échouer tout le cycle : l'ingestion et la corrélation ont déjà
-            # de la valeur, et les incidents non triés seront repris au prochain
-            # tour.
+            # Triage depends on the LLM server. If it is unavailable we do not
+            # fail the whole cycle: ingestion and correlation already have
+            # value, and untriaged incidents will be picked up next round.
             try:
                 triage.sort(triage_limit, None, False, False)
-            except Exception as e:  # noqa: BLE001 — on veut tout rattraper ici
-                # Un échec du triage NE DOIT PAS couper la création de cases : les
-                # incidents déjà triés lors des cycles précédents attendent leur
-                # case (iris_case_id IS NULL) et n'ont plus besoin du LLM de
-                # triage. L'ancien `return 0` ici a gelé la création de cases
-                # pendant des heures dès que le LLM rendait un content vide. On
-                # journalise et on poursuit vers whitelist + cases IRIS.
-                log.warning("triage sauté (serveur LLM injoignable ?) : %s", e)
+            except Exception as e:  # noqa: BLE001 — we want to catch everything here
+                # A triage failure MUST NOT stop case creation: incidents
+                # already triaged in earlier cycles are waiting for their case
+                # (iris_case_id IS NULL) and no longer need the triage LLM. The
+                # old `return 0` here froze case creation for hours as soon as
+                # the LLM returned empty content. We log and carry on to
+                # whitelist + IRIS cases.
+                log.warning("triage skipped (LLM server unreachable?): %s", e)
 
-            # Boucle fermée : les FP récurrents deviennent des exceptions. Ne
-            # tourne qu'après le triage, il lui faut des verdicts frais.
+            # Closed loop: recurring FPs become exceptions. Runs only after
+            # triage, since it needs fresh verdicts.
             created = [d for d in whitelist.analyze(config.WHITELIST_MIN_FP, False)
-                     if d["action"] == "créé"]
+                     if d["action"] == "created"]
             if created:
-                log.info("whitelist : %d exception(s) créée(s) : %s",
+                log.info("whitelist: %d exception(s) created: %s",
                          len(created), ", ".join(d["signature"] for d in created))
 
-            # Un case IRIS par incident trié. Après la whitelist : un incident
-            # qui vient de passer en 'whitelisted' n'a pas de verdict à verser
-            # (déjà écarté), les autres oui.
+            # One IRIS case per triaged incident. After the whitelist: an
+            # incident that just moved to 'whitelisted' has no verdict to push
+            # (already dropped), the others do.
             try:
                 cases = iris.create_cases()
                 if cases:
-                    log.info("IRIS : %d case(s) créé(s)", len(cases))
-            except Exception as e:  # noqa: BLE001 — IRIS down ne casse pas le cycle
-                log.warning("création de cases IRIS sautée : %s", e)
+                    log.info("IRIS: %d case(s) created", len(cases))
+            except Exception as e:  # noqa: BLE001 — IRIS down never breaks the cycle
+                log.warning("IRIS case creation skipped: %s", e)
 
-            # La réconciliation des remédiations annulées (tâche IRIS passée en
-            # 'Canceled') est DÉCOUPLÉE de ce cycle : elle a son propre timer plus
-            # court (soc-agent-reconcile, 1 min) car elle est légère (list_tasks +
-            # reverse) et ne doit pas attendre le triage qui sature le CPU.
+            # Reconciling cancelled remediations (an IRIS task moved to
+            # 'Canceled') is DECOUPLED from this cycle: it has its own, shorter
+            # timer (soc-agent-reconcile, 1 min) because it is light
+            # (list_tasks + reverse) and must not wait for the CPU-bound triage.
             return 0
         finally:
             guard.execute("SELECT pg_advisory_unlock(%s)", (LOCK,))
@@ -163,13 +163,13 @@ def run(since: str, batch_size: int, triage_limit: int) -> int:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--depuis", default="30d",
-                    help="fenêtre d'ingestion au tout premier passage "
-                         "(ignorée dès qu'un curseur existe)")
-    ap.add_argument("--taille-lot", type=int, default=500)
-    ap.add_argument("--limite-triage", type=int, default=50,
-                    help="plafond d'incidents triés par cycle, garde-fou "
-                         "contre un afflux qui saturerait le CPU")
+    ap.add_argument("--since", default="30d",
+                    help="ingestion window on the very first pass "
+                         "(ignored as soon as a cursor exists)")
+    ap.add_argument("--batch-size", type=int, default=500)
+    ap.add_argument("--triage-limit", type=int, default=50,
+                    help="cap on incidents triaged per cycle, a guardrail "
+                         "against an influx that would saturate the CPU")
     args = ap.parse_args()
     sys.exit(run(args.since, args.batch_size, args.triage_limit))
 

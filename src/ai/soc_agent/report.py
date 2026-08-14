@@ -1,14 +1,14 @@
-"""Le rapport qui justifie la phase 1.
+"""The report that justifies phase 1.
 
-Répond à la seule question qui décide de la suite : combien d'incidents par
-jour le LLM aura-t-il réellement à traiter, et donc l'architecture tient-elle
-sur ce CPU ?
+It answers the one question that decides what comes next: how many incidents
+per day will the LLM actually have to handle, and does the architecture hold on
+this CPU?
 
     python -m soc_agent.report
 
-Le calcul vit dans `rapport()`, qui rend un dict ; `afficher()` ne fait que le
-mettre en forme. Séparation voulue : le serveur MCP sert le dict tel quel, sans
-avoir à rejouer les requêtes ni à parser du texte tabulé.
+The computation lives in `report()`, which returns a dict; `show()` only formats
+it. The split is deliberate: the MCP server serves the dict as-is, without
+replaying the queries or parsing tabulated text.
 """
 
 import psycopg
@@ -16,20 +16,20 @@ from psycopg.rows import dict_row
 
 from . import config
 
-# 15 à 25 s par triage, mesurées sur DeepSeek. On prend le haut de la fourchette.
+# 15 to 25 s per triage, measured on DeepSeek. We take the high end.
 SECONDS_PER_TRIAGE = 25
 
 
 def report() -> dict:
-    """Entonnoir de filtrage et charge LLM induite, en données brutes.
+    """Filtering funnel and induced LLM load, as raw data.
 
-    `{"vide": True}` si aucune alerte n'a encore été ingérée — l'appelant doit
-    tester ce cas avant de lire les autres clés, qui sont alors absentes.
+    `{"empty": True}` if no alert has been ingested yet — the caller must test
+    that case before reading the other keys, which are then absent.
     """
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         total = conn.execute("SELECT count(*) n FROM alerts").fetchone()["n"]
         if not total:
-            return {"vide": True}
+            return {"empty": True}
 
         days = float(conn.execute(
             "SELECT greatest(extract(epoch FROM max(ts) - min(ts)) / 86400, 1) j "
@@ -43,8 +43,8 @@ def report() -> dict:
         incidents = conn.execute("SELECT count(*) n FROM incidents").fetchone()["n"]
 
         by_level = [
-            {"niveau": r["rule_level"], "n": r["n"],
-             "traite": r["rule_level"] >= config.MIN_LEVEL}
+            {"level": r["rule_level"], "n": r["n"],
+             "processed": r["rule_level"] >= config.MIN_LEVEL}
             for r in conn.execute(
                 "SELECT rule_level, count(*) n FROM alerts "
                 "GROUP BY rule_level ORDER BY rule_level")
@@ -64,75 +64,75 @@ def report() -> dict:
 
     per_day = incidents / days
     seconds = per_day * SECONDS_PER_TRIAGE
-    # Sans corrélation, chaque alerte partirait au triage. C'est la mesure de ce
-    # que la phase 1 rapporte réellement.
-    sans = kept / days * SECONDS_PER_TRIAGE
+    # Without correlation every alert would go to triage. That is the measure of
+    # what phase 1 actually buys.
+    without = kept / days * SECONDS_PER_TRIAGE
 
     if seconds > 8 * 3600:
-        verdict = "intenable"
+        verdict = "untenable"
     elif seconds > 2 * 3600:
-        verdict = "tendu"
+        verdict = "tight"
     else:
-        verdict = "large"
+        verdict = "comfortable"
 
     return {
-        "vide": False,
-        "entonnoir": {
+        "empty": False,
+        "funnel": {
             "total": total,
             "days": days,
-            "par_jour": total / days,
-            "supprimees": deleted,
-            "retenues": kept,
+            "per_day": total / days,
+            "suppressed": deleted,
+            "kept": kept,
             "min_level": config.MIN_LEVEL,
-            "part_retenues_pct": 100 * kept / total,
+            "kept_pct": 100 * kept / total,
             "incidents": incidents,
-            "facteur": (kept / incidents) if incidents else None,
+            "factor": (kept / incidents) if incidents else None,
         },
-        "par_niveau": by_level,
+        "by_level": by_level,
         "incidents": top,
-        "charge_llm": {
-            "incidents_par_jour": per_day,
-            "secondes_par_triage": SECONDS_PER_TRIAGE,
-            "minutes_par_jour": seconds / 60,
-            "minutes_par_jour_sans_correlation": sans / 60,
-            "gain_correlation": sans / max(seconds, 1),
+        "llm_load": {
+            "incidents_per_day": per_day,
+            "seconds_per_triage": SECONDS_PER_TRIAGE,
+            "minutes_per_day": seconds / 60,
+            "minutes_per_day_without_correlation": without / 60,
+            "correlation_gain": without / max(seconds, 1),
             "verdict": verdict,
         },
     }
 
 
 VERDICTS_TEXT = {
-    "intenable": "intenable. Filtrer davantage avant d'aller plus loin.",
-    "tendu": "tendu. Viable, mais sans marge — surveiller la dérive.",
-    "large": "large. On peut se permettre plus de contexte par triage.",
+    "untenable": "untenable. Filter harder before going any further.",
+    "tight": "tight. Viable, but with no margin — watch for drift.",
+    "comfortable": "comfortable. We can afford more context per triage.",
 }
 
 
 def show(r: dict) -> None:
-    if r["vide"]:
-        print("Base vide — lancer l'ingestion d'abord.")
+    if r["empty"]:
+        print("Empty database — run the ingestion first.")
         return
 
-    e, c = r["entonnoir"], r["charge_llm"]
+    f, c = r["funnel"], r["llm_load"]
     print("=" * 66)
-    print("ENTONNOIR DE FILTRAGE")
+    print("FILTERING FUNNEL")
     print("=" * 66)
-    print(f"  Alertes ingérées            {e['total']:6d}   "
-          f"sur {e['days']:.1f} jours ({e['par_jour']:.0f}/jour)")
-    print(f"  Écartées (noise filter)     {e['supprimees']:6d}   "
-          f"post-retrieval, conservées pour l'audit")
-    print(f"  Retenues (niveau >= {e['min_level']:2d})     {e['retenues']:6d}   "
-          f"{e['part_retenues_pct']:.1f} % du total")
-    print(f"  Incidents après corrélation {e['incidents']:6d}", end="")
-    print(f"   facteur {e['facteur']:.1f}x" if e["facteur"] else "")
+    print(f"  Alerts ingested             {f['total']:6d}   "
+          f"over {f['days']:.1f} days ({f['per_day']:.0f}/day)")
+    print(f"  Dropped (noise filter)      {f['suppressed']:6d}   "
+          f"post-retrieval, kept for audit")
+    print(f"  Kept (level >= {f['min_level']:2d})          {f['kept']:6d}   "
+          f"{f['kept_pct']:.1f} % of the total")
+    print(f"  Incidents after correlation {f['incidents']:6d}", end="")
+    print(f"   factor {f['factor']:.1f}x" if f["factor"] else "")
 
     print()
     print("-" * 66)
-    print("RÉPARTITION PAR NIVEAU")
+    print("BREAKDOWN BY LEVEL")
     print("-" * 66)
-    for n in r["par_niveau"]:
-        mark = " <- traité" if n["traite"] else ""
-        print(f"  niveau {n['niveau']:2d}  {n['n']:6d}{mark}")
+    for n in r["by_level"]:
+        mark = " <- processed" if n["processed"] else ""
+        print(f"  level {n['level']:2d}  {n['n']:6d}{mark}")
 
     print()
     print("-" * 66)
@@ -142,19 +142,19 @@ def show(r: dict) -> None:
         tac = ",".join(i["mitre_tactics"]) or "-"
         print(f"  #{i['id']:<4} {i['first_seen'][5:16].replace('T', ' ')} "
               f"{i['agent_name'] or '?':<14} lvl {i['max_level']:2d}  "
-              f"{i['alert_count']:3d} alertes  "
-              f"règles {','.join(i['rule_ids'])[:32]:<32} [{tac}]")
+              f"{i['alert_count']:3d} alerts  "
+              f"rules {','.join(i['rule_ids'])[:32]:<32} [{tac}]")
 
     print()
     print("=" * 66)
-    print("CHARGE LLM")
+    print("LLM LOAD")
     print("=" * 66)
-    print(f"  {c['incidents_par_jour']:.1f} incidents/jour x "
-          f"{c['secondes_par_triage']} s = {c['minutes_par_jour']:.1f} min "
-          f"de CPU par jour")
-    print(f"  Sans corrélation : {c['minutes_par_jour_sans_correlation']:.1f} "
-          f"min/jour ({c['gain_correlation']:.1f}x plus)")
-    print(f"\n  VERDICT : {VERDICTS_TEXT[c['verdict']]}")
+    print(f"  {c['incidents_per_day']:.1f} incidents/day x "
+          f"{c['seconds_per_triage']} s = {c['minutes_per_day']:.1f} min "
+          f"of CPU per day")
+    print(f"  Without correlation: {c['minutes_per_day_without_correlation']:.1f} "
+          f"min/day ({c['correlation_gain']:.1f}x more)")
+    print(f"\n  VERDICT: {VERDICTS_TEXT[c['verdict']]}")
 
 
 def main() -> None:

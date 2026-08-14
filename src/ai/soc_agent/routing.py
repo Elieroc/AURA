@@ -848,7 +848,7 @@ def _cap_reached(conn) -> bool:
     n = conn.execute(
         "SELECT count(*) c FROM routing_sources "
         " WHERE applied_at > now() - interval '24 hours' "
-        "   AND nomme_par <> 'statique'").fetchone()["c"]
+        "   AND named_by <> 'statique'").fetchone()["c"]
     return n >= config.ROUTING_MAX_NEW_PER_DAY
 
 

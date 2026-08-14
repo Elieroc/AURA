@@ -1235,7 +1235,7 @@ def _already_executed(conn, incident_id: int, action: str, target: str,
                agent_id: str) -> bool:
     r = conn.execute(
         "SELECT status, attempts FROM mitigations WHERE incident_id=%s "
-        "AND action=%s AND cible=%s AND agent_id=%s",
+        "AND action=%s AND target=%s AND agent_id=%s",
         (incident_id, action, target, agent_id)).fetchone()
     if not r:
         return False

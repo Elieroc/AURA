@@ -1,48 +1,48 @@
-"""Contrôle de cohérence entre le verdict et les actions du modèle.
+"""Consistency check between the model's verdict and the actions it proposes.
 
-La validation de sortie (`triage._valider`) garantit la *forme* — champs
-présents, valeurs dans l'enum. Elle ne peut rien garantir *entre* les champs :
-rien n'empêche le modèle de rendre `false_positive` tout en proposant de bloquer
-une IP. C'est arrivé sur deux incidents sur quatre au premier passage réel.
+Output validation (`triage._validate`) guarantees the *shape* — fields present,
+values within the enum. It cannot guarantee anything *across* fields: nothing
+stops the model from returning `false_positive` while proposing to block an IP.
+That happened on two incidents out of four on the very first real pass.
 
-Ce contrôle est déterministe et tourne après chaque triage. Il ne corrige rien
-— réécrire le verdict du modèle masquerait le problème au lieu de le mesurer —
-mais il l'enregistre. Un taux d'incohérence qui monte signale un prompt qu'on
-vient de dégrader, et se mesure **sans jeu labellisé**.
+This check is deterministic and runs after every triage. It fixes nothing —
+rewriting the model's verdict would hide the problem instead of measuring it —
+but it records it. A rising inconsistency rate flags a prompt we have just
+degraded, and it is measurable **without any labelled set**.
 
-Il ne porte que sur les actions du MODÈLE. Celles déduites du verdict
-(`open_case`, `close_false_positive`, cf. actions.py) sont cohérentes par
+It only covers the MODEL's actions. Those inferred from the verdict
+(`open_case`, `close_false_positive`, see actions.py) are consistent by
 construction.
 """
 
 from .actions import HIGH_IMPACT_ACTIONS
 
 
-def check(verdict: str, actions_modele: list[str]) -> list[str]:
-    """Liste des incohérences constatées. Vide = sortie cohérente."""
+def check(verdict: str, model_actions: list[str]) -> list[str]:
+    """Inconsistencies found. Empty means the output is consistent."""
     issues: list[str] = []
-    proposed = set(actions_modele)
+    proposed = set(model_actions)
 
     if verdict == "false_positive":
-        # Si l'activité est légitime, il n'y a rien à couper. Proposer une
-        # remédiation contredit le verdict.
+        # If the activity is legitimate there is nothing to cut off. Proposing a
+        # remediation contradicts the verdict.
         high = proposed & HIGH_IMPACT_ACTIONS
         if high:
             issues.append(
-                "false_positive propose " + ", ".join(sorted(high)))
+                "false_positive proposes " + ", ".join(sorted(high)))
 
     if verdict == "needs_investigation":
-        # Sur un simple doute, on ne coupe rien de façon irréversible : couper
-        # (isolation, kill, désactivation, blocage) sans certitude est incohérent.
+        # On mere doubt we cut nothing irreversibly: cutting (isolation, kill,
+        # account disable, IP block) without certainty is inconsistent.
         high = proposed & HIGH_IMPACT_ACTIONS
         if high:
             issues.append(
-                "needs_investigation coupe sans certitude : "
+                "needs_investigation cuts without certainty: "
                 + ", ".join(sorted(high)))
 
     if verdict == "true_positive" and not proposed:
-        # Légitime pour un vrai positif sans suite possible, mais assez rare
-        # pour mériter d'être compté.
-        issues.append("true_positive sans aucune action")
+        # Legitimate for a true positive with no possible follow-up, but rare
+        # enough to be worth counting.
+        issues.append("true_positive with no action at all")
 
     return issues

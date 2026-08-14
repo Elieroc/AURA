@@ -1,32 +1,32 @@
-"""Actions déduites du verdict, et classement par impact.
+"""Actions inferred from the verdict, and ranking by impact.
 
-L'ouverture d'un case et la clôture en faux positif ne sont pas des décisions :
-elles découlent mécaniquement du verdict. Les demander au modèle, c'était lui
-faire tenir une comptabilité — et il l'oubliait deux fois sur quatre. On les
-dérive ici, où la règle est explicite et ne peut pas varier.
+Opening a case and closing as a false positive are not decisions: they follow
+mechanically from the verdict. Asking the model for them amounted to making it
+keep books — and it forgot two times out of four. We derive them here, where the
+rule is explicit and cannot drift.
 
-Le modèle ne juge donc que ce qui demande un jugement : le verdict, la
-confiance, et les remédiations qui s'appliquent.
+The model therefore only judges what needs judgement: the verdict, the
+confidence, and the remediations that apply.
 """
 
-# Actions qui touchent la production. Elles sont exécutées de façon AUTONOME
-# (XDR autonome, cf. mitigate.py) ; la liste ne sert pas à réclamer un accord
-# humain, mais à les SIGNALER comme telles dans le rapport et à les ordonner
-# par urgence. Leur sûreté tient à des garde-fous déterministes, pas à un clic.
+# Actions that touch production. They are executed AUTONOMOUSLY (autonomous XDR,
+# see mitigate.py); the list is not there to demand a human sign-off, but to
+# FLAG them as such in the report and to order them by urgency. Their safety
+# rests on deterministic guardrails, not on a click.
 HIGH_IMPACT_ACTIONS = {
-    "propose_kill_process",              # tue un process en cours
-    "propose_isolate_host",              # coupe l'hôte du réseau
-    "propose_disable_user",              # verrouille un compte (local ou AD)
-    "propose_block_ip",                  # coupe un flux réseau
-    "propose_quarantine_file",           # met un fichier en quarantaine
-    "propose_remove_privileged_group",   # retire d'un groupe AD privilégié
+    "propose_kill_process",              # kills a running process
+    "propose_isolate_host",              # cuts the host off the network
+    "propose_disable_user",              # locks an account (local or AD)
+    "propose_block_ip",                  # cuts a network flow
+    "propose_quarantine_file",           # quarantines a file
+    "propose_remove_privileged_group",   # removes from a privileged AD group
 }
 
-# Ordre d'urgence pour la présentation à l'analyste. Tuer le process malveillant
-# prime (le plus chirurgical : stoppe l'exécution sans couper la machine) ;
-# isoler vient juste après (arrête tout mais coupe aussi l'investigation).
-# La collecte forensique n'est PAS une action de l'IA (trop lourde, tirée en
-# SSH par le manager, hors périmètre du triage automatique).
+# Urgency order for presentation to the analyst. Killing the malicious process
+# comes first (the most surgical: stops execution without cutting the machine
+# off); isolation comes right after (stops everything but also stops the
+# investigation). Forensic collection is NOT an AI action (too heavy, pulled
+# over SSH by the manager, outside the scope of automatic triage).
 ORDER = [
     "propose_kill_process",
     "propose_quarantine_file",
@@ -41,25 +41,24 @@ ORDER = [
 
 
 def _order(actions) -> list[str]:
-    """Actions triées par urgence de présentation (ORDRE)."""
+    """Actions sorted by presentation urgency (ORDER)."""
     return sorted(actions, key=lambda a: ORDER.index(a) if a in ORDER else 99)
 
 
-def infer(verdict: str, actions_modele: list[str]) -> list[str]:
-    """Actions du modèle + celles qu'impose le verdict, ordonnées."""
-    actions = set(actions_modele)
+def infer(verdict: str, model_actions: list[str]) -> list[str]:
+    """The model's actions plus those the verdict imposes, ordered."""
+    actions = set(model_actions)
 
     if verdict == "true_positive":
         actions.add("open_case")
     elif verdict == "false_positive":
-        # Un faux positif est une activité légitime : rien à remédier. On
-        # écarte toute action de remédiation que le modèle aurait proposée
-        # malgré tout — l'incohérence est relevée par coherence.py, ici on
-        # produit une sortie exploitable.
+        # A false positive is legitimate activity: nothing to remediate. We drop
+        # any remediation the model proposed anyway — the inconsistency is
+        # recorded by coherence.py; here we just produce a usable output.
         actions = {"close_false_positive"}
     elif verdict == "needs_investigation":
-        # Le doute appelle un humain : la collecte forensique n'est pas une
-        # action de l'IA, et on ne coupe rien sur un simple doute.
+        # Doubt calls for a human: forensic collection is not an AI action, and
+        # we cut nothing on mere doubt.
         if not actions:
             actions.add("escalate_human")
 
@@ -67,29 +66,29 @@ def infer(verdict: str, actions_modele: list[str]) -> list[str]:
 
 
 def high_impact_actions(actions: list[str]) -> list[str]:
-    """Actions à fort impact présentes, pour les SIGNALER dans le rapport.
+    """High-impact actions present, so the report can FLAG them.
 
-    Elles sont exécutées automatiquement (pas de validation humaine) ; ce filtre
-    sert seulement à les mettre en évidence pour l'analyste qui lit le case.
+    They run automatically (no human validation); this filter only exists to
+    highlight them for the analyst reading the case.
     """
     return [a for a in actions if a in HIGH_IMPACT_ACTIONS]
 
 
-# Niveau Wazuh à partir duquel une clôture automatique est interdite. 14 et 15
-# sont les niveaux « attaque avérée » : ransomware, destruction de masse,
-# compromission confirmée. Une règle qui tire à 14+ a exigé plusieurs
-# corrélations côté Wazuh — la classer en faux positif demande un humain.
+# Wazuh level from which automatic closure is forbidden. 14 and 15 are the
+# "confirmed attack" levels: ransomware, mass destruction, confirmed compromise.
+# A rule firing at 14+ required several correlations on the Wazuh side —
+# classifying it as a false positive takes a human.
 #
-# Défaut historique, conservé pour les assets sans priorité connue et pour les
-# appels qui ne passent pas de priorité (tests, rejeu d'incidents antérieurs à
-# la CMDB). Sur un asset priorisé, c'est `config.CLOTURE_INTERDITE_PAR_PRIORITE`
-# qui s'applique : le seuil DESCEND quand l'asset compte (12 sur un contrôleur
-# de domaine). Le coût d'un faux négatif y est sans commune mesure avec celui
-# d'un case de plus à lire.
+# Historical default, kept for assets with no known priority and for callers
+# that pass no priority (tests, replay of incidents predating the CMDB). On a
+# prioritised asset `config.CLOSURE_FORBIDDEN_BY_PRIORITY` applies instead: the
+# threshold GOES DOWN when the asset matters (12 on a domain controller). The
+# cost of a false negative there is nothing like the cost of one more case to
+# read.
 LEVEL_CLOSURE_FORBIDDEN = 14
 
-# Confinements moins invasifs que l'isolation. Tant que l'un d'eux s'applique,
-# il traite la menace sans couper la machine du réseau.
+# Containments less invasive than isolation. As long as one of them applies, it
+# handles the threat without cutting the machine off the network.
 LEAST_INVASIVE_CONFINEMENT = (
     "propose_block_ip",
     "propose_kill_process",
@@ -100,10 +99,10 @@ LEAST_INVASIVE_CONFINEMENT = (
 
 
 def closure_threshold(priority: int | None) -> int:
-    """Niveau au-delà duquel la clôture automatique est refusée, selon l'asset.
+    """Level above which automatic closure is refused, per asset.
 
-    Import local : `actions` est un module pur (aucune I/O, aucune base) et doit
-    le rester pour être testable seul ; `config` ne lit que l'environnement.
+    Local import: `actions` is a pure module (no I/O, no database) and must stay
+    that way to be testable on its own; `config` only reads the environment.
     """
     from . import config
     if priority is None:
@@ -117,36 +116,35 @@ def apply_guardrails(verdict: str, actions: list[str], max_level: int,
                          active_compromise: bool = False,
                          priority: int | None = None,
                          ) -> tuple[list[str], list[str]]:
-    """Barrière déterministe entre la sortie du modèle et une action réelle.
+    """Deterministic barrier between the model's output and a real action.
 
-    Mesuré : trois charges d'injection sur quatre retournent le verdict du
-    modèle en `false_positive` sur un ransomware avéré. Le prompt système ne
-    tient pas, et il ne peut pas tenir — un modèle de langage n'est pas une
-    frontière de sécurité. Celle-ci l'est : elle ne dépend d'aucune
-    probabilité et ne peut pas être argumentée par du texte dans un log.
+    Measured: three injection payloads out of four flip the model's verdict to
+    `false_positive` on a confirmed ransomware. The system prompt does not hold,
+    and it cannot hold — a language model is not a security boundary. This is:
+    it depends on no probability and cannot be argued with by text in a log.
 
-    Trois invariants :
+    Three invariants:
 
-    1. Un incident de niveau >= 14 ne peut PAS être clos automatiquement,
-       quoi qu'en dise le modèle. C'est exactement le scénario qu'une
-       injection cherche à provoquer : faire refermer une intrusion en silence.
-       Le seuil DESCEND sur un asset prioritaire (`priorite`, cf.
-       `seuil_cloture`) : 12 sur un contrôleur de domaine ou un pare-feu.
-    2. Un incident où des motifs d'injection ont été repérés ne peut pas être
-       clos non plus — le verdict rendu sur un contexte manipulé ne vaut rien.
-    3. L'isolation d'un hôte est un DERNIER RECOURS : elle ne part que si aucun
-       confinement moins invasif ne s'applique (cf. plus bas) — SAUF si l'hôte
-       est en compromission active (post-exploitation avérée), auquel cas
-       l'isolation est MAINTENUE malgré la présence d'un confinement moins
-       invasif (bloquer une IP ne déloge pas un attaquant déjà installé).
+    1. An incident of level >= 14 can NOT be closed automatically, whatever the
+       model says. That is exactly the scenario an injection aims for: silently
+       closing an intrusion. The threshold GOES DOWN on a priority asset
+       (`priority`, see `closure_threshold`): 12 on a domain controller or a
+       firewall.
+    2. An incident where injection patterns were spotted cannot be closed
+       either — a verdict rendered on a manipulated context is worthless.
+    3. Isolating a host is a LAST RESORT: it only fires when no less invasive
+       containment applies (see below) — UNLESS the host is under active
+       compromise (confirmed post-exploitation), in which case isolation is KEPT
+       despite a less invasive containment being available (blocking an IP does
+       not dislodge an attacker who is already in).
 
-    `compromission_active` : l'incident porte une règle de post-exploitation
-    (cf. config.RULES_COMPROMISSION_HOTE) — l'attaquant exécute déjà du code
-    sur la machine (webshell, reverse shell, rootkit, persistance root). Le
-    calcul du drapeau est fait par l'appelant (triage) à partir des rule_ids
-    de l'incident ; la barrière ici ne fait qu'en tenir compte.
+    `active_compromise`: the incident carries a post-exploitation rule (see
+    config.RULES_COMPROMISE_HOST) — the attacker already runs code on the
+    machine (webshell, reverse shell, rootkit, root persistence). The flag is
+    computed by the caller (triage) from the incident's rule_ids; the barrier
+    here only takes it into account.
 
-    Retourne (actions effectives, motifs de l'intervention).
+    Returns (effective actions, reasons for the intervention).
     """
     patterns: list[str] = []
 
@@ -154,53 +152,53 @@ def apply_guardrails(verdict: str, actions: list[str], max_level: int,
         threshold = closure_threshold(priority)
         if max_level >= threshold:
             patterns.append(
-                f"clôture refusée : niveau {max_level} >= {threshold}"
+                f"closure refused: level {max_level} >= {threshold}"
                 + (f" (asset P{priority})" if priority else ""))
         if suspected_injection:
             patterns.append(
-                "clôture refusée : motifs d'injection dans les données")
+                "closure refused: injection patterns in the data")
 
     if patterns:
-        # On n'invente pas un verdict à la place du modèle : on refuse
-        # seulement la conséquence dangereuse, et on rend la main à un humain.
+        # We do not invent a verdict in the model's place: we only refuse the
+        # dangerous consequence, and hand back to a human.
         return ["escalate_human", "open_case"], patterns
 
-    # --- Isolation en dernier recours ---------------------------------------
+    # --- Isolation as a last resort -----------------------------------------
     #
-    # Couper un hôte du réseau est l'action la plus chère du catalogue : elle
-    # arrête l'attaque, mais aussi le service. Mesuré : un scanner internet
-    # cherchant //adminer.php (404, rien servi) a fait isoler un reverse proxy
-    # exposant tout un parc. Le blocage de l'IP suffisait, et il était proposé
-    # dans le même verdict.
+    # Cutting a host off the network is the most expensive action in the
+    # catalogue: it stops the attack, but also the service. Measured: an
+    # internet scanner probing //adminer.php (404, nothing served) got a reverse
+    # proxy fronting a whole fleet isolated. Blocking the IP was enough, and it
+    # was proposed in the same verdict.
     #
-    # Donc : tant qu'un confinement moins invasif s'applique — bloquer l'IP,
-    # tuer le process, désactiver le compte — c'est lui qui part, et
-    # l'isolation est retirée. Elle n'est PAS silencieusement abandonnée :
-    # `escalate_human` prend sa place, l'analyste voit dans le case qu'une
-    # isolation a été jugée pertinente et tranche lui-même.
+    # So: as long as a less invasive containment applies — block the IP, kill
+    # the process, disable the account — that is what fires, and isolation is
+    # dropped. It is NOT silently abandoned: `escalate_human` takes its place,
+    # the analyst sees in the case that isolation was judged relevant and
+    # decides.
     #
-    # Volontairement déterministe et non négociable par le prompt : le modèle
-    # est incité à préférer le blocage (prompts/system.md), mais l'incitation
-    # ne tient pas face à un log hostile. Cette barrière, si.
+    # Deliberately deterministic and not negotiable by the prompt: the model is
+    # nudged to prefer blocking (prompts/system.md), but a nudge does not hold
+    # against a hostile log. This barrier does.
     if "propose_isolate_host" in actions:
         less_invasive = [a for a in LEAST_INVASIVE_CONFINEMENT if a in actions]
         if less_invasive and active_compromise:
-            # Compromission active de l'hôte : l'attaquant exécute déjà du code
-            # dessus (webshell, reverse shell, rootkit, persistance root). Un
-            # confinement moins invasif ne suffit pas — couper une IP laisse le
-            # foothold en place. L'isolation EST maintenue, en plus du reste.
+            # Active compromise of the host: the attacker already runs code on
+            # it (webshell, reverse shell, rootkit, root persistence). A less
+            # invasive containment is not enough — cutting an IP leaves the
+            # foothold in place. Isolation IS kept, on top of the rest.
             patterns.append(
-                "isolation MAINTENUE : compromission active de l'hôte "
-                "(post-exploitation avérée) — le confinement moins invasif "
-                f"({', '.join(less_invasive)}) ne déloge pas un attaquant "
-                "déjà installé")
+                "isolation KEPT: active compromise of the host "
+                "(confirmed post-exploitation) — the less invasive containment "
+                f"({', '.join(less_invasive)}) does not dislodge an attacker "
+                "already in place")
         elif less_invasive:
             actions = [a for a in actions if a != "propose_isolate_host"]
             if "escalate_human" not in actions:
                 actions.append("escalate_human")
             actions = _order(actions)
             patterns.append(
-                "isolation retirée (dernier recours) : "
-                f"{', '.join(less_invasive)} suffit — escalade à un humain")
+                "isolation dropped (last resort): "
+                f"{', '.join(less_invasive)} is enough — escalated to a human")
 
     return actions, patterns

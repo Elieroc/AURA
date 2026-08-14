@@ -1,16 +1,16 @@
-"""Appel générique au modèle — DeepSeek (API cloud, compatible OpenAI).
+"""Generic call to the model — DeepSeek (cloud API, OpenAI-compatible).
 
-DeepSeek n'accepte aucune contrainte de grammaire ;
-on force un JSON valide via `response_format={"type": "json_object"}`. Cela
-garantit un JSON *syntaxiquement* valide, PAS le respect du schéma ni de
-l'enum — cette garantie-là est reportée dans le code appelant (coercition
-dans triage.py) et dans les garde-fous déterministes d'actions.py.
+DeepSeek accepts no grammar constraint; we force valid JSON through
+`response_format={"type": "json_object"}`. That guarantees *syntactically* valid
+JSON, NOT that the schema or the enum is respected — that guarantee is pushed
+into the calling code (coercion in triage.py) and into the deterministic
+guardrails of actions.py.
 
-Note sécurité : tout ce qui passe ici part vers le cloud. Le texte doit être
-anonymisé en amont (sanitize.py). Le LLM n'est pas une frontière de sécurité.
+Security note: everything passing through here leaves for the cloud. The text
+must be anonymised upstream (sanitize.py). The LLM is not a security boundary.
 
-Toujours `/chat/completions` (template de chat), jamais un endpoint brut : le
-template change le verdict (mesuré).
+Always `/chat/completions` (chat template), never a raw endpoint: the template
+changes the verdict (measured).
 """
 
 import json
@@ -25,17 +25,17 @@ from . import config
 log = logging.getLogger(__name__)
 
 
-def _record(usage: str, modele: str, max_tokens: int, duration_ms: int,
+def _record(usage: str, model: str, max_tokens: int, duration_ms: int,
                  metrics: dict | None, incident_id: int | None,
                  error: str | None) -> None:
-    """Trace l'appel dans `llm_calls`. N'échoue JAMAIS vers l'appelant.
+    """Records the call in `llm_calls`. NEVER fails towards the caller.
 
-    Point de passage unique : instrumenter ici plutôt que chez chaque appelant
-    garantit qu'un nouvel usage du modèle est compté sans qu'on y pense. Et une
-    métrique perdue vaut mieux qu'un verdict perdu — d'où le try/except large.
+    Single choke point: instrumenting here rather than in every caller
+    guarantees a new use of the model is counted without anyone thinking about
+    it. And a lost metric beats a lost verdict — hence the broad try/except.
 
-    Import de psycopg à l'intérieur : `llm.py` doit rester utilisable sans base
-    (tests, appels ponctuels).
+    psycopg imported inside: `llm.py` must stay usable without a database
+    (tests, one-off calls).
     """
     try:
         import psycopg
@@ -44,64 +44,63 @@ def _record(usage: str, modele: str, max_tokens: int, duration_ms: int,
             conn.execute(
                 "INSERT INTO llm_calls (usage, model, prompt_tokens, "
                 "completion_tokens, cache_hit_tokens, cache_miss_tokens, "
-                "max_tokens, duree_ms, incident_id, ok, erreur) "
+                "max_tokens, duration_ms, incident_id, ok, error) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (usage, m.get("model") or modele, m.get("prompt_tokens"),
+                (usage, m.get("model") or model, m.get("prompt_tokens"),
                  m.get("completion_tokens"), m.get("cache_hit_tokens"),
                  m.get("cache_miss_tokens"), max_tokens, duration_ms,
                  incident_id, error is None, error))
             conn.commit()
     except Exception as e:                                   # noqa: BLE001
-        log.debug("métrique LLM non enregistrée : %s", e)
+        log.debug("LLM metric not recorded: %s", e)
 
 
-# Antislash qui n'ouvre PAS une séquence d'échappement JSON valide. C'est
-# exactement ce que produit un modèle qui recopie un chemin Windows dans sa
-# justification : `C:\Windows\System32` sort tel quel, et `\W` n'est pas un
-# échappement légal.
+# Backslash that does NOT open a valid JSON escape sequence. That is exactly
+# what a model produces when it copies a Windows path into its justification:
+# `C:\Windows\System32` comes out as-is, and `\W` is not a legal escape.
 _BARE_BACKSLASH = re.compile(r'\\(?!["\\/bfnrtu])')
 
 
 def _load_json(content: str) -> dict:
-    """Parse la réponse du modèle, en réparant les antislashs non échappés.
+    """Parses the model's answer, repairing unescaped backslashes.
 
-    `response_format=json_object` était réputé garantir un JSON valide. C'est
-    faux, et mesuré : sur un incident Windows (chemins `C:\\...` partout dans le
-    contexte), DeepSeek a rendu « Invalid \\escape: line 2 column 68 ». Sans
-    réparation, l'incident échoue à CHAQUE cycle — le lot étant trié de façon
-    déterministe, il repasse en tête indéfiniment.
+    `response_format=json_object` was supposed to guarantee valid JSON. It does
+    not, and it is measured: on a Windows incident (`C:\\...` paths all over the
+    context), DeepSeek returned "Invalid \\escape: line 2 column 68". Without
+    repair the incident fails on EVERY cycle — the batch being ordered
+    deterministically, it comes back to the front indefinitely.
 
-    La réparation est délibérément étroite : on ne double que les antislashs qui
-    n'ouvrent aucune séquence d'échappement légale. Un JSON déjà correct est
-    inchangé (il passe au premier `loads` et n'atteint jamais la regex), et une
-    vraie panne d'API remonte toujours.
+    The repair is deliberately narrow: we only double the backslashes that open
+    no legal escape sequence. Already-correct JSON is untouched (it passes the
+    first `loads` and never reaches the regex), and a real API outage still
+    surfaces.
     """
     try:
         return json.loads(content)
     except json.JSONDecodeError:
         repaired = _BARE_BACKSLASH.sub(r"\\\\", content)
-        obj = json.loads(repaired)   # échoue encore -> vraie sortie inexploitable
-        log.warning("JSON du modèle réparé (antislashs non échappés)")
+        obj = json.loads(repaired)   # still failing -> genuinely unusable output
+        log.warning("model JSON repaired (unescaped backslashes)")
         return obj
 
 
 def completion(system: str, user: str, usage: str,
                max_tokens: int = 500, temperature: float = 0.2,
                incident_id: int | None = None) -> tuple[dict, dict]:
-    """Retourne (objet JSON parsé, métriques).
+    """Returns (parsed JSON object, metrics).
 
-    `response_format` json_object exige que le mot « json » apparaisse dans les
-    messages — les prompts système le mentionnent explicitement (« objet JSON »).
+    `response_format` json_object requires the word "json" to appear in the
+    messages — the system prompts mention it explicitly ("objet JSON").
 
-    `usage` nomme l'appelant ('triage', 'report', …) : c'est la dimension par
-    laquelle on lit ensuite la consommation dans le dashboard AI. Les appels en
-    échec sont comptés aussi — un timeout ou un budget trop court coûte du
-    temps, et parfois des tokens, même sans réponse exploitable.
+    `usage` names the caller ('triage', 'report', ...): it is the dimension the
+    AI dashboard then reads consumption by. Failed calls are counted too — a
+    timeout or too small a budget costs time, and sometimes tokens, even without
+    a usable answer.
 
-    Paramètre OBLIGATOIRE et placé avant les optionnels, volontairement : avec
-    une valeur par défaut, un nouvel appelant qui l'oublie passe inaperçu et sa
-    consommation atterrit dans un bucket « inconnu » du dashboard — ce qui est
-    exactement arrivé. Sans défaut, l'oubli est une TypeError au premier appel.
+    MANDATORY parameter, deliberately placed before the optional ones: with a
+    default value a new caller who forgets it goes unnoticed and its consumption
+    lands in an "unknown" bucket of the dashboard — which is exactly what
+    happened. With no default, forgetting it is a TypeError on the first call.
     """
     start = time.monotonic()
     try:
@@ -128,16 +127,16 @@ def _completion(system: str, user: str, max_tokens: int,
             ],
             "response_format": {"type": "json_object"},
             "max_tokens": max_tokens,
-            # Température basse pour un verdict aussi stable que possible.
-            # DeepSeek ne garantit pas la reproductibilité par seed (non
-            # supportée), contrairement au setup local.
+            # Low temperature for a verdict as stable as possible. DeepSeek
+            # does not guarantee reproducibility by seed (unsupported), unlike
+            # the local setup did.
             "temperature": temperature,
             "stream": False,
         },
-        # (connexion, lecture) explicites : le second est un délai d'INACTIVITÉ,
-        # pas une durée totale. Le cycle tient son verrou consultatif pendant
-        # tout son déroulé — un fournisseur qui répond au ralenti ne doit pas
-        # l'immobiliser (cf. config.LLM_TIMEOUT_*).
+        # (connect, read) explicit: the second is an INACTIVITY delay, not a
+        # total duration. The cycle holds its advisory lock for its whole run —
+        # a provider answering slowly must not tie it up (see
+        # config.LLM_TIMEOUT_*).
         timeout=(config.LLM_TIMEOUT_CONNECT_S, config.LLM_TIMEOUT_READ_S),
     )
     rep.raise_for_status()
@@ -146,21 +145,21 @@ def _completion(system: str, user: str, max_tokens: int,
 
     choice = body["choices"][0]
     content = choice["message"].get("content") or ""
-    # Modèles raisonnants (deepseek-v4-*) : le raisonnement est décompté de
-    # max_tokens. S'il l'épuise, finish_reason=length et content est VIDE — le
-    # verdict n'a jamais été écrit. Erreur explicite plutôt qu'un JSONDecodeError
-    # opaque : la correction est d'augmenter TRIAGE_MAX_TOKENS.
+    # Reasoning models (deepseek-v4-*): the reasoning is charged against
+    # max_tokens. If it exhausts it, finish_reason=length and content is EMPTY —
+    # the verdict was never written. An explicit error rather than an opaque
+    # JSONDecodeError: the fix is to raise TRIAGE_MAX_TOKENS.
     if not content.strip():
         raise RuntimeError(
-            f"réponse sans content (finish_reason={choice.get('finish_reason')}, "
-            f"reasoning épuisant max_tokens={max_tokens} ?) — augmenter le budget")
+            f"answer with no content (finish_reason={choice.get('finish_reason')}, "
+            f"reasoning exhausting max_tokens={max_tokens}?) — raise the budget")
 
     obj = _load_json(content)
     consumption = body.get("usage", {})
-    # DeepSeek ventile l'entrée entre cache hit et cache miss, et le hit est
-    # facturé 50x moins cher. Sans cette ventilation, le coût est surestimé :
-    # le prompt système est constant d'un incident à l'autre, donc il est
-    # presque toujours servi par le cache.
+    # DeepSeek splits the input between cache hit and cache miss, and the hit
+    # is billed 50x cheaper. Without that split the cost is overestimated: the
+    # system prompt is constant from one incident to the next, so it is almost
+    # always served from cache.
     metrics = {"duration_ms": duration_ms,
                  "prompt_tokens": consumption.get("prompt_tokens"),
                  "completion_tokens": consumption.get("completion_tokens"),

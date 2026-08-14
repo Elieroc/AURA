@@ -290,7 +290,7 @@ def sync(conn, lines: list[dict] | None = None) -> dict:
         silent = sorted(known - set(agents_seen))
         cur.execute(
             "INSERT INTO vuln_scans (agents_seen, vulns_seen, new_count, "
-            "                        corrigees, agents_muets) "
+            "                        fixed_count, silent_agents) "
             "VALUES (%s, %s, %s, %s, %s)",
             (len(agents_seen), len(seen), new, fixed, silent))
     conn.commit()
@@ -350,7 +350,7 @@ def exposure(conn, agent_id: str) -> dict:
         "       avg(extract(epoch FROM fixed_at - first_seen) / 86400) AS mttr "
         "  FROM vulnerabilities "
         " WHERE agent_id = %s AND status = 'corrigee' "
-        "   AND corrigee_a >= now() - interval '90 days'",
+        "   AND fixed_at >= now() - interval '90 days'",
         (str(agent_id),)).fetchone()
 
     return {

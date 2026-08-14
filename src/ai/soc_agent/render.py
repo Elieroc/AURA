@@ -1,14 +1,18 @@
-"""Rendu d'un incident en texte pour le LLM.
+"""Rendering an incident as text for the LLM.
 
-Toute la difficulté est là. Un incident ransomware regroupe 31 alertes ; les
-donner brutes ferait 15 000 tokens pour un seul verdict. C'est payé au token, et
-surtout noyé : plus le contexte est long, moins le modèle distingue ce qui
-tranche.
+This is where the whole difficulty sits. A ransomware incident groups 31 alerts;
+handing them over raw would be 15,000 tokens for a single verdict. That is paid
+per token, and above all it drowns the signal: the longer the context, the less
+the model tells apart what actually decides.
 
-On résume donc agressivement, en gardant ce qui sert à décider : quelles règles
-ont tiré et combien de fois, sur quel hôte, contre quels objets, avec quel
-enrichissement de réputation. Le détail alerte par alerte reste en base pour
-l'analyste ; le modèle n'en a pas besoin pour trancher.
+So we summarise aggressively, keeping what serves the decision: which rules
+fired and how many times, on which host, against which objects, with which
+reputation enrichment. The alert-by-alert detail stays in database for the
+analyst; the model does not need it to decide.
+
+The rendered text stays in French on purpose: it is the untrusted-data block of
+a French prompt (see prompts/system.md), and the model answers in French for the
+analysts reading IRIS.
 """
 
 import json
@@ -16,18 +20,18 @@ from typing import Any
 
 from .sanitize import detect, neutralize
 
-# Plafonds de rendu. Au-delà, on n'ajoute plus d'information utile à la
-# décision, seulement du volume.
+# Rendering caps. Past them we no longer add information useful to the
+# decision, only volume.
 MAX_RULES = 6
 MAX_OBJECTS = 5
 MAX_IPS = 3
 
-# Valeur de `asset_role` posée par la corrélation quand la priorité vient du
-# rabattement capteur (cf. assets.priorite_agent) et non du rôle de la machine.
+# Value of `asset_role` set by correlation when the priority comes from the
+# sensor fallback (see assets.agent_priority) and not from the machine's role.
 ROLE_SENSOR = "sensor"
 
-# Ce que « P1 » signifie, en clair. Un chiffre nu n'apprend rien au modèle : il
-# lui faut la CONSÉQUENCE d'une compromission pour la peser dans son verdict.
+# What "P1" means, spelled out. A bare number teaches the model nothing: it
+# needs the CONSEQUENCE of a compromise to weigh it in its verdict.
 SCALE_PRIORITY = {
     1: "compromission = perte du domaine, du réseau ou de la capacité de "
        "détection ; aucun doute ne se referme tout seul",
@@ -38,10 +42,10 @@ SCALE_PRIORITY = {
 
 
 def _truncate(values: list[str], max_items: int) -> str:
-    """Liste bornée, avec mention explicite de ce qui est masqué.
+    """Bounded list, with an explicit mention of what is hidden.
 
-    Le « (+N autres) » compte : sans lui, le modèle voit cinq fichiers touchés
-    au lieu de deux mille et sous-estime l'ampleur.
+    The "(+N autres)" matters: without it the model sees five affected files
+    instead of two thousand and underestimates the scale.
     """
     if not values:
         return "-"
@@ -51,10 +55,10 @@ def _truncate(values: list[str], max_items: int) -> str:
 
 
 def _enrichment(alerts: list[dict]) -> list[str]:
-    """Réputation et géoloc, extraites des documents bruts.
+    """Reputation and geolocation, extracted from the raw documents.
 
-    C'est l'information qui fait basculer un verdict — une IP notée 96/100 par
-    AbuseIPDB n'est pas une IP quelconque — et elle est enfouie dans le JSON.
+    This is the information that flips a verdict — an IP rated 96/100 by
+    AbuseIPDB is not just any IP — and it is buried in the JSON.
     """
     lines: list[str] = []
     seen: set[str] = set()
@@ -96,11 +100,11 @@ def _enrichment(alerts: list[dict]) -> list[str]:
 
 
 def injection_patterns(alerts: list[dict]) -> list[str]:
-    """Motifs d'instruction repérés dans les champs contrôlés par l'attaquant.
+    """Instruction patterns spotted in attacker-controlled fields.
 
-    Leur présence dans un champ de log est anormale en soi. Elle interdit la
-    clôture automatique de l'incident (`actions.appliquer_garde_fous`) : un
-    verdict rendu sur un contexte manipulé ne vaut rien.
+    Their presence in a log field is abnormal in itself. It forbids automatic
+    closure of the incident (`actions.apply_guardrails`): a verdict rendered on
+    a manipulated context is worthless.
     """
     found: set[str] = set()
     for a in alerts:
@@ -112,14 +116,14 @@ def injection_patterns(alerts: list[dict]) -> list[str]:
 
 
 def render(incident: dict, alerts: list[dict], max_rules: int = MAX_RULES) -> str:
-    """Incident + ses alertes -> bloc de données non fiables pour le prompt.
+    """Incident + its alerts -> untrusted data block for the prompt.
 
-    `max_regles` borne le nombre de règles listées. Le triage le garde bas — il
-    n'a besoin que de quoi trancher ; le rapport peut le relever pour que
-    l'analyse voie toute la chaîne, pas seulement le pic.
+    `max_rules` bounds the number of rules listed. Triage keeps it low — it only
+    needs enough to decide; the report can raise it so the analysis sees the
+    whole chain, not just the peak.
     """
-    # Regroupement par règle : « x25 » porte l'information de répétition sans
-    # payer 25 fois les mêmes tokens.
+    # Grouped by rule: "x25" carries the repetition without paying for the
+    # same tokens 25 times over.
     by_rule: dict[str, dict[str, Any]] = {}
     for a in alerts:
         e = by_rule.setdefault(a["rule_id"], {
@@ -137,18 +141,19 @@ def render(incident: dict, alerts: list[dict], max_rules: int = MAX_RULES) -> st
         f"niveau max {incident['max_level']}/15",
     ]
 
-    # Criticité de la machine. Le niveau Wazuh décrit ce que la règle a vu ;
-    # celui-ci décrit ce qu'on perd. Le même `net user /add` est une routine
-    # d'admin sur un poste de test et un backdoor de domaine sur un DC — sans
-    # cette ligne, le modèle n'a aucun moyen de faire la différence. Les rôles
-    # sont explicités plutôt que codés : « P1 » seul ne veut rien dire pour lui.
+    # Criticality of the machine. The Wazuh level describes what the rule saw;
+    # this one describes what we lose. The same `net user /add` is admin routine
+    # on a test box and a domain backdoor on a DC — without this line the model
+    # has no way to tell the difference. Roles are spelled out rather than
+    # coded: "P1" alone means nothing to it.
     priority = incident.get("priority")
     if priority:
         role = incident.get("asset_role")
         if role == ROLE_SENSOR:
-            # Le rôle propre de la machine (pare-feu, hyperviseur) serait ici
-            # trompeur : ce qu'elle remonte décrit d'AUTRES machines. Le dire au
-            # modèle change son analyse — l'hôte visé n'est pas celui qui parle.
+            # The machine's own role (firewall, hypervisor) would be
+            # misleading here: what it reports describes OTHER machines. Telling
+            # the model changes its analysis — the targeted host is not the one
+            # talking.
             detail = ("agent capteur — sa télémétrie décrit l'activité d'autres "
                       "machines (IDS, hyperviseur), la machine réellement "
                       "concernée est à identifier dans les données")
@@ -164,12 +169,11 @@ def render(incident: dict, alerts: list[dict], max_rules: int = MAX_RULES) -> st
     if tactics:
         lines.append(f"tactiques MITRE  : {', '.join(tactics)}")
 
-    # Origine UEBA : sans cette explication, le modèle voit une poignée
-    # d'alertes de niveau 5 et conclut mécaniquement au faux positif — c'est
-    # d'ailleurs le bon réflexe SUR LE NIVEAU SEUL. Ce qui rend l'incident
-    # jugeable, c'est la rareté mesurée : « ce binaire n'a jamais été vu sur cet
-    # hôte ni sur aucun autre ». Quelques dizaines de tokens qui remplacent
-    # avantageusement les alertes brutes.
+    # UEBA origin: without this explanation the model sees a handful of level
+    # 5 alerts and mechanically concludes false positive — which is in fact the
+    # right reflex ON THE LEVEL ALONE. What makes the incident judgeable is the
+    # measured rarity: "this binary has never been seen on this host nor on any
+    # other". A few dozen tokens that beat the raw alerts.
     if incident.get("ueba"):
         lines.append("")
         lines.append(

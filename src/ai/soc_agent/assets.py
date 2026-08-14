@@ -262,7 +262,7 @@ def definir(agent_id: str, role: str | None = None,
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         line = conn.execute(
             "INSERT INTO assets (agent_id, role, priority, priority_source, "
-            "                    notes, vu_a, maj_a) "
+            "                    notes, seen_at, updated_at) "
             "VALUES (%s, %s, %s, %s, %s, now(), now()) "
             # COALESCE sur le rôle : forcer une priorité seule (échappatoire
             # hors catalogue) ne doit pas effacer le rôle déjà connu — l'asset
@@ -270,9 +270,9 @@ def definir(agent_id: str, role: str | None = None,
             # qu'on vient justement de le classer.
             "ON CONFLICT (agent_id) DO UPDATE "
             "SET role = COALESCE(EXCLUDED.role, assets.role), "
-            "  priorite = EXCLUDED.priorite, "
-            "  priorite_source = EXCLUDED.priorite_source, "
-            "  notes = COALESCE(EXCLUDED.notes, assets.notes), maj_a = now() "
+            "  priority = EXCLUDED.priority, "
+            "  priority_source = EXCLUDED.priority_source, "
+            "  notes = COALESCE(EXCLUDED.notes, assets.notes), updated_at = now() "
             "RETURNING agent_id, name, role, priority, priority_source, notes",
             (str(agent_id), role, int(priority), source, notes)).fetchone()
         conn.commit()
@@ -283,7 +283,7 @@ def list(priority: int | None = None) -> list[dict]:
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         return [dict(r) for r in conn.execute(
             "SELECT agent_id, name, ip, os, role, priority, priority_source, "
-            "       groupes, notes, vu_a "
+            "       groups, notes, seen_at "
             "  FROM assets WHERE (%s::int IS NULL OR priority = %s::int) "
             " ORDER BY priority, name", (priority, priority)).fetchall()]
 
