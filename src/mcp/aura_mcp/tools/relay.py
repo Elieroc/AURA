@@ -1,25 +1,25 @@
-"""Relais vers les serveurs MCP Wazuh et DFIR-IRIS.
+"""Relay to the Wazuh and DFIR-IRIS MCP servers.
 
-Deux outils par serveur amont — un pour découvrir, un pour appeler — plutôt
-que la trentaine d'outils relayés un par un. C'est le même compromis que celui
-qui justifie le gateway : le catalogue amont représente 60 outils, soit
-l'essentiel du contexte d'un client avant qu'il ait lu une seule alerte. En
-deux étapes, il ne paie que ce qu'il utilise, et le catalogue reste filtré par
-la liste d'autorisation.
+Two tools per upstream server — one to discover, one to call — rather than
+the thirty-odd relayed tools one by one. It's the same trade-off that
+justifies the gateway: the upstream catalog represents 60 tools, i.e. the
+bulk of a client's context before it has read a single alert. In two
+steps, it only pays for what it uses, and the catalog stays filtered by
+the allowlist.
 
-Le filtre est appliqué **à l'appel**, pas seulement à la découverte : demander
-un outil masqué est refusé, même si son nom a été appris ailleurs.
+The filter is applied **at call time**, not only at discovery: requesting a
+masked tool is refused, even if its name was learned elsewhere.
 """
 
 from .. import auth, gateway
 from ..server import register
 
 AR_DENIED = (
-    "Cet outil agit directement sur le manager Wazuh, sans connaître la "
-    "politique d'AURA : agents protégés, groupes d'infrastructure, comptes "
-    "système, plancher de clôture. Il est masqué délibérément. Pour remédier, "
-    "passer par aura_mitigate_execute, aura_isolate ou aura_unisolate, qui "
-    "appliquent ces garde-fous."
+    "This tool acts directly on the Wazuh manager, without knowing AURA's "
+    "policy: protected agents, infrastructure groups, system accounts, "
+    "closure floor. It is deliberately masked. To remediate, go through "
+    "aura_mitigate_execute, aura_isolate, or aura_unisolate, which apply "
+    "these guardrails."
 )
 
 
@@ -30,90 +30,90 @@ def _upstream(name: str) -> gateway.Upstream | None:
 async def _list(name: str) -> dict:
     upstream = _upstream(name)
     if not upstream:
-        return {"disponible": False,
-                "raison": f"Aucun serveur MCP {name} configuré "
+        return {"available": False,
+                "reason": f"No MCP server {name} configured "
                           f"(AURA_MCP_{name.upper()}_URL)."}
     tools = await upstream.tools()
     if not tools:
-        return {"disponible": False,
-                "raison": f"Serveur MCP {name} injoignable — AURA reste "
-                          f"interrogeable sans lui."}
+        return {"available": False,
+                "reason": f"MCP server {name} unreachable — AURA stays "
+                          f"queryable without it."}
     guards = [t for t in tools if gateway.allowed(upstream, t.name)]
     return {
-        "disponible": True,
-        "outils": [{"name": t.name, "description": t.description,
+        "available": True,
+        "tools": [{"name": t.name, "description": t.description,
                     "arguments": t.input_schema} for t in guards],
-        "total_amont": len(tools),
-        "relayes": len(guards),
-        "note": f"{len(tools) - len(guards)} outil(s) de l'amont ne sont pas "
-                f"relayés (hors liste d'autorisation, ou action masquée).",
+        "upstream_total": len(tools),
+        "relayed": len(guards),
+        "note": f"{len(tools) - len(guards)} upstream tool(s) are not "
+                f"relayed (outside the allowlist, or masked action).",
     }
 
 
 async def _call(name: str, tool: str, arguments: dict | None) -> dict:
     upstream = _upstream(name)
     if not upstream:
-        return {"error": f"Aucun serveur MCP {name} configuré."}
+        return {"error": f"No MCP server {name} configured."}
     if tool in gateway.WAZUH_MASKED:
-        return {"error": f"Outil {tool} masqué.", "explication": AR_DENIED}
+        return {"error": f"Tool {tool} masked.", "explanation": AR_DENIED}
     if not gateway.allowed(upstream, tool):
-        return {"error": f"Outil {tool} hors de la liste d'autorisation du "
-                          f"relais {name}.",
-                "conseil": f"Lister les outils relayés avec "
+        return {"error": f"Tool {tool} outside the {name} relay's "
+                          f"allowlist.",
+                "advice": f"List the relayed tools with "
                            f"{name}_tools_list."}
     try:
         return await upstream.call(tool, arguments or {})
     except Exception as e:  # noqa: BLE001
-        return {"error": f"Appel {name}.{tool} échoué : {e}"}
+        return {"error": f"Call {name}.{tool} failed: {e}"}
 
 
 @auth.require("aura:read")
 async def wazuh_tools_list() -> dict:
-    """Les outils Wazuh relayés par AURA, avec leurs arguments.
+    """The Wazuh tools relayed by AURA, with their arguments.
 
-    Couvre ce que la base AURA ne sait pas dire : l'état du parc d'agents, les
-    alertes à la source (AURA n'ingère pas tout), les vulnérabilités, la santé
-    de l'infrastructure de détection.
+    Covers what the AURA database can't tell: the state of the agent
+    fleet, alerts at the source (AURA doesn't ingest everything),
+    vulnerabilities, the health of the detection infrastructure.
 
-    Les 19 outils d'active response du serveur Wazuh sont **masqués** : ils
-    agiraient sans les garde-fous d'AURA. La remédiation passe par les outils
-    `aura_*`.
+    The 19 active response tools of the Wazuh server are **masked**: they
+    would act without AURA's guardrails. Remediation goes through the
+    `aura_*` tools.
     """
     return await _list("wazuh")
 
 
 @auth.require("aura:read")
 async def wazuh_call(tool: str, arguments: dict | None = None) -> dict:
-    """Appelle un outil Wazuh relayé.
+    """Calls a relayed Wazuh tool.
 
     Args:
-        outil: nom exact rendu par `wazuh_tools_list`.
-        arguments: arguments de l'outil, tels que décrits par son schéma.
+        tool: exact name returned by `wazuh_tools_list`.
+        arguments: tool arguments, as described by its schema.
     """
     return await _call("wazuh", tool, arguments)
 
 
 @auth.require("aura:read")
 async def iris_tools_list() -> dict:
-    """Les outils DFIR-IRIS relayés : dossiers, notes, IOC, actifs, tâches.
+    """The relayed DFIR-IRIS tools: cases, notes, IOCs, assets, tasks.
 
-    AURA crée et met à jour ses propres cases par `aura_iris_case_sync` — ces
-    outils-ci servent au travail d'analyste sur un dossier : ajouter une note,
-    un IOC découvert à la main, une tâche.
+    AURA creates and updates its own cases through `aura_iris_case_sync` —
+    these tools are for analyst work on a case: adding a note, a manually
+    discovered IOC, a task.
     """
     return await _list("iris")
 
 
 @auth.require("aura:write")
 async def iris_call(tool: str, arguments: dict | None = None) -> dict:
-    """Appelle un outil DFIR-IRIS relayé.
+    """Calls a relayed DFIR-IRIS tool.
 
-    En `aura:write` : ces outils écrivent dans les dossiers. C'est réversible
-    et sans effet sur les machines, mais ce n'est pas de la lecture.
+    At `aura:write`: these tools write into cases. It's reversible and has
+    no effect on machines, but it isn't reading.
 
     Args:
-        outil: nom exact rendu par `iris_tools_list`.
-        arguments: arguments de l'outil, tels que décrits par son schéma.
+        tool: exact name returned by `iris_tools_list`.
+        arguments: tool arguments, as described by its schema.
     """
     return await _call("iris", tool, arguments)
 

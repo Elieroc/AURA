@@ -1,24 +1,25 @@
-"""Outils d'action : ceux qui changent quelque chose.
+"""Action tools: the ones that change something.
 
-Trois principes, tenus par le code et non par la consigne :
+Three principles, upheld by the code and not by the instructions:
 
-1. **Le dry-run est le défaut.** Tout outil qui touche la production a un
-   paramètre `appliquer` à `False`. Sans lui, on obtient ce qui serait fait.
-2. **Les actions irréversibles exigent une confirmation explicite.** Le
-   paramètre `confirmer` n'a pas de valeur par défaut vraie et le refus dit
-   exactement ce qui se produirait — un client IA ne le passe pas par accident.
-3. **Les garde-fous ne sont pas ici.** Ils sont dans `soc_agent`, en amont, et
-   s'appliquent quel que soit l'appelant. Cette couche ne les rejoue pas et ne
-   peut pas les désactiver.
+1. **Dry-run is the default.** Every tool that touches production has an
+   `apply` parameter defaulting to `False`. Without it, you get what would
+   be done.
+2. **Irreversible actions require explicit confirmation.** The `confirm`
+   parameter has no true default and the refusal states exactly what would
+   happen — an AI client doesn't pass it by accident.
+3. **Guardrails aren't here.** They live in `soc_agent`, upstream, and apply
+   regardless of the caller. This layer doesn't replay them and can't
+   disable them.
 
-Ce qui n'est **jamais** exposé, à aucun scope :
+What is **never** exposed, at any scope:
 
-- `correlate.recommencer` — efface tous les incidents ;
-- `ueba.purger` — supprime définitivement l'historique de baseline ;
-- `label.enregistrer` — la vérité terrain sert à noter l'IA, l'IA ne l'écrit pas ;
-- `iris.nettoyer_iocs(simulation=False)` — suppression irréversible dans IRIS ;
-- `llm.completion` — court-circuiterait la pseudonymisation ;
-- la table `anonymization_map` — correspondances jetons ↔ valeurs réelles.
+- `correlate.restart` — wipes every incident;
+- `ueba.purge` — permanently deletes the baseline history;
+- `label.save` — ground truth is used to grade the AI, the AI doesn't write it;
+- `iris.clean_iocs(simulation=False)` — irreversible deletion in IRIS;
+- `llm.completion` — would bypass pseudonymization;
+- the `anonymization_map` table — token ↔ real value correspondences.
 """
 
 from soc_agent import config as soc_config
@@ -31,206 +32,211 @@ from ..server import register
 @auth.require("aura:write")
 def aura_run_cycle(batch_size: int = 500, triage_limit: int = 20,
                    since: str = "30d") -> dict:
-    """Déclenche un cycle AURA complet, sans attendre la boucle de 5 minutes.
+    """Triggers a full AURA cycle, without waiting for the 5-minute loop.
 
-    Enchaîne ingestion, filtre VirusTotal, UEBA, corrélation, watchdog des
-    capteurs, triage LLM, whitelist et création des cases IRIS. Un verrou
-    consultatif empêche deux cycles simultanés : si la boucle périodique est en
-    train de tourner, cet appel rend `verrouille` et ne fait rien — ce n'est
-    pas une erreur.
+    Chains ingestion, VirusTotal filter, UEBA, correlation, sensor watchdog,
+    LLM triage, whitelist, and IRIS case creation. An advisory lock prevents
+    two simultaneous cycles: if the periodic loop is already running, this
+    call returns `locked` and does nothing — that's not an error.
 
-    Peut durer plusieurs minutes et consomme des tokens DeepSeek (un appel par
-    incident trié).
+    Can take several minutes and consumes DeepSeek tokens (one call per
+    triaged incident).
 
     Args:
-        taille_lot: alertes ingérées par page.
-        limite_triage: nombre maximal d'incidents triés dans ce cycle. C'est
-            le paramètre qui borne la facture LLM de l'appel.
-        depuis: fenêtre d'ingestion initiale (`30d`, `6h`) — ignorée dès qu'un
-            curseur d'ingestion existe, ce qui est le cas en régime établi.
+        batch_size: alerts ingested per page.
+        triage_limit: maximum number of incidents triaged in this cycle.
+            This is the parameter that caps the call's LLM bill.
+        since: initial ingestion window (`30d`, `6h`) — ignored as soon as an
+            ingestion cursor exists, which is the case in steady state.
     """
     code = cycle.run(since, batch_size, triage_limit)
     return {
-        "code_sortie": code,
-        # `cycle.executer` ne distingue pas « rien à faire » de « verrou déjà
-        # pris » : les deux rendent 0. Le dire plutôt que laisser le client
-        # conclure que le cycle a forcément tourné.
-        "note": "Un code 0 signifie « cycle terminé » OU « un autre cycle "
-                "tournait déjà » — les deux sont normaux. Le résultat se lit "
-                "dans aura_incidents_list ; le détail par incident est dans "
-                "les journaux du conteneur aura-mcp.",
+        "exit_code": code,
+        # `cycle.run` doesn't distinguish "nothing to do" from "lock already
+        # held": both return 0. Better to say so than let the client
+        # conclude the cycle necessarily ran.
+        "note": "An exit code of 0 means either 'cycle finished' OR 'another "
+                "cycle was already running' — both are normal. The result is "
+                "read from aura_incidents_list; the per-incident detail is in "
+                "the aura-mcp container's logs.",
     }
 
 
 @auth.require("aura:write")
-def aura_triage_incident(incident_id: int, forcer: bool = False) -> dict:
-    """Fait (re)passer un incident au triage LLM.
+def aura_triage_incident(incident_id: int, force: bool = False) -> dict:
+    """(Re)triages an incident through the LLM.
 
-    Par défaut, un incident déjà trié et hors fenêtre de rafraîchissement n'est
-    pas repris — le résultat est alors une liste vide, ce n'est pas un échec.
-    `forcer` retrie quand même : c'est ce qu'on fait après un changement de
-    prompt pour comparer, l'ancien verdict étant conservé (`aura_triage_history`).
+    By default, an incident already triaged and outside the refresh window
+    isn't picked up again — the result is then an empty list, that's not a
+    failure. `force` retriages anyway: that's what you do after a prompt
+    change to compare, the previous verdict being kept
+    (`aura_triage_history`).
 
-    Consomme un appel DeepSeek. Les données partent pseudonymisées ; si un
-    identifiant interne échappe à la pseudonymisation, l'envoi est refusé et
-    le statut vaut `fuite`.
+    Consumes a DeepSeek call. Data is sent pseudonymized; if an internal
+    identifier escapes pseudonymization, the send is refused and the status
+    is `leak`.
 
     Args:
-        incident_id: incident à trier.
-        forcer: retrier même s'il l'a déjà été.
+        incident_id: incident to triage.
+        force: retriage even if it already has been.
     """
-    results = triage.sort(1, incident_id, forcer, False)
+    results = triage.sort(1, incident_id, force, False)
     return {"incident_id": incident_id,
-            "resultats": output.jsonifiable(results),
+            "results": output.jsonifiable(results),
             "note": None if results else
-                    "Incident déjà trié et hors fenêtre de rafraîchissement — "
-                    "utiliser forcer=true pour le reprendre."}
+                    "Incident already triaged and outside the refresh "
+                    "window — use force=true to pick it up again."}
 
 
 @auth.require("aura:write")
 def aura_iris_case_sync(incident_id: int | None = None) -> dict:
-    """Crée ou met à jour les cases DFIR-IRIS des incidents triés.
+    """Creates or updates the DFIR-IRIS cases of triaged incidents.
 
-    Pour un vrai positif, le rapport d'analyse est rédigé par le LLM (donc
-    coûte des tokens) ; pour un faux positif, la note est déterministe. Un
-    incident dont le case existe déjà et qui porte `needs_refresh` voit son
-    case complété, pas dupliqué.
+    For a true positive, the analysis report is written by the LLM (so it
+    costs tokens); for a false positive, the note is deterministic. An
+    incident whose case already exists and that carries `needs_refresh` gets
+    its case completed, not duplicated.
 
-    Effet de bord à connaître : la détection d'un doublon peut FUSIONNER deux
-    incidents, ce qui en supprime un de la base AURA (le case IRIS, lui, est
-    conservé).
+    Side effect worth knowing: duplicate detection can MERGE two incidents,
+    which removes one from the AURA database (the IRIS case itself is kept).
 
     Args:
-        incident_id: se limiter à un incident. Sans lui, traite tous ceux qui
-            attendent un case.
+        incident_id: restrict to one incident. Without it, processes all
+            those awaiting a case.
     """
-    faits = iris.create_cases(incident_id)
+    done = iris.create_cases(incident_id)
     return {"cases": [{"incident_id": i, "case_id": c, "verdict": v}
-                      for i, c, v in faits],
-            "total": len(faits)}
+                      for i, c, v in done],
+            "total": len(done)}
 
 
 @auth.require("aura:write")
 def aura_ar_reconcile() -> dict:
-    """Fige le résultat réel des remédiations envoyées aux agents.
+    """Freezes the real outcome of remediations sent to agents.
 
-    Une remédiation part en `émis` : l'ordre est parti, on ne sait pas encore
-    ce qu'il a donné. Cet outil lit les retours d'active response remontés par
-    les agents et bascule le statut en `confirmé`, `sans_effet`, `refusé_agent`
-    ou `échec`. Sans lui, un tableau de bord annonce des remédiations
-    « réussies » qui ont pu être refusées sur la machine.
+    A remediation starts out `issued`: the order has been sent, we don't yet
+    know what it produced. This tool reads the active response results
+    reported back by the agents and flips the status to `confirmed`,
+    `no_effect`, `refused_by_agent`, or `failed`. Without it, a dashboard
+    would announce "successful" remediations that may have been refused on
+    the machine.
 
-    Idempotent, sans effet destructif.
+    Idempotent, no destructive effect.
     """
     frozen = mitigate.reconcile_ar_results()
-    return {"reconciliees": output.jsonifiable(frozen), "total": len(frozen)}
+    return {"reconciled": output.jsonifiable(frozen), "total": len(frozen)}
 
 
 @auth.require("aura:admin")
 def aura_mitigate_execute(incident_id: int, confirm: bool = False) -> dict:
-    """Exécute les remédiations décidées pour un incident. ACTION RÉELLE.
+    """Executes the remediations decided for an incident. REAL ACTION.
 
-    Peut couper une machine du réseau, tuer un processus, bloquer une adresse,
-    désactiver un compte ou mettre un fichier en quarantaine, sur la
-    production. Le kill de processus n'a **aucune annulation** possible.
+    Can cut a machine off the network, kill a process, block an address,
+    disable an account, or quarantine a file, on production. Killing a
+    process has **no undo** whatsoever.
 
-    Trois barrières en amont, non contournables depuis ici : la remédiation est
-    entièrement suspendue si des motifs d'injection ont été relevés sur
-    l'incident ; les agents protégés, comptes système et adresses internes sont
-    exclus ; et si `MITIGATE_EXECUTE` vaut `false` dans la configuration du
-    stack, tout reste en `dry_run` quoi qu'on demande ici.
+    Three upstream barriers, not bypassable from here: remediation is
+    entirely suspended if injection patterns were flagged on the incident;
+    protected agents, system accounts, and internal addresses are excluded;
+    and if `MITIGATE_EXECUTE` is `false` in the stack's configuration,
+    everything stays in `dry_run` no matter what is requested here.
 
     Args:
-        incident_id: incident dont on applique les remédiations.
-        confirmer: doit valoir `true` pour agir. À `false` (défaut), l'outil
-            rend ce qui serait tenté sans rien envoyer.
+        incident_id: incident whose remediations to apply.
+        confirm: must be `true` to act. At `false` (default), the tool
+            returns what would be attempted without sending anything.
     """
     if not confirm:
-        with_dry = "déjà globalement en dry-run" if not soc_config.MITIGATE_EXECUTE \
-            else "ARMÉ : les actions partiraient réellement"
+        dry_state = "already globally in dry-run" if not soc_config.MITIGATE_EXECUTE \
+            else "ARMED: actions would really be sent"
         return {
             "execute": False,
-            "raison": "confirmer=false — aucune action envoyée.",
-            "etat_du_stack": with_dry,
-            "conseil": "Lire d'abord aura_incident_get puis "
-                       "aura_simulate_decision pour voir ce que les garde-fous "
-                       "laissent passer.",
+            "reason": "confirm=false — no action sent.",
+            "stack_state": dry_state,
+            "advice": "Read aura_incident_get first, then "
+                       "aura_simulate_decision to see what the guardrails "
+                       "let through.",
         }
-    faits = mitigate.run(incident_id)
+    done = mitigate.run(incident_id)
     return {"execute": True, "mitigate_execute_global": soc_config.MITIGATE_EXECUTE,
-            "actions": output.jsonifiable(faits), "total": len(faits)}
+            "actions": output.jsonifiable(done), "total": len(done)}
 
 
 @auth.require("aura:admin")
-def aura_isolate(agent_id: str, pattern: str, confirm: bool = False,
-                 forcer: bool = False) -> dict:
-    """Isole un hôte du réseau. ACTION RÉELLE, coupante.
+def aura_isolate(agent_id: str, reason: str, confirm: bool = False,
+                 force: bool = False) -> dict:
+    """Isolates a host from the network. REAL, disruptive ACTION.
 
-    L'hôte perd toute connectivité sauf le canal de l'agent Wazuh. Vérifier
-    d'abord avec `aura_isolation_check` : isoler un pare-feu, un proxy, un
-    résolveur DNS ou une passerelle VPN coupe tout le monde, SOC compris.
+    The host loses all connectivity except the Wazuh agent channel. Check
+    first with `aura_isolation_check`: isolating a firewall, a proxy, a DNS
+    resolver, or a VPN gateway cuts everyone off, SOC included.
 
     Args:
-        agent_id: agent Wazuh à isoler.
-        motif: pourquoi — repris dans la trace et dans IRIS. Obligatoire :
-            une isolation sans motif est ingérable au moment de la lever.
-        confirmer: doit valoir `true` pour agir.
-        forcer: passer outre un refus de politique. À n'utiliser que sur une
-            compromission établie d'une machine d'infrastructure, en sachant
-            ce qu'on coupe.
+        agent_id: Wazuh agent to isolate.
+        reason: why — carried into the trace and into IRIS. Mandatory: an
+            isolation without a reason is unmanageable when it's time to
+            lift it.
+        confirm: must be `true` to act.
+        force: overrides a policy refusal. Only use on an established
+            compromise of an infrastructure machine, knowing what you're
+            cutting off.
     """
     refusal = mitigate.not_isolatable_reason(agent_id)
     if not confirm:
         return {"execute": False,
-                "raison": "confirmer=false — aucune action envoyée.",
-                "serait_refuse_par_la_politique": refusal,
-                "forcer_necessaire": bool(refusal)}
-    if refusal and not forcer:
-        return {"execute": False, "raison": refusal,
-                "conseil": "forcer=true passe outre — mesurer ce que l'hôte "
-                           "porte avant."}
-    mitigate.isolate(agent_id, pattern, forcer)
-    return {"execute": True, "agent_id": agent_id, "pattern": pattern,
-            "politique_forcee": bool(refusal and forcer),
-            "etat": output.jsonifiable(mitigate.isolation_state(agent_id))}
+                "reason": "confirm=false — no action sent.",
+                "would_be_refused_by_policy": refusal,
+                "force_needed": bool(refusal)}
+    if refusal and not force:
+        return {"execute": False, "reason": refusal,
+                "advice": "force=true overrides it — assess what the host "
+                           "carries first."}
+    mitigate.isolate(agent_id, reason, force)
+    return {"execute": True, "agent_id": agent_id, "reason": reason,
+            "policy_forced": bool(refusal and force),
+            "state": output.jsonifiable(mitigate.isolation_state(agent_id))}
 
 
 @auth.require("aura:admin")
-def aura_unisolate(agent_id: str, pattern: str, confirm: bool = False) -> dict:
-    """Lève l'isolation d'un hôte. ACTION RÉELLE.
+def aura_unisolate(agent_id: str, reason: str, confirm: bool = False) -> dict:
+    """Lifts a host's isolation. REAL ACTION.
 
-    Rend sa connectivité à une machine qui avait été confinée. À ne faire
-    qu'après avoir vérifié que la cause a disparu : la remédiation autonome ne
-    retire PAS la persistance posée par un attaquant (cron, web shell, compte
-    UID 0). Une machine désisolée trop tôt rappelle son C2.
+    Restores connectivity to a machine that had been contained. Only do
+    this after verifying the cause is gone: autonomous remediation does NOT
+    remove persistence planted by an attacker (cron, web shell, UID 0
+    account). A machine unisolated too soon calls its C2 back.
 
     Args:
-        agent_id: agent Wazuh à désisoler.
-        motif: pourquoi — tracé.
-        confirmer: doit valoir `true` pour agir.
+        agent_id: Wazuh agent to unisolate.
+        reason: why — traced.
+        confirm: must be `true` to act.
     """
     if not confirm:
         return {"execute": False,
-                "raison": "confirmer=false — aucune action envoyée.",
-                "rappel": "Vérifier l'absence de persistance (cron, web shell, "
-                          "compte UID 0) avant de rendre le réseau."}
-    mitigate.unisolate(agent_id, pattern)
-    return {"execute": True, "agent_id": agent_id, "pattern": pattern,
-            "etat": output.jsonifiable(mitigate.isolation_state(agent_id))}
+                "reason": "confirm=false — no action sent.",
+                "reminder": "Check for the absence of persistence (cron, web "
+                          "shell, UID 0 account) before restoring the "
+                          "network."}
+    mitigate.unisolate(agent_id, reason)
+    return {"execute": True, "agent_id": agent_id, "reason": reason,
+            "state": output.jsonifiable(mitigate.isolation_state(agent_id))}
 
 
 @auth.require("aura:admin")
 def aura_whitelist_apply(min_fp: int | None = None,
                          apply: bool = False) -> dict:
-    """Crée les exceptions de whitelist pour les faux positifs récurrents.
+    """Creates whitelist exceptions for recurring false positives.
 
-    Chaque exception créée est un angle mort assumé : ces alertes ne
-    remonteront plus. Les garde-fous refusent une signature sans discriminant,
-    au-dessus du niveau plafond, ou déjà vue sur un vrai positif.
+    Every exception created is a deliberate blind spot: those alerts will no
+    longer be reported. Guardrails refuse a signature without a
+    discriminant, above the ceiling level, or already seen on a true
+    positive.
 
     Args:
-        min_fp: nombre de faux positifs requis avant d'exonérer une signature.
-        appliquer: à `false` (défaut), rend les décisions sans rien créer.
+        min_fp: number of false positives required before exempting a
+            signature.
+        apply: at `false` (default), returns the decisions without creating
+            anything.
     """
     decisions = whitelist.analyze(
         min_fp if min_fp is not None else soc_config.WHITELIST_MIN_FP,
@@ -243,27 +249,27 @@ def aura_whitelist_apply(min_fp: int | None = None,
 @auth.require("aura:admin")
 def aura_rule_tuning_apply(min_fp: int | None = None,
                            apply: bool = False) -> dict:
-    """Génère et déploie des règles Wazuh d'exception. REDÉMARRE LE MANAGER.
+    """Generates and deploys Wazuh exception rules. RESTARTS THE MANAGER.
 
-    Deuxième étage de la whitelist : le bruit est calmé dans le moteur de
-    règles au lieu d'être écarté après coup. Chaque règle générée est PROUVÉE
-    par rejeu `/logtest` — l'évènement faux positif doit tomber dessus, et un
-    contre-exemple réel doit rester sur la règle parente. Une règle non prouvée
-    est retirée du disque.
+    Second stage of the whitelist: noise is calmed in the rule engine
+    instead of being discarded after the fact. Every generated rule is
+    PROVEN by `/logtest` replay — the false-positive event must match it,
+    and a real counter-example must stay matched to the parent rule. An
+    unproven rule is removed from disk.
 
-    Appliquer redémarre le manager Wazuh : la détection est interrompue le
-    temps du redémarrage, deux fois si une règle échoue à sa preuve.
+    Applying restarts the Wazuh manager: detection is interrupted for the
+    duration of the restart, twice if a rule fails its proof.
 
     Args:
-        min_fp: faux positifs requis avant de générer une règle.
-        appliquer: à `false` (défaut), rend le XML sans rien écrire ni
-            redémarrer.
+        min_fp: false positives required before generating a rule.
+        apply: at `false` (default), returns the XML without writing or
+            restarting anything.
     """
     decisions = rule_tuning.analyze(
         min_fp if min_fp is not None else soc_config.WHITELIST_MIN_FP,
         simulation=not apply)
     return {"applied": apply,
-            "manager_redemarre": apply and bool(decisions),
+            "manager_restarted": apply and bool(decisions),
             "decisions": output.jsonifiable(decisions),
             "total": len(decisions)}
 

@@ -1,7 +1,7 @@
-"""Outils de lecture : l'état d'AURA, sans rien modifier.
+"""Read tools: AURA's state, without modifying anything.
 
-Tous en `aura:read`. Ils lisent la base `socagent` en transaction read-only
-(voir `db.lecture`) : une erreur de requête ne peut pas muter un incident.
+All at `aura:read`. They read the `socagent` database in a read-only
+transaction (see `db.read`): a query mistake can't mutate an incident.
 """
 
 from soc_agent import config as soc_config
@@ -11,9 +11,9 @@ from .. import auth, output
 from ..db import read as base
 from ..server import register
 
-# Colonnes de l'incident rendues en liste. Pas `entities` ni `rule_ids` en
-# entier : sur un incident à 300 alertes, ces tableaux font l'essentiel du
-# poids de la réponse alors que la liste sert à choisir sur quoi zoomer.
+# Incident columns returned as a list. Not `entities` or `rule_ids` in full:
+# on a 300-alert incident, these arrays make up most of the response's
+# weight, while the list is only there to choose what to zoom in on.
 SELECT_INCIDENTS = """
     SELECT i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
            i.alert_count, i.max_level, i.priority, i.severity, i.status,
@@ -30,15 +30,15 @@ SELECT_INCIDENTS = """
             OR i.agent_id = %(agent)s OR i.agent_name = %(agent)s)
        AND (%(min_level)s::int IS NULL OR i.max_level >= %(min_level)s)
        AND (%(verdict)s::text IS NULL OR t.verdict = %(verdict)s)
-       AND (%(depuis_heures)s::int IS NULL
-            OR i.last_seen >= now() - make_interval(hours => %(depuis_heures)s))
-     -- Même ordre que la file de triage : l'asset le plus critique d'abord,
-     -- puis la sévérité effective. Un analyste qui ouvre cette liste doit voir
-     -- ce que le pipeline a traité en premier, sinon les deux vues racontent
-     -- deux histoires différentes du même parc.
-     ORDER BY COALESCE(i.priority, %(prio_defaut)s),
+       AND (%(since_hours)s::int IS NULL
+            OR i.last_seen >= now() - make_interval(hours => %(since_hours)s))
+     -- Same order as the triage queue: the most critical asset first, then
+     -- effective severity. An analyst opening this list must see what the
+     -- pipeline processed first, otherwise the two views tell two
+     -- different stories about the same fleet.
+     ORDER BY COALESCE(i.priority, %(default_prio)s),
               COALESCE(i.severity, i.max_level) DESC, i.last_seen DESC
-     LIMIT %(limite)s OFFSET %(offset)s
+     LIMIT %(limit)s OFFSET %(offset)s
 """
 
 COUNT_INCIDENTS = """
@@ -53,8 +53,8 @@ COUNT_INCIDENTS = """
             OR i.agent_id = %(agent)s OR i.agent_name = %(agent)s)
        AND (%(min_level)s::int IS NULL OR i.max_level >= %(min_level)s)
        AND (%(verdict)s::text IS NULL OR t.verdict = %(verdict)s)
-       AND (%(depuis_heures)s::int IS NULL
-            OR i.last_seen >= now() - make_interval(hours => %(depuis_heures)s))
+       AND (%(since_hours)s::int IS NULL
+            OR i.last_seen >= now() - make_interval(hours => %(since_hours)s))
 """
 
 
@@ -68,53 +68,54 @@ def aura_incidents_list(
     limit: int | None = None,
     offset: int | None = None,
 ) -> dict:
-    """Liste les incidents AURA, du plus grave au plus récent.
+    """Lists AURA incidents, from most severe to most recent.
 
-    Un incident est un groupe d'alertes corrélées : c'est l'unité de travail du
-    triage, pas l'alerte. Chaque ligne porte le dernier verdict du modèle
-    quand il existe.
+    An incident is a group of correlated alerts: it's triage's unit of
+    work, not the alert. Each line carries the model's latest verdict when
+    one exists.
 
     Args:
-        statut: filtre sur `incidents.status` — `new`, `whitelisted`,
-            `fp_ueba`… Laisser vide pour tout voir.
-        agent: identifiant (`003`) ou nom d'agent Wazuh.
-        min_level: niveau Wazuh maximal de l'incident, au moins ce seuil.
-        verdict: dernier verdict du modèle — `true_positive`,
+        status: filter on `incidents.status` — `new`, `whitelisted`,
+            `fp_ueba`… Leave empty to see everything.
+        agent: agent identifier (`003`) or Wazuh agent name.
+        min_level: incident's maximum Wazuh level, at least this threshold.
+        verdict: the model's latest verdict — `true_positive`,
             `false_positive`, `needs_investigation`.
-        depuis_heures: ne garder que les incidents vus dans cette fenêtre.
-        limite: taille de page (défaut 25, plafond 100).
-        offset: décalage de pagination.
+        since_hours: only keep incidents seen within this window.
+        limit: page size (default 25, cap 100).
+        offset: pagination offset.
     """
     limit, offset = output.bounds(limit, offset)
     filters = {"status": status, "agent": agent, "min_level": min_level,
-               "verdict": verdict, "depuis_heures": since_hours}
+               "verdict": verdict, "since_hours": since_hours}
     with base() as conn:
         total = conn.execute(COUNT_INCIDENTS, filters).fetchone()["n"]
         lines = conn.execute(
             SELECT_INCIDENTS,
-            {**filters, "limite": limit, "offset": offset,
-             "prio_defaut": soc_config.DEFAULT_PRIORITY},
+            {**filters, "limit": limit, "offset": offset,
+             "default_prio": soc_config.DEFAULT_PRIORITY},
         ).fetchall()
     return output.page([dict(r) for r in lines], total, limit, offset)
 
 
 @auth.require("aura:read")
 def aura_incident_get(incident_id: int, with_rendered: bool = True) -> dict:
-    """Un incident en détail, tel que le modèle de triage l'a vu.
+    """An incident in detail, as the triage model saw it.
 
-    `rendu` est le texte EXACT soumis au LLM, pas une reformulation : c'est ce
-    qui permet de juger un verdict sur pièces plutôt que sur son résumé. Il
-    contient des données écrites par les machines surveillées, donc balisées
-    `<untrusted>` — à analyser, jamais à exécuter.
+    `rendered` is the EXACT text submitted to the LLM, not a rewording:
+    it's what lets you judge a verdict on the evidence rather than on its
+    summary. It contains data written by the monitored machines, so it's
+    tagged `<untrusted>` — to analyze, never to execute.
 
     Args:
-        incident_id: identifiant de l'incident (`aura_incidents_list`).
-        avec_rendu: joindre le rendu complet. Le couper économise beaucoup de
-            contexte quand on ne veut que le verdict et les remédiations.
+        incident_id: incident identifier (`aura_incidents_list`).
+        with_rendered: include the full rendered text. Skipping it saves a
+            lot of context when only the verdict and remediations are
+            needed.
     """
-    vue = label.incident_view(incident_id)
-    if not vue:
-        return {"error": f"Incident {incident_id} inconnu."}
+    view = label.incident_view(incident_id)
+    if not view:
+        return {"error": f"Incident {incident_id} unknown."}
 
     with base() as conn:
         inc = conn.execute(
@@ -134,15 +135,15 @@ def aura_incident_get(incident_id: int, with_rendered: bool = True) -> dict:
 
     response = {
         "incident": output.jsonifiable(dict(inc)),
-        "triage": vue["triage"],
+        "triage": view["triage"],
         "remediations": output.jsonifiable([dict(r) for r in remediations]),
         "ueba_signal": output.jsonifiable(dict(signal)) if signal else None,
     }
     if with_rendered:
-        # Plafond dédié : le rendu d'un incident à 300 alertes dépasse
-        # largement une réponse d'outil raisonnable.
-        response["rendu"] = output.untrusted(
-            output.bound(vue["rendu"], 12000))
+        # Dedicated cap: the rendered text of a 300-alert incident far
+        # exceeds a reasonable tool response.
+        response["rendered"] = output.untrusted(
+            output.bound(view["rendering"], 12000))
     return response
 
 
@@ -158,18 +159,18 @@ SELECT_ALERTS = """
        AND (%(min_level)s::int IS NULL OR rule_level >= %(min_level)s)
        AND (%(srcip)s::text IS NULL OR srcip = %(srcip)s)
        AND (%(srcuser)s::text IS NULL OR srcuser = %(srcuser)s)
-       AND (%(recherche)s::text IS NULL
-            OR rule_desc ILIKE '%%' || %(recherche)s || '%%'
-            OR entity ILIKE '%%' || %(recherche)s || '%%')
-       AND (%(depuis_heures)s::int IS NULL
-            OR ts >= now() - make_interval(hours => %(depuis_heures)s))
-       AND (%(inclure_supprimees)s OR NOT suppressed)
+       AND (%(search)s::text IS NULL
+            OR rule_desc ILIKE '%%' || %(search)s || '%%'
+            OR entity ILIKE '%%' || %(search)s || '%%')
+       AND (%(since_hours)s::int IS NULL
+            OR ts >= now() - make_interval(hours => %(since_hours)s))
+       AND (%(include_deleted)s OR NOT suppressed)
      ORDER BY ts DESC
-     LIMIT %(limite)s OFFSET %(offset)s
+     LIMIT %(limit)s OFFSET %(offset)s
 """
 
-# Champs écrits par les machines surveillées : un attaquant choisit un nom de
-# fichier ou une description de règle déclenchée. Balisés à la sortie.
+# Fields written by the monitored machines: an attacker chooses a file name
+# or the description of a triggered rule. Tagged on the way out.
 HOSTILE_FIELDS = ("rule_desc", "entity", "srcuser", "suppress_reason")
 
 
@@ -187,41 +188,41 @@ def aura_alerts_search(
     limit: int | None = None,
     offset: int | None = None,
 ) -> dict:
-    """Cherche des alertes Wazuh dans la base AURA (les plus récentes d'abord).
+    """Searches Wazuh alerts in the AURA database (most recent first).
 
-    Cette base ne contient QUE ce qu'AURA a ingéré : les alertes écartées par le
-    noise filter y sont marquées `suppressed` plutôt que supprimées, et rien en
-    dessous d'`INGEST_MIN_LEVEL` n'y entre. Pour interroger la source complète,
-    passer par les outils Wazuh.
+    This database contains ONLY what AURA has ingested: alerts dropped by
+    the noise filter are marked `suppressed` here rather than deleted, and
+    nothing below `INGEST_MIN_LEVEL` ever enters it. To query the full
+    source, use the Wazuh tools.
 
     Args:
-        incident_id: se limiter aux alertes d'un incident.
-        agent: identifiant ou nom d'agent.
-        rule_id: identifiant de règle Wazuh exact.
-        min_level: niveau minimal.
-        srcip: adresse IP source exacte.
-        srcuser: compte source exact.
-        recherche: fragment cherché dans la description de règle ou l'entité.
-        depuis_heures: fenêtre temporelle.
-        inclure_supprimees: inclure les alertes écartées par le noise filter,
-            utile pour comprendre un angle mort ou une whitelist trop large.
-        limite: taille de page (défaut 25, plafond 100).
-        offset: décalage de pagination.
+        incident_id: restrict to an incident's alerts.
+        agent: agent identifier or name.
+        rule_id: exact Wazuh rule identifier.
+        min_level: minimum level.
+        srcip: exact source IP address.
+        srcuser: exact source account.
+        search: fragment searched in the rule description or the entity.
+        since_hours: time window.
+        include_deleted: include alerts dropped by the noise filter, useful
+            for understanding a blind spot or an overly broad whitelist.
+        limit: page size (default 25, cap 100).
+        offset: pagination offset.
     """
     limit, offset = output.bounds(limit, offset)
     filters = {
         "incident_id": incident_id, "agent": agent, "rule_id": rule_id,
         "min_level": min_level, "srcip": srcip, "srcuser": srcuser,
-        "recherche": search, "depuis_heures": since_hours,
-        "inclure_supprimees": include_deleted,
+        "search": search, "since_hours": since_hours,
+        "include_deleted": include_deleted,
     }
     with base() as conn:
         lines = conn.execute(
-            SELECT_ALERTS, {**filters, "limite": limit, "offset": offset}
+            SELECT_ALERTS, {**filters, "limit": limit, "offset": offset}
         ).fetchall()
         total = conn.execute(
             "SELECT count(*) AS n FROM (" +
-            SELECT_ALERTS.replace("LIMIT %(limite)s OFFSET %(offset)s", "") +
+            SELECT_ALERTS.replace("LIMIT %(limit)s OFFSET %(offset)s", "") +
             ") t", filters).fetchone()["n"]
 
     alerts = []
@@ -235,12 +236,12 @@ def aura_alerts_search(
 
 @auth.require("aura:read")
 def aura_triage_history(incident_id: int) -> dict:
-    """Tous les passages de triage d'un incident, du plus récent au plus ancien.
+    """All triage passes of an incident, most recent first.
 
-    Un incident retrié après un changement de prompt garde ses verdicts
-    précédents : c'est ce qui permet de voir si un changement a amélioré ou
-    dégradé le jugement, plutôt que de le croire. `prompt_sha` identifie la
-    version du prompt qui a produit chaque verdict.
+    An incident retriaged after a prompt change keeps its previous
+    verdicts: this is what lets you see whether a change improved or
+    degraded the judgment, rather than just believing it did. `prompt_sha`
+    identifies the prompt version that produced each verdict.
     """
     with base() as conn:
         lines = conn.execute(
@@ -256,7 +257,7 @@ def aura_triage_history(incident_id: int) -> dict:
     return {
         "incident_id": incident_id,
         "triages": output.jsonifiable([dict(r) for r in lines]),
-        "label_humain": output.jsonifiable(dict(human)) if human else None,
+        "human_label": output.jsonifiable(dict(human)) if human else None,
     }
 
 
@@ -269,20 +270,20 @@ def aura_mitigations_list(
     limit: int | None = None,
     offset: int | None = None,
 ) -> dict:
-    """Historique des remédiations, appliquées ou non.
+    """History of remediations, applied or not.
 
-    Attention au sens des statuts, c'est la principale source de fausse
-    confiance : `émis` signifie « ordre envoyé à l'agent », pas « exécuté ».
-    Seuls `confirmé`, `sans_effet` et `exécuté` attestent d'un effet réel ;
-    `dry_run` n'a rien fait ; `refusé_agent` a été refusé sur la machine.
+    Watch the meaning of the statuses, the main source of false
+    confidence: `issued` means "order sent to the agent", not "executed".
+    Only `confirmed`, `no_effect`, and `executed` attest to a real effect;
+    `dry_run` did nothing; `refused_by_agent` was refused on the machine.
 
     Args:
-        incident_id: se limiter à un incident.
-        statut: filtre exact sur le statut.
-        agent: identifiant d'agent visé par l'action.
-        depuis_heures: fenêtre temporelle.
-        limite: taille de page (défaut 25, plafond 100).
-        offset: décalage de pagination.
+        incident_id: restrict to an incident.
+        status: exact filter on the status.
+        agent: agent identifier targeted by the action.
+        since_hours: time window.
+        limit: page size (default 25, cap 100).
+        offset: pagination offset.
     """
     limit, offset = output.bounds(limit, offset)
     where = """
@@ -290,12 +291,12 @@ def aura_mitigations_list(
                 OR incident_id = %(incident_id)s)
            AND (%(status)s::text IS NULL OR status = %(status)s)
            AND (%(agent)s::text IS NULL OR agent_id = %(agent)s)
-           AND (%(depuis_heures)s::int IS NULL
+           AND (%(since_hours)s::int IS NULL
                 OR executed_at >= now()
-                   - make_interval(hours => %(depuis_heures)s))
+                   - make_interval(hours => %(since_hours)s))
     """
     filters = {"incident_id": incident_id, "status": status, "agent": agent,
-               "depuis_heures": since_hours}
+               "since_hours": since_hours}
     with base() as conn:
         total = conn.execute(
             "SELECT count(*) AS n FROM mitigations" + where,
@@ -305,20 +306,20 @@ def aura_mitigations_list(
             "       undo, iris_task_id, attempts, executed_at "
             "  FROM mitigations" + where +
             " ORDER BY executed_at DESC NULLS LAST, id DESC "
-            " LIMIT %(limite)s OFFSET %(offset)s",
-            {**filters, "limite": limit, "offset": offset}).fetchall()
+            " LIMIT %(limit)s OFFSET %(offset)s",
+            {**filters, "limit": limit, "offset": offset}).fetchall()
     return output.page([dict(r) for r in lines], total, limit, offset)
 
 
 @auth.require("aura:read")
 def aura_whitelist_list(active_only: bool = True) -> dict:
-    """Les exceptions de whitelist : ce qu'AURA a décidé de ne plus voir.
+    """The whitelist exceptions: what AURA has decided to stop seeing.
 
-    Chaque exception est un angle mort assumé. Quatre origines : `auto` (FP
-    récurrents jugés par l'IA), `analyste` (demande via une tâche IRIS),
-    `training` (fenêtre d'apprentissage du bruit ambiant), `humain`. Une
-    exception révoquée reste listée avec `active: false` — l'historique de ce
-    qu'on a cessé de voir compte autant que l'état courant.
+    Every exception is a deliberate blind spot. Four origins: `auto`
+    (recurring FPs judged by the AI), `analyst` (requested via an IRIS
+    task), `training` (ambient-noise learning window), `human`. A revoked
+    exception stays listed with `active: false` — the history of what we
+    stopped seeing matters as much as the current state.
     """
     lines = whitelist.exceptions()
     if active_only:
@@ -328,16 +329,16 @@ def aura_whitelist_list(active_only: bool = True) -> dict:
 
 @auth.require("aura:read")
 def aura_ueba_state(signals_limit: int | None = None) -> dict:
-    """État du moteur comportemental : maturité, budget, derniers signaux.
+    """State of the behavioral engine: maturity, budget, latest signals.
 
-    L'UEBA promeut en incident des comportements rares qu'aucune règle Wazuh
-    ne relève. Deux chiffres commandent tout :
+    UEBA promotes rare behaviors that no Wazuh rule catches into incidents.
+    Two numbers control everything:
 
-    - `scopes_murs` : un scope trop jeune n'est pas scoré du tout — une
-      baseline immature confond « nouveau » et « anormal ».
-    - `budget_restant` : promotions encore possibles sur 24 h. À zéro, les
-      signaux sont scorés et enregistrés mais ne partent plus au triage,
-      ce qui borne la facture LLM d'une dérive.
+    - `immature_scopes`: a too-young scope isn't scored at all — an
+      immature baseline confuses "new" with "abnormal".
+    - `remaining_budget`: promotions still possible over 24h. At zero,
+      signals are still scored and recorded but no longer go to triage,
+      which caps the LLM bill of a drift.
     """
     limit, _ = output.bounds(signals_limit, 0)
     return output.jsonifiable(ueba.state_report(limit))
@@ -345,25 +346,24 @@ def aura_ueba_state(signals_limit: int | None = None) -> dict:
 
 @auth.require("aura:read")
 def aura_funnel_report() -> dict:
-    """Entonnoir de filtrage et charge LLM induite.
+    """Filtering funnel and induced LLM load.
 
-    Combien d'alertes entrent, combien le noise filter écarte, combien la
-    corrélation en fait d'incidents, et ce que ça coûte en triage. Le
-    `verdict` (`large` / `tendu` / `intenable`) dit si l'architecture tient au
-    volume actuel.
+    How many alerts come in, how many the noise filter drops, how many
+    correlation turns into incidents, and what it costs in triage. The
+    `verdict` (`comfortable` / `tight` / `unsustainable`) says whether the
+    architecture holds at the current volume.
     """
     return output.jsonifiable(report.report())
 
 
 @auth.require("aura:read")
 def aura_metrics() -> dict:
-    """Justesse et cohérence du triage, plus l'état des fenêtres de training.
+    """Triage accuracy and consistency, plus the state of training windows.
 
-    `justesse.conclusion` est la seule chose qui autorise à sortir du mode
-    shadow, et elle refuse de conclure sous 30 incidents labellisés : un
-    « 100 % » sur quatre cas ne veut rien dire. `coherence` se mesure SANS
-    label — c'est le signal disponible tout de suite après un changement de
-    prompt.
+    `accuracy.conclusion` is the only thing that authorizes leaving shadow
+    mode, and it refuses to conclude under 30 labeled incidents: a "100%"
+    on four cases means nothing. `consistency` is measured WITHOUT a
+    label — it's the signal available right after a prompt change.
     """
     return output.jsonifiable({
         **evaluate.report(),

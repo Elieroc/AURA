@@ -1,20 +1,20 @@
-"""Mise en forme des réponses d'outil.
+"""Formatting of tool responses.
 
-Une réponse d'outil atterrit dans le contexte d'un LLM. Deux contraintes qui
-n'existent pas pour une API classique :
+A tool response lands in an LLM's context. Two constraints that don't exist
+for a regular API:
 
-1. **La taille est un coût.** Un `full_log` de 200 Ko ou 3 000 alertes ne
-   rendent pas le client plus lucide, ils saturent sa fenêtre. Tout est borné
-   et paginé, et une troncature est toujours annoncée dans la donnée elle-même.
-2. **Le contenu est hostile.** `rule_desc`, `full_log`, un nom de fichier, une
-   ligne de commande : tout cela est écrit par ce qui tourne sur les machines
-   surveillées, donc éventuellement par un attaquant qui sait qu'une IA va le
-   lire. On le balise `<untrusted>` pour que le client sache qu'il regarde des
-   pièces à conviction, pas des consignes.
+1. **Size is a cost.** A 200 KB `full_log` or 3,000 alerts don't make the
+   client more lucid, they saturate its window. Everything is bounded and
+   paginated, and a truncation is always announced within the data itself.
+2. **The content is hostile.** `rule_desc`, `full_log`, a file name, a
+   command line: all of this is written by whatever runs on the monitored
+   machines, so possibly by an attacker who knows an AI is going to read it.
+   It is tagged `<untrusted>` so the client knows it is looking at evidence,
+   not instructions.
 
-Le balisage n'est pas une protection — un modèle peut s'y laisser prendre quand
-même (3 charges sur 4 dans les tests du pipeline). La vraie barrière reste
-déterministe et côté serveur : `soc_agent.actions.appliquer_garde_fous`.
+The tagging isn't a protection — a model can still fall for it anyway (3
+payloads out of 4 in the pipeline's tests). The real barrier stays
+deterministic and server-side: `soc_agent.actions.apply_guardrails`.
 """
 
 from datetime import date, datetime
@@ -26,10 +26,10 @@ END = "</untrusted>"
 
 
 def untrusted(value):
-    """Balise une chaîne venue des machines surveillées, en la bornant.
+    """Tags a string coming from the monitored machines, bounding it too.
 
-    `None` et les non-chaînes passent tels quels : un niveau de règle ou un
-    identifiant d'agent sont produits par Wazuh, pas par l'attaquant.
+    `None` and non-strings pass through unchanged: a rule level or an agent
+    ID is produced by Wazuh, not by the attacker.
     """
     if not isinstance(value, str) or not value:
         return value
@@ -37,16 +37,16 @@ def untrusted(value):
 
 
 def bound(text: str, maximum: int | None = None) -> str:
-    """Tronque en le disant. Une troncature muette ferait conclure à tort."""
+    """Truncates while saying so. A silent truncation would lead to a wrong conclusion."""
     maximum = maximum or config.MAX_TEXT
     if len(text) <= maximum:
         return text
-    return (f"{text[:maximum]}\n[…tronqué, {len(text) - maximum} caractères "
-            f"de plus — demander la source complète si nécessaire]")
+    return (f"{text[:maximum]}\n[…truncated, {len(text) - maximum} more "
+            f"characters — request the full source if needed]")
 
 
 def jsonifiable(value):
-    """Rend datetime/date sérialisables, récursivement."""
+    """Makes datetime/date serializable, recursively."""
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, dict):
@@ -57,23 +57,23 @@ def jsonifiable(value):
 
 
 def bounds(limit: int | None, offset: int | None) -> tuple[int, int]:
-    """Normalise une demande de pagination dans les plafonds du serveur."""
+    """Normalizes a pagination request within the server's caps."""
     limit = config.DEFAULT_PAGE if limit is None else limit
     limit = max(1, min(int(limit), config.MAX_PAGE))
     return limit, max(0, int(offset or 0))
 
 
 def page(lines: list, total: int, limit: int, offset: int) -> dict:
-    """Enveloppe paginée uniforme.
+    """Uniform paginated envelope.
 
-    `reste` plutôt qu'un simple `total` : le client doit savoir en un coup
-    d'œil s'il a tout vu, sans refaire la soustraction — c'est ce qui évite
-    qu'il conclue sur une page partielle.
+    `remaining` rather than a plain `total`: the client must know at a
+    glance whether it has seen everything, without redoing the subtraction —
+    that's what keeps it from concluding on a partial page.
     """
     return {
-        "resultats": jsonifiable(lines),
+        "results": jsonifiable(lines),
         "total": total,
         "offset": offset,
-        "limite": limit,
-        "reste": max(0, total - offset - len(lines)),
+        "limit": limit,
+        "remaining": max(0, total - offset - len(lines)),
     }

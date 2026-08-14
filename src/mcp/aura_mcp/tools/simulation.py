@@ -1,12 +1,12 @@
-"""Outils de simulation : répondre à « que se passerait-il si… » sans le faire.
+"""Simulation tools: answering "what would happen if…" without doing it.
 
-Tous en `aura:read`, tous sans effet de bord. Ils existent parce que la
-question qui précède une action est toujours la même : qu'est-ce qui partirait
-réellement, et qu'est-ce que les garde-fous retiendraient ? Y répondre en
-lançant l'action pour voir n'est pas une option sur un parc de production.
+All at `aura:read`, all side-effect free. They exist because the question
+that precedes an action is always the same: what would actually go out, and
+what would the guardrails hold back? Answering it by firing the action to
+see isn't an option on a production fleet.
 
-Ils appellent les fonctions pures du pipeline — mêmes garde-fous, même code.
-Une simulation qui divergerait de l'exécution ne servirait à rien.
+They call the pipeline's pure functions — same guardrails, same code. A
+simulation that diverged from execution would be worthless.
 """
 
 from soc_agent import actions as soc_actions
@@ -27,63 +27,63 @@ def aura_simulate_decision(
     active_compromise: bool = False,
     priority: int | None = None,
 ) -> dict:
-    """Que deviendrait ce verdict après les garde-fous déterministes ?
+    """What would this verdict become after the deterministic guardrails?
 
-    Le modèle ne fait que proposer des remédiations ; AURA en déduit
-    l'ouverture ou la clôture du dossier, puis applique trois invariants que
-    rien ne contourne :
+    The model only proposes remediations; AURA derives the case's opening
+    or closure from them, then applies three invariants that nothing
+    bypasses:
 
-    1. pas de clôture automatique si le niveau atteint 14 — seuil abaissé sur
-       un asset prioritaire (12 sur un P1) ;
-    2. pas de clôture si un motif d'injection a été repéré dans les logs —
-       le modèle se laisse retourner par une injection 3 fois sur 4 ;
-    3. l'isolation d'hôte est rétrogradée s'il existe un confinement moins
-       invasif, SAUF si la compromission de l'hôte est établie.
+    1. no automatic closure if the level reaches 14 — lowered threshold on
+       a priority asset (12 on a P1);
+    2. no closure if an injection pattern was spotted in the logs — the
+       model gets turned around by an injection 3 times out of 4;
+    3. host isolation is downgraded if a less invasive containment exists,
+       UNLESS the host's compromise is established.
 
     Args:
-        verdict: `true_positive`, `false_positive` ou `needs_investigation`.
-        actions_proposees: actions du modèle (`propose_block_ip`,
+        verdict: `true_positive`, `false_positive`, or `needs_investigation`.
+        proposed_actions: the model's actions (`propose_block_ip`,
             `propose_isolate_host`, `propose_kill_process`,
             `propose_disable_user`, `propose_quarantine_file`,
             `propose_remove_privileged_group`, `escalate_human`).
-        max_level: niveau Wazuh le plus élevé de l'incident.
-        injection_suspectee: un motif d'injection a été repéré dans les logs.
-        compromission_active: une règle de post-exploitation a matché
-            (webshell qui exécute, reverse shell, rootkit, persistance root).
-        priorite: priorité de l'asset touché (1 à 4). Elle décide du seuil de
-            clôture : sur un P1, le modèle ne peut plus refermer dès le niveau
-            12. Absente = seuil historique (14).
+        max_level: highest Wazuh level of the incident.
+        suspected_injection: an injection pattern was spotted in the logs.
+        active_compromise: a post-exploitation rule matched (a webshell
+            executing, reverse shell, rootkit, root persistence).
+        priority: priority of the affected asset (1 to 4). It decides the
+            closure threshold: on a P1, the model can no longer close from
+            level 12 on. Absent = historical threshold (14).
     """
     inferred = soc_actions.infer(verdict, proposed_actions)
     final, guardrails = soc_actions.apply_guardrails(
         verdict, inferred, max_level, suspected_injection,
         active_compromise, priority)
     return {
-        "actions_proposees": proposed_actions,
-        "apres_deduction": inferred,
-        "actions_finales": final,
-        "garde_fous_declenches": guardrails,
-        "actions_fort_impact": soc_actions.high_impact_actions(final),
+        "proposed_actions": proposed_actions,
+        "after_inference": inferred,
+        "final_actions": final,
+        "triggered_guardrails": guardrails,
+        "high_impact_actions": soc_actions.high_impact_actions(final),
         "priority": priority,
-        "niveau_cloture_interdite": soc_actions.closure_threshold(priority),
+        "closure_forbidden_level": soc_actions.closure_threshold(priority),
     }
 
 
 @auth.require("aura:read")
 def aura_validate_whitelist_signature(signature: dict, level: int) -> dict:
-    """Cette signature pourrait-elle être mise en whitelist ?
+    """Could this signature be whitelisted?
 
-    Trois refus possibles, tous déterministes et non contournables : absence
-    de discriminant (compte, commande ou fichier — sans quoi l'exception
-    aveuglerait bien plus que le bruit visé), niveau trop élevé, ou signature
-    déjà observée sur un vrai positif. Ce dernier point est le garde-fou
-    anti-normalisation : ce qui a servi une fois à une intrusion ne devient
-    jamais « normal ».
+    Three possible refusals, all deterministic and non-bypassable: no
+    discriminant (account, command, or file — without which the exception
+    would blind far more than the targeted noise), level too high, or a
+    signature already observed on a true positive. This last point is the
+    anti-normalization guardrail: whatever served an intrusion once never
+    becomes "normal".
 
     Args:
-        signature: champs constants de la signature, p. ex.
+        signature: constant fields of the signature, e.g.
             `{"rule_id": "100657", "agent_name": "web01", "command": "uname -a"}`.
-        niveau: niveau Wazuh des alertes concernées.
+        level: Wazuh level of the concerned alerts.
     """
     with base() as conn:
         sig_tp = whitelist.signatures_seen_tp(conn)
@@ -91,40 +91,40 @@ def aura_validate_whitelist_signature(signature: dict, level: int) -> dict:
     return {
         "signature": signature,
         "acceptable": refusal is None,
-        "motif_de_refus": refusal,
-        "niveau_maximum": soc_config.WHITELIST_MAX_LEVEL,
-        "min_fp_requis": soc_config.WHITELIST_MIN_FP,
+        "refusal_reason": refusal,
+        "max_level": soc_config.WHITELIST_MAX_LEVEL,
+        "min_fp_required": soc_config.WHITELIST_MIN_FP,
     }
 
 
 @auth.require("aura:read")
 def aura_ueba_score_group(alert_ids: list[str]) -> dict:
-    """Quel score UEBA obtiendrait ce groupe d'alertes ?
+    """What UEBA score would this group of alerts get?
 
-    Sert à calibrer : comprendre pourquoi un comportement est passé sous le
-    plancher, ou au contraire ce qui l'a fait remonter. Le score additionne la
-    rareté de chaque trait (surprisal en bits), plafonnée par trait et par
-    alerte, avec un bonus de progression dans la kill chain.
+    Used for calibration: understanding why a behavior stayed under the
+    floor, or conversely what pushed it above. The score adds up the
+    rarity of each trait (surprisal in bits), capped per trait and per
+    alert, with a kill-chain progression bonus.
 
     Args:
-        alert_ids: identifiants natifs Wazuh des alertes du groupe
-            (`aura_alerts_search` les rend).
+        alert_ids: native Wazuh identifiers of the group's alerts
+            (returned by `aura_alerts_search`).
     """
     if not alert_ids:
-        return {"error": "Aucune alerte fournie."}
+        return {"error": "No alert provided."}
     with base() as conn:
         lines = conn.execute(
             "SELECT * FROM alerts WHERE id = ANY(%s) ORDER BY ts",
             (list(alert_ids),)).fetchall()
     if not lines:
-        return {"error": "Aucune de ces alertes n'est en base."}
+        return {"error": "None of these alerts are in the database."}
 
     score, patterns = ueba.score_group([dict(r) for r in lines])
     return output.jsonifiable({
-        "alertes": len(lines),
+        "alerts": len(lines),
         "score": score,
-        "plancher": soc_config.UEBA_SCORE_FLOOR,
-        "franchirait_le_plancher": score >= soc_config.UEBA_SCORE_FLOOR,
+        "floor": soc_config.UEBA_SCORE_FLOOR,
+        "would_cross_the_floor": score >= soc_config.UEBA_SCORE_FLOOR,
         "patterns": patterns,
     })
 
@@ -133,79 +133,79 @@ def aura_ueba_score_group(alert_ids: list[str]) -> dict:
 def aura_rule_preview(rule_id: int, parent: str, level: int,
                       signature: dict, n_fp: int = 0,
                       incidents: list[int] | None = None) -> dict:
-    """Le XML de la règle d'exception qui serait déployée, sans rien écrire.
+    """The XML of the exception rule that would be deployed, without writing anything.
 
-    Deuxième étage de la whitelist : plutôt qu'écarter le bruit après coup, on
-    calme la règle DANS le moteur Wazuh. Cet outil rend le XML pour relecture ;
-    il ne l'écrit pas et ne redémarre pas le manager — c'est `aura:admin` et
-    c'est `aura_rule_tuning_apply`.
+    Second stage of the whitelist: rather than discarding noise after the
+    fact, the rule itself is calmed INSIDE the Wazuh engine. This tool
+    returns the XML for review; it doesn't write it and doesn't restart the
+    manager — that's `aura:admin` and `aura_rule_tuning_apply`.
 
-    Piège à connaître : une règle fille doit avoir un identifiant SUPÉRIEUR à
-    celui de sa parente, sinon Wazuh la charge et ne l'évalue jamais, sans le
-    moindre message d'erreur.
+    Pitfall to know: a child rule must have an identifier GREATER than its
+    parent's, otherwise Wazuh loads it and never evaluates it, without any
+    error message.
 
     Args:
-        rule_id: identifiant de la règle à créer (plage réservée
+        rule_id: identifier of the rule to create (reserved range
             101000-101999).
-        parent: identifiant de la règle parente (`if_sid`).
-        niveau: niveau de la règle fille (0 = suppression totale, verrouillé
-            par configuration).
-        signature: champs discriminants à matcher.
-        n_fp: nombre de faux positifs qui motivent la règle (commentaire).
-        incidents: incidents à l'origine (commentaire de traçabilité).
+        parent: identifier of the parent rule (`if_sid`).
+        level: level of the child rule (0 = total suppression, locked by
+            configuration).
+        signature: discriminant fields to match.
+        n_fp: number of false positives motivating the rule (comment).
+        incidents: originating incidents (traceability comment).
     """
     if not (soc_config.RULE_TUNING_ID_MIN <= rule_id
             <= soc_config.RULE_TUNING_ID_MAX):
-        return {"error": f"rule_id hors plage réservée "
+        return {"error": f"rule_id outside the reserved range "
                           f"{soc_config.RULE_TUNING_ID_MIN}-"
                           f"{soc_config.RULE_TUNING_ID_MAX}."}
     if int(parent) >= rule_id:
-        return {"error": f"La règle {rule_id} ne peut pas être fille de "
-                          f"{parent} : une fille doit avoir un identifiant "
-                          f"SUPÉRIEUR à sa parente, sinon Wazuh ne l'évalue "
-                          f"jamais (sans erreur)."}
+        return {"error": f"Rule {rule_id} can't be a child of "
+                          f"{parent}: a child must have an identifier "
+                          f"GREATER than its parent's, otherwise Wazuh "
+                          f"never evaluates it (without error)."}
 
     xml = rule_tuning.build_xml(rule_id, parent, level, signature, {},
                                      n_fp, incidents or [])
     return {
-        "rule_id": rule_id, "parent": parent, "niveau": level,
-        "traduisible": xml is not None,
+        "rule_id": rule_id, "parent": parent, "level": level,
+        "translatable": xml is not None,
         "xml": xml,
-        "niveau_0_autorise": soc_config.RULE_TUNING_ALLOW_LEVEL_0,
+        "level_0_allowed": soc_config.RULE_TUNING_ALLOW_LEVEL_0,
     }
 
 
 @auth.require("aura:read")
 def aura_isolation_check(agent_id: str) -> dict:
-    """Cet agent peut-il être isolé, et l'est-il déjà ?
+    """Can this agent be isolated, and is it already?
 
-    Deux questions distinctes, souvent confondues : ce que la politique AURA
-    autorise (`motif_de_refus`), et ce que la machine dit d'elle-même
-    (`etat`, lu en SSH sur l'hôte). Une machine peut être marquée isolée dans
-    IRIS sans l'être réellement — c'est l'état de l'hôte qui tranche.
+    Two distinct questions, often conflated: what AURA's policy allows
+    (`refusal_reason`), and what the machine says about itself (`state`,
+    read over SSH on the host). A machine can be marked isolated in IRIS
+    without actually being so — it's the host's state that decides.
 
-    Les refus sont volontairement fermés : agent protégé (le manager, 000),
-    appartenance à un groupe d'infrastructure (pare-feu, proxy, DNS, VPN), ou
-    rôle inconnu. Isoler un pare-feu coupe tout le monde, y compris le SOC.
+    Refusals are deliberately closed: protected agent (the manager, 000),
+    membership in an infrastructure group (firewall, proxy, DNS, VPN), or
+    unknown role. Isolating a firewall cuts everyone off, SOC included.
 
     Args:
-        agent_id: identifiant d'agent Wazuh (`003`, `001`…).
+        agent_id: Wazuh agent identifier (`003`, `001`…).
     """
     refusal = mitigate.not_isolatable_reason(agent_id)
     response = {
         "agent_id": agent_id,
-        "isolable": refusal is None,
-        "motif_de_refus": refusal,
-        "agents_proteges": sorted(soc_config.AGENTS_PROTECTED),
-        "refus_si_role_inconnu": soc_config.ISOLATION_REFUSE_IF_ROLE_UNKNOWN,
+        "isolatable": refusal is None,
+        "refusal_reason": refusal,
+        "protected_agents": sorted(soc_config.AGENTS_PROTECTED),
+        "refuse_if_unknown_role": soc_config.ISOLATION_REFUSE_IF_ROLE_UNKNOWN,
     }
     try:
-        response["etat"] = mitigate.isolation_state(agent_id)
+        response["state"] = mitigate.isolation_state(agent_id)
     except Exception as e:  # noqa: BLE001
-        # Un hôte injoignable est une information, pas une panne de l'outil :
-        # il peut être éteint, ou déjà coupé du réseau par une isolation.
-        response["etat"] = None
-        response["etat_indisponible"] = str(e)
+        # An unreachable host is information, not a tool failure: it could
+        # be powered off, or already cut from the network by an isolation.
+        response["state"] = None
+        response["state_unavailable"] = str(e)
     return response
 
 

@@ -1,11 +1,11 @@
-"""Accès Postgres pour les outils MCP.
+"""Postgres access for the MCP tools.
 
-Connexion par appel, pas de pool : un outil MCP est un coup ponctuel déclenché
-par un humain via son IA, pas une boucle chaude. Une connexion persistante
-tiendrait surtout une transaction ouverte pendant que le modèle réfléchit.
+One connection per call, no pool: an MCP tool is a one-off triggered by a
+human via their AI, not a hot loop. A persistent connection would mostly
+hold a transaction open while the model thinks.
 
-Le DSN vient de `soc_agent.config` : une seule source de vérité pour la base,
-partagée avec le pipeline.
+The DSN comes from `soc_agent.config`: a single source of truth for the
+database, shared with the pipeline.
 """
 
 from contextlib import contextmanager
@@ -17,11 +17,11 @@ from soc_agent import config as soc_config
 
 @contextmanager
 def read():
-    """Connexion en lecture seule — la transaction ne peut rien écrire.
+    """Read-only connection — the transaction can't write anything.
 
-    Garde-fou de fond : la majorité des outils exposés sont des outils de
-    lecture, et une faute de frappe dans un SQL ne doit pas pouvoir muter la
-    base d'incidents. Les outils d'action passent par `soc_agent`, pas ici.
+    Backstop guardrail: most exposed tools are read tools, and a typo in a
+    SQL query must not be able to mutate the incident database. Action tools
+    go through `soc_agent`, not here.
     """
     with psycopg.connect(soc_config.PG_DSN, row_factory=dict_row) as conn:
         conn.read_only = True

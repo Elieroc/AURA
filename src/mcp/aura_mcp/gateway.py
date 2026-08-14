@@ -1,26 +1,26 @@
-"""Relais des serveurs MCP amont : Wazuh et DFIR-IRIS.
+"""Relay for the upstream MCP servers: Wazuh and DFIR-IRIS.
 
-Pourquoi relayer plutôt que laisser le client déclarer trois serveurs :
+Why relay instead of letting the client declare three servers:
 
-1. **Budget de contexte.** Le serveur MCP Wazuh expose 54 outils, IRIS une
-   dizaine. Ajoutés aux 25 d'AURA, l'inventaire devient le gros du contexte
-   d'un client avant qu'il ait lu la moindre alerte. Une liste d'autorisation
-   en garde une trentaine, choisis.
+1. **Context budget.** The Wazuh MCP server exposes 54 tools, IRIS about a
+   dozen. Added to AURA's 25, the inventory becomes the bulk of a client's
+   context before it has read a single alert. An allowlist keeps around
+   thirty, chosen.
 
-2. **Les garde-fous ne doivent pas être contournables.** Le serveur Wazuh
-   expose 19 outils d'active response — `wazuh_isolate_host`, `wazuh_kill_process`,
-   `wazuh_disable_user`… — qui parlent directement à l'API du manager, sans
-   rien connaître des agents protégés d'AURA, des comptes système, ni du
-   plancher de clôture. Un client qui les voit peut isoler le pare-feu.
-   **Ils sont donc masqués**, sans exception : la remédiation passe par les
-   outils `aura_*`, qui appliquent la politique.
+2. **Guardrails must not be bypassable.** The Wazuh server exposes 19 active
+   response tools — `wazuh_isolate_host`, `wazuh_kill_process`,
+   `wazuh_disable_user`… — which talk directly to the manager's API, knowing
+   nothing about AURA's protected agents, system accounts, or closure floor.
+   A client that sees them can isolate the firewall. **They are therefore
+   masked**, no exceptions: remediation goes through the `aura_*` tools,
+   which apply the policy.
 
-3. **Un seul point d'authentification et d'audit.**
+3. **A single authentication and audit point.**
 
-Un serveur amont absent n'empêche pas le démarrage : ses outils manquent, le
-serveur le dit dans son journal, et le reste fonctionne. AURA doit rester
-interrogeable même quand une brique est tombée — c'est souvent à ce
-moment-là qu'on en a besoin.
+A missing upstream server doesn't prevent startup: its tools are simply
+missing, the server logs it, and everything else keeps working. AURA must
+stay queryable even when a component is down — that's often precisely when
+it's needed.
 """
 
 import logging
@@ -28,34 +28,33 @@ import os
 
 log = logging.getLogger("aura_mcp.gateway")
 
-# --- Serveurs amont -------------------------------------------------------
+# --- Upstream servers --------------------------------------------------------
 WAZUH_URL = os.environ.get("AURA_MCP_WAZUH_URL", "")
 WAZUH_TOKEN = os.environ.get("AURA_MCP_WAZUH_TOKEN", "")
 IRIS_URL = os.environ.get("AURA_MCP_IRIS_URL", "")
 IRIS_TOKEN = os.environ.get("AURA_MCP_IRIS_TOKEN", "")
 
-# Plafond de la réponse d'un outil relayé, plus large que celui d'un champ
-# d'alerte : ces réponses sont des inventaires (agents, vulnérabilités), pas
-# des fragments de journal.
+# Cap on a relayed tool's response, wider than an alert field's: these
+# responses are inventories (agents, vulnerabilities), not log fragments.
 RELAY_CAP = int(os.environ.get("AURA_MCP_RELAI_MAX", "12000"))
 
-# --- Ce que l'on relaie ---------------------------------------------------
-# Liste d'AUTORISATION, jamais d'interdiction : un outil ajouté en amont par
-# une montée de version n'apparaît pas tout seul chez les clients. Un nouvel
-# outil d'action qui passerait par une liste noire oubliée, si.
+# --- What we relay -----------------------------------------------------------
+# ALLOWLIST, never a denylist: a tool added upstream by a version bump
+# doesn't appear on its own for clients. A new action tool that would slip
+# through a forgotten denylist, would.
 WAZUH_ALLOWED = {
-    # État du parc — ce que la base AURA ne sait pas dire
+    # Fleet state — what the AURA database can't tell
     "get_wazuh_agents", "get_wazuh_running_agents", "check_agent_health",
     "get_agent_configuration", "get_agent_ports", "get_agent_processes",
-    # Alertes à la source (AURA n'ingère pas tout)
+    # Alerts at the source (AURA doesn't ingest everything)
     "get_wazuh_alerts", "get_wazuh_alert_summary", "get_alerts_aggregated",
     "search_security_events", "analyze_alert_patterns",
     "get_top_security_threats",
-    # Vulnérabilités et conformité
+    # Vulnerabilities and compliance
     "get_wazuh_vulnerabilities", "get_wazuh_critical_vulnerabilities",
     "get_wazuh_vulnerability_summary", "get_sca_policy_checks",
     "run_compliance_check",
-    # Santé de l'infrastructure de détection
+    # Health of the detection infrastructure
     "get_wazuh_cluster_health", "get_wazuh_cluster_nodes",
     "get_wazuh_statistics", "get_wazuh_log_collector_stats",
     "get_wazuh_remoted_stats", "get_wazuh_manager_error_logs",
@@ -68,9 +67,9 @@ IRIS_ALLOWED = {
     "add_event", "list_ioc_types", "list_severities",
 }
 
-# Masqués explicitement, pour que la raison soit lisible dans le code et non
-# seulement dans l'absence d'une entrée. Ce sont les outils qui agiraient sur
-# la production en court-circuitant la politique d'AURA.
+# Explicitly masked, so the reason is readable in the code and not only in
+# the absence of an entry. These are the tools that would act on production
+# by short-circuiting AURA's policy.
 WAZUH_MASKED = {
     "wazuh_active_response", "wazuh_isolate_host", "wazuh_unisolate_host",
     "wazuh_check_agent_isolation", "wazuh_block_ip", "wazuh_check_blocked_ip",
@@ -81,20 +80,20 @@ WAZUH_MASKED = {
     "wazuh_check_user_status", "wazuh_restart",
 }
 
-# Tous les outils relayés sont en lecture : l'écriture passe par les outils
-# `aura_*`. IRIS fait exception — créer une note ou un IOC dans un dossier est
-# du travail d'analyste, réversible, et sans effet sur les machines.
+# All relayed tools are read-only: writes go through the `aura_*` tools.
+# IRIS is the exception — creating a note or an IOC in a case is analyst
+# work, reversible, and has no effect on machines.
 SCOPE_WAZUH = "aura:read"
 SCOPE_IRIS = "aura:write"
 
 
 class Upstream:
-    """Un serveur MCP amont, joint en HTTP streamable.
+    """An upstream MCP server, reached over streamable HTTP.
 
-    Une session par appel plutôt qu'une session longue : le relais est un
-    chemin froid (quelques appels par investigation), et une session longue
-    devrait être reconnectée à chaque redémarrage de l'amont — complexité pour
-    rien.
+    One session per call rather than a long-lived session: the relay is a
+    cold path (a handful of calls per investigation), and a long-lived
+    session would need reconnecting on every upstream restart — complexity
+    for nothing.
     """
 
     def __init__(self, name: str, url: str, token: str, prefix: str):
@@ -110,42 +109,42 @@ class Upstream:
 
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         http = httpx2.AsyncClient(headers=headers, timeout=60)
-        flux = streamable_http_client(self.url, http_client=http)
-        return http, flux, ClientSession
+        flow = streamable_http_client(self.url, http_client=http)
+        return http, flow, ClientSession
 
     async def tools(self) -> list:
-        """Inventaire de l'amont. Liste vide s'il est injoignable."""
+        """Upstream inventory. Empty list if it's unreachable."""
         try:
-            http, flux, ClientSession = await self._session()
-            async with http, flux as (read, write):
+            http, flow, ClientSession = await self._session()
+            async with http, flow as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     return list((await session.list_tools()).tools)
         except Exception as e:  # noqa: BLE001
-            log.warning("serveur MCP %s injoignable (%s) : ses outils ne "
-                        "seront pas relayés", self.name, e)
+            log.warning("MCP server %s unreachable (%s): its tools won't be "
+                        "relayed", self.name, e)
             return []
 
     async def call(self, tool: str, arguments: dict) -> dict:
-        http, flux, ClientSession = await self._session()
-        async with http, flux as (read, write):
+        http, flow, ClientSession = await self._session()
+        async with http, flow as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 result = await session.call_tool(tool, arguments)
                 texts = [getattr(b, "text", str(b)) for b in result.content]
-                # Borné comme tout le reste : un `get_wazuh_agents` sur un parc
-                # de 16 machines rend déjà 8 Ko de JSON. Relayer sans limite
-                # annulerait la raison d'être du gateway — le budget de
-                # contexte du client.
+                # Bounded like everything else: a `get_wazuh_agents` on a
+                # fleet of 16 machines already returns 8 KB of JSON. Relaying
+                # without a limit would defeat the gateway's whole point —
+                # the client's context budget.
                 from . import output
-                return {"amont": self.name, "outil": tool,
+                return {"upstream": self.name, "tool": tool,
                         "error": result.is_error,
-                        "resultat": output.bound("\n".join(texts),
+                        "result": output.bound("\n".join(texts),
                                                   RELAY_CAP)}
 
 
 def upstreams() -> list[Upstream]:
-    """Les serveurs amont configurés. Vide = gateway désactivé."""
+    """The configured upstream servers. Empty = gateway disabled."""
     items = []
     if WAZUH_URL:
         items.append(Upstream("wazuh", WAZUH_URL, WAZUH_TOKEN, "wazuh_"))
@@ -155,11 +154,11 @@ def upstreams() -> list[Upstream]:
 
 
 def allowed(upstream: Upstream, name: str) -> bool:
-    """Cet outil amont doit-il être relayé ?
+    """Should this upstream tool be relayed?
 
-    Le nom est comparé nu ET préfixé : les serveurs amont ne nomment pas leurs
-    outils de la même façon (`get_wazuh_agents` chez l'un, `wazuh_block_ip`
-    chez l'autre pour la même famille).
+    The name is compared both bare AND prefixed: upstream servers don't name
+    their tools the same way (`get_wazuh_agents` for one, `wazuh_block_ip`
+    for the other, for the same family).
     """
     if upstream.name == "wazuh":
         if name in WAZUH_MASKED or name.replace("wazuh_", "") in {

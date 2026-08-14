@@ -1,14 +1,14 @@
-"""Outils d'enrôlement : mettre une machine sous surveillance AURA.
+"""Enrollment tools: putting a machine under AURA surveillance.
 
-`aura:admin` : installer un agent modifie durablement la machine cible
-(paquets, politique d'audit, compte d'administration, exécution root déléguée
-au manager par le canal d'active response).
+`aura:admin`: installing an agent durably modifies the target machine
+(packages, audit policy, admin account, root execution delegated to the
+manager via the active response channel).
 
-Le point qui compte plus que l'installation elle-même : la **vérification**.
-Un agent « installé » qui n'émet pas d'`execve`, ou dont les scripts d'active
-response manquent, produit exactement la même chose qu'une machine saine —
-rien. C'est pour cela que chaque enrôlement se termine par un contrôle lu sur
-la machine, et que l'outil dit franchement ce qui n'est pas encore bon.
+The point that matters more than the installation itself: **verification**.
+An "installed" agent that emits no `execve`, or whose active response
+scripts are missing, produces exactly the same thing as a healthy machine —
+nothing. That's why every enrollment ends with a check read from the
+machine, and the tool states plainly what isn't good yet.
 """
 
 from soc_agent import config as soc_config
@@ -26,73 +26,74 @@ def aura_enroll_agent(
     ssh_user: str = "root",
     winrm_user: str | None = None,
     winrm_password: str | None = None,
-    sans_sysmon: bool = False,
+    skip_sysmon: bool = False,
     role: str | None = None,
     confirm: bool = False,
 ) -> dict:
-    """Installe un agent Wazuh complet sur une machine. MODIFIE LA MACHINE.
+    """Installs a full Wazuh agent on a machine. MODIFIES THE MACHINE.
 
-    Pose les quatre étages sans lesquels la couverture est illusoire : l'agent,
-    la télémétrie que les règles attendent, les scripts d'active response, et
-    l'accès d'administration du SOC.
+    Lays down the four layers without which coverage is illusory: the
+    agent, the telemetry the rules expect, the active response scripts, and
+    the SOC's administration access.
 
-    **Linux** (Debian/Ubuntu, accès SSH par clé) : agent Wazuh épinglé, auditd
-    avec le jeu de règles `execve` d'AURA, `/etc/ld.so.preload` créé pour être
-    surveillable, scripts d'active response, compte `wazuh-admin` en sudo sans
-    mot de passe accessible par la clé du SOC.
+    **Linux** (Debian/Ubuntu, SSH key access): pinned Wazuh agent, auditd
+    with AURA's `execve` rule set, `/etc/ld.so.preload` created to make it
+    monitorable, active response scripts, `wazuh-admin` account with
+    passwordless sudo reachable via the SOC's key.
 
-    **Windows** (WinRM) : agent, audit de création de processus AVEC ligne de
-    commande, sous-catégories d'audit AD, journalisation ScriptBlock
-    PowerShell, Sysmon, abonnement de l'agent aux canaux — puis les scripts
-    d'active response Windows/AD et leurs lanceurs `.exe` compilés.
+    **Windows** (WinRM): agent, process-creation auditing WITH command
+    line, AD audit subcategories, PowerShell ScriptBlock logging, Sysmon,
+    agent subscription to the channels — then the Windows/AD active
+    response scripts and their compiled `.exe` launchers.
 
-    Après un enrôlement Linux, un REDÉMARRAGE est presque toujours nécessaire :
-    tant que journald tient le socket netlink, auditd n'émet rien et la machine
-    paraît calme alors qu'elle est muette. La vérification le signale.
+    After a Linux enrollment, a REBOOT is almost always required: as long as
+    journald holds the netlink socket, auditd emits nothing and the machine
+    looks quiet while it's actually mute. The verification flags it.
 
-    Côté Windows, il reste une étape sur le MANAGER : déclarer les blocs
-    `<command>`/`<active-response>` (`aura_manager_ar_status` le vérifie). Sans
-    eux, `execd` refuse chaque action sans le dire, l'API répondant 200.
+    On the Windows side, one step remains on the MANAGER: declaring the
+    `<command>`/`<active-response>` blocks (`aura_manager_ar_status` checks
+    it). Without them, `execd` refuses every action silently, the API
+    replying 200.
 
     Args:
-        hote: adresse IP ou nom de la machine à enrôler.
-        systeme: `linux` ou `windows`.
-        nom_agent: nom enregistré sur le manager (défaut : l'hôte).
-        manager: adresse du manager Wazuh (défaut : `WAZUH_MANAGER_IP`).
-        ssh_user: compte SSH pour un enrôlement Linux — doit être root ou
-            pouvoir le devenir.
-        winrm_user: compte administrateur Windows.
-        winrm_password: mot de passe associé.
-        sans_sysmon: Windows seulement — sauter l'installation de Sysmon
-            (hôte sans accès Internet).
-        role: rôle de la machine, qui fixe sa PRIORITÉ (P1-P4) dans le SOC :
-            `dc`, `firewall`, `soc`, `hypervisor`, `pki`, `backup` (P1) ;
-            `web`, `db`, `mail`, `proxy`, `dns`, `vpn`, `fileserver` (P2) ;
-            `serveur`, `admin` (P3) ; `endpoint`, `lab` (P4). L'agent est rangé
-            dans le groupe Wazuh `role-<role>`, qui est la source de vérité.
-            **Sans rôle, la machine est traitée en P4** — ses incidents passent
-            en fin de file et sa sévérité est minorée d'un niveau. À déclarer
-            même approximativement : un rôle discutable vaut mieux qu'un asset
-            critique invisible.
-        confirmer: doit valoir `true` pour agir. À `false` (défaut), l'outil
-            rend le plan sans rien toucher.
+        host: IP address or name of the machine to enroll.
+        system: `linux` or `windows`.
+        agent_name: name registered on the manager (default: the host).
+        manager: Wazuh manager address (default: `WAZUH_MANAGER_IP`).
+        ssh_user: SSH account for a Linux enrollment — must be root or able
+            to become root.
+        winrm_user: Windows administrator account.
+        winrm_password: associated password.
+        skip_sysmon: Windows only — skip the Sysmon install (host without
+            internet access).
+        role: the machine's role, which sets its PRIORITY (P1-P4) in the
+            SOC: `dc`, `firewall`, `soc`, `hypervisor`, `pki`, `backup`
+            (P1); `web`, `db`, `mail`, `proxy`, `dns`, `vpn`, `fileserver`
+            (P2); `server`, `admin` (P3); `endpoint`, `lab` (P4). The agent
+            is placed in the Wazuh group `role-<role>`, which is the source
+            of truth. **Without a role, the machine is treated as P4** — its
+            incidents go to the back of the queue and its severity is
+            lowered by one level. Declare it even approximately: a debatable
+            role beats an invisible critical asset.
+        confirm: must be `true` to act. At `false` (default), the tool
+            returns the plan without touching anything.
     """
     system = system.lower().strip()
     if system not in ("linux", "windows"):
-        return {"error": "systeme doit valoir 'linux' ou 'windows'."}
+        return {"error": "system must be 'linux' or 'windows'."}
 
     manager = manager or enrollment.MANAGER
     if not manager:
-        return {"error": "Adresse du manager inconnue : passer `manager` ou "
-                          "renseigner WAZUH_MANAGER_IP dans le .env."}
+        return {"error": "Unknown manager address: pass `manager` or set "
+                          "WAZUH_MANAGER_IP in the .env."}
     if system == "windows" and not (winrm_user and winrm_password):
-        return {"error": "winrm_user et winrm_password sont requis pour "
+        return {"error": "winrm_user and winrm_password are required for "
                           "Windows."}
 
-    plan = _plan(system, host, agent_name or host, manager, sans_sysmon, role)
+    plan = _plan(system, host, agent_name or host, manager, skip_sysmon, role)
     if not confirm:
         return {"execute": False, "plan": plan,
-                "raison": "confirmer=false — la machine n'a pas été touchée."}
+                "reason": "confirm=false — the machine was not touched."}
 
     try:
         if system == "linux":
@@ -101,69 +102,70 @@ def aura_enroll_agent(
         else:
             result = enrollment.enroll_windows(
                 host, agent_name, winrm_user, winrm_password, manager,
-                sans_sysmon, role)
+                skip_sysmon, role)
     except enrollment.EnrollmentError as e:
-        # Un enrôlement peut échouer à mi-chemin. Le dire avec l'étape fautive
-        # vaut mieux qu'une trace : la machine est peut-être à moitié
-        # configurée, et c'est une information opérationnelle.
-        return {"execute": True, "succes": False, "error": str(e),
-                "avertissement": "La machine peut être partiellement "
-                                 "configurée. Relancer l'outil est sans "
-                                 "danger : les recettes sont idempotentes."}
+        # An enrollment can fail halfway through. Saying so with the
+        # offending step is better than a stack trace: the machine may be
+        # half-configured, and that's operational information.
+        return {"execute": True, "success": False, "error": str(e),
+                "warning": "The machine may be partially configured. "
+                                 "Re-running the tool is safe: the recipes "
+                                 "are idempotent."}
 
-    return {"execute": True, "succes": True, "systeme": system,
-            "hote": host, "manager": manager,
+    return {"execute": True, "success": True, "system": system,
+            "host": host, "manager": manager,
             **output.jsonifiable(result),
-            "suite": _suite(system)}
+            "next_steps": _next_steps(system)}
 
 
 def _plan(system: str, host: str, name: str, manager: str,
-          sans_sysmon: bool, role: str | None = None) -> list[str]:
+          skip_sysmon: bool, role: str | None = None) -> list[str]:
     ranking = (
-        f"Ranger l'agent dans le groupe role-{role} et l'inscrire dans la CMDB."
+        f"Place the agent in the role-{role} group and register it in the CMDB."
         if role else
-        f"AUCUN rôle déclaré : la machine sera traitée en "
-        f"P{soc_config.DEFAULT_PRIORITY} (fin de file d'analyse, sévérité "
-        f"minorée). Passer `role` pour la classer.")
+        f"NO role declared: the machine will be treated as "
+        f"P{soc_config.DEFAULT_PRIORITY} (back of the analysis queue, "
+        f"lowered severity). Pass `role` to classify it.")
     if system == "linux":
         return [
-            f"Copier les recettes d'AURA sur {host} (SSH par clé).",
-            f"Installer l'agent Wazuh, enrôlé sur {manager} sous le nom {name}.",
-            "Installer auditd et le jeu de règles execve d'AURA "
-            "(préfixe zz- obligatoire, sinon le -D de Debian les efface).",
-            "Créer /etc/ld.so.preload s'il manque, pour le rendre surveillable.",
-            "Poser les scripts d'active response.",
-            "Créer le compte wazuh-admin (sudo sans mot de passe, SSH par clé).",
+            f"Copy AURA's recipes to {host} (SSH key).",
+            f"Install the Wazuh agent, enrolled on {manager} under the name {name}.",
+            "Install auditd and AURA's execve rule set "
+            "(zz- prefix mandatory, otherwise Debian's -D clears them).",
+            "Create /etc/ld.so.preload if missing, to make it monitorable.",
+            "Deploy the active response scripts.",
+            "Create the wazuh-admin account (passwordless sudo, SSH key).",
             ranking,
-            "Vérifier sur la machine, et signaler si un redémarrage est requis.",
+            "Verify on the machine, and flag whether a reboot is required.",
         ]
     return [
-        f"Pousser la recette d'installation sur {host} (WinRM).",
-        f"Installer l'agent Wazuh, enrôlé sur {manager} sous le nom {name}.",
-        "Activer l'audit de création de processus AVEC ligne de commande, "
-        "les sous-catégories AD et la journalisation ScriptBlock.",
-        "Installer Sysmon." if not sans_sysmon else "Sauter Sysmon (demandé).",
-        "Abonner l'agent aux canaux Sysmon et PowerShell Operational.",
-        "Pousser les scripts d'active response Windows/AD, compiler le "
-        "wrapper et le recopier sous le nom de chaque action.",
+        f"Push the installation recipe to {host} (WinRM).",
+        f"Install the Wazuh agent, enrolled on {manager} under the name {name}.",
+        "Enable process-creation auditing WITH command line, the AD "
+        "subcategories, and ScriptBlock logging.",
+        "Install Sysmon." if not skip_sysmon else "Skip Sysmon (requested).",
+        "Subscribe the agent to the Sysmon and PowerShell Operational channels.",
+        "Push the Windows/AD active response scripts, compile the "
+        "wrapper, and copy it under each action's name.",
         ranking,
-        "Vérifier sur la machine.",
+        "Verify on the machine.",
     ]
 
 
-def _suite(system: str) -> list[str]:
+def _next_steps(system: str) -> list[str]:
     common = [
-        "Vérifier que l'agent remonte : aura_alerts_search sur son nom.",
-        "Déclencher une action inoffensive et contrôler le retour "
-        "(aura_ar_reconcile) — ne jamais se fier au 200 de l'API.",
+        "Check that the agent reports in: aura_alerts_search on its name.",
+        "Trigger a harmless action and check the outcome "
+        "(aura_ar_reconcile) — never trust the API's 200.",
     ]
     if system == "linux":
-        return ["REDÉMARRER la machine si la vérification le demande : sans "
-                "cela auditd n'émet rien et la machine paraîtra calme.",
+        return ["REBOOT the machine if the verification asks for it: "
+                "otherwise auditd emits nothing and the machine will look "
+                "quiet.",
                 *common]
-    return ["Déclarer les blocs <command>/<active-response> Windows sur le "
-            "manager (aura_manager_ar_status le vérifie) : sans eux execd "
-            "refuse chaque action en silence.",
+    return ["Declare the Windows <command>/<active-response> blocks on the "
+            "manager (aura_manager_ar_status checks it): without them execd "
+            "silently refuses every action.",
             *common]
 
 
@@ -172,31 +174,33 @@ def aura_agent_health(host: str, system: str, agent_name: str | None = None,
                       ssh_user: str = "root",
                       winrm_user: str | None = None,
                       winrm_password: str | None = None) -> dict:
-    """Cette machine est-elle réellement couverte ? Contrôle sur pièces.
+    """Is this machine actually covered? Check the evidence.
 
-    Ne modifie rien. Répond à la question que le tableau de bord ne sait pas
-    poser : l'agent est vert, mais **émet-il** ? Un agent connecté dont
-    l'audit noyau est coupé, ou dont les scripts d'active response manquent,
-    est indiscernable d'une machine saine — jusqu'au jour où on lui demande
-    quelque chose.
+    Changes nothing. Answers the question a dashboard can't ask: the agent
+    is green, but **is it emitting**? An agent that's connected but whose
+    kernel audit is cut off, or whose active response scripts are missing,
+    is indistinguishable from a healthy machine — until the day it's asked
+    to do something.
 
-    Deux points décident, et aucun ne se lit sur un tableau de bord :
+    Two points decide, and neither can be read off a dashboard:
 
-    - `surveille` : le manager voit-il cet agent `active` ET la machine
-      porte-t-elle bien SA propre identité ? Une machine clonée hérite du
-      `client.keys` de son modèle, présente une identité déjà prise, et boucle
-      en connexion/déconnexion — tout en paraissant parfaitement installée.
-    - `redemarrage_requis` : tant que journald tient le socket netlink, auditd
-      n'émet rien.
+    - `monitored`: does the manager see this agent as `active` AND does the
+      machine carry ITS OWN identity? A cloned machine inherits its
+      template's `client.keys`, presents an already-taken identity, and
+      loops connecting/disconnecting — all while looking perfectly
+      installed.
+    - `reboot_required`: as long as journald holds the netlink socket,
+      auditd emits nothing.
 
     Args:
-        hote: adresse de la machine.
-        systeme: `linux` ou `windows`.
-        nom_agent: nom attendu côté manager. Sans lui, le contrôle reste local
-            et ne peut pas dire si la machine est réellement surveillée.
-        ssh_user: compte SSH (Linux).
-        winrm_user: compte administrateur (Windows).
-        winrm_password: mot de passe associé (Windows).
+        host: machine address.
+        system: `linux` or `windows`.
+        agent_name: name expected on the manager side. Without it, the
+            check stays local and can't say whether the machine is actually
+            monitored.
+        ssh_user: SSH account (Linux).
+        winrm_user: administrator account (Windows).
+        winrm_password: associated password (Windows).
     """
     system = system.lower().strip()
     try:
@@ -204,43 +208,44 @@ def aura_agent_health(host: str, system: str, agent_name: str | None = None,
             state = enrollment.check_linux(host, ssh_user, agent_name)
         elif system == "windows":
             if not (winrm_user and winrm_password):
-                return {"error": "winrm_user et winrm_password requis."}
+                return {"error": "winrm_user and winrm_password required."}
             state = enrollment.check_windows(host, winrm_user,
                                                winrm_password)
         else:
-            return {"error": "systeme doit valoir 'linux' ou 'windows'."}
+            return {"error": "system must be 'linux' or 'windows'."}
     except enrollment.EnrollmentError as e:
-        return {"hote": host, "joignable": False, "error": str(e)}
-    # `joignable` vient de la vérification elle-même : côté Linux, chaque
-    # contrôle est une commande distante qui peut échouer seule.
-    return {"hote": host, "systeme": system, "joignable": True, **state}
+        return {"host": host, "reachable": False, "error": str(e)}
+    # `reachable` comes from the check itself: on the Linux side, each check
+    # is a separate remote command that can fail on its own.
+    return {"host": host, "system": system, "reachable": True, **state}
 
 
 @auth.require("aura:read")
 def aura_manager_ar_status() -> dict:
-    """Les actions de remédiation déclarées côté manager sont-elles au complet ?
+    """Are the remediation actions declared manager-side complete?
 
-    `execd` valide chaque action demandée contre le `ar.conf` que le manager
-    génère depuis ses blocs `<command>`. Une action absente est refusée **sans
-    message** : l'API répond 200 et rien ne se produit sur la machine. C'est le
-    mode d'échec le plus coûteux d'AURA, parce qu'il ressemble à un succès.
+    `execd` validates every requested action against the `ar.conf` the
+    manager generates from its `<command>` blocks. A missing action is
+    refused **without a message**: the API replies 200 and nothing happens
+    on the machine. This is AURA's costliest failure mode, because it looks
+    like a success.
 
-    Cet outil compare les actions attendues par le pipeline à ce que le manager
-    déclare réellement.
+    This tool compares the actions expected by the pipeline against what the
+    manager actually declares.
     """
     import re
 
     conf = enrollment.REPO / "src/wazuh/config/wazuh_cluster/wazuh_manager.conf"
     if not conf.is_file():
-        return {"error": f"{conf} illisible depuis le conteneur — la racine "
-                          f"du dépôt doit être montée sur {enrollment.REPO}."}
+        return {"error": f"{conf} unreadable from the container — the repo "
+                          f"root must be mounted at {enrollment.REPO}."}
     text = conf.read_text(encoding="utf-8", errors="replace")
     declared = set(re.findall(r"<command>\s*<name>([^<]+)</name>", text))
     declared |= set(re.findall(r"<name>([^<]+)</name>\s*<executable>", text))
     referenced = set(re.findall(
         r"<active-response>.*?<command>([^<]+)</command>", text, re.S))
 
-    expected = set(soc_config.__dict__.get("AR_ATTENDUES", ())) or {
+    expected = set(soc_config.__dict__.get("AR_EXPECTED", ())) or {
         "firewall-drop", "firewall-allow", "host-deny", "host-allow",
         "disable-account", "enable-account", "host-isolate", "host-unisolate",
         "kill-process", "quarantine", "win-host-isolate", "win-host-unisolate",
@@ -250,14 +255,15 @@ def aura_manager_ar_status() -> dict:
     }
 
     return {
-        "declarees": sorted(declared),
-        "referencees_par_un_active_response": sorted(referenced),
-        "manquantes": sorted(expected - declared),
-        "declarees_mais_non_referencees": sorted(declared - referenced),
-        "rappel": "Une action déclarée mais jamais référencée par un bloc "
-                  "<active-response> est refusée par execd, même appelée par "
-                  "l'API. Le motif rules_id 999999 (règle inexistante) sert "
-                  "exactement à cela : référencer sans déclencher.",
+        "declared": sorted(declared),
+        "referenced_by_an_active_response": sorted(referenced),
+        "missing": sorted(expected - declared),
+        "declared_but_not_referenced": sorted(declared - referenced),
+        "reminder": "An action that is declared but never referenced by an "
+                  "<active-response> block is refused by execd, even when "
+                  "called via the API. The rules_id 999999 trick (a "
+                  "nonexistent rule) exists exactly for this: reference "
+                  "without ever triggering.",
     }
 
 

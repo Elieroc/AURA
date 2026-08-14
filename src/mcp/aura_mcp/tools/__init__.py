@@ -1,9 +1,9 @@
-"""Enregistrement des outils du serveur MCP AURA.
+"""Registration of the AURA MCP server tools.
 
-Importer ce paquet suffit à peupler le serveur : chaque module y déclare ses
-outils puis appelle `serveur.enregistrer`. L'ordre d'import fixe l'ordre du
-`tools/list`, donc celui dans lequel un client découvre les outils — lecture
-d'abord, action ensuite, délibérément.
+Importing this package is enough to populate the server: each module
+declares its tools here and then calls `server.register`. Import order fixes
+the order of `tools/list`, and therefore the order in which a client
+discovers the tools — read first, action next, deliberately.
 """
 
 from . import read  # noqa: F401

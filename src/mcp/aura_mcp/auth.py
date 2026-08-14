@@ -1,15 +1,15 @@
-"""Authentification et autorisation du serveur MCP AURA.
+"""Authentication and authorization for the AURA MCP server.
 
-Deux étages, volontairement séparés :
+Two stages, deliberately separated:
 
-- **Middleware ASGI** : valide le jeton une fois par requête HTTP et dépose
-  les scopes dans un contextvar. C'est le seul endroit qui voit le JWT.
-- **Décorateur `exige`** : vérifie le scope de l'outil appelé. Le middleware
-  ne peut pas le faire — au moment de la requête HTTP, on ne sait pas encore
-  quel outil le corps JSON-RPC va invoquer.
+- **ASGI middleware**: validates the token once per HTTP request and deposits
+  the scopes in a contextvar. It is the only place that sees the JWT.
+- **`require` decorator**: checks the scope of the called tool. The
+  middleware can't do it — at HTTP request time we don't yet know which tool
+  the JSON-RPC body will invoke.
 
-Sans le décorateur, un jeton `aura:read` pourrait appeler `aura_isolate`.
-Tout outil non décoré est donc un trou : `serveur.py` refuse d'en enregistrer.
+Without the decorator, an `aura:read` token could call `aura_isolate`.
+Any undecorated tool is therefore a hole: `server.py` refuses to register it.
 """
 
 import time
@@ -22,44 +22,44 @@ from starlette.responses import JSONResponse
 
 from . import config
 
-# Scopes du jeton porté par la requête en cours. Vide = non authentifié : le
-# défaut est le refus, pas la lecture.
+# Scopes carried by the request currently in flight. Empty = unauthenticated:
+# the default is refusal, not read access.
 SCOPES: ContextVar[frozenset[str]] = ContextVar("scopes", default=frozenset())
-SUBJECT: ContextVar[str] = ContextVar("sujet", default="anonyme")
+SUBJECT: ContextVar[str] = ContextVar("subject", default="anonymous")
 
 
 class Denied(Exception):
-    """Scope insuffisant. Remonte au client comme une erreur d'outil.
+    """Insufficient scope. Surfaces to the client as a tool error.
 
-    Message volontairement explicite (« il faut aura:admin ») : le client est
-    un agent IA, pas un attaquant anonyme — il doit pouvoir dire à son
-    utilisateur quel jeton demander plutôt que boucler sur un échec opaque.
+    Deliberately explicit message ("aura:admin is required"): the client is
+    an AI agent, not an anonymous attacker — it must be able to tell its
+    user which token to request instead of looping on an opaque failure.
     """
 
 
 def scopes_of_token(token: str) -> tuple[str, frozenset[str]]:
-    """(sujet, scopes effectifs). Lève `jwt.PyJWTError` si le jeton est mauvais.
+    """(subject, effective scopes). Raises `jwt.PyJWTError` if the token is bad.
 
-    Les scopes sont *développés* par implication : `aura:admin` donne aussi
-    write et read, sinon chaque jeton devrait lister les trois et un oubli
-    passerait pour un refus incompréhensible.
+    Scopes are *expanded* by implication: `aura:admin` also grants write and
+    read, otherwise every token would need to list all three and an omission
+    would look like an incomprehensible refusal.
     """
-    charge = jwt.decode(token, config.SECRET, algorithms=["HS256"],
+    payload = jwt.decode(token, config.SECRET, algorithms=["HS256"],
                         audience=config.AUDIENCE, issuer=config.ISSUER,
                         options={"require": ["exp", "sub"]})
-    raw = charge.get("scope", "")
-    requests = set(raw.split()) if isinstance(raw, str) else set(raw)
+    raw = payload.get("scope", "")
+    requested = set(raw.split()) if isinstance(raw, str) else set(raw)
     effective: set[str] = set()
-    for s in requests:
+    for s in requested:
         effective |= config.IMPLIES.get(s, set())
-    return charge["sub"], frozenset(effective)
+    return payload["sub"], frozenset(effective)
 
 
 def require(scope: str):
-    """Décorateur d'outil : impose un scope minimal.
+    """Tool decorator: enforces a minimum scope.
 
-    S'applique à des fonctions synchrones comme asynchrones — les outils de
-    lecture appellent psycopg en bloquant, ceux du gateway sont async.
+    Applies to both sync and async functions — read tools call psycopg in a
+    blocking way, gateway tools are async.
     """
     def decorator(fn):
         @wraps(fn)
@@ -73,7 +73,7 @@ def require(scope: str):
             return await fn(*a, **kw)
 
         envelope = asynchronous if _is_async(fn) else sync
-        envelope.required_scope = scope  # lu par serveur.py pour l'inventaire
+        envelope.required_scope = scope  # read by server.py for the inventory
         return envelope
     return decorator
 
@@ -86,15 +86,15 @@ def _is_async(fn) -> bool:
 def _verify(scope: str, name: str) -> None:
     if scope not in SCOPES.get():
         raise Denied(
-            f"L'outil {name} demande le scope {scope}. Le jeton présenté porte "
-            f"{' '.join(sorted(SCOPES.get())) or 'aucun scope'}.")
+            f"Tool {name} requires scope {scope}. The presented token "
+            f"carries {' '.join(sorted(SCOPES.get())) or 'no scope'}.")
 
 
 class Authentication:
-    """Middleware ASGI : Bearer JWT obligatoire sur le chemin MCP.
+    """ASGI middleware: Bearer JWT required on the MCP path.
 
-    `/health` reste ouvert — c'est le healthcheck du conteneur, il ne révèle
-    que l'état vivant/mort.
+    `/health` stays open — it's the container's healthcheck, it reveals
+    nothing but the alive/dead state.
     """
 
     def __init__(self, app):
@@ -109,23 +109,23 @@ class Authentication:
         headers = {k.decode().lower(): v.decode() for k, v in scope["headers"]}
         pair = headers.get("authorization", "").split(" ", 1)
         if len(pair) != 2 or pair[0].lower() != "bearer":
-            await _error(send, 401, "Jeton Bearer requis.")
+            await _error(send, 401, "Bearer token required.")
             return
 
         try:
             subject, scopes = scopes_of_token(pair[1])
         except jwt.PyJWTError as e:
-            await _error(send, 401, f"Jeton refusé : {e}")
+            await _error(send, 401, f"Token rejected: {e}")
             return
         if not scopes:
             await _error(send, 403,
-                          "Jeton sans scope AURA reconnu (aura:read / "
+                          "Token without a recognized AURA scope (aura:read / "
                           "aura:write / aura:admin).")
             return
 
         if not self._under_rate_limit(subject):
             await _error(send, 429,
-                          f"Plus de {config.MAX_RATE} appels par minute.")
+                          f"More than {config.MAX_RATE} calls per minute.")
             return
 
         token_scopes = SCOPES.set(scopes)
@@ -137,23 +137,23 @@ class Authentication:
             SUBJECT.reset(token_subject)
 
     def _under_rate_limit(self, subject: str) -> bool:
-        """Fenêtre glissante d'une minute, comptée par sujet du jeton.
+        """One-minute sliding window, counted per token subject.
 
-        Par sujet et non par IP : tous les clients arrivent de la loopback,
-        l'IP ne distingue rien.
+        Per subject and not per IP: every client arrives from loopback, the
+        IP doesn't distinguish anything.
         """
-        maintenant = time.monotonic()
+        now = time.monotonic()
         recent = self._calls[subject]
-        while recent and maintenant - recent[0] > 60:
+        while recent and now - recent[0] > 60:
             recent.popleft()
         if len(recent) >= config.MAX_RATE:
             return False
-        recent.append(maintenant)
+        recent.append(now)
         return True
 
 
 async def _empty():
-    """`receive` factice : une réponse d'erreur ne lit jamais le corps."""
+    """Dummy `receive`: an error response never reads the body."""
     return {"type": "http.disconnect"}
 
 

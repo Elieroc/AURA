@@ -1,1 +1,1 @@
-"""Serveur MCP AURA — administrer le XDR depuis n'importe quel client IA."""
+"""AURA MCP server — administer the XDR from any AI client."""
