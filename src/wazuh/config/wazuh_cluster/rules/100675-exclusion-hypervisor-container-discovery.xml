@@ -1,0 +1,46 @@
+<!-- Aura-SOC - rule 100675 (level 0). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- 2026-08-14, 121 930 discovery alerts from a single host (home-s-pve01)
+       out of ~150 000 fleet-wide. They fed one incident of 96 804 alerts,
+       which is what made the IRIS evidence loop visible (see docs/RETENTION.md).
+
+       Root cause: on a Proxmox hypervisor, auditd records the execve of every
+       process running INSIDE its unprivileged LXC guests. User-namespace
+       mapping makes them appear with a shifted uid - 100000 is the guest's
+       root, 100000+n its other users - and with `auid` unset, since no login
+       session exists on the HOST for a process that belongs to a container.
+
+       So the hypervisor was reporting its guests' internal activity as its own
+       discovery activity. 75 545 alerts, none of which describe anything the
+       host did.
+
+       Discriminant: uid in the userns range AND no login session. Both are
+       required. `uid>=100000` alone would also silence a HUMAN logged into a
+       container (uid 100000, auid 100000 - 1 970 alerts here), which is
+       exactly the case worth seeing; `auid` unset alone would silence the
+       hypervisor's own daemons, covered separately and much more narrowly by
+       100676-100678.
+
+       Coverage note, deliberate: a guest is monitored by ITS OWN Wazuh agent,
+       which sees the same execve with real uids and a real session. Nothing is
+       lost for a guest that matters; what disappears is the duplicate seen
+       from below, which carries neither the right identity nor the right
+       hostname.
+
+       The proper fix is at the sensor (`-F uid>=100000` exclusion in the
+       hypervisor's audit rules) - not applied because auditd runs in immutable
+       mode there (`enabled 2`), and changing its rules requires rebooting the
+       hypervisor, hence the whole lab. To do at the next maintenance window;
+       this rule then becomes redundant but harmless. -->
+
+  <rule id="100675" level="0">
+    <if_sid>100657, 100667</if_sid>
+    <!-- Unprivileged LXC userns range: 100000 + 65536 offsets. -->
+    <field name="audit.uid" type="pcre2">^1[0-9]{5}$</field>
+    <field name="audit.auid" type="pcre2">^4294967295$</field>
+    <description>Excluded: discovery command inside an LXC guest, seen from the hypervisor (no host login session)</description>
+  </rule>
+
+</group>

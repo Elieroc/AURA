@@ -1,0 +1,18 @@
+<!-- Aura-SOC - rule 100679 (level 0). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+  <!-- systemd unit-state probes: `systemctl is-enabled|is-active <unit>`. The
+       unit name varies, the verb does not, and a verb-anchored exclusion is
+       still specific: an attacker enumerating services runs `list-units`,
+       `--type=service` or plain `systemctl`, none of which match here.
+       `list-unit-files` IS a real enumeration verb and is deliberately NOT
+       excluded, despite 598 hits from Proxmox itself. -->
+  <rule id="100679" level="0">
+    <if_sid>100667</if_sid>
+    <field name="audit.command" type="pcre2">^systemctl$</field>
+    <field name="audit.execve.a1" type="pcre2">^(is-enabled|is-active)$</field>
+    <field name="audit.auid" type="pcre2">^4294967295$</field>
+    <description>Excluded: systemd unit-state probe (systemctl is-enabled/is-active) - not discovery</description>
+  </rule>
+
+</group>

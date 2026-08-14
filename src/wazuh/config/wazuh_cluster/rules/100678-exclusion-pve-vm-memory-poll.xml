@@ -1,0 +1,25 @@
+<!-- Aura-SOC - rule 100678 (level 0). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- 2026-08-14. pvestatd's per-VM memory accounting, part of the same
+       supervision loop as 100676/100677.
+
+       `ps` shows 703 distinct argument vectors on this hypervisor: argv
+       anchoring only works for the fixed one (the kvm poll, 3 081 hits). The
+       rest are per-pid probes that keep firing 100667 and are deliberately
+       left alone - a per-pid `ps` is exactly what a human looking around also
+       runs, and there is no argv shape that separates the two. -->
+
+  <rule id="100678" level="0">
+    <if_sid>100667</if_sid>
+    <field name="audit.command" type="pcre2">^ps$</field>
+    <field name="audit.execve.a1" type="pcre2">^-C$</field>
+    <field name="audit.execve.a2" type="pcre2">^kvm$</field>
+    <field name="audit.execve.a3" type="pcre2">^-o$</field>
+    <field name="audit.execve.a4" type="pcre2">^pss$</field>
+    <field name="audit.auid" type="pcre2">^4294967295$</field>
+    <description>Excluded: Proxmox VM memory accounting (ps -C kvm -o pss) - not discovery</description>
+  </rule>
+
+</group>

@@ -1,0 +1,33 @@
+<!-- Aura-SOC - rule 100676 (level 0). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- 2026-08-14. After 100675 removed the LXC guests' share of the noise,
+       what remained on the hypervisor was its own supervision loop: pvestatd
+       polls storage state every few seconds, forever. 13 094 `lsblk` alerts in
+       the window for THREE distinct argument vectors - the signature of a
+       machine, not of someone looking around.
+
+       Anchored on the exact argv rather than on `auid` unset alone, and the
+       difference matters: a daemon-spawned implant running plain `lsblk`, or
+       `lsblk` with any other option, still fires 100667. Only the vectors
+       Proxmox actually emits are silenced, and only when no login session
+       exists behind them.
+
+       One rule per argv rather than one regex: each argument position is a
+       separate field in the Wazuh audit decoder and a rule's fields are ANDed,
+       so "this argv OR that argv" cannot be expressed in a single rule without
+       loosening every position at once. Hence 100676 and 100677. -->
+
+  <rule id="100676" level="0">
+    <if_sid>100667</if_sid>
+    <field name="audit.command" type="pcre2">^lsblk$</field>
+    <field name="audit.execve.a1" type="pcre2">^-d$</field>
+    <field name="audit.execve.a2" type="pcre2">^-n$</field>
+    <field name="audit.execve.a3" type="pcre2">^-o$</field>
+    <field name="audit.execve.a4" type="pcre2">^NAME,TYPE$</field>
+    <field name="audit.auid" type="pcre2">^4294967295$</field>
+    <description>Excluded: Proxmox storage poll (lsblk -d -n -o NAME,TYPE) - not discovery</description>
+  </rule>
+
+</group>

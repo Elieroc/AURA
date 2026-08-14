@@ -1,0 +1,19 @@
+<!-- Aura-SOC - rule 100677 (level 0). Domain: threat_hunting,linux,mitre_gaps,
+     Naming convention and load-order trap: see rules/README.md -->
+<group name="threat_hunting,linux,mitre_gaps,">
+
+  <!-- 2026-08-14. Second `lsblk` argv emitted by Proxmox's own supervision
+       loop (see 100676 for the reasoning and why each argv needs its own
+       rule). This one is the disk inventory used by the storage panel. -->
+
+  <rule id="100677" level="0">
+    <if_sid>100667</if_sid>
+    <field name="audit.command" type="pcre2">^lsblk$</field>
+    <field name="audit.execve.a1" type="pcre2">^--json$</field>
+    <field name="audit.execve.a2" type="pcre2">^-o$</field>
+    <field name="audit.execve.a3" type="pcre2">^path,parttype,fstype$</field>
+    <field name="audit.auid" type="pcre2">^4294967295$</field>
+    <description>Excluded: Proxmox disk inventory (lsblk --json -o path,parttype,fstype) - not discovery</description>
+  </rule>
+
+</group>
