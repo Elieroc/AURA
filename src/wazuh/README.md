@@ -530,6 +530,53 @@ quasi temps réel..
 - Modif du routage : éditer le script dans `alerts-pipeline.json` puis recréer le manager
   (`docker compose up -d --force-recreate wazuh.manager`).
 
+### Index d'exception : `wazuh-proxy-*`, `wazuh-dns-*`, `wazuh-jellyfin-*`
+
+Ces trois index sont **vides en fonctionnement normal, et c'est voulu**. Ne pas
+partir en chasse au bug quand ils n'ont aucun document — vérifié par `logtest`
+le 2026-08-14 :
+
+| Événement | Règle | Niveau | Alerte ? |
+|---|---|---|---|
+| NPM, requête 200 | 31108 (native) | 0 | non |
+| NPM, path traversal + 403 | 100824 | 5 | **oui** |
+| NPM, 12 erreurs 4xx/60 s | 100823 | 10 | **oui** |
+| AdGuard, requête autorisée | 100853 | 2 | non — **sous `log_alert_level` (3)** |
+| AdGuard, requête bloquée | 100851 | 3 | **oui** |
+| Jellyfin, ligne `[INF]` | 100830 | 0 | non |
+| Jellyfin, ligne `[ERR]` | 100832 | 7 | **oui** |
+
+Le trafic nominal est délibérément sous le seuil : indexer chaque requête DNS
+ou chaque hit HTTP ferait de ces index de la télémétrie, pas de la détection.
+Conséquence à connaître : ces sources ne franchissent jamais la baseline du
+contrôle de routage, donc leur silence n'est **pas** surveillé par ce
+mécanisme-là. Ce qu'il faut surveiller pour elles, c'est l'agent (cf. ci-dessous).
+
+### Agent `Active` mais daemons morts
+
+Mode de panne vécu du 2026-07-30 au 2026-08-14 sur `nginx-proxy-manager`,
+`jellyfin` et `adguard-home` : `wazuh-logcollector`, `wazuh-syscheckd`,
+`wazuh-modulesd` et `wazuh-execd` tués simultanément (SIGKILL, journald tué en
+même temps et tous les services systemd relancés — aucun OOM côté hyperviseur).
+Seul `wazuh-agentd` a survécu, **donc l'agent est resté `Active`** : keepalive
+présent, tableau de bord vert, et **zéro log collecté pendant 15 jours**.
+
+Rien ne relance ces daemons — `wazuh-control` n'a pas de surveillance par
+daemon, et le service systemd `wazuh-agent` ne redémarre pas ses enfants. Le
+diagnostic tient en une commande, à connaître :
+
+```bash
+/var/ossec/bin/wazuh-control status   # "not running" + "Process N not used by Wazuh"
+/var/ossec/bin/wazuh-control start    # les relance ; ils repartent sans erreur
+```
+
+Avant de relancer un logcollector resté longtemps mort, **repositionner les
+offsets** de `queue/logcollector/file_status.json` sur la taille courante des
+fichiers : la reprise se fait à l'offset enregistré, et rattraper plusieurs Go
+(ici 1,85 Go de `querylog.json` AdGuard, soit ~3,7 M d'événements) noie le
+manager — c'est le scénario du flood Suricata qui avait rendu le SOC aveugle
+26 h.
+
 ### Contrôle automatique du routage (`soc_agent.routage`)
 
 Le tableau ci-dessus est **vérifié en continu** par le watchdog (toutes les
