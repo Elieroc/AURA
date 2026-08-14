@@ -334,7 +334,7 @@ def test_dry_run_ne_telecharge_rien_et_rend_le_verdict(monkeypatch):
     pourquoi » sans télécharger 40 Mo pour l'apprendre."""
     line = {"key": "v1/wazuh-web/2026/x.age", "documents": 10,
              "plain_bytes": 1000, "indices": ["wazuh-web-2026.03.01"],
-             "verify_state": None, "index_base": "wazuh-web", "periode": "2026-03",
+             "verify_state": None, "index_base": "wazuh-web", "period": "2026-03",
              "sha256_plain": "a" * 64}
     monkeypatch.setattr(hunting, "archive_available", lambda c, b, p: line)
     monkeypatch.setattr(hunting, "state", lambda: _state() | {"plafonds": {}})
@@ -364,7 +364,7 @@ def test_dry_run_annonce_le_refus_sans_lever(monkeypatch):
     client demande un plan, on lui donne le plan et le verdict."""
     line = {"key": "k", "documents": 10**9, "plain_bytes": 1,
              "indices": [], "verify_state": None, "index_base": "wazuh-web",
-             "periode": "2026-03", "sha256_plain": "a" * 64}
+             "period": "2026-03", "sha256_plain": "a" * 64}
     monkeypatch.setattr(hunting, "archive_available", lambda c, b, p: line)
     monkeypatch.setattr(hunting, "state", lambda: _state() | {"plafonds": {}})
     monkeypatch.setattr("psycopg.connect", lambda *a, **k: _Ctx())

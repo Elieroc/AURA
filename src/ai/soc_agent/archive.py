@@ -172,22 +172,22 @@ def batches_to_archive(conn, today: date | None = None) -> list[dict]:
     objet » est ce qui rend un trou détectable. Un mois simplement absent serait
     indistinguable d'un mois perdu.
     """
-    already = {(r["index_base"], r["periode"]) for r in conn.execute(
-        "SELECT index_base, periode FROM archives_s3 WHERE format_version=%s",
+    already = {(r["index_base"], r["period"]) for r in conn.execute(
+        "SELECT index_base, period FROM archives_s3 WHERE format_version=%s",
         (config.ARCHIVE_FORMAT_VERSION,)).fetchall()}
     batches: dict[tuple[str, str], dict] = {}
     for i in dated_indices():
         key = (i["base"], i["mois"])
         if key in already or not _closed_months(i["mois"], today):
             continue
-        batch = batches.setdefault(key, {"index_base": i["base"], "periode": i["mois"],
+        batch = batches.setdefault(key, {"index_base": i["base"], "period": i["mois"],
                                     "indices": [], "documents": 0, "octets": 0})
         batch["indices"].append(i["index"])
         batch["documents"] += i["documents"]
         batch["octets"] += i["octets"]
     for batch in batches.values():
         batch["indices"].sort()
-    return sorted(batches.values(), key=lambda l: (l["periode"], l["index_base"]))
+    return sorted(batches.values(), key=lambda l: (l["period"], l["index_base"]))
 
 
 # --------------------------------------------------------------------------
@@ -456,13 +456,13 @@ def export(batch: dict, destination: Path) -> dict:
         raise RuntimeError(
             f"export INCOMPLET refusé : {documents} documents écrits pour "
             f"{expected} annoncés par l'indexer "
-            f"({batch['index_base']}/{batch['periode']}). Le fichier a été supprimé "
+            f"({batch['index_base']}/{batch['period']}). Le fichier a été supprimé "
             "— l'archiver aurait produit une copie tronquée qui se croit "
             "complète. Lot repris au prochain passage.")
     if expected is not None and documents > expected:
         log.warning("export %s/%s : %d documents écrits pour %d annoncés — "
                     "surplus conservé (aucune perte), à surveiller si ça se "
-                    "répète", batch["index_base"], batch["periode"], documents,
+                    "répète", batch["index_base"], batch["period"], documents,
                     expected)
 
     return {"documents": documents, "plain_bytes": plain_bytes,
@@ -523,7 +523,7 @@ def manifest(batch: dict, metrics: dict, key: str) -> dict:
     return {
         "format_version": config.ARCHIVE_FORMAT_VERSION,
         "index_set": batch["index_base"],
-        "periode": batch["periode"],
+        "period": batch["period"],
         "indices": batch["indices"],
         "documents": metrics["documents"],
         "plain_bytes": metrics["plain_bytes"],
@@ -588,13 +588,13 @@ def _record(conn, batch: dict, metrics: dict, key: str,
     lock = _args_lock()
     conn.execute(
         """INSERT INTO archives_s3
-               (format_version, index_base, periode, key, manifest_key,
+               (format_version, index_base, period, key, manifest_key,
                 indices, documents, plain_bytes, object_bytes, sha256_plain,
                 sha256_encrypted, chain, recipients, excluded_fields,
                 object_lock_until)
            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-           ON CONFLICT (format_version, index_base, periode) DO NOTHING""",
-        (config.ARCHIVE_FORMAT_VERSION, batch["index_base"], batch["periode"],
+           ON CONFLICT (format_version, index_base, period) DO NOTHING""",
+        (config.ARCHIVE_FORMAT_VERSION, batch["index_base"], batch["period"],
          key, man_key, batch["indices"], metrics["documents"],
          metrics["plain_bytes"], metrics["object_bytes"],
          metrics["sha256_plain"], metrics["sha256_encrypted"],
@@ -639,34 +639,34 @@ def _adopt(conn, s3, batch: dict, key: str, man_key: str) -> bool:
         "sha256_encrypted": man["sha256_encrypted"]}, key, man_key)
     log.warning("archive %s/%s ADOPTÉE : l'objet existait sans repère en base "
                 "(interruption entre l'upload et l'enregistrement).",
-                batch["index_base"], batch["periode"])
+                batch["index_base"], batch["period"])
     return True
 
 
 def archive(conn, s3, batch: dict) -> dict:
-    key = object_key(batch["index_base"], batch["periode"], SUFFIX_OBJECT)
-    man_key = object_key(batch["index_base"], batch["periode"], SUFFIX_MANIFEST)
+    key = object_key(batch["index_base"], batch["period"], SUFFIX_OBJECT)
+    man_key = object_key(batch["index_base"], batch["period"], SUFFIX_MANIFEST)
 
     if _adopt(conn, s3, batch, key, man_key):
-        return {"index_base": batch["index_base"], "periode": batch["periode"],
+        return {"index_base": batch["index_base"], "period": batch["period"],
                 "etat": "adoptée", "key": key}
 
     tmp = Path(tempfile.mkdtemp(prefix="aura-archive-",
                                dir=config.ARCHIVE_TMP_DIR))
     try:
-        object_path = tmp / f"{batch['index_base']}.{batch['periode']}.{SUFFIX_OBJECT}"
+        object_path = tmp / f"{batch['index_base']}.{batch['period']}.{SUFFIX_OBJECT}"
         metrics = export(batch, object_path)
         man = manifest(batch, metrics, key)
 
         upload(s3, object_path, key, {
-            "index-set": batch["index_base"], "periode": batch["periode"],
+            "index-set": batch["index_base"], "period": batch["period"],
             "documents": metrics["documents"],
             "sha256-clair": metrics["sha256_plain"],
             "sha256-chiffre": metrics["sha256_encrypted"],
             "format-version": config.ARCHIVE_FORMAT_VERSION})
         _reread(s3, key, metrics["object_bytes"])
 
-        man_path = tmp / f"{batch['index_base']}.{batch['periode']}.{SUFFIX_MANIFEST}"
+        man_path = tmp / f"{batch['index_base']}.{batch['period']}.{SUFFIX_MANIFEST}"
         man_path.write_text(json.dumps(man, indent=2, ensure_ascii=False),
                               encoding="utf-8")
         upload(s3, man_path, man_key, {"index-set": batch["index_base"]})
@@ -677,10 +677,10 @@ def archive(conn, s3, batch: dict) -> dict:
         ratio = (metrics["plain_bytes"] / metrics["object_bytes"]
                  if metrics["object_bytes"] else 0)
         log.info("archivé %s/%s : %d documents, %.1f Mo -> %.1f Mo (x%.1f), %s",
-                 batch["index_base"], batch["periode"], metrics["documents"],
+                 batch["index_base"], batch["period"], metrics["documents"],
                  metrics["plain_bytes"] / 1048576,
                  metrics["object_bytes"] / 1048576, ratio, key)
-        return {"index_base": batch["index_base"], "periode": batch["periode"],
+        return {"index_base": batch["index_base"], "period": batch["period"],
                 "etat": "archivée", "key": key, **metrics}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -780,8 +780,8 @@ def indices_at_risk(conn, today: date | None = None) -> list[dict]:
         return []
     ref = today or datetime.now(timezone.utc).date()
     threshold = config.RETENTION_INDEX_DAYS - config.ARCHIVE_MARGIN_DAYS
-    already = {(r["index_base"], r["periode"]) for r in conn.execute(
-        "SELECT index_base, periode FROM archives_s3 WHERE format_version=%s",
+    already = {(r["index_base"], r["period"]) for r in conn.execute(
+        "SELECT index_base, period FROM archives_s3 WHERE format_version=%s",
         (config.ARCHIVE_FORMAT_VERSION,)).fetchall()}
     risk = []
     for i in dated_indices():
@@ -898,14 +898,14 @@ def drill(conn, s3, batch: drill_full | None = None,
         conn.commit()
         if r["etat"] == "ok":
             log.info("drill %s/%s : OK%s", line["index_base"],
-                     line["periode"], " (complet)" if r.get("complet") else "")
+                     line["period"], " (complet)" if r.get("complet") else "")
         else:
             log.error("DRILL EN ÉCHEC %s/%s : %s — %s. L'archive de ce mois "
                       "n'est pas fiable ; la donnée d'origine est probablement "
                       "déjà purgée de l'indexer.", line["index_base"],
-                      line["periode"], r["etat"], r.get("detail", ""))
+                      line["period"], r["etat"], r.get("detail", ""))
         summary.append({"index_base": line["index_base"],
-                      "periode": line["periode"], **r})
+                      "period": line["period"], **r})
     return summary
 
 
@@ -982,8 +982,8 @@ def anomalies(conn) -> list[dict]:
             "High", len(risk)))
 
     lines = conn.execute(
-        "SELECT index_base, periode, verified_at, verify_state FROM archives_s3 "
-        " WHERE format_version=%s ORDER BY index_base, periode",
+        "SELECT index_base, period, verified_at, verify_state FROM archives_s3 "
+        " WHERE format_version=%s ORDER BY index_base, period",
         (config.ARCHIVE_FORMAT_VERSION,)).fetchall()
 
     # Trous dans une série : un mois absent ENTRE deux mois présents. Borné aux
@@ -991,7 +991,7 @@ def anomalies(conn) -> list[dict]:
     # trou, il a juste un passé qui n'existe pas.
     by_base: dict[str, list[str]] = {}
     for l in lines:
-        by_base.setdefault(l["index_base"], []).append(l["periode"])
+        by_base.setdefault(l["index_base"], []).append(l["period"])
     gaps = {b: [m for m in _months_between(min(p), max(p)) if m not in set(p)]
              for b, p in by_base.items()}
     gaps = {b: m for b, m in gaps.items() if m}
@@ -1028,7 +1028,7 @@ def anomalies(conn) -> list[dict]:
                 "Le drill de restauration a relu ces archives et n'a pas "
                 "retrouvé ce qui avait été écrit :",
                 "",
-                *(f"  {l['index_base']}/{l['periode']} : {l['verify_state']}"
+                *(f"  {l['index_base']}/{l['period']} : {l['verify_state']}"
                   for l in failures[:20]),
                 "",
                 "Une archive qui ne se relit pas n'est pas une archive. La "
@@ -1243,7 +1243,7 @@ def run(dry_run: bool = False) -> dict:
             if not dry_run:
                 summary["menage_local"] = sweep_temporary()
             batches = batches_to_archive(conn)
-            summary["a_faire"] = [f"{l['index_base']}/{l['periode']}" for l in batches]
+            summary["a_faire"] = [f"{l['index_base']}/{l['period']}" for l in batches]
             if dry_run:
                 summary["lots"] = batches
                 summary["peril"] = [i["index"] for i in indices_at_risk(conn)]
@@ -1259,10 +1259,10 @@ def run(dry_run: bool = False) -> dict:
                     # mois suivant appartient peut-être à un autre index set,
                     # et refuser de l'archiver ne répare rien.
                     log.error("archivage %s/%s en échec : %s",
-                              batch["index_base"], batch["periode"], e)
+                              batch["index_base"], batch["period"], e)
                     summary["echecs"].append(
                         {"index_base": batch["index_base"],
-                         "periode": batch["periode"], "error": str(e)[:300]})
+                         "period": batch["period"], "error": str(e)[:300]})
 
             summary["drill"] = drill(conn, s3)
             risk = indices_at_risk(conn)

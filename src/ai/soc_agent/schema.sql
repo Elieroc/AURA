@@ -803,7 +803,7 @@ CREATE TABLE IF NOT EXISTS archives_s3 (
     format_version text NOT NULL,
     -- Préfixe d'index SANS la date : 'wazuh-firewall', 'wazuh-alerts-4.x'.
     index_base     text NOT NULL,
-    periode        text NOT NULL,               -- 'AAAA-MM'
+    period        text NOT NULL,               -- 'AAAA-MM'
     key            text NOT NULL,               -- clé S3 de l'objet chiffré
     manifest_key  text NOT NULL,
     -- Index datés réellement lus. Gardés parce qu'ils ne seront plus là : une
@@ -831,11 +831,11 @@ CREATE TABLE IF NOT EXISTS archives_s3 (
     verified_at      timestamptz,
     verify_state     text,
     verify_full  boolean NOT NULL DEFAULT false,
-    UNIQUE (format_version, index_base, periode)
+    UNIQUE (format_version, index_base, period)
 );
 -- Sélection du drill : les moins récemment vérifiées d'abord, jamais vérifiées
 -- en tête.
 CREATE INDEX IF NOT EXISTS archives_s3_drill
     ON archives_s3 (verified_at NULLS FIRST);
 CREATE INDEX IF NOT EXISTS archives_s3_coverage
-    ON archives_s3 (index_base, periode);
+    ON archives_s3 (index_base, period);

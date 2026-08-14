@@ -1,30 +1,32 @@
-"""Mode « training » : apprendre le bruit ambiant d'un SI avant d'y lâcher le SOC.
+"""Training mode: learning an estate's ambient noise before unleashing the SOC.
 
-Un SOC branché sur un SI déjà en production tire d'abord sur tout ce qui bouge :
-les sauvegardes, les scripts d'admin, les scanners de conformité déclenchent des
-alertes HIGH/CRITICAL parfaitement légitimes. Sans période d'apprentissage,
-l'XDR autonome ouvre des dizaines de cases et REMÉDIE ce bruit — il isole des
-serveurs sains le premier jour.
+A SOC plugged into an estate already in production first fires on everything
+that moves: backups, admin scripts and compliance scanners raise perfectly
+legitimate HIGH/CRITICAL alerts. Without a learning period, the autonomous XDR
+opens dozens of cases and REMEDIATES that noise — it isolates healthy servers on
+day one.
 
-Le mode training est une **fenêtre de confiance déclarée par l'administrateur**
-au lancement du SOC : pendant N jours (`TRAINING_DAYS`, défaut 7), toute alerte
-HIGH/CRITICAL observée est réputée être du bruit ambiant et devient une exception
-de whitelist. C'est un choix assumé — une intrusion en cours au moment du
-lancement serait apprise comme du bruit. D'où la clôture par un case IRIS
-« TRAINING » : chaque exception y est une tâche, et l'analyste défait celles qui
-n'ont rien à y faire en passant la tâche en 'Canceled'.
+Training mode is a **window of trust declared by the administrator** at SOC
+launch: for N days (`TRAINING_DAYS`, default 7), every HIGH/CRITICAL alert
+observed is deemed ambient noise and becomes a whitelist exception. It is a
+deliberate choice — an intrusion under way at launch time would be learned as
+noise. Hence the closure through a "TRAINING" IRIS case: every exception is a
+task there, and the analyst undoes the ones that do not belong by moving the task
+to 'Canceled'.
 
-Pendant la fenêtre, le reste du pipeline est SUSPENDU (`cycle.py` teste
-`en_cours()`) : pas de triage LLM, pas de case, pas de remédiation. Seule
-l'ingestion continue, pour que les alertes soient en base et servent
-l'apprentissage. À la clôture, le noise filter est réappliqué à tout l'existant
-(`ingest.reappliquer_filtre`) : le bruit appris est marqué supprimé et ne
-graine plus aucun incident quand la corrélation reprend.
+During the window the rest of the pipeline is SUSPENDED (`cycle.py` tests
+`in_progress()`): no LLM triage, no case, no remediation. Only ingestion carries
+on, so the alerts are in database and serve the learning. On closing, the noise
+filter is reapplied to everything already stored (`ingest.reapply_filter`): the
+learned noise is marked suppressed and no longer seeds any incident when
+correlation resumes.
 
-    python -m soc_agent.training --tick        # boucle du conteneur soc-training
-    python -m soc_agent.training --demarrer    # ouvre une fenêtre (ou --jours N)
-    python -m soc_agent.training --cloturer    # fin anticipée
-    python -m soc_agent.training --etat
+The IRIS case and its tasks stay in French: analysts read them.
+
+    python -m soc_agent.training --tick    # loop of the soc-training container
+    python -m soc_agent.training --start   # opens a window (or --days N)
+    python -m soc_agent.training --close   # early end
+    python -m soc_agent.training --state
 """
 
 import argparse
@@ -42,33 +44,33 @@ from .whitelist import DISCRIMINANT_FIELDS, _canonical
 
 log = logging.getLogger("training")
 
-# Verrou consultatif dédié : 0x50CA1 cycle, 0x50CA2 reconcile,
-# 0x50CA3 whitelist_task.
+# Dedicated advisory lock: 0x50CA1 cycle, 0x50CA2 reconcile, 0x50CA3
+# whitelist_task.
 _LOCK_TRAINING = 0x50CA4
 
-# Préfixe des tâches IRIS du case TRAINING. Volontairement DIFFÉRENT de
-# « WHITELIST » : `whitelist_task.py` ramasse toute tâche dont le titre commence
-# par WHITELIST et passe en 'To do', il ne doit pas confondre les nôtres avec
-# une demande d'exception d'analyste.
+# Prefix of the IRIS tasks of the TRAINING case. Deliberately DIFFERENT from
+# "WHITELIST": `whitelist_task.py` picks up any task whose title starts with
+# WHITELIST and moves to 'To do', it must not confuse ours with an analyst's
+# exception request.
 _TITLE_PREFIX = "TRAINING — whitelist"
 _STATUS_PLACED = "Done"
 _STATUS_CANCELED = "Canceled"
 
-# Classification IRIS du case TRAINING : « other:other » (id 36). Ce case n'est
-# pas un incident — le ranger en intrusion fausserait toute statistique tirée
-# des classifications.
+# IRIS classification of the TRAINING case: "other:other" (id 36). This case is
+# not an incident — filing it as an intrusion would skew any statistic drawn from
+# the classifications.
 CLASSIF_TRAINING = int(os.environ.get("TRAINING_IRIS_CLASSIFICATION", "36"))
 
 
-# --- fenêtre -----------------------------------------------------------------
+# --- window ------------------------------------------------------------------
 
 def current_run(conn) -> dict | None:
-    """Fenêtre de training ouverte, ou None.
+    """The open training window, or None.
 
-    Le critère est le STATUT, pas `ends_at` : entre l'expiration du délai et la
-    clôture effective (réapplication du filtre + case IRIS), le pipeline doit
-    rester suspendu. Sinon le premier cycle passant dans cet intervalle
-    corrélerait le backlog brut, avant que le bruit appris ne soit marqué.
+    The criterion is the STATUS, not `ends_at`: between the deadline expiring and
+    the actual closure (filter reapplied plus IRIS case), the pipeline must stay
+    suspended. Otherwise the first cycle passing in that interval would correlate
+    the raw backlog, before the learned noise is marked.
     """
     return conn.execute(
         "SELECT id, started_at, ends_at, days, status, iris_case_id "
@@ -77,14 +79,14 @@ def current_run(conn) -> dict | None:
 
 
 def in_progress(conn) -> bool:
-    """Le pipeline doit-il rester suspendu ? (appelé par `cycle.py`)"""
+    """Must the pipeline stay suspended? (called by `cycle.py`)"""
     return conn.execute(
         "SELECT 1 FROM training_runs WHERE status = 'running' LIMIT 1"
     ).fetchone() is not None
 
 
 def start(conn, days: int) -> dict | None:
-    """Ouvre une fenêtre de training. None si une fenêtre est déjà ouverte."""
+    """Opens a training window. None if one is already open."""
     if current_run(conn):
         return None
     run = conn.execute("""
@@ -93,38 +95,39 @@ def start(conn, days: int) -> dict | None:
         RETURNING id, started_at, ends_at, days, status, iris_case_id
     """, (days, days)).fetchone()
     conn.commit()
-    log.info("training : fenêtre #%s ouverte pour %d jour(s), fin %s",
+    log.info("training: window #%s opened for %d day(s), ending %s",
              run["id"], days, run["ends_at"])
     return run
 
 
-# --- apprentissage -----------------------------------------------------------
+# --- learning ----------------------------------------------------------------
 
 SELECT_ALERTS = """
 SELECT id, rule_id, rule_level, rule_desc, agent_name, agent_id, raw
   FROM alerts
- WHERE ts >= %(depuis)s
-   AND rule_level >= %(niveau)s
+ WHERE ts >= %(since)s
+   AND rule_level >= %(min_level)s
    AND NOT suppressed
 """
 
 
 def _training_signature(raw_alerts: list[dict], rule_id: str,
                         agent_name: str | None) -> dict:
-    """Signature d'un groupe d'alertes (même règle, même machine).
+    """Signature of a group of alerts (same rule, same machine).
 
-    Diffère de `whitelist._signature` sur deux points, assumés :
+    Differs from `whitelist._signature` on two deliberate points:
 
-    - `agent_name` fait TOUJOURS partie de la signature. Le bruit ambiant est
-      propre à une machine (c'est ce serveur-là qui lance ce script-là) ; le
-      whitelister partout aveuglerait la détection sur tout le parc.
-    - l'absence de discriminant (compte / commande / fichier) n'est PAS un
-      refus. Beaucoup de bruit d'infrastructure n'a aucun champ discriminant, et
-      `rule_id + agent_name` reste borné à une machine — là où `rule_id` seul,
-      refusé par la whitelist automatique, neutraliserait la règle sur tout le SI.
+    - `agent_name` is ALWAYS part of the signature. Ambient noise belongs to one
+      machine (it is that server running that script); whitelisting it everywhere
+      would blind detection across the whole fleet.
+    - the absence of a discriminant (account / command / file) is NOT a refusal.
+      Much infrastructure noise has no discriminant field at all, and
+      `rule_id + agent_name` stays bounded to one machine — where `rule_id`
+      alone, refused by the automatic whitelist, would neutralise the rule across
+      the whole estate.
 
-    Les discriminants constants sur tout le groupe sont ajoutés : ils
-    rétrécissent encore la signature quand ils existent.
+    Discriminants constant over the whole group are added: they narrow the
+    signature further when they exist.
     """
     signature = {"rule_id": str(rule_id)}
     if agent_name:
@@ -138,14 +141,14 @@ def _training_signature(raw_alerts: list[dict], rule_id: str,
 
 
 def learn(conn, run: dict) -> list[dict]:
-    """Transforme le bruit HIGH/CRITICAL observé en exceptions de whitelist.
+    """Turns the observed HIGH/CRITICAL noise into whitelist exceptions.
 
-    Entièrement DÉTERMINISTE : aucun appel au LLM. Groupement par (règle,
-    machine), une exception par groupe. Idempotent — les signatures déjà
-    connues sont ignorées (contrainte d'unicité).
+    Entirely DETERMINISTIC: no LLM call. Grouped by (rule, machine), one
+    exception per group. Idempotent — signatures already known are ignored
+    (uniqueness constraint).
     """
     lines = conn.execute(SELECT_ALERTS, {
-        "depuis": run["started_at"], "niveau": config.TRAINING_MIN_LEVEL,
+        "since": run["started_at"], "min_level": config.TRAINING_MIN_LEVEL,
     }).fetchall()
     if not lines:
         return []
@@ -162,7 +165,7 @@ def learn(conn, run: dict) -> list[dict]:
             groups.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")):
         level = max(l["rule_level"] for l in group)
         if level > config.TRAINING_MAX_LEVEL:
-            log.info("training : niveau %d > %d, règle %s@%s non whitelistée",
+            log.info("training: level %d > %d, rule %s@%s not whitelisted",
                      level, config.TRAINING_MAX_LEVEL, rule_id, agent_name)
             continue
         raws = [l["raw"] if isinstance(l["raw"], dict) else json.loads(l["raw"])
@@ -173,8 +176,8 @@ def learn(conn, run: dict) -> list[dict]:
             continue
 
         desc = next((l["rule_desc"] for l in group if l["rule_desc"]), "")
-        reason = (f"Bruit ambiant appris en training (fenêtre #{run['id']}, "
-                  f"{len(group)} alerte(s) niveau max {level}) — "
+        reason = (f"ambient noise learned in training (window #{run['id']}, "
+                  f"{len(group)} alert(s), max level {level}) — "
                   f"{desc or canon}")
         conn.execute("""
             INSERT INTO whitelist_rules
@@ -185,14 +188,14 @@ def learn(conn, run: dict) -> list[dict]:
         conn.commit()
         existing.add(canon)
         created.append({"signature": canon, "match_all": signature,
-                       "alertes": len(group), "niveau": level,
+                       "alerts": len(group), "level": level,
                        "rule_desc": desc})
-        log.info("training : exception apprise %s (%d alertes)",
+        log.info("training: exception learned %s (%d alerts)",
                  canon, len(group))
     return created
 
 
-# --- clôture -----------------------------------------------------------------
+# --- closure -----------------------------------------------------------------
 
 def _case_description(run: dict, rules: list[dict]) -> str:
     start = run["started_at"].strftime("%Y-%m-%d %H:%M")
@@ -215,7 +218,7 @@ def _case_description(run: dict, rules: list[dict]) -> str:
 
 
 def _task_description(rule: dict) -> str:
-    """Description de la tâche IRIS, depuis la ligne `whitelist_rules` telle quelle."""
+    """IRIS task description, from the `whitelist_rules` row as it stands."""
     return (
         f"Exception créée automatiquement pendant le training.\n\n"
         f"```json\n"
@@ -227,13 +230,13 @@ def _task_description(rule: dict) -> str:
 
 
 def close(conn, run: dict) -> dict:
-    """Ferme la fenêtre : filtre réappliqué, case IRIS « TRAINING », statut figé.
+    """Closes the window: filter reapplied, "TRAINING" IRIS case, status frozen.
 
-    Ordre imposé : le filtre est réappliqué AVANT de basculer le statut, car
-    c'est le statut qui débloque le pipeline. L'inverse laisserait un cycle
-    corréler le backlog non filtré.
+    The order is mandatory: the filter is reapplied BEFORE flipping the status,
+    because the status is what unblocks the pipeline. The other way round would
+    let a cycle correlate the unfiltered backlog.
     """
-    # Dernier passage d'apprentissage : les alertes des toutes dernières minutes.
+    # Final learning pass: the alerts of the very last minutes.
     learn(conn, run)
 
     rules = conn.execute("""
@@ -244,35 +247,35 @@ def close(conn, run: dict) -> dict:
     """, (run["id"],)).fetchall()
 
     deleted, seen = ingest.reapply_filter()
-    log.info("training : filtre réappliqué, %d/%d alertes supprimées",
+    log.info("training: filter reapplied, %d/%d alerts suppressed",
              deleted, seen)
 
     case_id = None
     try:
         case_id = _create_iris_case(conn, run, rules)
-    except Exception as e:  # noqa: BLE001 — un IRIS indisponible ne doit pas
-        # laisser la fenêtre ouverte indéfiniment : les exceptions sont créées,
-        # le pipeline doit reprendre. Le case sera retenté au tick suivant.
-        log.error("training : case IRIS non créé (%s) — nouvelle tentative "
-                  "au prochain passage", e)
+    except Exception as e:  # noqa: BLE001 — an unavailable IRIS must not leave
+        # the window open forever: the exceptions are created, the pipeline must
+        # resume. The case is retried on the next tick.
+        log.error("training: IRIS case not created (%s) — retrying on the next "
+                  "pass", e)
 
     if case_id is None:
-        return {"case_id": None, "regles": len(rules),
-                "supprimees": deleted}
+        return {"case_id": None, "rules": len(rules),
+                "suppressed": deleted}
 
     conn.execute("UPDATE training_runs SET status = 'finished', "
                  "finished_at = now(), iris_case_id = %s WHERE id = %s",
                  (case_id, run["id"]))
     conn.commit()
-    log.info("training : fenêtre #%s clôturée -> case IRIS #%s (%d exceptions)",
+    log.info("training: window #%s closed -> IRIS case #%s (%d exceptions)",
              run["id"], case_id, len(rules))
-    return {"case_id": case_id, "regles": len(rules),
-            "supprimees": deleted}
+    return {"case_id": case_id, "rules": len(rules),
+            "suppressed": deleted}
 
 
 def _create_iris_case(conn, run: dict, rules: list[dict]) -> int:
-    # Import différé : `iris` importe tout le pipeline, inutile de le charger
-    # pour un tick qui ne fait qu'apprendre.
+    # Deferred import: `iris` pulls in the whole pipeline, no point loading it
+    # for a tick that only learns.
     from .iris import _client
 
     case = _client()
@@ -286,7 +289,7 @@ def _create_iris_case(conn, run: dict, rules: list[dict]) -> int:
         soc_id=f"Aura-SOC-TRAINING-{run['id']}",
     )
     if not r.is_success():
-        raise RuntimeError(f"création case TRAINING échouée : {r.get_msg()}")
+        raise RuntimeError(f"TRAINING case creation failed: {r.get_msg()}")
     case_id = r.get_data()["case_id"]
 
     for rule in rules:
@@ -300,9 +303,9 @@ def _create_iris_case(conn, run: dict, rules: list[dict]) -> int:
                 tags=["training", "whitelist", "auto"],
                 cid=case_id)
             task_id = rt.get_data().get("id") if rt.is_success() else None
-        except Exception as e:  # noqa: BLE001 — une tâche KO n'empêche pas
-            # les autres ; l'exception existe déjà en base.
-            log.warning("training : tâche pour %s non créée : %s",
+        except Exception as e:  # noqa: BLE001 — one failed task does not stop
+            # the others; the exception already exists in database.
+            log.warning("training: task for %s not created: %s",
                         rule["signature"], e)
             continue
         if task_id:
@@ -312,15 +315,14 @@ def _create_iris_case(conn, run: dict, rules: list[dict]) -> int:
     return case_id
 
 
-# --- révocation : tâche passée en 'Canceled' ---------------------------------
+# --- revocation: task moved to 'Canceled' ------------------------------------
 
 def reconcile(conn) -> list[dict]:
-    """Désactive les exceptions dont la tâche IRIS est passée en 'Canceled'.
+    """Disables the exceptions whose IRIS task moved to 'Canceled'.
 
-    Symétrique de `mitigate.reconcilier` pour les remédiations. Sens unique :
-    remettre la tâche en 'Done' ne réactive PAS l'exception — une exception
-    retirée par un analyste doit se recréer explicitement, pas au gré d'un
-    clic dans un statut.
+    Symmetric to `mitigate.reconcile` for remediations. One-way: moving the task
+    back to 'Done' does NOT re-enable the exception — an exception removed by an
+    analyst must be recreated explicitly, not at the whim of a status click.
     """
     runs = conn.execute(
         "SELECT id, iris_case_id FROM training_runs "
@@ -347,8 +349,8 @@ def reconcile(conn) -> list[dict]:
         cid = run["iris_case_id"]
         try:
             tasks = (case.list_tasks(cid).get_data() or {}).get("tasks") or []
-        except Exception as e:  # noqa: BLE001 — IRIS KO ne casse pas le tick
-            log.warning("training : list_tasks case #%s : %s", cid, e)
+        except Exception as e:  # noqa: BLE001 — IRIS down never breaks the tick
+            log.warning("training: list_tasks case #%s: %s", cid, e)
             continue
         for t in tasks:
             if (t.get("status_name") or "") != _STATUS_CANCELED:
@@ -361,7 +363,7 @@ def reconcile(conn) -> list[dict]:
             conn.commit()
             removed.append({"signature": rule["signature"],
                              "task_id": t["task_id"], "case_id": cid})
-            log.info("training : exception %s désactivée (tâche IRIS #%s "
+            log.info("training: exception %s disabled (IRIS task #%s "
                      "Canceled)", rule["signature"], t["task_id"])
             _comment_task(case, cid, t["task_id"],
                 "🤖 Exception de training DÉSACTIVÉE : les alertes "
@@ -369,30 +371,29 @@ def reconcile(conn) -> list[dict]:
                 "pipeline (triage, case, remédiation).")
 
     if removed:
-        # Les alertes que ces exceptions masquaient doivent redevenir
-        # corrélables : sans cette réévaluation, elles resteraient marquées
-        # `suppressed` en base et la révocation n'aurait aucun effet visible.
+        # The alerts those exceptions masked must become correlatable again:
+        # without this re-evaluation they would stay marked `suppressed` in
+        # database and the revocation would have no visible effect.
         deleted, seen = ingest.reapply_filter()
-        log.info("training : filtre réappliqué après révocation "
-                 "(%d/%d supprimées)", deleted, seen)
+        log.info("training: filter reapplied after revocation "
+                 "(%d/%d suppressed)", deleted, seen)
     return removed
 
 
-# --- boucle ------------------------------------------------------------------
+# --- loop --------------------------------------------------------------------
 
 def tick() -> dict:
-    """Un passage du conteneur soc-training. Idempotent.
+    """One pass of the soc-training container. Idempotent.
 
-    Démarrage automatique : seulement si `TRAINING_ENABLED` et qu'AUCUNE
-    fenêtre n'a jamais été ouverte. Le training est une phase de mise en
-    service, pas un mode récurrent — relancer une fenêtre plus tard est une
-    décision explicite (`--demarrer`).
+    Automatic start: only when `TRAINING_ENABLED` and NO window has ever been
+    opened. Training is a commissioning phase, not a recurring mode — reopening a
+    window later is an explicit decision (`--start`).
     """
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         if not conn.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_TRAINING,)
                             ).fetchone()["pg_try_advisory_lock"]:
-            log.info("training : passage déjà en cours, on saute ce tour")
-            return {"etat": "verrouillé"}
+            log.info("training: pass already running, skipping this round")
+            return {"state": "locked"}
         try:
             run = current_run(conn)
             if run is None:
@@ -401,25 +402,25 @@ def tick() -> dict:
                 if config.TRAINING_ENABLED and not already:
                     run = start(conn, config.TRAINING_DAYS)
                 else:
-                    # Fenêtre close (ou jamais ouverte) : il reste à écouter les
-                    # révocations de l'analyste sur le case TRAINING.
-                    return {"etat": "inactif",
-                            "retirees": reconcile(conn)}
+                    # Window closed (or never opened): what is left is listening
+                    # for the analyst's revocations on the TRAINING case.
+                    return {"state": "inactive",
+                            "revoked": reconcile(conn)}
 
-            expire = conn.execute(
-                "SELECT now() >= %s AS fini", (run["ends_at"],)).fetchone()["fini"]
-            if expire:
-                return {"etat": "clôture", **close(conn, dict(run))}
+            expired = conn.execute(
+                "SELECT now() >= %s AS done", (run["ends_at"],)).fetchone()["done"]
+            if expired:
+                return {"state": "closing", **close(conn, dict(run))}
 
             created = learn(conn, run)
-            return {"etat": "apprentissage", "run": run["id"],
-                    "creees": len(created), "end_ts": run["ends_at"]}
+            return {"state": "learning", "run": run["id"],
+                    "created": len(created), "ends_at": run["ends_at"]}
         finally:
             conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_TRAINING,))
 
 
 def state_report() -> list[dict]:
-    """Les fenêtres de training, plus récente d'abord, avec leurs exceptions."""
+    """The training windows, most recent first, with their exceptions."""
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         runs = conn.execute(
             "SELECT * FROM training_runs ORDER BY id DESC").fetchall()
@@ -436,7 +437,7 @@ def state_report() -> list[dict]:
                 "finished_at": (r["finished_at"].isoformat()
                                 if r["finished_at"] else None),
                 "iris_case_id": r["iris_case_id"],
-                "exceptions_actives": n["a"], "exceptions_total": n["t"],
+                "active_exceptions": n["a"], "total_exceptions": n["t"],
             })
     return output
 
@@ -444,14 +445,14 @@ def state_report() -> list[dict]:
 def state() -> None:
     runs = state_report()
     if not runs:
-        print("Aucune fenêtre de training.")
+        print("No training window.")
         return
     for r in runs:
         print(f"  #{r['id']} [{r['status']}] {r['started_at'][:16]}"
               f" → {r['ends_at'][:16]} ({r['days']} j)"
               f"  case IRIS {r['iris_case_id'] or '—'}"
-              f"  exceptions {r['exceptions_actives']}/{r['exceptions_total']} "
-              f"actives")
+              f"  exceptions {r['active_exceptions']}/{r['total_exceptions']} "
+              f"active")
 
 
 def main() -> None:
@@ -461,13 +462,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tick", action="store_true",
-                    help="un passage complet (boucle du conteneur)")
-    ap.add_argument("--demarrer", action="store_true",
-                    help="ouvre une fenêtre de training")
-    ap.add_argument("--jours", type=int, default=config.TRAINING_DAYS)
-    ap.add_argument("--cloturer", action="store_true",
-                    help="clôture la fenêtre en cours sans attendre son terme")
-    ap.add_argument("--etat", action="store_true")
+                    help="one full pass (the container loop)")
+    ap.add_argument("--start", action="store_true",
+                    help="opens a training window")
+    ap.add_argument("--days", type=int, default=config.TRAINING_DAYS)
+    ap.add_argument("--close", action="store_true",
+                    help="closes the current window without waiting for its end")
+    ap.add_argument("--state", action="store_true")
     args = ap.parse_args()
 
     if args.state:
@@ -478,20 +479,20 @@ def main() -> None:
         with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
             run = start(conn, args.days)
         if run is None:
-            print("Une fenêtre de training est déjà ouverte.")
+            print("A training window is already open.")
         else:
-            print(f"Fenêtre #{run['id']} ouverte jusqu'au {run['ends_at']}.")
+            print(f"Window #{run['id']} open until {run['ends_at']}.")
         return
 
     if args.close:
         with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
             run = current_run(conn)
             if run is None:
-                print("Aucune fenêtre de training ouverte.")
+                print("No training window open.")
                 return
             res = close(conn, dict(run))
-        print(f"Fenêtre clôturée : {res['regles']} exception(s), "
-              f"case IRIS #{res['case_id']}.")
+        print(f"Window closed: {res['rules']} exception(s), "
+              f"IRIS case #{res['case_id']}.")
         return
 
     res = tick()

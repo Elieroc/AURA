@@ -253,7 +253,7 @@ def test_manifeste_porte_de_quoi_relire_sans_le_code(monkeypatch):
     monkeypatch.setattr(archive, "recipients", lambda: ["age1abc"])
     monkeypatch.setattr(config, "ARCHIVE_ZSTD_LEVEL", 19)
     man = archive.manifest(
-        {"index_base": "wazuh-web", "periode": "2026-05",
+        {"index_base": "wazuh-web", "period": "2026-05",
          "indices": ["wazuh-web-2026.05.01"]},
         {"documents": 3, "plain_bytes": 30, "object_bytes": 10,
          "sha256_plain": "a" * 64, "sha256_encrypted": "b" * 64},
@@ -324,9 +324,9 @@ def test_trou_de_couverture_detecte(monkeypatch):
     monkeypatch.setattr(config, "ARCHIVING_ENABLED", True)
     monkeypatch.setattr(archive, "indices_at_risk", lambda conn: [])
     conn = _Conn([
-        {"index_base": "wazuh-web", "periode": "2026-01",
+        {"index_base": "wazuh-web", "period": "2026-01",
          "verified_at": None, "verify_state": "ok"},
-        {"index_base": "wazuh-web", "periode": "2026-03",
+        {"index_base": "wazuh-web", "period": "2026-03",
          "verified_at": None, "verify_state": "ok"},
     ])
     gaps = [a for a in archive.anomalies(conn)
@@ -342,7 +342,7 @@ def test_serie_recente_sans_passe_n_est_pas_un_trou(monkeypatch):
     d'index set — et routage.py en crée jusqu'à deux par jour."""
     monkeypatch.setattr(config, "ARCHIVING_ENABLED", True)
     monkeypatch.setattr(archive, "indices_at_risk", lambda conn: [])
-    conn = _Conn([{"index_base": "wazuh-jellyfin", "periode": "2026-07",
+    conn = _Conn([{"index_base": "wazuh-jellyfin", "period": "2026-07",
                    "verified_at": None, "verify_state": "ok"}])
     assert not [a for a in archive.anomalies(conn)
                 if a["sensor"].endswith("trou")]
@@ -351,7 +351,7 @@ def test_serie_recente_sans_passe_n_est_pas_un_trou(monkeypatch):
 def test_drill_en_echec_remonte_en_high(monkeypatch):
     monkeypatch.setattr(config, "ARCHIVING_ENABLED", True)
     monkeypatch.setattr(archive, "indices_at_risk", lambda conn: [])
-    conn = _Conn([{"index_base": "wazuh-web", "periode": "2026-01",
+    conn = _Conn([{"index_base": "wazuh-web", "period": "2026-01",
                    "verified_at": None, "verify_state": "sha256-divergent"}])
     failures = [a for a in archive.anomalies(conn)
               if a["sensor"].endswith("drill")]
@@ -415,7 +415,7 @@ def test_lots_ignorent_le_mois_en_cours(monkeypatch):
         ("wazuh-firewall", "2026-08", 2, 50),   # mois en cours
         ("wazuh-web", "2026-05", 1, 7)))
     batches = archive.batches_to_archive(_Conn([]), date(2026, 8, 14))
-    assert [(l["index_base"], l["periode"]) for l in batches] == [
+    assert [(l["index_base"], l["period"]) for l in batches] == [
         ("wazuh-firewall", "2026-05"), ("wazuh-web", "2026-05")]
     # Les jours du mois sont regroupés en UN lot, documents cumulés.
     assert batches[0]["documents"] == 300 and len(batches[0]["indices"]) == 3
@@ -428,9 +428,9 @@ def test_lot_deja_archive_ne_revient_pas(monkeypatch):
     monkeypatch.setattr(archive, "dated_indices", lambda: _fake_indices(
         ("wazuh-firewall", "2026-05", 3, 100),
         ("wazuh-web", "2026-05", 1, 7)))
-    conn = _Conn([{"index_base": "wazuh-firewall", "periode": "2026-05"}])
+    conn = _Conn([{"index_base": "wazuh-firewall", "period": "2026-05"}])
     batches = archive.batches_to_archive(conn, date(2026, 8, 14))
-    assert [(l["index_base"], l["periode"]) for l in batches] == [
+    assert [(l["index_base"], l["period"]) for l in batches] == [
         ("wazuh-web", "2026-05")]
 
 
@@ -454,7 +454,7 @@ def test_peril_tombe_quand_l_archive_existe(monkeypatch):
     monkeypatch.setattr(config, "ARCHIVE_MARGIN_DAYS", 7)
     monkeypatch.setattr(archive, "dated_indices", lambda: _fake_indices(
         ("wazuh-web", "2026-05", 1, 7)))
-    conn = _Conn([{"index_base": "wazuh-web", "periode": "2026-05"}])
+    conn = _Conn([{"index_base": "wazuh-web", "period": "2026-05"}])
     assert archive.indices_at_risk(conn, date(2026, 8, 14)) == []
 
 
@@ -632,7 +632,7 @@ def test_export_tronque_refuse_et_fichier_supprime(tmp_path, monkeypatch):
     object_path = tmp_path / "a.ndjson.zst.age"
     with pytest.raises(RuntimeError, match="export INCOMPLET refusé"):
         archive.export({"indices": ["i"], "octets": 1,
-                          "index_base": "wazuh-web", "periode": "2026-03"}, object_path)
+                          "index_base": "wazuh-web", "period": "2026-03"}, object_path)
     assert not object_path.exists(), "le fichier tronqué a été conservé"
 
 
@@ -650,7 +650,7 @@ def test_export_complet_accepte(tmp_path, monkeypatch):
     monkeypatch.setattr(archive, "pages", _pages)
 
     m = archive.export({"indices": ["i"], "octets": 1,
-                          "index_base": "wazuh-web", "periode": "2026-03"},
+                          "index_base": "wazuh-web", "period": "2026-03"},
                          tmp_path / "a.age")
     assert m["documents"] == 10
 
@@ -670,7 +670,7 @@ def test_surplus_accepte_car_sans_perte(tmp_path, monkeypatch):
     monkeypatch.setattr(archive, "pages", _pages)
 
     m = archive.export({"indices": ["i"], "octets": 1,
-                          "index_base": "wazuh-web", "periode": "2026-03"},
+                          "index_base": "wazuh-web", "period": "2026-03"},
                          tmp_path / "a.age")
     assert m["documents"] == 10
 

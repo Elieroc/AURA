@@ -61,11 +61,11 @@ def aura_archives_list(index_set: str | None = None,
             f"SELECT count(*) AS n FROM archives_s3 {where}",
             params).fetchone()["n"]
         lines = conn.execute(
-            f"""SELECT index_base, periode, documents, plain_bytes,
+            f"""SELECT index_base, period, documents, plain_bytes,
                        octets_objet, indices, archivee_a, verifie_a,
                        verif_etat, verif_complet, object_lock_jusqu_a
                   FROM archives_s3 {where}
-                 ORDER BY index_base, periode DESC
+                 ORDER BY index_base, period DESC
                  LIMIT %(limite)s OFFSET %(offset)s""", params).fetchall()
     return output.page([dict(l) for l in lines], total, limit, offset)
 
@@ -115,7 +115,7 @@ def aura_hunting_restore(index_set: str, period: str,
     Args:
         index_set: index set d'origine (`wazuh-firewall`), tel que rendu par
             `aura_archives_list`.
-        periode: mois au format `AAAA-MM` (`2026-03`).
+        period: mois au format `AAAA-MM` (`2026-03`).
         appliquer: exécuter réellement. `False` rend le plan et le verdict des
             garde-fous.
     """

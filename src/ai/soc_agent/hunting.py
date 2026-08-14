@@ -1,58 +1,57 @@
-"""Espace de threat hunting : remettre une archive en ligne pour chasser dedans.
+"""Threat hunting space: putting an archive back online to hunt inside it.
 
-La rétention supprime les index à 90 jours, l'archivage en garde une copie
-chiffrée douze mois ([ARCHIVAGE.md](../../../docs/ARCHIVAGE.md)). Reste le geste
-qui rend cette copie utile : la remettre dans l'indexer pour pouvoir la
-requêter dans Discover, agréger, pivoter — chasser.
+Retention drops the indices at 90 days, archiving keeps an encrypted copy for
+twelve months ([ARCHIVAGE.md](../../../docs/ARCHIVAGE.md)). What is left is the
+gesture that makes that copy useful: putting it back into the indexer so it can
+be queried in Discover, aggregated, pivoted on — hunted.
 
-Ce que `wazuh-hunting-*` n'est PAS
----------------------------------
-Ce n'est **pas un index set de routage**. Aucune source de log n'y écrit, aucune
-branche du pipeline d'ingest ne le désigne. Il lui manque délibérément deux des
-cinq pièces d'un index set (cf. docs/ROUTAGE.md), et cette absence *est* la
-fonctionnalité :
+What `wazuh-hunting-*` is NOT
+----------------------------
+It is **not a routing index set**. No log source writes to it, no branch of the
+ingest pipeline points at it. It deliberately lacks two of the five pieces of an
+index set (see docs/ROUTAGE.md), and that absence *is* the feature:
 
-- **pas lu par l'ingestion.** C'est le point dur. Ré-ingérer des alertes vieilles
-  de dix mois les ferait entrer dans la corrélation, puis dans le triage, puis
-  dans les cases IRIS — et AURA remédie tout seul sur verdict vrai positif. Une
-  restauration mal cloisonnée ne produit pas un faux positif, elle produit une
-  isolation d'hôte ou un blocage d'IP en réponse à une attaque de l'an dernier.
-- **pas observé par le routage.** Les alertes restaurées gardent leur
-  `decoder.name`. Vues par `routage.sources_observees()`, elles ressembleraient à
-  une source qui n'atterrit plus dans son index attendu, donc à une dérive de
-  routage, avec l'alerte IRIS qui va avec.
+- **not read by ingestion.** That is the hard point. Re-ingesting ten-month-old
+  alerts would bring them into correlation, then triage, then the IRIS cases —
+  and AURA remediates on its own on a true-positive verdict. A poorly partitioned
+  restore does not produce a false positive, it produces a host isolation or an
+  IP block in response to last year's attack.
+- **not observed by routing.** Restored alerts keep their `decoder.name`. Seen by
+  `routing.observed_sources()`, they would look like a source no longer landing
+  in its expected index, hence like a routing drift, with the matching IRIS
+  alert.
 
-Les deux exclusions sont posées par une NÉGATION dans `routage.indices_lus()`
-(`-wazuh-hunting-*`), pas par une liste qu'il faudrait penser à tenir. Elle gagne
-même si quelqu'un met `wazuh-*` dans `INDEXER_ALERT_INDICES` : la protection ne
-dépend pas de la discipline de configuration.
+Both exclusions are set by a NEGATION in `routing.read_indices()`
+(`-wazuh-hunting-*`), not by a list someone would have to remember to maintain.
+It wins even if someone puts `wazuh-*` in `INDEXER_ALERT_INDICES`: the protection
+does not depend on configuration discipline.
 
-Ce qu'il garde : le template (même mapping que les alertes vivantes — sans lui
-tous les champs seraient en `text` et aucune agrégation ne marcherait), un index
-pattern pour Discover, et une rétention à lui (`aura-hunting`, 30 jours), parce
-que c'est de l'espace de travail et pas de la conservation.
+What it keeps: the template (the same mapping as the live alerts — without it
+every field would be `text` and no aggregation would work), an index pattern for
+Discover, and a retention of its own (`aura-hunting`, 30 days), because this is
+workspace and not preservation.
 
-Le nom d'index
+The index name
 --------------
-`wazuh-hunting-<source>-<AAAA-MM>` — `wazuh-hunting-firewall-2026-03`.
+`wazuh-hunting-<source>-<YYYY-MM>` — `wazuh-hunting-firewall-2026-03`.
 
-Volontairement **pas** daté au jour : c'est la forme du nom (`-AAAA.MM.JJ`) qui
-détermine ce que l'archivage prend, donc ce nommage suffit à garantir qu'on
-n'archive jamais une archive restaurée. `ARCHIVE_INDEX_EXCLUS` le redit en clair,
-comme seconde barrière.
+Deliberately **not** dated to the day: it is the shape of the name
+(`-YYYY.MM.DD`) that determines what archiving takes, so this naming alone
+guarantees we never archive a restored archive. `ARCHIVE_INDEX_EXCLUDED` says it
+again explicitly, as a second barrier.
 
-Garde-fous
+Guardrails
 ----------
-Cet espace est accessible depuis le serveur MCP, donc par un agent IA.
-« Restaure-moi tout pour voir » doit être refusé par le CODE, pas déconseillé par
-une consigne : plafond de documents, d'index, d'octets, et refus net si le disque
-est déjà au-dessus du seuil d'alerte du watchdog. Un disque plein arrête tout le
-SOC (cf. docs/RETENTION.md).
+This space is reachable from the MCP server, hence by an AI agent. "Restore
+everything so I can look" must be refused by the CODE, not discouraged by an
+instruction: caps on documents, on indices, on bytes, and a flat refusal if the
+disk is already above the watchdog alert threshold. A full disk stops the whole
+SOC (see docs/RETENTION.md).
 
-    python -m soc_agent.hunting --preparer
-    python -m soc_agent.hunting --etat
-    python -m soc_agent.hunting --restaurer wazuh-firewall/2026-03
-    python -m soc_agent.hunting --purger wazuh-hunting-firewall-2026-03
+    python -m soc_agent.hunting --prepare
+    python -m soc_agent.hunting --state
+    python -m soc_agent.hunting --restore wazuh-firewall/2026-03
+    python -m soc_agent.hunting --purge wazuh-hunting-firewall-2026-03
 """
 from __future__ import annotations
 
@@ -88,50 +87,50 @@ def _indexer(method: str, path: str, body: dict | None = None,
 def index_name(index_base: str, period: str) -> str:
     """`wazuh-firewall` + `2026-03` -> `wazuh-hunting-firewall-2026-03`.
 
-    Le préfixe `wazuh-` de la source est retiré : `wazuh-hunting-wazuh-firewall`
-    ne dirait rien de plus et ferait un nom illisible dans Discover.
+    The source's `wazuh-` prefix is stripped: `wazuh-hunting-wazuh-firewall`
+    would say nothing more and would read badly in Discover.
     """
     source = index_base.removeprefix("wazuh-")
     return f"{config.HUNTING_INDEX_BASE}-{source}-{period}"
 
 
 # --------------------------------------------------------------------------
-# Préparation de l'espace
+# Preparing the space
 # --------------------------------------------------------------------------
 
 def prepare() -> dict:
-    """Pose ce dont l'espace a besoin : template, ISM, index pattern.
+    """Sets what the space needs: template, ISM, index pattern.
 
-    Idempotent, et appelé automatiquement avant chaque restauration : un espace
-    de hunting qui se prépare tout seul évite le mode d'échec le plus bête —
-    restaurer 200 000 documents dans un index sans mapping, où plus aucune
-    agrégation ne fonctionne et qu'aucune rétention ne purgera.
+    Idempotent, and called automatically before every restore: a hunting space
+    that prepares itself avoids the silliest failure mode — restoring 200,000
+    documents into an index with no mapping, where no aggregation works any more
+    and no retention will ever purge it.
     """
     from . import retention, routing
     summary: dict = {"index_base": config.HUNTING_INDEX_BASE}
 
-    # Template : le MÊME que les alertes vivantes. `_poser_template` lit le
-    # template en place et n'y ajoute qu'un pattern — c'est ce qui garantit que
-    # les champs restaurés se comportent exactement comme à l'origine, y compris
-    # après une montée de version de Wazuh qui aurait changé les mappings.
+    # Template: the SAME as the live alerts. `_set_template` reads the template
+    # in place and only adds a pattern to it — that is what guarantees restored
+    # fields behave exactly as they did, including after a Wazuh upgrade that
+    # changed the mappings.
     try:
         routing._set_template(config.HUNTING_INDEX_BASE)
         summary["template"] = routing.TEMPLATE
     except Exception as e:                                    # noqa: BLE001
-        # Sans mapping, la donnée entre quand même mais devient inexploitable
-        # (tout en `text`, pas d'agrégation). Autant le dire fort et refuser.
+        # Without a mapping the data still goes in but becomes unusable
+        # (everything `text`, no aggregation). Better say so loudly and refuse.
         raise RuntimeError(
-            f"template {routing.TEMPLATE} non posé pour "
-            f"{config.HUNTING_INDEX_BASE} ({e}) : une restauration sans mapping "
-            "produirait un index inexploitable en hunting.") from e
+            f"template {routing.TEMPLATE} not set for "
+            f"{config.HUNTING_INDEX_BASE} ({e}): a restore without a mapping "
+            "would produce an index unusable for hunting.") from e
 
     try:
         retention.apply_ism()
         summary["ism"] = retention.ISM_HUNTING_ID
     except Exception as e:                                    # noqa: BLE001
-        log.warning("politique ISM de hunting non posée (%s) : les index "
-                    "restaurés ne seront pas purgés automatiquement", e)
-        summary["ism"] = f"échec : {e}"
+        log.warning("hunting ISM policy not set (%s): the restored indices "
+                    "will not be purged automatically", e)
+        summary["ism"] = f"failed: {e}"
 
     routing._set_index_pattern(config.HUNTING_INDEX_BASE)
     summary["index_pattern"] = f"{config.HUNTING_INDEX_BASE}-*"
@@ -139,15 +138,15 @@ def prepare() -> dict:
 
 
 # --------------------------------------------------------------------------
-# État de l'espace
+# State of the space
 # --------------------------------------------------------------------------
 
 def state() -> dict:
-    """Ce qui occupe l'espace de hunting, et ce qu'il reste avant les plafonds.
+    """What occupies the hunting space, and what is left before the caps.
 
-    Rendre `plafonds` avec l'état plutôt qu'à l'échec : un client (humain ou IA)
-    doit pouvoir décider s'il a la place AVANT de lancer une restauration de
-    trois minutes qui sera refusée à la fin.
+    Returning `caps` with the state rather than on failure: a client (human or
+    AI) must be able to decide whether there is room BEFORE launching a
+    three-minute restore that gets refused at the end.
     """
     r = _indexer("GET", f"/_cat/indices/{config.HUNTING_INDEX_BASE}-*"
                         "?format=json&h=index,docs.count,pri.store.size,"
@@ -155,151 +154,150 @@ def state() -> dict:
     indices = []
     if r.status_code != 404:
         if not r.ok:
-            raise RuntimeError(f"_cat/indices refusé ({r.status_code}) : {r.text}")
+            raise RuntimeError(f"_cat/indices refused ({r.status_code}): {r.text}")
         for line in r.json():
             indices.append({
                 "index": line["index"],
                 "documents": int(line.get("docs.count") or 0),
-                "octets": int(line.get("pri.store.size") or 0),
-                "cree_le": line.get("creation.date.string"),
+                "bytes": int(line.get("pri.store.size") or 0),
+                "created_at": line.get("creation.date.string"),
             })
     indices.sort(key=lambda i: i["index"])
-    byte_count = sum(i["octets"] for i in indices)
+    byte_count = sum(i["bytes"] for i in indices)
     free = shutil.disk_usage(config.ARCHIVE_TMP_DIR)
     return {
         "index_base": config.HUNTING_INDEX_BASE,
         "indices": indices,
         "total_indices": len(indices),
         "total_documents": sum(i["documents"] for i in indices),
-        "total_octets": byte_count,
-        "plafonds": {
+        "total_bytes": byte_count,
+        "caps": {
             "max_indices": config.HUNTING_MAX_INDICES,
-            "max_octets": config.HUNTING_MAX_BYTES,
-            "max_documents_par_restauration": config.HUNTING_MAX_DOCS,
-            "octets_restants": max(0, config.HUNTING_MAX_BYTES - byte_count),
-            "indices_restants": max(0, config.HUNTING_MAX_INDICES - len(indices)),
+            "max_bytes": config.HUNTING_MAX_BYTES,
+            "max_documents_per_restore": config.HUNTING_MAX_DOCS,
+            "bytes_left": max(0, config.HUNTING_MAX_BYTES - byte_count),
+            "indices_left": max(0, config.HUNTING_MAX_INDICES - len(indices)),
         },
-        "disque_pct": round(100 * free.used / free.total),
-        "retention_jours": config.HUNTING_RETENTION_DAYS,
+        "disk_pct": round(100 * free.used / free.total),
+        "retention_days": config.HUNTING_RETENTION_DAYS,
     }
 
 
 # --------------------------------------------------------------------------
-# Garde-fous
+# Guardrails
 # --------------------------------------------------------------------------
 
 def check_space(archive: dict, current: dict | None = None) -> None:
-    """Lève si cette restauration ne doit pas avoir lieu. Aucun effet de bord.
+    """Raises if this restore must not happen. No side effect.
 
-    Séparé de `restaurer` pour être appelable en simulation : c'est ce qui permet
-    au dry-run de dire « ça passerait » ou « ça serait refusé, et pourquoi » sans
-    rien télécharger.
+    Separated from `restore` so it can be called in simulation: that is what lets
+    the dry-run say "it would go through" or "it would be refused, and why"
+    without downloading anything.
     """
     e = current or state()
 
-    # Le disque d'abord. Restaurer est du confort ; un disque plein bascule
-    # l'indexer en lecture seule et arrête l'ingestion de TOUT le parc.
-    if e["disque_pct"] >= config.DISK_THRESHOLD_ALERT:
+    # The disk first. Restoring is comfort; a full disk flips the indexer to
+    # read-only and stops ingestion for the WHOLE fleet.
+    if e["disk_pct"] >= config.DISK_THRESHOLD_ALERT:
         raise RuntimeError(
-            f"disque à {e['disque_pct']} % (seuil d'alerte "
-            f"{config.DISK_THRESHOLD_ALERT} %) : restauration refusée. Le hunting "
-            "est du confort, un disque plein arrête l'ingestion de tout le parc. "
-            "Libérer de la place ou purger des index de hunting "
-            "(soc_agent.hunting --etat).")
+            f"disk at {e['disk_pct']} % (alert threshold "
+            f"{config.DISK_THRESHOLD_ALERT} %): restore refused. Hunting is "
+            "comfort, a full disk stops ingestion for the whole fleet. Free "
+            "some space or purge hunting indices (soc_agent.hunting --state).")
 
     if archive["documents"] > config.HUNTING_MAX_DOCS:
         raise RuntimeError(
-            f"{archive['documents']} documents à restaurer, plafond "
-            f"{config.HUNTING_MAX_DOCS} (HUNTING_MAX_DOCS). Cette archive est "
-            "trop grosse pour l'espace de hunting : restaurer le fichier "
-            "NDJSON en local et le filtrer avec jq "
-            "(soc_agent.archive --restaurer) est le bon geste ici.")
+            f"{archive['documents']} documents to restore, cap "
+            f"{config.HUNTING_MAX_DOCS} (HUNTING_MAX_DOCS). This archive is too "
+            "large for the hunting space: restoring the NDJSON file locally and "
+            "filtering it with jq (soc_agent.archive --restore) is the right "
+            "move here.")
 
     if e["total_indices"] >= config.HUNTING_MAX_INDICES:
         raise RuntimeError(
-            f"{e['total_indices']} index de hunting déjà en place, plafond "
-            f"{config.HUNTING_MAX_INDICES} (HUNTING_MAX_INDICES). Purger ce qui "
-            "ne sert plus : ces index sont des copies, l'archive S3 reste.")
+            f"{e['total_indices']} hunting indices already in place, cap "
+            f"{config.HUNTING_MAX_INDICES} (HUNTING_MAX_INDICES). Purge what is "
+            "no longer useful: those indices are copies, the S3 archive stays.")
 
-    # L'archive est chiffrée et compressée ; ce qui pèse dans l'indexer, c'est le
-    # CLAIR. On estime à partir de `octets_clair`, qui est au manifeste, avec un
-    # facteur voisin de 1 : l'indexer compresse ses segments mais ajoute ses
-    # structures. Approximation assumée et annoncée comme telle.
-    projected = e["total_octets"] + archive["plain_bytes"]
+    # The archive is encrypted and compressed; what weighs in the indexer is the
+    # PLAINTEXT. We estimate from `plain_bytes`, which is in the manifest, with a
+    # factor close to 1: the indexer compresses its segments but adds its own
+    # structures. An assumed approximation, announced as such.
+    projected = e["total_bytes"] + archive["plain_bytes"]
     if projected > config.HUNTING_MAX_BYTES:
         raise RuntimeError(
-            f"{projected / 1073741824:.1f} Go projetés dans l'espace de hunting, "
-            f"plafond {config.HUNTING_MAX_BYTES / 1073741824:.1f} Go "
-            "(HUNTING_MAX_GO). Purger un index de hunting d'abord.")
+            f"{projected / 1073741824:.1f} GB projected into the hunting space, "
+            f"cap {config.HUNTING_MAX_BYTES / 1073741824:.1f} GB "
+            "(HUNTING_MAX_GB). Purge a hunting index first.")
 
 
 def archive_available(conn, index_base: str, period: str) -> dict:
-    """La ligne d'archive, ou une erreur qui dit quoi faire.
+    """The archive row, or an error that says what to do.
 
-    On interroge Postgres et pas S3 : c'est le repère qui fait autorité
-    (cf. archive.py). Un S3 qui ne répond pas ne doit pas se traduire par
-    « cette archive n'existe pas ».
+    We query Postgres and not S3: that is the authoritative marker (see
+    archive.py). An S3 that does not answer must not translate into "this archive
+    does not exist".
     """
     r = conn.execute(
         "SELECT * FROM archives_s3 WHERE format_version=%s AND index_base=%s "
-        "  AND periode=%s", (config.ARCHIVE_FORMAT_VERSION, index_base,
+        "  AND period=%s", (config.ARCHIVE_FORMAT_VERSION, index_base,
                             period)).fetchone()
     if r is None:
         available = conn.execute(
-            "SELECT index_base, min(periode) d, max(periode) f, count(*) n "
+            "SELECT index_base, min(period) d, max(period) f, count(*) n "
             "  FROM archives_s3 WHERE format_version=%s GROUP BY index_base "
             "  ORDER BY index_base", (config.ARCHIVE_FORMAT_VERSION,)).fetchall()
         raise RuntimeError(
-            f"aucune archive pour {index_base}/{period}. Disponible : "
-            + (", ".join(f"{d['index_base']} {d['d']}..{d['f']} ({d['n']} mois)"
-                         for d in available) or "rien (l'archivage n'a rien écrit)"))
+            f"no archive for {index_base}/{period}. Available: "
+            + (", ".join(f"{d['index_base']} {d['d']}..{d['f']} ({d['n']} months)"
+                         for d in available) or "nothing (archiving wrote nothing)"))
     if r["verify_state"] and r["verify_state"] != "ok":
-        # Ne pas refuser : une archive douteuse est justement ce qu'on veut
-        # inspecter. Mais le dire, pour qu'on ne conclue pas sur une copie
-        # partielle en croyant tenir la vérité.
-        log.warning("archive %s/%s en état « %s » : la restauration peut être "
-                    "incomplète", index_base, period, r["verify_state"])
+        # Do not refuse: a doubtful archive is precisely what we want to
+        # inspect. But say so, so nobody concludes on a partial copy believing
+        # they hold the truth.
+        log.warning("archive %s/%s in state \"%s\": the restore may be "
+                    "incomplete", index_base, period, r["verify_state"])
     return dict(r)
 
 
 # --------------------------------------------------------------------------
-# Restauration
+# Restore
 # --------------------------------------------------------------------------
 
 def _create_index(target: str, archive: dict) -> None:
-    """Crée l'index avec sa provenance dans `_meta`.
+    """Creates the index with its provenance in `_meta`.
 
-    La provenance va dans les métadonnées de l'INDEX, jamais dans `_source` : une
-    alerte restaurée doit rester octet pour octet ce qui a été archivé. Un champ
-    ajouté dans le document rendrait le SHA-256 du manifeste inutilisable comme
-    preuve, et fausserait les agrégations sur les champs qu'on chasse.
+    The provenance goes into the INDEX metadata, never into `_source`: a restored
+    alert must stay byte for byte what was archived. A field added to the
+    document would make the manifest SHA-256 useless as proof, and would skew the
+    aggregations on the fields being hunted.
     """
     body = {"mappings": {"_meta": {"aura_hunting": {
-        "archive_cle": archive["key"],
-        "index_origine": archive["index_base"],
-        "periode": archive["periode"],
-        "indices_origine": archive["indices"],
-        "documents_attendus": archive["documents"],
+        "archive_key": archive["key"],
+        "source_index": archive["index_base"],
+        "period": archive["period"],
+        "source_indices": archive["indices"],
+        "expected_documents": archive["documents"],
         "sha256_plain": archive["sha256_plain"],
-        "restaure_le": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "restored_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }}}}
     r = _indexer("PUT", f"/{target}", body)
     if r.status_code == 400 and "resource_already_exists" in r.text:
-        log.info("index %s déjà présent : réinjection par-dessus (les _id sont "
-                 "conservés, donc les documents sont écrasés à l'identique)",
+        log.info("index %s already present: re-injecting on top (the _id are "
+                 "kept, so the documents are overwritten identically)",
                  target)
         return
     if not r.ok:
-        raise RuntimeError(f"création de {target} refusée ({r.status_code}) : "
+        raise RuntimeError(f"creation of {target} refused ({r.status_code}): "
                            f"{r.text[:300]}")
 
 
 def _inject(target: str, ndjson: Path) -> dict:
-    """Réinjecte le NDJSON dans l'index cible, par lots `_bulk`.
+    """Re-injects the NDJSON into the target index, in `_bulk` batches.
 
-    L'`_id` d'origine est CONSERVÉ : une restauration rejouée écrase les mêmes
-    documents au lieu d'en créer des doublons. C'est ce qui rend l'opération
-    idempotente sans repère à tenir.
+    The original `_id` is KEPT: a replayed restore overwrites the same documents
+    instead of creating duplicates. That is what makes the operation idempotent
+    with no marker to maintain.
     """
     injected = errors = 0
     examples: list[str] = []
@@ -313,7 +311,7 @@ def _inject(target: str, ndjson: Path) -> dict:
                      content_type="application/x-ndjson", timeout=300)
         batch.clear()
         if not r.ok:
-            raise RuntimeError(f"_bulk refusé ({r.status_code}) : {r.text[:300]}")
+            raise RuntimeError(f"_bulk refused ({r.status_code}): {r.text[:300]}")
         response = r.json()
         for item in response.get("items", []):
             detail = item.get("index") or {}
@@ -342,17 +340,17 @@ def _inject(target: str, ndjson: Path) -> dict:
             if len(batch) >= config.HUNTING_BULK_SIZE * 2:
                 clear()
     clear()
-    return {"injectes": injected, "erreurs": errors,
-            "exemples_erreurs": examples}
+    return {"injected": injected, "errors": errors,
+            "error_examples": examples}
 
 
 def restore(index_base: str, period: str, apply: bool = False,
               identity: str | None = None) -> dict:
-    """Remet une archive dans l'espace de hunting.
+    """Puts an archive back into the hunting space.
 
-    En dry-run (défaut), rend ce qui serait fait, y compris le verdict des
-    garde-fous : c'est le seul moyen honnête de répondre « est-ce que ça passe ? »
-    sans télécharger 40 Mo pour l'apprendre.
+    In dry-run (the default) it returns what would be done, guardrail verdict
+    included: that is the only honest way to answer "will it go through?" without
+    downloading 40 MB to find out.
     """
     from . import archive as arch
 
@@ -362,33 +360,33 @@ def restore(index_base: str, period: str, apply: bool = False,
     target = index_name(index_base, period)
     current = state()
     preview = {
-        "index_cible": target,
+        "target_index": target,
         "archive": {"key": line["key"], "documents": line["documents"],
                     "plain_bytes": line["plain_bytes"],
-                    "indices_origine": line["indices"],
-                    "verification": line["verify_state"] or "jamais vérifiée"},
-        "espace_avant": {k: current[k] for k in
-                         ("total_indices", "total_documents", "total_octets")},
-        "plafonds": current["plafonds"],
-        "retention_jours": config.HUNTING_RETENTION_DAYS,
+                    "source_indices": line["indices"],
+                    "verification": line["verify_state"] or "never verified"},
+        "space_before": {k: current[k] for k in
+                         ("total_indices", "total_documents", "total_bytes")},
+        "caps": current["caps"],
+        "retention_days": config.HUNTING_RETENTION_DAYS,
     }
 
     try:
         check_space(line, current)
         preview["guardrails"] = "ok"
     except RuntimeError as e:
-        preview["guardrails"] = f"REFUS : {e}"
+        preview["guardrails"] = f"REFUSED: {e}"
         if not apply:
-            return {"applique": False, **preview}
+            return {"applied": False, **preview}
         raise
 
     if not apply:
         return {
-            "applique": False, **preview,
-            "note": "Dry-run : rien n'a été téléchargé ni indexé. Relancer avec "
-                    "appliquer=true. La restauration n'entre PAS dans le "
-                    "pipeline : ces alertes ne seront ni corrélées, ni triées, "
-                    "ni remédiées — c'est un espace de lecture.",
+            "applied": False, **preview,
+            "note": "Dry-run: nothing was downloaded nor indexed. Re-run with "
+                    "apply=true. The restore does NOT enter the pipeline: those "
+                    "alerts will be neither correlated, nor triaged, nor "
+                    "remediated — this is a read-only space.",
         }
 
     prepare()
@@ -397,79 +395,76 @@ def restore(index_base: str, period: str, apply: bool = False,
     try:
         ndjson = tmp / f"{target}.ndjson"
         rest = arch.restore(arch._s3(), index_base, period, ndjson, identity)
-        if rest["lignes"] != line["documents"]:
-            log.warning("archive %s/%s : %d lignes déchiffrées, %d au "
-                        "manifeste — restauration poursuivie, mais la copie est "
-                        "incomplète", index_base, period, rest["lignes"],
-                        line["documents"])
+        if rest["lines"] != line["documents"]:
+            log.warning("archive %s/%s: %d lines decrypted, %d in the manifest "
+                        "— restore continued, but the copy is incomplete",
+                        index_base, period, rest["lines"], line["documents"])
         _create_index(target, line)
         summary = _inject(target, ndjson)
         _indexer("POST", f"/{target}/_refresh")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-    log.info("hunting : %d document(s) restauré(s) dans %s depuis %s/%s",
-             summary["injectes"], target, index_base, period)
+    log.info("hunting: %d document(s) restored into %s from %s/%s",
+             summary["injected"], target, index_base, period)
     return {
-        "applique": True, **preview,
-        "lignes_dechiffrees": rest["lignes"], **summary,
-        "complet": summary["injectes"] == line["documents"],
-        "ou_chercher": f"Discover, index pattern {config.HUNTING_INDEX_BASE}-*, "
-                       f"index {target}",
-        "note": "Ces alertes ne sont PAS dans le pipeline : ni corrélation, ni "
-                "triage, ni remédiation. Elles seront supprimées "
-                f"automatiquement au bout de {config.HUNTING_RETENTION_DAYS} "
-                "jours — l'archive S3, elle, reste.",
+        "applied": True, **preview,
+        "decrypted_lines": rest["lines"], **summary,
+        "complete": summary["injected"] == line["documents"],
+        "where_to_look": f"Discover, index pattern "
+                         f"{config.HUNTING_INDEX_BASE}-*, index {target}",
+        "note": "Those alerts are NOT in the pipeline: no correlation, no "
+                "triage, no remediation. They will be deleted automatically "
+                f"after {config.HUNTING_RETENTION_DAYS} days — the S3 archive "
+                "itself stays.",
     }
 
 
 def purge(index: str, confirm: bool = False) -> dict:
-    """Supprime un index de hunting pour rendre de la place.
+    """Deletes a hunting index to free room.
 
-    Borné au préfixe de hunting, et pas par prudence rhétorique : la même requête
-    sur `wazuh-firewall-2026.08.14` détruirait de la donnée de production que
-    seule l'archive S3 pourrait rendre — si elle existe déjà.
+    Bounded to the hunting prefix, and not out of rhetorical caution: the same
+    request on `wazuh-firewall-2026.08.14` would destroy production data that
+    only the S3 archive could give back — if it already exists.
     """
     if not index.startswith(f"{config.HUNTING_INDEX_BASE}-"):
         raise RuntimeError(
-            f"« {index} » n'est pas un index de hunting (préfixe attendu : "
-            f"{config.HUNTING_INDEX_BASE}-). Refus : cet outil ne supprime que "
-            "des copies restaurées, jamais de la donnée de production.")
+            f"\"{index}\" is not a hunting index (expected prefix: "
+            f"{config.HUNTING_INDEX_BASE}-). Refused: this tool only deletes "
+            "restored copies, never production data.")
     if "*" in index or "," in index:
         raise RuntimeError(
-            "un index à la fois, nommé en entier — pas de joker. Une suppression "
-            "par motif est exactement le geste dont on ne mesure pas la portée.")
+            "one index at a time, fully named — no wildcard. A pattern deletion "
+            "is exactly the gesture whose reach nobody measures.")
     if not confirm:
-        return {"supprime": False,
-                "note": f"{index} serait supprimé. C'est une COPIE : l'archive "
-                        "S3 reste et la restauration est rejouable. Passer "
-                        "confirmer=true."}
+        return {"deleted": False,
+                "note": f"{index} would be deleted. It is a COPY: the S3 archive "
+                        "stays and the restore is replayable. Pass confirm=true."}
     r = _indexer("DELETE", f"/{index}")
     if not r.ok:
-        raise RuntimeError(f"suppression de {index} refusée ({r.status_code}) : "
+        raise RuntimeError(f"deletion of {index} refused ({r.status_code}): "
                            f"{r.text[:200]}")
-    log.info("index de hunting %s supprimé", index)
-    return {"supprime": True, "index": index}
+    log.info("hunting index %s deleted", index)
+    return {"deleted": True, "index": index}
 
 
 # --------------------------------------------------------------------------
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--preparer", action="store_true",
-                   help="poser template, ISM et index pattern, puis sortir")
-    p.add_argument("--etat", action="store_true",
-                   help="ce qui occupe l'espace de hunting")
-    p.add_argument("--restaurer", metavar="INDEX_SET/AAAA-MM",
-                   help="remettre une archive dans l'espace de hunting")
-    p.add_argument("--appliquer", action="store_true",
-                   help="exécuter pour de vrai (défaut : dry-run)")
-    p.add_argument("--identite", help="clé age de secours, si celle du SOC est "
-                                     "perdue")
-    p.add_argument("--purger", metavar="INDEX",
-                   help="supprimer un index de hunting")
-    p.add_argument("--confirmer", action="store_true",
-                   help="confirmer la suppression")
+    p.add_argument("--prepare", action="store_true",
+                   help="set template, ISM and index pattern, then exit")
+    p.add_argument("--state", action="store_true",
+                   help="what occupies the hunting space")
+    p.add_argument("--restore", metavar="INDEX_SET/YYYY-MM",
+                   help="put an archive back into the hunting space")
+    p.add_argument("--apply", action="store_true",
+                   help="run for real (default: dry-run)")
+    p.add_argument("--identity", help="backup age key, if the SOC one is lost")
+    p.add_argument("--purge", metavar="INDEX",
+                   help="delete a hunting index")
+    p.add_argument("--confirm", action="store_true",
+                   help="confirm the deletion")
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 

@@ -1,13 +1,13 @@
-"""Regroupement des alertes en incidents.
+"""Grouping alerts into incidents.
 
-Le cœur de la phase 1 : 25 alertes « canari altéré » sur le même hôte à la même
-seconde sont un incident ransomware, pas 25 incidents. C'est ce qui rend le
-triage LLM abordable — on paye ~20 s par incident, pas par alerte.
+The heart of phase 1: 25 "canary altered" alerts on the same host in the same
+second are one ransomware incident, not 25 incidents. That is what makes LLM
+triage affordable — we pay ~20 s per incident, not per alert.
 
-Méthode : chaînage par proximité, agent par agent, en ordre chronologique. Deux
-alertes voisines dans le temps ET ayant un point commun rejoignent le même
-incident. Aucun modèle, aucun seuil appris — des règles qu'on peut expliquer à
-un analyste et qu'il peut contester.
+Method: proximity chaining, agent by agent, in chronological order. Two alerts
+close in time AND sharing common ground join the same incident. No model, no
+learned threshold — rules that can be explained to an analyst, and that they can
+argue with.
 
     python -m soc_agent.correlate
 """
@@ -22,48 +22,48 @@ from psycopg.rows import dict_row
 
 from . import assets, config
 
-# Groupes présents sur la moitié des règles Wazuh : les retenir comme point
-# commun fusionnerait des alertes sans aucun rapport entre elles.
+# Groups present on half the Wazuh rules: keeping them as common ground would
+# merge alerts with nothing to do with each other.
 GROUPS_GENERIC = {
     "syscheck", "ossec", "linux", "windows", "syslog", "authentication_failed",
     "pci_dss", "gdpr", "hipaa", "nist_800_53", "tsc", "gpg13",
 }
 
-# Groupes qui ne caractérisent JAMAIS une intrusion à eux seuls : posture de
-# conformité (SCA/CIS), vérif d'intégrité de l'hôte (rootcheck), inventaire de
-# vulnérabilités, login réussi. Une alerte purement de ce type ne doit pas
-# OUVRIR un incident — même si un passage bas niveau la remonte au-dessus du
-# seuil de graine. Elle reste éligible comme alerte RATTACHÉE (contexte d'une
-# intrusion réelle : un login réussi au milieu d'un reverse shell compte).
+# Groups that NEVER characterise an intrusion on their own: compliance posture
+# (SCA/CIS), host integrity check (rootcheck), vulnerability inventory,
+# successful login. An alert purely of that kind must not OPEN an incident — even
+# if a low-level pass pushes it above the seed threshold. It stays eligible as an
+# ATTACHED alert (context of a real intrusion: a successful login in the middle
+# of a reverse shell counts).
 GROUPS_NON_SEED = {
     "sca", "rootcheck", "vulnerability-detector", "cis",
     "authentication_success", "policy_monitoring",
 }
-# Changements d'état d'un agent Wazuh (connecté/démarré/arrêté/déconnecté) :
-# opérationnel, jamais une graine d'incident. Repéré sur la description, les
-# groupes de ces règles étant trop génériques (« ossec ») pour discriminer.
+# State changes of a Wazuh agent (connected/started/stopped/disconnected):
+# operational, never an incident seed. Spotted on the description, since the
+# groups of those rules are too generic ("ossec") to discriminate.
 _RE_STATUS_AGENT = re.compile(
     r"\bagent (?:connected|started|stopped|disconnected|removed|restarted)\b",
     re.I)
 
-# Exception à _RE_STATUT_AGENT : nos règles d'auto-surveillance (100803/100804)
-# décrivent le MÊME événement, mais volontairement comme une altération possible
-# du SOC (T1562.001) — arrêter l'agent est la première action d'un attaquant qui
-# a obtenu root. Elles doivent pouvoir amorcer un incident.
-# Le filtre ci-dessus est écrit en anglais parce qu'il vise les descriptions du
-# ruleset natif ; depuis que nos règles locales sont elles aussi en anglais, il
-# les capturait par effet de bord et les rendait inaptes à ouvrir un case, sans
-# rien signaler. D'où cette liste explicite, par identifiant et non par texte.
+# Exception to _RE_STATUS_AGENT: our self-monitoring rules (100803/100804)
+# describe the SAME event, but deliberately as a possible tampering with the SOC
+# (T1562.001) — stopping the agent is the first action of an attacker who got
+# root. They must be able to seed an incident.
+# The filter above is written in English because it targets the native ruleset's
+# descriptions; ever since our local rules are in English too, it caught them as
+# a side effect and made them unable to open a case, silently. Hence this
+# explicit list, by identifier and not by text.
 SIDS_STATUS_AGENT_SEED = {"100803", "100804"}
 
 
 def _is_valid_seed(a: dict) -> bool:
-    """Une alerte peut-elle OUVRIR un incident (être une graine) ?
+    """Can an alert OPEN an incident (be a seed)?
 
-    Faux pour le bruit structurel (SCA/CIS, rootcheck, inventaire de vulns,
-    login réussi, statut d'agent) : ces alertes ne sont pas des intrusions,
-    elles ne doivent pas fonder un case. Elles restent rattachables à un
-    incident réel voisin (contexte), mais ne l'amorcent pas.
+    False for structural noise (SCA/CIS, rootcheck, vulnerability inventory,
+    successful login, agent status): those alerts are not intrusions, they must
+    not found a case. They stay attachable to a nearby real incident (context),
+    but they do not seed it.
     """
     if set(a.get("rule_groups") or []) & GROUPS_NON_SEED:
         return False
@@ -72,21 +72,21 @@ def _is_valid_seed(a: dict) -> bool:
         return False
     return True
 
-# Binaires shell omniprésents : les retenir comme « même objet » fusionnerait
-# deux intrusions distinctes (ou une intrusion et de l'activité shell normale)
-# sur le simple fait qu'elles passent toutes par bash. L'uid et les vrais objets
-# (fichiers déposés, IP) restent des liens valides.
+# Ubiquitous shell binaries: keeping them as "same object" would merge two
+# distinct intrusions (or an intrusion and normal shell activity) on the mere
+# fact that they all go through bash. The uid and the real objects (dropped
+# files, IPs) stay valid links.
 ENTITIES_GENERIC = {
     "/usr/bin/bash", "/bin/bash", "/usr/bin/sh", "/bin/sh",
     "/usr/bin/dash", "/bin/dash",
 }
 
-# Exécutables trop communs pour lier deux alertes ou fusionner deux hôtes : un
-# rebond d'administration (powershell, cmd, net) ou un shell relierait sinon
-# tout le parc. La campagne #4 a fusionné à tort deux hôtes sur
-# `...\WindowsPowerShell\v1.0\powershell.exe`. On compare sur le NOM de fichier,
-# backslashes doublés de l'eventchannel repliés — un vrai marqueur d'attaquant
-# (mimikatz.exe, un compte créé, une IP C2) reste, lui, discriminant.
+# Executables too common to link two alerts or merge two hosts: an admin hop
+# (powershell, cmd, net) or a shell would otherwise link the whole fleet.
+# Campaign #4 wrongly merged two hosts on
+# `...\WindowsPowerShell\v1.0\powershell.exe`. We compare on the file NAME, with
+# the eventchannel's doubled backslashes folded — a real attacker marker
+# (mimikatz.exe, a created account, a C2 IP) does stay discriminant.
 NAMES_GENERIC = {
     "bash", "sh", "dash", "zsh",
     "powershell.exe", "pwsh.exe", "cmd.exe", "conhost.exe", "net.exe",
@@ -96,7 +96,7 @@ NAMES_GENERIC = {
 
 
 def generic_entity(entity: str | None) -> bool:
-    """Vrai si l'entité est trop générique pour lier/fusionner (basename)."""
+    """True if the entity is too generic to link/merge (basename)."""
     if not entity:
         return True
     e = entity.replace("\\\\", "\\").replace("\\", "/").lower().rstrip("/")
@@ -106,42 +106,41 @@ def generic_entity(entity: str | None) -> bool:
 
 
 def common_ground(a: dict, b: dict) -> tuple[str, bool] | None:
-    """Ce qui rattache deux alertes du même agent : (libellé, lien_fort).
+    """What links two alerts of the same agent: (label, strong_link).
 
-    La proximité temporelle seule ne suffit pas : sur un hôte actif, deux
-    événements sans rapport tombent constamment dans la même fenêtre. Il faut
-    un lien explicite, et pouvoir le nommer dans le rapport.
+    Temporal proximity alone is not enough: on an active host, two unrelated
+    events constantly fall in the same window. An explicit link is needed, and it
+    must be nameable in the report.
 
-    Un lien est dit FORT quand il désigne le même objet concret — la même IP
-    source, le même fichier, le même compte. Ces liens-là supportent une
-    fenêtre bien plus large : une IP hostile qui revient trois fois dans la
-    journée est une seule campagne, pas trois incidents. Les liens faibles
-    (tactique MITRE, groupe de règle) sont des indices de parenté, pas des
-    identités : leur accorder la même largeur fusionnerait tout et n'importe
-    quoi.
+    A link is called STRONG when it points at the same concrete object — the same
+    source IP, the same file, the same account. Those links support a far wider
+    window: a hostile IP coming back three times in a day is one campaign, not
+    three incidents. Weak links (MITRE tactic, rule group) are hints of kinship,
+    not identities: giving them the same width would merge anything with
+    anything.
     """
-    # Même signal UEBA : le lien le plus fort du lot, et le premier examiné. Le
-    # moteur comportemental a DÉJÀ tranché que ces alertes forment un tout ; les
-    # laisser se redécouper ici sur les critères génériques les émiette. Mesuré
-    # à la mise en service : un signal de 239 alertes ressortait en 8 incidents,
-    # donc 8 triages LLM au lieu d'un, chacun amputé du contexte des autres et
-    # portant un score sans rapport avec celui du signal (115, puis 2,5 et 3,3).
-    # Les fenêtres se correspondent déjà : UEBA_SIGNAL_MAX_HEURES = 6 =
-    # MAX_INCIDENT_HOURS, et le lien fort porte jusqu'à ENTITY_GAP_MINUTES.
+    # Same UEBA signal: the strongest link of the lot, and the first examined.
+    # The behavioural engine has ALREADY decided those alerts form a whole;
+    # letting them be re-split here on generic criteria crumbles them. Measured
+    # at go-live: a 239-alert signal came out as 8 incidents, hence 8 LLM triages
+    # instead of one, each cut off from the others' context and carrying a score
+    # unrelated to the signal's (115, then 2.5 and 3.3). The windows already
+    # match: UEBA_SIGNAL_MAX_HOURS = 6 = MAX_INCIDENT_HOURS, and the strong link
+    # reaches up to ENTITY_GAP_MINUTES.
     if a.get("ueba_signal_id") and a["ueba_signal_id"] == b.get("ueba_signal_id"):
-        return "même signal UEBA", True
+        return "same UEBA signal", True
     if a["srcip"] and a["srcip"] == b["srcip"]:
-        return "même IP source", True
+        return "same source IP", True
     if (a["entity"] and a["entity"] == b["entity"]
             and not generic_entity(a["entity"])):
-        return "même objet", True
+        return "same object", True
     if a["srcuser"] and a["srcuser"] == b["srcuser"]:
-        return "même compte", True
+        return "same account", True
     if a["mitre_tactics"] and set(a["mitre_tactics"]) & set(b["mitre_tactics"]):
-        return "tactique MITRE", False
+        return "MITRE tactic", False
     common = (set(a["rule_groups"]) & set(b["rule_groups"])) - GROUPS_GENERIC
     if common:
-        return f"groupe {sorted(common)[0]}", False
+        return f"group {sorted(common)[0]}", False
     return None
 
 
@@ -155,9 +154,9 @@ SELECT id, ts, agent_id, agent_name, container, rule_id, rule_level, rule_desc,
  ORDER BY agent_id, ts, id
 """
 
-# Incidents encore « ouvrables » d'un agent : leur dernière alerte n'est pas
-# trop ancienne pour accueillir une nouvelle salve. On charge aussi leurs
-# agrégats, mis à jour en Python au rattachement.
+# Incidents of an agent still "openable": their last alert is not too old to
+# take in a new burst. We also load their aggregates, updated in Python on
+# attachment.
 SELECT_INCIDENTS_OPENABLE = """
 SELECT id, agent_id, first_seen, last_seen, alert_count, max_level,
        rule_ids, mitre_tactics, entities, priority
@@ -166,14 +165,14 @@ SELECT id, agent_id, first_seen, last_seen, alert_count, max_level,
  ORDER BY last_seen DESC
 """
 
-# Membres d'un incident ouvrable, BORNÉS aux MEMBRES_RECENTS derniers de chaque
-# incident. `_rattacher` ne regarde de toute façon que la queue (`membres[-20:]`)
-# pour chercher un point commun, et la date de DÉBUT vient de l'incident
-# (`first_seen`), pas de la première ligne chargée.
+# Members of an openable incident, BOUNDED to the last MEMBERS_RECENT of each
+# incident. `_attach_existing` only looks at the tail (`members[-20:]`) to find
+# common ground anyway, and the START date comes from the incident
+# (`first_seen`), not from the first row loaded.
 #
-# Sans cette borne, chaque cycle relisait TOUTES les alertes de chaque incident
-# ouvrable — 126 508 lignes pour un seul incident pfSense le 2026-08-14, toutes
-# les 5 minutes, pour n'en exploiter que 20.
+# Without this bound, every cycle re-read ALL the alerts of every openable
+# incident — 126,508 rows for a single pfSense incident on 2026-08-14, every 5
+# minutes, to use 20 of them.
 MEMBERS_RECENT = 50
 
 SELECT_MEMBERS = """
@@ -197,29 +196,29 @@ RETURNING id
 
 
 def _group(alerts: list[dict]) -> list[list[dict]]:
-    """Chaîne les alertes en incidents. Fonction pure, donc testable seule."""
+    """Chains alerts into incidents. A pure function, hence testable alone."""
     small_gap = timedelta(minutes=config.CORRELATION_GAP_MINUTES)
     large_gap = timedelta(minutes=config.ENTITY_GAP_MINUTES)
     max_duration = timedelta(hours=config.MAX_INCIDENT_HOURS)
 
     incidents: list[list[dict]] = []
 
-    # PLUSIEURS incidents ouverts simultanément par agent, et non un seul.
-    # Avec un seul, une alerte sans rapport qui s'intercale referme l'incident
-    # en cours : deux alertes de la même IP hostile séparées par un événement
-    # étranger repartaient dans deux incidents distincts. Sur un hôte actif,
-    # l'entrelacement est le cas normal, pas l'exception.
+    # SEVERAL incidents open simultaneously per agent, not just one. With a
+    # single one, an unrelated alert slipping in closes the current incident: two
+    # alerts from the same hostile IP separated by a foreign event ended up in
+    # two distinct incidents. On an active host, interleaving is the normal case,
+    # not the exception.
     #
-    # Les agents restent cloisonnés : une alerte sur un endpoint n'a pas à
-    # rejoindre un incident d'un autre agent.
+    # Agents stay partitioned: an alert on one endpoint has no business joining
+    # an incident of another agent.
     open_incidents: dict[str, list[list[dict]]] = {}
     max_window = max(large_gap, small_gap)
 
     for a in alerts:
         groups = open_incidents.setdefault(a["agent_id"], [])
 
-        # Fermeture des incidents hors d'atteinte. Les alertes étant triées par
-        # date, ils ne pourront plus rien accueillir.
+        # Close the incidents out of reach. Alerts being sorted by date, they
+        # can no longer take anything in.
         groups[:] = [
             g for g in groups
             if a["ts"] - g[-1]["ts"] <= max_window
@@ -229,9 +228,9 @@ def _group(alerts: list[dict]) -> list[list[dict]]:
         target = None
         for g in groups:
             since_last = a["ts"] - g[-1]["ts"]
-            # On ne compare qu'aux 20 dernières : au-delà le coût devient
-            # quadratique sans rien changer, le chaînage étant de proche en
-            # proche.
+            # We only compare against the last 20: beyond that the cost turns
+            # quadratic without changing anything, the chaining being
+            # step by step.
             for member in g[-20:]:
                 link = common_ground(a, member)
                 if link is None:
@@ -253,12 +252,12 @@ def _group(alerts: list[dict]) -> list[list[dict]]:
 
 
 def _uids_incident(inc: list[dict]) -> set[str]:
-    """UID auditd sous lesquels la graine de l'incident a tiré.
+    """auditd UIDs under which the incident's seed fired.
 
-    C'est l'uid du compte compromis. Une privesc par SUID garde l'uid réel du
-    compte (seul l'euid passe à 0), donc les actions root de l'attaquant restent
-    taguées à cet uid. On écarte root (0) si un compte non-root est présent :
-    garder 0 ferait rentrer tous les démons root et le bruit système.
+    It is the uid of the compromised account. A SUID privesc keeps the account's
+    real uid (only the euid becomes 0), so the attacker's root actions stay
+    tagged with that uid. We drop root (0) when a non-root account is present:
+    keeping 0 would let in every root daemon and the system noise.
     """
     uids = {str(m["audit_uid"]) for m in inc if m.get("audit_uid") is not None}
     non_root = uids - {"0"}
@@ -266,24 +265,25 @@ def _uids_incident(inc: list[dict]) -> set[str]:
 
 
 def _enrich(incidents: list[list[dict]], candidates: list[dict]) -> int:
-    """Rattache les alertes de sévérité intermédiaire aux incidents formés.
+    """Attaches mid-severity alerts to the incidents already formed.
 
-    Une graine HIGH a déjà confirmé l'incident ; on lui recolle les alertes
-    du même agent qui appartiennent RÉELLEMENT à la même intrusion — sinon le
-    reverse shell est vu seul et la privesc/persistence restent invisibles.
+    A HIGH seed has already confirmed the incident; we glue back onto it the
+    alerts of the same agent that REALLY belong to the same intrusion —
+    otherwise the reverse shell is seen alone and the privesc/persistence stay
+    invisible.
 
-    Le rattachement exige un lien réel, jamais la seule coïncidence temporelle
-    (qui aspirerait le bruit légitime de l'hôte — démons, sessions de login,
-    activité admin). Deux titres, dans la fenêtre temporelle :
-      - MÊME UID auditd que la graine : le compte compromis et ses descendants
-        (privesc SUID compris) exécutent sous cet uid ; c'est ce qui isole
-        l'énumération/exploitation (audit niv. 3) du bruit de fond ;
-      - POINT COMMUN nommable avec un membre (même IP/objet/compte/tactique),
-        qui étend la portée à la fenêtre forte (une IP hostile qui revient des
-        heures plus tard reste le même incident).
+    Attachment requires a real link, never mere temporal coincidence (which would
+    suck in the host's legitimate noise — daemons, login sessions, admin
+    activity). Two grounds, within the time window:
+      - SAME auditd UID as the seed: the compromised account and its descendants
+        (SUID privesc included) run under that uid; that is what separates
+        enumeration/exploitation (audit level 3) from the background noise;
+      - nameable COMMON GROUND with a member (same IP/object/account/tactic),
+        which extends the reach to the strong window (a hostile IP coming back
+        hours later is still the same incident).
 
-    Une candidate sans lien reste non rattachée : le case ne contient que les
-    alertes de l'intrusion, pas les faux positifs légitimes de la machine.
+    A candidate with no link stays unattached: the case only holds the alerts of
+    the intrusion, not the machine's legitimate false positives.
     """
     small_gap = timedelta(minutes=config.CORRELATION_GAP_MINUTES)
     large_gap = timedelta(minutes=config.ENTITY_GAP_MINUTES)
@@ -301,29 +301,29 @@ def _enrich(incidents: list[list[dict]], candidates: list[dict]) -> int:
             in_window = (start - small_gap) <= c["ts"] <= (end + small_gap)
 
             title = False
-            # Lien par uid : dans la fenêtre et même compte compromis.
+            # Link by uid: within the window and same compromised account.
             if (in_window and uids and c.get("audit_uid") is not None
                     and str(c["audit_uid"]) in uids):
                 title = True
-            # Lien par IDENTITÉ FORTE seulement (même IP source, ou même objet
-            # concret non générique — fichier déposé). On EXCLUT ici les liens
-            # faibles (tactique MITRE, groupe de règle) et le compte : ils
-            # chaînent l'activité légitime de l'hôte (sessions sudo de l'admin,
-            # règles partageant « Privilege Escalation »…) dans l'incident. Le
-            # case ne doit contenir que l'intrusion, pas les FP de la machine.
+            # Link by STRONG IDENTITY only (same source IP, or same concrete
+            # non-generic object — a dropped file). We EXCLUDE the weak links
+            # here (MITRE tactic, rule group) and the account: they chain the
+            # host's legitimate activity (the admin's sudo sessions, rules
+            # sharing "Privilege Escalation"...) into the incident. The case must
+            # only hold the intrusion, not the machine's FPs.
             if not title and min(abs(c["ts"] - start),
                                  abs(c["ts"] - end)) <= large_gap:
                 for member in inc:
-                    meme_ip = c["srcip"] and c["srcip"] == member["srcip"]
+                    same_ip = c["srcip"] and c["srcip"] == member["srcip"]
                     same_object = (c["entity"] and c["entity"] == member["entity"]
                                   and not generic_entity(c["entity"]))
-                    if meme_ip or same_object:
+                    if same_ip or same_object:
                         title = True
                         break
             if not title:
                 continue
 
-            # Départage : l'incident temporellement le plus proche.
+            # Tie-break: the incident closest in time.
             if start <= c["ts"] <= end:
                 dist = timedelta(0)
             else:
@@ -339,18 +339,17 @@ def _enrich(incidents: list[list[dict]], candidates: list[dict]) -> int:
 
 
 def _attach_existing(conn, alerts: list[dict]) -> tuple[list[dict], dict[int, list[dict]]]:
-    """Recolle les alertes non rattachées aux incidents DÉJÀ en base.
+    """Glues the unattached alerts back onto the incidents ALREADY in database.
 
-    C'est le correctif du doublon de case. Le cycle tourne toutes les 5 min et
-    ne voit à chaque tour que les alertes fraîchement ingérées : sans ce
-    rattrapage, chaque salve d'une intrusion EN COURS rouvre un incident neuf,
-    donc un case IRIS de plus — neuf cases « reverse shell » pour une seule
-    attaque. On rattache donc d'abord chaque nouvelle alerte à un incident
-    récent du même agent, avec EXACTEMENT les règles de proximité de `_grouper`
-    (le seul écart entre les deux, c'était la frontière de lot).
+    This is the duplicate-case fix. The cycle runs every 5 min and only sees the
+    freshly ingested alerts on each round: without this catch-up, every burst of
+    an ONGOING intrusion reopens a fresh incident, hence one more IRIS case —
+    nine "reverse shell" cases for a single attack. So we first attach each new
+    alert to a recent incident of the same agent, with EXACTLY the proximity
+    rules of `_group` (the only gap between the two was the batch boundary).
 
-    Retourne (restantes, {incident_id: [alertes ajoutées]}, {incident_id: inc}).
-    Ne persiste rien : l'appelant écrit dans la même transaction que le reste.
+    Returns (remaining, {incident_id: [alerts added]}, {incident_id: inc}).
+    Persists nothing: the caller writes in the same transaction as the rest.
     """
     if not alerts:
         return alerts, {}, {}
@@ -370,29 +369,29 @@ def _attach_existing(conn, alerts: list[dict]) -> tuple[list[dict], dict[int, li
 
     members = conn.execute(SELECT_MEMBERS,
                            ([i["id"] for i in incs], MEMBERS_RECENT)).fetchall()
-    by_inc: dict[int, dict] = {i["id"]: {"inc": i, "membres": []} for i in incs}
+    by_inc: dict[int, dict] = {i["id"]: {"inc": i, "members": []} for i in incs}
     for m in members:
-        by_inc[m["incident_id"]]["membres"].append(m)
+        by_inc[m["incident_id"]]["members"].append(m)
 
     remaining: list[dict] = []
     additions: dict[int, list[dict]] = {}
-    # Ordre chronologique : une alerte rattachée devient membre pour la
-    # suivante, ce qui chaîne une salve de proche en proche à travers le lot.
+    # Chronological order: an attached alert becomes a member for the next one,
+    # which chains a burst step by step across the batch.
     for a in sorted(alerts, key=lambda x: (x["ts"], x["id"])):
         target = None
         target_dist = None
         for iid, e in by_inc.items():
-            if e["inc"]["agent_id"] != a["agent_id"] or not e["membres"]:
+            if e["inc"]["agent_id"] != a["agent_id"] or not e["members"]:
                 continue
-            # Début lu sur l'INCIDENT, pas sur la première ligne chargée : les
-            # membres sont bornés aux plus récents (cf. SELECT_MEMBRES), leur
-            # tête n'est donc plus le début de l'incident.
+            # Start read from the INCIDENT, not from the first row loaded: the
+            # members are bounded to the most recent ones (see SELECT_MEMBERS),
+            # so their head is no longer the start of the incident.
             start = e["inc"]["first_seen"]
-            last = e["membres"][-1]["ts"]
+            last = e["members"][-1]["ts"]
             if a["ts"] - start > max_duration:
                 continue
             since = abs(a["ts"] - last)
-            for m in e["membres"][-20:]:
+            for m in e["members"][-20:]:
                 link = common_ground(a, m)
                 if link is None:
                     continue
@@ -404,7 +403,7 @@ def _attach_existing(conn, alerts: list[dict]) -> tuple[list[dict], dict[int, li
         if target is None:
             remaining.append(a)
         else:
-            by_inc[target]["membres"].append(a)
+            by_inc[target]["members"].append(a)
             additions.setdefault(target, []).append(a)
 
     return remaining, additions, incs_by_id
@@ -412,13 +411,13 @@ def _attach_existing(conn, alerts: list[dict]) -> tuple[list[dict], dict[int, li
 
 def _signal_decisive(old_rules: set, new: list[dict],
                     max_old: int) -> bool:
-    """Une salve rattachée apporte-t-elle un signal décisif nouveau ?
+    """Does an attached burst bring a new decisive signal?
 
-    Vrai si le niveau max monte, OU si une règle inédite NON structurelle
-    apparaît. Faux pour une répétition de bruit (mêmes règles déjà présentes,
-    ou alertes structurelles SCA/rootcheck/statut d'agent — cf. _graine_valide) :
-    ne re-déclenche alors PAS le triage + le rapport LLM (correctif #2, boucle
-    de régénération à l'origine de l'explosion de tokens du 2026-07-30)."""
+    True when the max level rises, OR when a novel NON-structural rule appears.
+    False for a repetition of noise (same rules already present, or structural
+    SCA/rootcheck/agent-status alerts — see _is_valid_seed): it then does NOT
+    re-trigger triage plus the LLM report (fix #2, the regeneration loop behind
+    the token explosion of 2026-07-30)."""
     if max([max_old] + [a["rule_level"] for a in new]) > max_old:
         return True
     return any(a["rule_id"] not in old_rules and _is_valid_seed(a)
@@ -427,16 +426,16 @@ def _signal_decisive(old_rules: set, new: list[dict],
 
 def _apply_additions(conn, incs_by_id: dict[int, dict],
                       additions: dict[int, list[dict]]) -> None:
-    """Persiste les rattachements aux incidents existants et pose needs_refresh.
+    """Persists the attachments to existing incidents and sets needs_refresh.
 
-    Met à jour les agrégats de l'incident (fenêtre, compte, niveau max, unions
-    de règles/tactiques/objets). `needs_refresh` n'est posé que si la salve
-    apporte un SIGNAL DÉCISIF NOUVEAU (correctif #2, explosion tokens du
-    2026-07-30) : une règle inédite NON structurelle, ou une hausse du niveau
-    max. Une répétition de bruit (mêmes règles, ou alertes structurelles
-    SCA/rootcheck/statut d'agent) ne re-déclenche PLUS triage + rapport LLM —
-    c'était la boucle qui régénérait le rapport à vide à chaque cycle (5 min).
-    On ne rétrograde jamais un refresh déjà en attente (`OR` en SQL).
+    Updates the incident's aggregates (window, count, max level, unions of
+    rules/tactics/objects). `needs_refresh` is only set when the burst brings a
+    NEW DECISIVE SIGNAL (fix #2, token explosion of 2026-07-30): a novel
+    NON-structural rule, or a rise of the max level. A repetition of noise (same
+    rules, or structural SCA/rootcheck/agent-status alerts) no longer re-triggers
+    triage plus the LLM report — that was the loop regenerating the report for
+    nothing on every cycle (5 min). We never downgrade a refresh already pending
+    (`OR` in SQL).
     """
     for iid, new in additions.items():
         inc = incs_by_id[iid]
@@ -450,10 +449,10 @@ def _apply_additions(conn, incs_by_id: dict[int, dict],
                       | {a["entity"] for a in new if a["entity"]})[:50]
         new_max = max([inc["max_level"]] + [a["rule_level"] for a in new])
         signal = _signal_decisive(old_rules, new, inc["max_level"])
-        # La priorité de l'incident ne bouge PAS (elle est celle de l'asset au
-        # moment de l'ouverture, cf. schema.sql) ; la sévérité, si — elle suit
-        # le niveau max. Priorité absente sur les incidents antérieurs à la
-        # CMDB : on retombe sur le défaut plutôt que d'écrire NULL.
+        # The incident's priority does NOT move (it is the asset's at opening
+        # time, see schema.sql); the severity does — it follows the max level.
+        # Priority missing on incidents predating the CMDB: we fall back on the
+        # default rather than writing NULL.
         priority = inc.get("priority") or config.DEFAULT_PRIORITY
         conn.execute(
             "UPDATE incidents SET last_seen = %s, first_seen = %s, "
@@ -470,8 +469,8 @@ def _apply_additions(conn, incs_by_id: dict[int, dict],
 def correlate(min_level: int, attach_min_level: int | None = None) -> tuple[int, int]:
     if attach_min_level is None:
         attach_min_level = config.ATTACH_MIN_LEVEL
-    # On ne peut rattacher qu'en dessous du seuil de graine ; au-dessus,
-    # l'alerte est déjà une graine à part entière.
+    # We can only attach below the seed threshold; above it, the alert is
+    # already a seed in its own right.
     floor = min(attach_min_level, min_level) if attach_min_level else min_level
 
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
@@ -479,19 +478,19 @@ def correlate(min_level: int, attach_min_level: int | None = None) -> tuple[int,
         if not alerts:
             return 0, 0
 
-        # 1) Rattrapage : recoller aux incidents déjà en base (anti-doublon de
-        # case). Ce qui reste sera groupé en incidents neufs ci-dessous.
+        # 1) Catch-up: glue back onto the incidents already in database
+        # (case anti-duplicate). What remains is grouped into fresh incidents
+        # below.
         alerts, additions, incs_by_id = _attach_existing(conn, alerts)
         _apply_additions(conn, incs_by_id, additions)
 
-        # 2) Nouveaux incidents à partir du reste. Le bruit structurel
-        # (SCA/rootcheck/statut d'agent/login réussi) ne peut PAS être une
-        # graine, même remonté au-dessus du seuil : il n'ouvre pas de case.
-        # Deux titres pour être graine : le niveau Wazuh (>= min_level), ou la
-        # promotion par le moteur UEBA (`ueba_seed`, posé par ueba.evaluer sur
-        # une concentration comportementale anormale). Le filtre structurel
-        # `_graine_valide` s'applique aux DEUX : un SCA ou un statut d'agent ne
-        # fonde pas un case, même statistiquement rare.
+        # 2) New incidents from the rest. Structural noise (SCA/rootcheck/agent
+        # status/successful login) can NOT be a seed, even pushed above the
+        # threshold: it does not open a case. Two grounds to be a seed: the Wazuh
+        # level (>= min_level), or promotion by the UEBA engine (`ueba_seed`, set
+        # by ueba.evaluate on an abnormal behavioural concentration). The
+        # structural filter `_is_valid_seed` applies to BOTH: an SCA or an agent
+        # status does not found a case, however statistically rare.
         seed_ids = {a["id"] for a in alerts
                        if (a["rule_level"] >= min_level or a.get("ueba_seed"))
                        and _is_valid_seed(a)}
@@ -502,65 +501,63 @@ def correlate(min_level: int, attach_min_level: int | None = None) -> tuple[int,
         if candidates and incidents:
             _enrich(incidents, candidates)
 
-        # Une seule transaction : en cas d'échec, les alertes restent
-        # simplement non rattachées et un nouveau passage reprend le travail.
+        # A single transaction: on failure the alerts simply stay unattached
+        # and a new pass takes the work back up.
         created: list[list[dict]] = []
         for group in incidents:
             tactics = sorted({t for a in group for t in a["mitre_tactics"]})
             entities = sorted({a["entity"] for a in group if a["entity"]})
-            # min/max explicites : l'enrichissement ajoute des membres en fin
-            # de liste sans garantie d'ordre chronologique.
-            # Origine UEBA : l'incident n'a pas été ouvert par une règle de
-            # niveau >= 12 mais par un score comportemental. Le triage doit le
-            # savoir (son max_level est bas, il serait autrement hors du lot),
-            # le prompt doit l'expliquer, et la remédiation autonome est bornée
-            # dessus (UEBA_MITIGATE).
-            # Le score et les motifs sont recalculés par la MÊME fonction que
-            # celle du moteur (`ueba.scorer_groupe`) et non ré-agrégés ici : le
-            # découpage de correlate n'est pas celui du signal, et deux formules
-            # pour la même grandeur finiraient par diverger — l'incident
-            # afficherait un score que rien ne permettrait de relier à celui du
-            # signal d'origine. Import différé : ueba n'a pas besoin de
-            # correlate, mais on garde le module chargeable sans lui.
+            # Explicit min/max: enrichment appends members at the end of the
+            # list with no guarantee of chronological order.
+            # UEBA origin: the incident was not opened by a level >= 12 rule but
+            # by a behavioural score. Triage must know (its max_level is low, it
+            # would otherwise be out of the batch), the prompt must explain it,
+            # and autonomous remediation is bounded on it (UEBA_MITIGATE).
+            # The score and the patterns are recomputed by the SAME function as
+            # the engine's (`ueba.score_group`) rather than re-aggregated here:
+            # correlate's slicing is not the signal's, and two formulas for the
+            # same quantity would end up diverging — the incident would show a
+            # score nothing could tie back to the original signal's. Deferred
+            # import: ueba does not need correlate, but we keep the module
+            # loadable without it.
             ueba_alerts = [a for a in group if a.get("ueba_seed")]
             score_ueba, patterns = (0.0, [])
             if ueba_alerts:
                 from . import ueba as _ueba
                 score_ueba, patterns = _ueba.score_group(ueba_alerts)
 
-            # Plancher de score sur l'INCIDENT, et pas seulement sur le signal.
-            # Le moteur UEBA promeut un signal entier ; le découpage d'ici peut
-            # en détacher un fragment dont le score propre n'a plus rien à voir
-            # avec celui qui a justifié la promotion. Sans ce garde-fou, un
-            # fragment de 2 alertes à 3,3 bits ouvrait un incident, un triage
-            # LLM et un case IRIS complets — c'est l'origine du case #192
-            # (« PHANTOM ALERT », planification du service Software Protection).
+            # Score floor on the INCIDENT, and not only on the signal. The UEBA
+            # engine promotes a whole signal; the slicing here can detach a
+            # fragment whose own score has nothing to do with the one that
+            # justified the promotion. Without this guardrail, a 2-alert fragment
+            # at 3.3 bits opened a full incident, LLM triage and IRIS case — that
+            # is the origin of case #192 ("PHANTOM ALERT", scheduling of the
+            # Software Protection service).
             #
-            # Ne s'applique qu'aux groupes fondés UNIQUEMENT par UEBA : dès
-            # qu'une alerte de niveau >= min_level est présente, l'incident
-            # tient par son propre titre et le score comportemental n'est plus
-            # qu'un enrichissement.
+            # Applies only to groups founded SOLELY by UEBA: as soon as an alert
+            # of level >= min_level is present, the incident stands on its own
+            # ground and the behavioural score is merely an enrichment.
             #
-            # Les alertes écartées perdent `ueba_seed` : sans ça elles restent
-            # éligibles comme graine à CHAQUE cycle (SELECT_NON_RATTACHEES lit
-            # `rule_level >= plancher OR ueba_seed`) et le même groupe se
-            # représente indéfiniment. Elles gardent `ueba_signal_id`, qui est
-            # ce sur quoi `ueba.SELECT_CANDIDATES` s'appuie pour ne jamais les
-            # repromouvoir : consommées par le budget une fois, pour de bon.
+            # The dropped alerts lose `ueba_seed`: without that they stay
+            # eligible as a seed on EVERY cycle (SELECT_NON_ATTACHED reads
+            # `rule_level >= floor OR ueba_seed`) and the same group comes back
+            # indefinitely. They keep `ueba_signal_id`, which is what
+            # `ueba.SELECT_CANDIDATES` relies on never to re-promote them:
+            # consumed by the budget once, for good.
             if (ueba_alerts and score_ueba < config.UEBA_SCORE_FLOOR
                     and max(a["rule_level"] for a in group) < min_level):
                 conn.execute(
                     "UPDATE alerts SET ueba_seed = false WHERE id = ANY(%s)",
                     ([a["id"] for a in ueba_alerts],))
-                print(f"  UEBA : groupe de {len(group)} alertes écarté "
-                      f"(score {score_ueba:.1f} < plancher "
-                      f"{config.UEBA_SCORE_FLOOR:.0f}) — pas d'incident")
+                print(f"  UEBA: group of {len(group)} alerts dropped "
+                      f"(score {score_ueba:.1f} < floor "
+                      f"{config.UEBA_SCORE_FLOOR:.0f}) — no incident")
                 continue
 
-            # Priorité de l'asset touché. Le conteneur d'origine prime sur
-            # l'agent quand l'alerte vient d'un capteur d'hôte : c'est le LXC
-            # qui est la vraie machine, pas l'hyperviseur qui l'observe (cf.
-            # assets.priorite_agent).
+            # Priority of the affected asset. The originating container wins
+            # over the agent when the alert comes from a host sensor: the LXC is
+            # the real machine, not the hypervisor watching it (see
+            # assets.agent_priority).
             max_level = max(a["rule_level"] for a in group)
             container = next((a.get("container") for a in group
                               if a.get("container")), None)
@@ -575,14 +572,14 @@ def correlate(min_level: int, attach_min_level: int | None = None) -> tuple[int,
                 max_level,
                 sorted({a["rule_id"] for a in group}),
                 tactics,
-                entities[:50],   # bornage : un ransomware touche des milliers de fichiers
+                entities[:50],   # bounded: a ransomware touches thousands of files
                 bool(ueba_alerts),
                 round(score_ueba, 2) or None,
                 json.dumps(patterns, ensure_ascii=False) if patterns else None,
                 prio["priority"],
                 assets.severity(max_level, prio["priority"]),
-                # Le rôle TEL QU'IL A COMPTÉ, et pas celui de la CMDB : sur un
-                # capteur, la priorité est rabattue et le rôle vaut « capteur ».
+                # The role AS IT COUNTED, not the CMDB's: on a sensor the
+                # priority falls back and the role is "sensor".
                 prio["role"],
             )).fetchone()["id"]
 
@@ -599,39 +596,39 @@ def correlate(min_level: int, attach_min_level: int | None = None) -> tuple[int,
 
 
 def restart() -> None:
-    """Détache toutes les alertes et supprime les incidents.
+    """Detaches every alert and deletes the incidents.
 
-    Sert à rejouer la corrélation après un changement de paramètres. Passe par
-    un DELETE et pas un TRUNCATE : `TRUNCATE incidents CASCADE` viderait aussi
-    `alerts`, à cause de la clé étrangère — ce qui oblige à tout réingérer.
+    Used to replay correlation after a parameter change. Goes through a DELETE
+    and not a TRUNCATE: `TRUNCATE incidents CASCADE` would also empty `alerts`,
+    because of the foreign key — which would force a full re-ingest.
     """
     with psycopg.connect(config.PG_DSN) as conn:
-        # Un incident déjà versé dans IRIS y a laissé un case. Le supprimer ici
-        # rompt le lien iris_case_id : le prochain passage IRIS recréerait un
-        # case en double. On prévient plutôt que de nettoyer côté IRIS à
-        # l'aveugle — la décision revient à l'analyste.
+        # An incident already pushed to IRIS left a case there. Deleting it
+        # here breaks the iris_case_id link: the next IRIS pass would recreate a
+        # duplicate case. We warn rather than clean up blindly on the IRIS side —
+        # the decision belongs to the analyst.
         orphans = conn.execute(
             "SELECT count(*) FROM incidents WHERE iris_case_id IS NOT NULL"
         ).fetchone()[0]
         if orphans:
-            print(f"ATTENTION : {orphans} incident(s) ont un case IRIS. Les "
-                  "supprimer ici orpheline ces cases (doublons au prochain "
-                  "cycle). Les retirer d'IRIS à la main si besoin.")
+            print(f"WARNING: {orphans} incident(s) have an IRIS case. Deleting "
+                  "them here orphans those cases (duplicates on the next cycle). "
+                  "Remove them from IRIS by hand if needed.")
         conn.execute("UPDATE alerts SET incident_id = NULL")
         conn.execute("DELETE FROM incidents")
         conn.commit()
-    print("Incidents supprimés, alertes détachées.")
+    print("Incidents deleted, alerts detached.")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--min-level", type=int, default=config.MIN_LEVEL,
-                    help="niveau Wazuh minimal pour OUVRIR un incident (graine)")
+                    help="minimum Wazuh level to OPEN an incident (seed)")
     ap.add_argument("--attach-min-level", type=int, default=config.ATTACH_MIN_LEVEL,
-                    help="niveau minimal des alertes rattachées à un incident "
-                         "existant (0 pour désactiver l'enrichissement)")
-    ap.add_argument("--recommencer", action="store_true",
-                    help="repart de zéro (conserve les alertes)")
+                    help="minimum level of the alerts attached to an existing "
+                         "incident (0 to disable enrichment)")
+    ap.add_argument("--restart", action="store_true",
+                    help="starts over from scratch (keeps the alerts)")
     args = ap.parse_args()
 
     if args.restart:
@@ -639,13 +636,14 @@ def main() -> None:
 
     n_inc, n_alerts = correlate(args.min_level, args.attach_min_level)
     if n_alerts and n_inc:
-        print(f"{n_alerts} alertes -> {n_inc} incidents neufs "
-              f"(facteur {n_alerts / n_inc:.1f}), rattachements aux existants inclus")
+        print(f"{n_alerts} alerts -> {n_inc} fresh incidents "
+              f"(factor {n_alerts / n_inc:.1f}), attachments to existing ones "
+              "included")
     elif n_alerts:
-        print(f"{n_alerts} alertes rattachées à des incidents existants, "
-              "aucun incident neuf.")
+        print(f"{n_alerts} alerts attached to existing incidents, no fresh "
+              "incident.")
     else:
-        print("Aucune alerte à corréler.")
+        print("No alert to correlate.")
 
 
 if __name__ == "__main__":
