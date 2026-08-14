@@ -1234,6 +1234,55 @@ WAZUH_QUEUE_DIR = os.environ.get("WAZUH_QUEUE_DIR", "/wazuh-queue")
 RETENTION_ISM_ENABLED = os.environ.get(
     "RETENTION_ISM_ENABLED", "true").lower() == "true"
 
+# --- Threat hunting : index set de restauration (cf. hunting.py) --------------
+#
+# `wazuh-hunting-*` n'est PAS un index set de routage. Aucune source de log n'y
+# écrit, aucune branche du pipeline d'ingest ne le désigne : c'est l'espace de
+# travail où l'on REMET de la donnée archivée pour chasser dedans.
+#
+# Il lui manque donc délibérément deux des cinq pièces d'un index set
+# (cf. docs/ROUTAGE.md), et cette absence est la fonctionnalité :
+#
+#  - **pas lu par l'ingestion.** Ré-ingérer des alertes vieilles de dix mois les
+#    ferait entrer dans la corrélation et le triage, ce qui fabriquerait des
+#    incidents — et des cases IRIS, et potentiellement des remédiations — sur des
+#    faits vieux d'un an. Ce n'est pas une préférence, c'est la seule chose qui
+#    sépare « restaurer pour analyser » de « rejouer une attaque de l'an dernier
+#    sur un SOC autonome ». L'exclusion est structurelle : `routage.indices_lus()`
+#    ajoute `-wazuh-hunting-*` en négation, donc même quelqu'un qui mettrait
+#    `wazuh-*` dans INDEXER_ALERT_INDICES ne pourrait pas l'y faire entrer.
+#  - **pas observé par le routage.** Les alertes restaurées portent leur
+#    `decoder.name` d'origine ; vues depuis `routage.sources_observees()`, elles
+#    ressembleraient à une source qui a cessé d'atterrir dans son index — donc à
+#    une DÉRIVE DE ROUTAGE, avec l'alerte IRIS qui va avec. Même exclusion.
+#
+# Il garde en revanche le template (même mapping que les alertes vivantes, sinon
+# tous les champs en `text` et aucune agrégation possible), un index pattern pour
+# Discover, et une rétention — la sienne, plus courte : c'est de l'espace de
+# travail, pas de la conservation.
+HUNTING_INDEX_BASE = os.environ.get("HUNTING_INDEX_BASE", "wazuh-hunting")
+
+# Rétention des index de hunting, en jours, par une politique ISM DÉDIÉE
+# (`aura-hunting`). Plus courte que celle des alertes vivantes : ce qui est ici
+# est une COPIE d'une archive qui, elle, vit douze mois. La perdre ne perd rien,
+# et laisser traîner des restaurations est le moyen le plus simple de remplir le
+# disque du SOC.
+HUNTING_RETENTION_JOURS = int(os.environ.get("HUNTING_RETENTION_JOURS", "30"))
+
+# Garde-fous de la restauration. Ils existent parce que cet espace est
+# accessible par le serveur MCP, donc par un agent IA : « restaure-moi tout pour
+# voir » doit être refusé par le code, pas déconseillé par une consigne. Un
+# disque plein arrête TOUT le SOC (cf. docs/RETENTION.md).
+HUNTING_MAX_DOCS = int(os.environ.get("HUNTING_MAX_DOCS", "2000000"))
+HUNTING_MAX_INDICES = int(os.environ.get("HUNTING_MAX_INDICES", "10"))
+HUNTING_MAX_OCTETS = int(float(
+    os.environ.get("HUNTING_MAX_GO", "10")) * 1073741824)
+
+# Taille des lots `_bulk` de la réinjection. 2 000 documents d'alerte font une
+# requête de ~6 Mo : au-delà, l'indexer rejette ou met la pression sur son heap
+# sans que la réinjection aille plus vite.
+HUNTING_BULK_TAILLE = int(os.environ.get("HUNTING_BULK_TAILLE", "2000"))
+
 # --- Archivage à froid vers S3 (cf. archive.py, docs/ARCHIVAGE.md) -----------
 #
 # La rétention ci-dessus SUPPRIME à 90 jours. Un SOC doit pouvoir répondre plus
@@ -1399,9 +1448,16 @@ if ARCHIVAGE_ENABLED and ARCHIVE_OBJECT_LOCK_MODE not in ("COMPLIANCE", "GOVERNA
 ARCHIVE_INDEX_MOTIFS = os.environ.get("ARCHIVE_INDEX_MOTIFS", "wazuh-*")
 
 # Exclusions supplémentaires, en motifs glob sur le nom d'index complet.
+#
+# L'espace de threat hunting y est TOUJOURS, quoi qu'on mette dans la variable :
+# il contient des copies restaurées depuis les archives, les réarchiver
+# reviendrait à archiver une archive — et sous Object Lock, à payer deux fois la
+# même donnée pendant douze mois. Le nom des index de hunting n'est déjà pas daté
+# au jour, donc ils sont exclus par la forme ; cette ligne est la seconde
+# barrière, celle qui tient même si le nommage change.
 ARCHIVE_INDEX_EXCLUS = [
     m.strip() for m in os.environ.get("ARCHIVE_INDEX_EXCLUS", "").split(",")
-    if m.strip()]
+    if m.strip()] + [f"{HUNTING_INDEX_BASE}-*"]
 
 # Champs retirés de `_source` avant écriture (motifs OpenSearch, `a.b.*`
 # accepté). VIDE par défaut, et c'est un choix : une archive amputée ne se

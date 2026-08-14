@@ -941,6 +941,20 @@ def indices_lus() -> str:
     # statique ; dédupliquer évite de le compter deux fois dans la recherche.
     tous = list(dict.fromkeys(statiques + [p for p in patterns
                                            if not p.startswith("wazuh-alerts")]))
+    # NÉGATION FINALE, non négociable : l'espace de threat hunting contient des
+    # alertes RESTAURÉES depuis les archives (cf. hunting.py). Les laisser entrer
+    # ici aurait deux conséquences, toutes deux graves :
+    #
+    #  - l'ingestion les reprendrait, la corrélation en ferait des incidents et
+    #    le triage des cases IRIS — sur des faits vieux de dix mois, avec la
+    #    remédiation autonome au bout ;
+    #  - le routage verrait leur `decoder.name` atterrir ailleurs que dans son
+    #    index attendu, donc une DÉRIVE, donc une alerte IRIS pour rien.
+    #
+    # La syntaxe `-motif` d'OpenSearch exclut après coup : cette ligne gagne même
+    # si quelqu'un met `wazuh-*` dans INDEXER_ALERT_INDICES. C'est voulu — la
+    # protection ne doit pas dépendre de la discipline de configuration.
+    tous.append(f"-{config.HUNTING_INDEX_BASE}-*")
     valeur = ",".join(tous)
     _INDICES_CACHE.update({"valeur": valeur,
                            "expire": maintenant + timedelta(seconds=_CACHE_S)})

@@ -8,6 +8,7 @@ d'abord, action ensuite, délibérément.
 
 from . import lecture  # noqa: F401
 from . import cmdb  # noqa: F401
+from . import hunting  # noqa: F401
 from . import simulation  # noqa: F401
 from . import action  # noqa: F401
 from . import enrolement  # noqa: F401

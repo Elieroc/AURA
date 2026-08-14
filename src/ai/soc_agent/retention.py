@@ -135,6 +135,48 @@ def politique_ism() -> dict:
     }
 
 
+# Politique DISTINCTE pour l'espace de threat hunting (cf. hunting.py). Deux
+# politiques plutôt qu'une durée moyenne, parce que ce ne sont pas les mêmes
+# données : `wazuh-hunting-*` contient des COPIES restaurées depuis les archives
+# S3, qui vivent douze mois de leur côté. Les perdre ne perd rien, et de
+# l'espace de travail qui traîne est le moyen le plus simple de remplir le
+# disque du SOC.
+#
+# Les motifs des deux politiques ne se recoupent pas : un index ne peut porter
+# qu'UNE politique ISM, et deux `ism_template` concurrents à la même priorité
+# donneraient un rattachement arbitraire.
+ISM_HUNTING_ID = "aura-hunting"
+
+
+def politique_ism_hunting() -> dict:
+    return {
+        "policy": {
+            "description": (
+                f"AURA — espace de threat hunting : suppression au-delà de "
+                f"{config.HUNTING_RETENTION_JOURS} jours. Ce sont des copies "
+                f"restaurées depuis les archives S3, pas des originaux."),
+            "default_state": "actif",
+            "states": [
+                {"name": "actif",
+                 "actions": [],
+                 "transitions": [{
+                     "state_name": "suppression",
+                     "conditions": {
+                         "min_index_age":
+                             f"{config.HUNTING_RETENTION_JOURS}d"},
+                 }]},
+                {"name": "suppression",
+                 "actions": [{"delete": {}}],
+                 "transitions": []},
+            ],
+            "ism_template": [{
+                "index_patterns": [f"{config.HUNTING_INDEX_BASE}-*"],
+                "priority": 150,
+            }],
+        }
+    }
+
+
 def _indexer(methode: str, chemin: str, corps: dict | None = None):
     verif = config.INDEXER_CA or config.INDEXER_VERIFY_TLS
     return requests.request(
@@ -143,35 +185,64 @@ def _indexer(methode: str, chemin: str, corps: dict | None = None):
         json=corps, verify=verif, timeout=30)
 
 
-def appliquer_ism() -> str:
-    """Pose la politique et l'attache aux index DÉJÀ existants.
+def _poser_politique(policy_id: str, corps: dict) -> str:
+    """Écrit une politique ISM, en création ou en mise à jour concurrente.
 
-    `ism_template` ne vaut que pour les index créés APRÈS : sans le second
-    appel, une politique posée aujourd'hui ne verrait jamais les index d'hier —
-    c'est-à-dire précisément ceux qu'elle doit supprimer.
+    Le couple `if_seq_no`/`if_primary_term` est ce qui rend deux passages
+    simultanés inoffensifs : le second est refusé par l'indexer au lieu
+    d'écraser une politique qu'il n'a pas lue.
     """
-    lu = _indexer("GET", f"/_plugins/_ism/policies/{ISM_POLICY_ID}")
-    corps = politique_ism()
+    lu = _indexer("GET", f"/_plugins/_ism/policies/{policy_id}")
     if lu.status_code == 200:
         seq = lu.json()["_seq_no"]
         prim = lu.json()["_primary_term"]
-        r = _indexer("PUT", f"/_plugins/_ism/policies/{ISM_POLICY_ID}"
+        r = _indexer("PUT", f"/_plugins/_ism/policies/{policy_id}"
                             f"?if_seq_no={seq}&if_primary_term={prim}", corps)
         etat = "mise à jour"
     else:
-        r = _indexer("PUT", f"/_plugins/_ism/policies/{ISM_POLICY_ID}", corps)
+        r = _indexer("PUT", f"/_plugins/_ism/policies/{policy_id}", corps)
         etat = "créée"
     if not r.ok:
-        raise RuntimeError(f"politique ISM refusée ({r.status_code}) : {r.text}")
+        raise RuntimeError(
+            f"politique ISM {policy_id} refusée ({r.status_code}) : {r.text}")
+    return etat
 
-    # Rattachement des index existants. Ceux qui sont déjà gérés répondent en
-    # « failure » avec un motif explicite : ce n'est pas une erreur, c'est
-    # l'état normal à partir du 2e passage.
-    r = _indexer("POST", "/_plugins/_ism/add/"
-                         + ",".join(ism_patterns()), {"policy_id": ISM_POLICY_ID})
-    ajoutes = r.json().get("updated_indices", 0) if r.ok else 0
+
+def _rattacher(policy_id: str, patterns: list[str]) -> int:
+    """Attache la politique aux index DÉJÀ existants.
+
+    `ism_template` ne vaut que pour les index créés APRÈS : sans cet appel, une
+    politique posée aujourd'hui ne verrait jamais les index d'hier —
+    c'est-à-dire précisément ceux qu'elle doit supprimer.
+
+    Les index déjà gérés répondent en « failure » avec un motif explicite : ce
+    n'est pas une erreur, c'est l'état normal à partir du 2e passage.
+    """
+    r = _indexer("POST", "/_plugins/_ism/add/" + ",".join(patterns),
+                 {"policy_id": policy_id})
+    return r.json().get("updated_indices", 0) if r.ok else 0
+
+
+def appliquer_ism() -> str:
+    """Pose les DEUX politiques : celle des alertes, celle du hunting."""
+    etat = _poser_politique(ISM_POLICY_ID, politique_ism())
+    ajoutes = _rattacher(ISM_POLICY_ID, ism_patterns())
     log.info("politique ISM « %s » %s (%s jours), %s index rattaché(s)",
              ISM_POLICY_ID, etat, config.RETENTION_INDEX_JOURS, ajoutes)
+
+    # L'espace de hunting a sa propre durée et son propre motif. Best-effort
+    # séparé : son échec ne doit pas emporter la rétention des alertes, qui est
+    # celle qui protège le disque.
+    try:
+        etat_h = _poser_politique(ISM_HUNTING_ID, politique_ism_hunting())
+        motifs_h = [f"{config.HUNTING_INDEX_BASE}-*"]
+        log.info("politique ISM « %s » %s (%s jours), %s index rattaché(s)",
+                 ISM_HUNTING_ID, etat_h, config.HUNTING_RETENTION_JOURS,
+                 _rattacher(ISM_HUNTING_ID, motifs_h))
+    except Exception as e:                                    # noqa: BLE001
+        log.warning("politique ISM « %s » non appliquée : %s — les index de "
+                    "hunting ne seront pas purgés automatiquement.",
+                    ISM_HUNTING_ID, e)
     return etat
 
 

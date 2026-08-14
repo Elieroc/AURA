@@ -518,6 +518,11 @@ services:
       # Clé d'exploitation : etat_isolation et l'enrôlement d'agent passent
       # par ssh vers les hôtes du parc.
       - ${SSH_KEY_HOST:-/root/.ssh/wazuh_ops_ed25519}:/root/.ssh/wazuh_ops_ed25519:ro
+      # Clé d'archivage : les outils de threat hunting déchiffrent une archive
+      # froide pour la remettre dans wazuh-hunting-*. Même RÉPERTOIRE monté que
+      # pour soc-agent-archive, et même raison de monter le répertoire plutôt que
+      # le fichier (docker crée un répertoire à la place d'une source absente).
+      - ${ARCHIVE_KEY_DIR_HOST:-/etc/aura/keys}:/run/secrets:ro
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request,os; urllib.request.urlopen('http://%s:%s/health' % (os.environ.get('AURA_MCP_HOST','127.0.0.1'), os.environ.get('AURA_MCP_PORT','3100')))"]

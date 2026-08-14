@@ -6,8 +6,13 @@ FROM python:3.12-slim
 
 # openssh-client : mitigate.etat_isolation et l'enrôlement d'agent Linux
 # passent par ssh. Sans lui, ces outils échouent à l'exécution seulement.
+#
+# zstd et age : les outils de threat hunting restaurent une archive froide, donc
+# la déchiffrent et la décompressent (soc_agent.hunting -> soc_agent.archive).
+# Mêmes binaires que l'image du pipeline, pour que la même archive se relise de
+# la même façon des deux côtés.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssh-client \
+    && apt-get install -y --no-install-recommends openssh-client zstd age \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

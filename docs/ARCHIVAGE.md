@@ -432,10 +432,21 @@ jq -c '{index:{_index:"restore-firewall-2026-03"}}, ._source' \
       --data-binary @- "$INDEXER_URL/_bulk"
 ```
 
-La réinjection est délibérément **hors du module** : décider où remettre de la
-donnée vieille de dix mois est un geste d'analyste, pas d'automate. Ré-ingérer
-dans `wazuh-firewall-*` ferait rentrer ces alertes dans le pipeline de triage et
-fabriquerait des incidents sur des faits vieux d'un an.
+La réinjection dans un index de **production** est délibérément hors du module :
+ré-ingérer dans `wazuh-firewall-*` ferait rentrer ces alertes dans le pipeline de
+triage et fabriquerait des incidents — et des remédiations réelles — sur des faits
+vieux d'un an.
+
+Pour chasser dans un mois archivé, le chemin prévu est l'espace de threat hunting
+([HUNTING.md](HUNTING.md)), qui remet la donnée en ligne dans `wazuh-hunting-*` :
+requêtable dans Discover, et **cloisonné du pipeline** par construction.
+
+```bash
+docker compose -p aura exec aura-mcp \
+  python -m soc_agent.hunting --restaurer wazuh-firewall/2026-03 --appliquer
+```
+
+C'est aussi ce que fait l'outil MCP `aura_hunting_restore`, dry-run par défaut.
 
 ## Coût réel
 

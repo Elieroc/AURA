@@ -70,8 +70,8 @@ reconnu n'obtient rien, pas même la lecture.
 
 | Scope | Ce qu'il ouvre |
 |---|---|
-| `aura:read` | incidents, alertes, triages, remédiations, whitelist, UEBA, métriques, entonnoir, simulations, santé d'agent, relais Wazuh |
-| `aura:write` | cycle, triage, synchro IRIS, réconciliation des retours d'AR, écriture dans les dossiers IRIS |
+| `aura:read` | incidents, alertes, triages, remédiations, whitelist, UEBA, métriques, entonnoir, simulations, santé d'agent, catalogue d'archives, état du hunting, relais Wazuh |
+| `aura:write` | cycle, triage, synchro IRIS, réconciliation des retours d'AR, écriture dans les dossiers IRIS, restauration d'archives dans l'espace de hunting |
 | `aura:admin` | remédiation, isolation, whitelist, tuning de règles, enrôlement d'agent |
 
 Le scope est porté **par outil**, via `@auth.exige`. `serveur.enregistrer`
@@ -84,10 +84,16 @@ erreur de démarrage, pas un trou silencieux.
 
 `aura_incidents_list` · `aura_incident_get` · `aura_alerts_search` ·
 `aura_triage_history` · `aura_mitigations_list` · `aura_whitelist_list` ·
-`aura_ueba_state` · `aura_funnel_report` · `aura_metrics` · `aura_assets_list`
+`aura_ueba_state` · `aura_funnel_report` · `aura_metrics` · `aura_assets_list` ·
+`aura_archives_list` · `aura_hunting_state`
 
 `aura_incident_get` rend le texte **exact** soumis au LLM : un verdict se juge
 sur pièces, pas sur son résumé.
+
+`aura_archives_list` est le catalogue de ce qui est restaurable — un mois d'un
+index set par ligne, avec son état de vérification. `aura_hunting_state` dit ce
+qui occupe l'espace de hunting **et ce qu'il reste avant les plafonds** : à lire
+avant une restauration, pour savoir si elle passera sans avoir à la tenter.
 
 ### Simuler (`aura:read`, aucun effet)
 
@@ -102,10 +108,26 @@ montre ce qu'il en reste. C'est la question à poser avant d'agir.
 `aura_run_cycle` · `aura_triage_incident` · `aura_iris_case_sync` ·
 `aura_ar_reconcile` · `aura_mitigate_execute` · `aura_isolate` ·
 `aura_unisolate` · `aura_whitelist_apply` · `aura_rule_tuning_apply` ·
-`aura_asset_set`
+`aura_asset_set` · `aura_hunting_restore` · `aura_hunting_purge`
 
 Tous en dry-run par défaut (`appliquer` / `confirmer` à `false`). Sans
 confirmation, l'outil rend ce qui serait fait **et pourquoi ce serait refusé**.
+
+### Chasser dans les archives (`aura:write`)
+
+`aura_hunting_restore` remet un mois d'archive froide dans `wazuh-hunting-*`,
+requêtable dans Discover. `aura_hunting_purge` rend la place.
+
+Le point qui rend ces outils sûrs entre les mains d'un agent IA : **la donnée
+restaurée n'entre pas dans le pipeline.** `wazuh-hunting-*` est exclu par
+négation de ce que lit l'ingestion, donc ces alertes ne sont ni corrélées, ni
+triées, ni remédiées. Sans ce cloisonnement, restaurer mars 2026 ferait rejouer à
+AURA une attaque vieille de dix mois — avec l'isolation d'hôte au bout, puisque
+la remédiation est autonome. Cf. [HUNTING.md](HUNTING.md).
+
+`aura_hunting_purge` refuse tout nom qui ne commence pas par le préfixe de
+hunting, ainsi que les jokers et les listes : il ne peut pas toucher un index
+d'alertes de production.
 
 ### Enrôler (`aura:admin`)
 

@@ -72,6 +72,7 @@ docker compose up -d
 | [`docs/MCP.md`](docs/MCP.md) | serveur MCP : administrer AURA depuis n'importe quel client IA (relaie Wazuh et IRIS) |
 | [`docs/RETENTION.md`](docs/RETENTION.md) | rétention et ménage : ce qui vieillit, ce qui est purgé, et les trois boucles d'écriture qui avaient rempli le disque |
 | [`docs/ARCHIVAGE.md`](docs/ARCHIVAGE.md) | archivage à froid vers S3 (Backblaze B2) : la copie chiffrée qui survit à la purge des 90 jours, et le garde-fou qui suspend la suppression tant qu'elle n'existe pas |
+| [`docs/HUNTING.md`](docs/HUNTING.md) | threat hunting : remettre une archive en ligne dans `wazuh-hunting-*` pour chasser dedans, cloisonnée du pipeline pour qu'AURA ne rejoue pas une attaque de l'an dernier |
 
 ## Security principles
 
@@ -85,7 +86,7 @@ docker compose up -d
 AURA/
 ├── docker-compose.yml   # compose racine unique — les 4 stacks
 ├── .env.example         # config racine unique (copier en .env)
-├── docs/                # INSTALL, TRAINING, UEBA, CMDB, CTI, VOC, REMEDIATION, MCP, RETENTION
+├── docs/                # INSTALL, TRAINING, UEBA, CMDB, CTI, VOC, REMEDIATION, MCP, RETENTION, ARCHIVAGE, HUNTING
 ├── scripts/             # install-agent.sh, déploiement AR...
 ├── db/                  # bases de données (Postgres/OpenSearch), gitignoré
 └── src/                 # les 4 stacks buildables : ai/ · iris/ · shuffle/ · wazuh/

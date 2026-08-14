@@ -34,6 +34,26 @@ Les cinq sont posées par `appliquer()`, dans cet ordre : template et ISM
 d'abord (ils ne valent que pour les index créés **après**), le routage en
 dernier, quand tout est prêt à recevoir.
 
+### L'exception : `wazuh-hunting`
+
+`wazuh-hunting-*` porte un nom d'index set et n'en est pas un. Aucune source n'y
+écrit : c'est l'espace où l'on **remet** une archive froide pour chasser dedans
+([HUNTING.md](HUNTING.md)). Il a les pièces 2, 3 et 5 (avec sa propre politique
+ISM, plus courte) et **pas** les pièces 1 et 4 — cette absence est la
+fonctionnalité, pas un oubli :
+
+- pièce 1 absente parce que rien n'y écrit en direct ;
+- pièce 4 absente, et **structurellement interdite** : `indices_lus()` ajoute
+  `-wazuh-hunting-*` en négation finale. Si l'ingestion lisait cet espace, les
+  alertes restaurées seraient corrélées, triées, puis **remédiées** — AURA
+  agirait sur la production d'aujourd'hui en réponse à une attaque de l'an
+  dernier. La négation gagne même si quelqu'un met `wazuh-*` dans
+  `INDEXER_ALERT_INDICES`.
+
+Le routage ne l'observe donc pas non plus, ce qui évite un second faux problème :
+les alertes restaurées gardent leur `decoder.name`, et ressembleraient sinon à une
+**dérive** — un dossier ouvert pour un geste d'analyste normal.
+
 ## Ce que fait un passage
 
 ```
