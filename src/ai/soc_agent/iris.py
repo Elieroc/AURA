@@ -2241,10 +2241,23 @@ def _alertes(conn, incident_id: int) -> list[dict]:
 
 
 def _traits(conn, incident_id: int) -> list[dict]:
-    """Champs de parenté/identité d'un incident (colonnes, sans parser le raw)."""
+    """Champs de parenté/identité d'un incident (colonnes, sans parser le raw).
+
+    DISTINCT, et c'est ce qui rend la fonction utilisable : `_fondre_si_doublon`
+    l'appelle pour l'incident courant PUIS pour chaque incident candidat à la
+    fusion, et tous ses consommateurs (`_identite_forte`, `_apparentes`,
+    `_distincts`) ne construisent que des ENSEMBLES — la 100 000e répétition
+    d'un même (ip, user, tactique) ne change aucun résultat, elle ne fait
+    qu'occuper la mémoire.
+
+    Sans le DISTINCT, un incident de flood ramenait ses 126 508 lignes, une
+    fois par candidat comparé. Le cycle a été OOM-killé (limite 1 Go) le
+    2026-08-14 à 11:24, arrêtant l'ingestion : le SOC est devenu aveugle par
+    l'ampleur de ce qu'il regardait.
+    """
     return conn.execute(
-        "SELECT srcip, srcuser, entity, mitre_tactics, rule_groups, audit_uid "
-        "FROM alerts WHERE incident_id = %s", (incident_id,)).fetchall()
+        "SELECT DISTINCT srcip, srcuser, entity, mitre_tactics, rule_groups, "
+        "audit_uid FROM alerts WHERE incident_id = %s", (incident_id,)).fetchall()
 
 
 def _identite_forte(traits: list[dict]) -> tuple[set[str], set[str]]:

@@ -65,3 +65,33 @@ def test_exception_file_suppression_bout_en_bout():
              "data": {"virustotal": {"source": {"file": "/tmp/malware.bin"}}}}
     assert f.raison_suppression(vise) == "EICAR"
     assert f.raison_suppression(autre) is None
+
+
+# --- parcours en flux (correctif OOM du 2026-08-14) --------------------------
+#
+# `_signature` reçoit désormais un itérable, pour que l'appelant puisse lui
+# passer un curseur serveur : matérialiser les 126 508 `raw` d'un incident de
+# flood coûtait 1 Go et a fait OOM-killer le cycle, donc arrêté l'ingestion.
+
+def test_signature_accepte_un_generateur():
+    """Un curseur serveur ne se parcourt qu'une fois : la fonction ne doit
+    jamais relire son entrée."""
+    alertes = [_alerte(command="/usr/bin/borg", file="/etc/passwd"),
+               _alerte(command="/usr/bin/borg", file="/etc/passwd")]
+    sig = _signature(a for a in alertes)
+    assert sig is not None
+    assert sig["command"] == "/usr/bin/borg"
+
+
+def test_signature_voit_la_valeur_divergente_tardive():
+    """Le champ qui varie à la DERNIÈRE alerte doit sortir de la signature.
+
+    C'est le garde-fou contre la tentation d'échantillonner : une signature
+    calculée sur les N premières alertes déclarerait `command` constant et
+    produirait une exception plus large que l'incident réellement observé.
+    """
+    alertes = ([_alerte(command="/usr/bin/borg", file="/etc/passwd")] * 5000
+               + [_alerte(command="/usr/bin/curl", file="/etc/passwd")])
+    sig = _signature(a for a in alertes)
+    assert "command" not in sig      # divergent, donc écarté
+    assert sig["file"] == "/etc/passwd"

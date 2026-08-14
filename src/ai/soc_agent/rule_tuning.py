@@ -352,8 +352,14 @@ def _contre_exemple(conn, parent: str, signature: dict) -> tuple[str, str] | Non
 
 def _exemple_fp(conn, incidents: list[int]) -> tuple[dict, tuple[str, str]] | None:
     """(raw, évènement) d'une alerte représentative des incidents FP."""
+    # BORNÉ : on cherche UNE alerte représentative, pas la collection. Sans
+    # limite, une liste d'incidents de flood ramenait des centaines de milliers
+    # de `raw` complets pour en retenir une seule (1 Go pour 126 508 alertes,
+    # cf. whitelist._signature). Les plus récentes d'abord : c'est l'état
+    # courant du FP qu'on veut illustrer.
     lignes = conn.execute(
-        "SELECT raw FROM alerts WHERE incident_id = ANY(%s) ORDER BY ts DESC",
+        "SELECT raw FROM alerts WHERE incident_id = ANY(%s) "
+        "ORDER BY ts DESC LIMIT 500",
         (incidents,)).fetchall()
     for l in lignes:
         raw = l["raw"] if isinstance(l["raw"], dict) else json.loads(l["raw"])

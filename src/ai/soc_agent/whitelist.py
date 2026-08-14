@@ -23,9 +23,10 @@ Trois garde-fous, hérités de la même logique que le triage :
 
 import argparse
 import json
+from collections.abc import Iterable
 
 import psycopg
-from psycopg.rows import dict_row
+from psycopg.rows import dict_row, tuple_row
 
 from . import config
 from .noise import _valeur_champ
@@ -38,7 +39,7 @@ CHAMPS_DISCRIMINANTS = ("src_user", "command", "file")
 CHAMPS_SIGNATURE = ("rule_id",) + CHAMPS_DISCRIMINANTS
 
 
-def _signature(alertes_raw: list[dict],
+def _signature(alertes_raw: Iterable[dict],
                discriminants: tuple[str, ...] = CHAMPS_DISCRIMINANTS) -> dict | None:
     """Signature d'un incident : champs constants sur toutes ses alertes.
 
@@ -49,13 +50,33 @@ def _signature(alertes_raw: list[dict],
     `discriminants` est paramétrable pour `rule_tuning.py`, qui en accepte un de
     plus (`url`) : une exception écrite dans le moteur de règles peut discriminer
     sur l'URL, ce que le filtre post-retrieval ne sait pas faire.
+
+    Prend un ITÉRABLE et ne le parcourt qu'une fois : l'appelant peut donc lui
+    passer un curseur serveur au lieu d'une liste. Chaque champ ne retient que
+    DEUX valeurs distinctes, parce que c'est tout ce que la décision demande —
+    « une seule valeur » ou « plusieurs ». Sans ce plafond, la matérialisation
+    des alertes d'un incident de flood (126 508 `raw`) coûtait 1 Go et a fait
+    OOM-killer le cycle le 2026-08-14, arrêtant l'ingestion.
+
+    Ne PAS remplacer ce parcours par un échantillon borné : un champ jugé
+    constant sur les 2 000 premières alertes alors qu'il varie sur la 2 001e
+    produirait une exception de whitelist plus large que l'incident observé.
+    La borne est sur la mémoire retenue, jamais sur ce qui est examiné.
     """
-    signature: dict = {}
-    for champ in ("rule_id",) + tuple(discriminants):
-        valeurs = {v for a in alertes_raw
-                   if (v := _valeur_champ(a, champ)) is not None}
-        if len(valeurs) == 1:
-            signature[champ] = str(next(iter(valeurs)))
+    champs = ("rule_id",) + tuple(discriminants)
+    valeurs: dict[str, set] = {c: set() for c in champs}
+    vu = False
+    for a in alertes_raw:
+        vu = True
+        for champ in champs:
+            if len(valeurs[champ]) > 1:
+                continue  # déjà multivalué : la suite ne peut plus rien changer
+            if (v := _valeur_champ(a, champ)) is not None:
+                valeurs[champ].add(v)
+    if not vu:
+        return None
+
+    signature = {c: str(next(iter(s))) for c, s in valeurs.items() if len(s) == 1}
 
     # Précision : au moins un discriminant, sinon on neutraliserait trop large
     # (rule_id seul = toute la règle).
@@ -88,12 +109,19 @@ def _incidents_par_verdict(
     sig_tp: set[str] = set()
 
     for l in lignes:
-        raws = [r["raw"] for r in conn.execute(
-            "SELECT raw FROM alerts WHERE incident_id = %s",
-            (l["incident_id"],)).fetchall()]
-        if not raws:
-            continue
-        signature = _signature(raws, discriminants)
+        # Curseur SERVEUR (`name=`) : les lignes arrivent par paquets et ne sont
+        # jamais toutes en mémoire. Un incident de flood en compte 126 508, dont
+        # le `raw` complet — 1 Go matérialisé d'un coup, au-delà de la limite du
+        # conteneur (cf. _signature).
+        # `row_factory` explicite : la connexion est en `dict_row`, dont le
+        # curseur hériterait — on ne veut qu'une colonne, autant la lire par
+        # position sans construire un dict par ligne.
+        with conn.cursor(name=f"sig_{l['incident_id']}",
+                         row_factory=tuple_row) as cur:
+            cur.itersize = 2000
+            cur.execute("SELECT raw FROM alerts WHERE incident_id = %s",
+                        (l["incident_id"],))
+            signature = _signature((r[0] for r in cur), discriminants)
         if signature is None:
             continue
         canon = _canonique(signature)
