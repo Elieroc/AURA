@@ -23,11 +23,18 @@ restauration n'est pas un clic (cf. docs/ARCHIVAGE.md).
 
 Trois propriétés qui tiennent le reste
 --------------------------------------
-1. **La prod ne détient que la clé PUBLIQUE.** Qui prend root sur cet hôte peut
-   écrire de nouvelles archives ; il ne peut pas relire les mois précédents.
-   Corollaire dérangeant mais volontaire : ce code est incapable de vérifier que
-   ses propres archives se déchiffrent. Le drill automatique prouve
-   l'intégrité (SHA-256 de l'objet), le drill COMPLET est un geste humain.
+1. **Le SOC détient la clé en entier** (`ARCHIVE_AGE_KEYFILE`) : il chiffre et
+   déchiffre ses propres archives. Ce qui en découle, en bien comme en mal :
+
+   - le drill de restauration va jusqu'au bout tout seul — il déchiffre, compte
+     les documents et compare au manifeste. Il prouve la LISIBILITÉ, pas
+     seulement l'intégrité du stockage ;
+   - restaurer un mois ne demande aucun montage de clé à la main ;
+   - mais ce fichier est la seule chose qui sépare un attaquant ayant root sur
+     cet hôte de la lecture de tout l'historique. Le fournisseur, lui, ne voit
+     jamais que de l'opaque — c'est le but du chiffrement client, et il est
+     atteint. Le modèle de menace couvert est « B2 lit mes archives », pas
+     « le SOC est compromis ».
 2. **Le repère vit en Postgres**, jamais dans le système distant. Interroger S3
    pour savoir ce qui est archivé, c'est reproduire le bug des pièces Evidence
    d'IRIS : l'appel échoue, l'échec est avalé, la liste des « déjà faites »
@@ -40,12 +47,11 @@ Trois propriétés qui tiennent le reste
 Le clair ne touche jamais le disque : il traverse `zstd | age` par des tubes, et
 seul le chiffré est écrit dans un fichier de travail.
 
-    python -m soc_agent.archive --verifier    # préflight bucket, avant tout
+    python -m soc_agent.archive --verifier    # préflight clé + bucket, avant tout
     python -m soc_agent.archive --plan        # ce qui serait archivé
     python -m soc_agent.archive               # un passage
-    python -m soc_agent.archive --drill       # relire des archives existantes
-    python -m soc_agent.archive --drill-complet --identite cle.txt
-    python -m soc_agent.archive --restaurer wazuh-firewall/2026-03 --identite …
+    python -m soc_agent.archive --drill       # relire et déchiffrer des archives
+    python -m soc_agent.archive --restaurer wazuh-firewall/2026-03 --vers f.ndjson
 """
 from __future__ import annotations
 
@@ -277,6 +283,38 @@ def pages(indices: list[str], taille: int | None = None):
 # Chaîne compression + chiffrement
 # --------------------------------------------------------------------------
 
+def cle_publique() -> str:
+    """Clé publique correspondant à `ARCHIVE_AGE_KEYFILE`.
+
+    `age-keygen` écrit la publique en commentaire de l'identité ; on la lit là
+    plutôt que de lancer un sous-processus à chaque archive. Repli sur
+    `age-keygen -y` si le commentaire a été retiré — ne pas se contenter d'un
+    échec ici, ce serait bloquer l'archivage pour une ligne de commentaire.
+    """
+    for ligne in Path(config.ARCHIVE_AGE_KEYFILE).read_text(
+            encoding="utf-8", errors="replace").splitlines():
+        if ligne.lower().startswith("# public key:"):
+            return ligne.split(":", 1)[1].strip()
+    r = subprocess.run(["age-keygen", "-y", config.ARCHIVE_AGE_KEYFILE],
+                       capture_output=True)
+    if r.returncode:
+        raise RuntimeError(
+            f"clé publique indéterminable depuis {config.ARCHIVE_AGE_KEYFILE} : "
+            + r.stderr.decode(errors="replace")[:300])
+    return r.stdout.decode().strip()
+
+
+def destinataires() -> list[str]:
+    """Clé du SOC, plus les clés de secours éventuelles.
+
+    La clé du SOC est DÉRIVÉE du fichier de clé, jamais recopiée dans le `.env`.
+    C'est ce qui supprime toute une classe de pannes : un destinataire mal
+    recopié produirait des archives que le SOC ne peut pas relire, et personne ne
+    s'en apercevrait avant le premier drill.
+    """
+    return [cle_publique(), *config.ARCHIVE_AGE_RECIPIENTS_EXTRA]
+
+
 def chaine_traitement() -> str:
     """Description exacte de la chaîne, telle qu'écrite dans le manifeste.
 
@@ -284,7 +322,7 @@ def chaine_traitement() -> str:
     trois ans sans lire le code de cette version-là.
     """
     return (f"zstd -{config.ARCHIVE_ZSTD_NIVEAU} --long=27 | age -r "
-            + " -r ".join(config.ARCHIVE_AGE_RECIPIENTS))
+            + " -r ".join(destinataires()))
 
 
 def _verifier_outils() -> None:
@@ -319,14 +357,13 @@ def exporter(lot: dict, destination: Path) -> dict:
 
     Le NDJSON en clair ne touche jamais le disque : il est écrit sur l'entrée de
     `zstd`, dont la sortie alimente `age`, dont la sortie seule est un fichier.
-    Le SHA-256 du clair est calculé au vol — c'est la seule occasion de le faire,
-    puisque personne ici ne peut redéchiffrer ensuite.
+    Le SHA-256 du clair est calculé au vol, pendant qu'on l'a sous la main.
     """
     _verifier_outils()
     _place_disponible(lot["octets"])
 
     recipients: list[str] = []
-    for r in config.ARCHIVE_AGE_RECIPIENTS:
+    for r in destinataires():
         recipients += ["-r", r]
 
     sha_clair = hashlib.sha256()
@@ -443,12 +480,12 @@ def manifeste(lot: dict, metriques: dict, cle: str) -> dict:
         "sha256_chiffre": metriques["sha256_chiffre"],
         "cle": cle,
         "chaine": chaine_traitement(),
-        "destinataires_age": config.ARCHIVE_AGE_RECIPIENTS,
+        "destinataires_age": destinataires(),
         "champs_exclus": config.ARCHIVE_CHAMPS_EXCLUS,
         "schema_ligne": "{_index, _id, _source}",
         "genere_le": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "outil": "soc_agent.archive",
-        "relecture": ("age -d -i <cle-privee> <objet> | zstd -d | "
+        "relecture": ("age -d -i <cle-age> <objet> | zstd -d | "
                       "jq -c 'select(._source.rule.level >= 10)'"),
     }
 
@@ -509,7 +546,7 @@ def _enregistrer(conn, lot: dict, metriques: dict, cle: str,
          cle, cle_man, lot["indices"], metriques["documents"],
          metriques["octets_clair"], metriques["octets_objet"],
          metriques["sha256_clair"], metriques["sha256_chiffre"],
-         chaine_traitement(), config.ARCHIVE_AGE_RECIPIENTS,
+         chaine_traitement(), destinataires(),
          config.ARCHIVE_CHAMPS_EXCLUS, lock.get("ObjectLockRetainUntilDate")))
     conn.commit()
 
@@ -658,16 +695,19 @@ def proteger(indices: list[str]) -> int:
 # Drill de restauration
 # --------------------------------------------------------------------------
 
-def _drill_une(s3, ligne: dict, identite: str | None) -> dict:
-    """Retélécharge une archive et compare son empreinte.
+def _drill_une(s3, ligne: dict, complet: bool = True) -> dict:
+    """Retélécharge une archive, la déchiffre et compare ce qu'elle contient.
 
-    Sans identité : vérifie le SHA-256 de l'OBJET. Ça prouve que le stockage n'a
-    pas altéré ni perdu la donnée — pas qu'elle se déchiffre. C'est la limite
-    structurelle du chiffrement asymétrique, et elle est le prix de la propriété
-    qui compte (la prod ne peut pas relire l'historique).
+    Trois vérifications qui ne disent pas la même chose, dans cet ordre :
 
-    Avec identité : déchiffre, décompresse, compare le SHA-256 du CLAIR et le
-    nombre de documents. C'est le seul drill qui prouve la lisibilité.
+    1. l'objet est **présent** — sinon quelqu'un ou quelque chose l'a supprimé ;
+    2. son SHA-256 correspond — le stockage ne l'a ni altéré ni tronqué ;
+    3. il se **déchiffre** et rend le compte de documents du manifeste. C'est la
+       seule des trois qui prouve qu'une archive sert à quelque chose, et elle
+       n'est possible que parce que le SOC détient sa clé.
+
+    `complet=False` s'arrête après (2) : utile quand la clé est momentanément
+    indisponible, pour ne pas déclarer en échec ce qu'on n'a pas su lire.
     """
     tmp = Path(tempfile.mkdtemp(prefix="aura-drill-",
                                dir=config.ARCHIVE_TMP_DIR))
@@ -680,12 +720,12 @@ def _drill_une(s3, ligne: dict, identite: str | None) -> dict:
         if _sha256_fichier(local) != ligne["sha256_chiffre"]:
             return {"etat": "sha256-divergent",
                     "detail": "l'objet stocké diffère de ce qui a été écrit"}
-        if not identite:
+        if not complet:
             return {"etat": "ok", "complet": False}
 
         dechiffre = subprocess.run(
-            f"age -d -i {identite!r} {str(local)!r} | zstd -d -c",
-            shell=True, capture_output=True)
+            f"age -d -i {config.ARCHIVE_AGE_KEYFILE!r} {str(local)!r} "
+            "| zstd -d -c", shell=True, capture_output=True)
         if dechiffre.returncode:
             return {"etat": "erreur: déchiffrement",
                     "detail": dechiffre.stderr.decode(errors="replace")[:500]}
@@ -703,13 +743,14 @@ def _drill_une(s3, ligne: dict, identite: str | None) -> dict:
 
 
 def drill(conn, s3, lot: int | None = None,
-          identite: str | None = None) -> list[dict]:
+          complet: bool | None = None) -> list[dict]:
     """Vérifie les archives vérifiées le moins récemment.
 
     Sélection par `verifie_a NULLS FIRST` : déterministe, et chaque archive
     finit par passer. Un tirage au sort laisserait durablement des trous.
     """
     n = config.ARCHIVE_DRILL_LOT if lot is None else lot
+    entier = config.ARCHIVE_DRILL_COMPLET if complet is None else complet
     lignes = conn.execute(
         "SELECT * FROM archives_s3 WHERE format_version=%s "
         " ORDER BY verifie_a NULLS FIRST, archivee_a LIMIT %s",
@@ -717,7 +758,7 @@ def drill(conn, s3, lot: int | None = None,
     bilan = []
     for ligne in lignes:
         try:
-            r = _drill_une(s3, ligne, identite)
+            r = _drill_une(s3, ligne, entier)
         except Exception as e:                                    # noqa: BLE001
             r = {"etat": f"erreur: {e}"[:200]}
         conn.execute(
@@ -915,6 +956,46 @@ def _anomalie(suffixe: str, titre: str, note: str, severite: str,
 # Préflight
 # --------------------------------------------------------------------------
 
+def verifier_cle() -> dict:
+    """Aller-retour RÉEL de chiffrement sur un témoin, avant de compter sur la clé.
+
+    Chiffrer puis redéchiffrer trois octets coûte quelques millisecondes et
+    répond à la seule question qui compte avant d'archiver un mois entier : cette
+    clé permet-elle de RELIRE ? Une clé publique collée par erreur dans le
+    fichier, une identité tronquée à la copie, un `age` absent — tout ça passe
+    les contrôles de `config` et se voit ici.
+    """
+    _verifier_outils()
+    bilan = {"keyfile": config.ARCHIVE_AGE_KEYFILE,
+             "destinataires": destinataires()}
+    tmp = Path(tempfile.mkdtemp(prefix="aura-clecheck-",
+                               dir=config.ARCHIVE_TMP_DIR))
+    try:
+        temoin, chiffre = b"aura\n", tmp / "t.age"
+        recipients: list[str] = []
+        for r in bilan["destinataires"]:
+            recipients += ["-r", r]
+        c = subprocess.run(["age", *recipients, "-o", str(chiffre)],
+                           input=temoin, capture_output=True)
+        if c.returncode:
+            raise RuntimeError("chiffrement du témoin en échec : "
+                               + c.stderr.decode(errors="replace")[:300])
+        d = subprocess.run(
+            ["age", "-d", "-i", config.ARCHIVE_AGE_KEYFILE, str(chiffre)],
+            capture_output=True)
+        if d.returncode or d.stdout != temoin:
+            raise RuntimeError(
+                "la clé ne redéchiffre PAS ce qu'elle a chiffré : "
+                + d.stderr.decode(errors="replace")[:300]
+                + " — archiver dans cet état produirait des objets illisibles.")
+        bilan["aller_retour"] = "ok"
+        bilan["secours"] = (config.ARCHIVE_AGE_RECIPIENTS_EXTRA
+                            or "AUCUNE — perdre le keyfile perdrait tout")
+        return bilan
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def verifier_bucket() -> dict:
     """Préflight à lancer AVANT de compter sur l'archivage.
 
@@ -974,25 +1055,34 @@ def verifier_bucket() -> dict:
 # Restauration
 # --------------------------------------------------------------------------
 
-def restaurer(s3, index_base: str, periode: str, identite: str,
-              destination: Path) -> dict:
-    """Télécharge et déchiffre une archive sur disque. Lecture seule côté SOC.
+def restaurer(s3, index_base: str, periode: str, destination: Path,
+              identite: str | None = None) -> dict:
+    """Télécharge et déchiffre une archive sur disque, avec la clé du SOC.
 
     Volontairement séparé de toute réinjection dans l'indexer : décider où
     remettre de la donnée vieille de dix mois est un geste d'analyste, pas
-    d'automate. Le NDJSON obtenu s'injecte avec `_bulk` (cf. docs/ARCHIVAGE.md).
+    d'automate. Ré-ingérer dans `wazuh-firewall-*` ferait rentrer ces alertes
+    dans le pipeline de triage et fabriquerait des incidents sur des faits vieux
+    d'un an. Le NDJSON obtenu s'injecte avec `_bulk` (cf. docs/ARCHIVAGE.md).
+
+    `identite` permet de passer une clé de SECOURS, pour le cas qui justifie
+    qu'elle existe : la clé du SOC est perdue ou l'hôte a été refait.
     """
+    cle_age = identite or config.ARCHIVE_AGE_KEYFILE
     cle = cle_objet(index_base, periode, SUFFIXE_OBJET)
     chiffre = destination.with_suffix(destination.suffix + ".age")
     s3.download_file(config.ARCHIVE_S3_BUCKET, cle, str(chiffre))
     r = subprocess.run(
-        f"age -d -i {identite!r} {str(chiffre)!r} | zstd -d -o "
+        f"age -d -i {cle_age!r} {str(chiffre)!r} | zstd -d -o "
         f"{str(destination)!r} -f",
         shell=True, capture_output=True)
     chiffre.unlink(missing_ok=True)
     if r.returncode:
         raise RuntimeError("restauration en échec : "
                            + r.stderr.decode(errors="replace")[:800])
+    # Confronter au manifeste appartient à l'appelant, mais compter les lignes
+    # ici évite le contresens le plus courant : croire qu'un fichier obtenu sans
+    # erreur est un fichier complet.
     return {"cle": cle, "fichier": str(destination),
             "lignes": sum(1 for _ in destination.open("rb")),
             "octets": destination.stat().st_size}
@@ -1038,8 +1128,7 @@ def tourner(dry_run: bool = False) -> dict:
                         {"index_base": lot["index_base"],
                          "periode": lot["periode"], "erreur": str(e)[:300]})
 
-            bilan["drill"] = drill(conn, s3,
-                                   identite=config.ARCHIVE_AGE_IDENTITE)
+            bilan["drill"] = drill(conn, s3)
             peril = indices_en_peril(conn)
             bilan["peril"] = [i["index"] for i in peril]
             if peril:
@@ -1059,13 +1148,14 @@ def main() -> None:
     p.add_argument("--plan", action="store_true",
                    help="ce qui serait archivé, sans rien écrire")
     p.add_argument("--verifier", action="store_true",
-                   help="préflight du bucket (joignable, droits, Object Lock)")
+                   help="préflight : aller-retour de la clé, puis bucket "
+                        "(joignable, droits, Object Lock)")
     p.add_argument("--drill", action="store_true",
-                   help="relire des archives existantes et sortir")
-    p.add_argument("--drill-complet", action="store_true",
-                   help="drill AVEC déchiffrement (exige --identite)")
-    p.add_argument("--identite", help="clé privée age, pour le drill complet "
-                                     "et la restauration")
+                   help="relire, déchiffrer et recompter des archives, puis sortir")
+    p.add_argument("--sans-dechiffrer", action="store_true",
+                   help="drill limité au SHA-256 de l'objet")
+    p.add_argument("--identite", help="clé age de SECOURS, si celle du SOC est "
+                                     "perdue (drill et restauration)")
     p.add_argument("--lot", type=int, help="nombre d'archives à vérifier")
     p.add_argument("--restaurer", metavar="INDEX_SET/AAAA-MM",
                    help="télécharger et déchiffrer une archive")
@@ -1079,29 +1169,27 @@ def main() -> None:
         return
 
     if args.verifier:
-        print(json.dumps(verifier_bucket(), indent=2, ensure_ascii=False,
-                         default=str))
+        # La clé d'abord : un bucket parfait ne sert à rien si ce qu'on y écrit
+        # est illisible.
+        print(json.dumps({"cle": verifier_cle(), "s3": verifier_bucket()},
+                         indent=2, ensure_ascii=False, default=str))
         return
 
     if args.restaurer:
-        if not args.identite:
-            raise SystemExit("--restaurer exige --identite (clé privée age). "
-                             "Elle n'est PAS sur cet hôte par conception.")
         base, _, periode = args.restaurer.rpartition("/")
-        print(json.dumps(restaurer(_s3(), base, periode, args.identite,
-                                   Path(args.vers)),
+        print(json.dumps(restaurer(_s3(), base, periode, Path(args.vers),
+                                   args.identite),
                          indent=2, ensure_ascii=False))
         return
 
-    if args.drill or args.drill_complet:
-        identite = args.identite or config.ARCHIVE_AGE_IDENTITE
-        if args.drill_complet and not identite:
-            raise SystemExit("--drill-complet exige --identite : sans la clé "
-                             "privée, seul le SHA-256 de l'objet est "
-                             "vérifiable, pas sa lisibilité.")
+    if args.drill:
+        if args.identite:
+            monkey = config.ARCHIVE_AGE_KEYFILE
+            config.ARCHIVE_AGE_KEYFILE = args.identite
+            log.warning("drill avec la clé de secours %s (au lieu de %s)",
+                        args.identite, monkey)
         with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-            r = drill(conn, _s3(), args.lot,
-                      identite if args.drill_complet else None)
+            r = drill(conn, _s3(), args.lot, not args.sans_dechiffrer)
         print(json.dumps(r, indent=2, ensure_ascii=False))
         return
 

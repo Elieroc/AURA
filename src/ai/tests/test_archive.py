@@ -111,19 +111,76 @@ def test_cle_prefixee_et_versionnee(monkeypatch):
 _OUTILS = shutil.which("zstd") and shutil.which("age") and shutil.which("age-keygen")
 
 
+def _keyfile(tmp_path, monkeypatch):
+    """Génère la clé du SOC et la déclare, comme en exploitation."""
+    cle = tmp_path / "aura-archive-age.key"
+    subprocess.run(["age-keygen", "-o", str(cle)], check=True,
+                   capture_output=True)
+    monkeypatch.setattr(config, "ARCHIVE_AGE_KEYFILE", str(cle))
+    monkeypatch.setattr(config, "ARCHIVE_AGE_RECIPIENTS_EXTRA", [])
+    return cle
+
+
+@pytest.mark.skipif(not _OUTILS, reason="zstd/age absents de cet environnement")
+def test_cle_publique_derivee_du_keyfile(tmp_path, monkeypatch):
+    """La clé publique est DÉRIVÉE du fichier de clé, jamais recopiée dans le
+    .env. Ça supprime une classe entière de pannes : un destinataire mal recopié
+    produirait des archives que le SOC ne peut pas relire, et personne ne s'en
+    apercevrait avant le premier drill."""
+    cle = _keyfile(tmp_path, monkeypatch)
+    attendu = next(l.split(": ")[1].strip() for l in cle.read_text().splitlines()
+                   if l.startswith("# public key:"))
+    assert archive.cle_publique() == attendu
+    assert archive.destinataires() == [attendu]
+    # Sans le commentaire, on retombe sur `age-keygen -y` plutôt que d'échouer.
+    cle.write_text(next(l for l in cle.read_text().splitlines()
+                        if l.startswith("AGE-SECRET-KEY-1")) + "\n")
+    assert archive.cle_publique() == attendu
+
+
+@pytest.mark.skipif(not _OUTILS, reason="zstd/age absents de cet environnement")
+def test_secours_ajoute_aux_destinataires(tmp_path, monkeypatch):
+    """Une clé de secours doit s'ajouter, jamais remplacer : le SOC doit rester
+    capable de relire ses propres archives."""
+    _keyfile(tmp_path, monkeypatch)
+    secours = tmp_path / "secours.key"
+    subprocess.run(["age-keygen", "-o", str(secours)], check=True,
+                   capture_output=True)
+    pub_secours = next(l.split(": ")[1].strip()
+                       for l in secours.read_text().splitlines()
+                       if l.startswith("# public key:"))
+    monkeypatch.setattr(config, "ARCHIVE_AGE_RECIPIENTS_EXTRA", [pub_secours])
+    d = archive.destinataires()
+    assert len(d) == 2 and d[0] == archive.cle_publique() and d[1] == pub_secours
+
+
+@pytest.mark.skipif(not _OUTILS, reason="zstd/age absents de cet environnement")
+def test_verifier_cle_fait_un_aller_retour_reel(tmp_path, monkeypatch):
+    """Le préflight doit REFUSER une clé qui ne redéchiffre pas ce qu'elle
+    chiffre — sinon on ne l'apprend qu'à la première restauration."""
+    _keyfile(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
+    assert archive.verifier_cle()["aller_retour"] == "ok"
+    # Clé d'un AUTRE porteur en destinataire exclusif : le SOC ne peut plus lire.
+    autre = tmp_path / "autre.key"
+    subprocess.run(["age-keygen", "-o", str(autre)], check=True,
+                   capture_output=True)
+    monkeypatch.setattr(archive, "destinataires", lambda: [
+        next(l.split(": ")[1].strip() for l in autre.read_text().splitlines()
+             if l.startswith("# public key:"))])
+    with pytest.raises(RuntimeError, match="ne redéchiffre PAS"):
+        archive.verifier_cle()
+
+
 @pytest.mark.skipif(not _OUTILS, reason="zstd/age absents de cet environnement")
 def test_export_chiffre_puis_relu(tmp_path, monkeypatch):
-    """Le seul test qui prouve la propriété centrale : ce qui sort de la chaîne
-    se redéchiffre à l'identique, et le SHA-256 annoncé est celui du clair.
+    """Le test qui prouve la propriété centrale : ce qui sort de la chaîne se
+    redéchiffre à l'identique AVEC LA CLÉ DU SOC, et le SHA-256 annoncé est celui
+    du clair.
 
     Sans ça, on ne saurait qu'à la première restauration réelle — donc trop tard.
     """
-    cle = tmp_path / "identite.txt"
-    subprocess.run(["age-keygen", "-o", str(cle)], check=True,
-                   capture_output=True)
-    publique = next(l.split(": ")[1].strip()
-                    for l in cle.read_text().splitlines()
-                    if l.startswith("# public key:"))
+    cle = _keyfile(tmp_path, monkeypatch)
 
     docs = [{"_index": "wazuh-firewall-2026.08.14", "_id": f"i{n}",
              "_source": {"rule": {"level": 12}, "agent": {"id": "001"},
@@ -133,7 +190,6 @@ def test_export_chiffre_puis_relu(tmp_path, monkeypatch):
         (json.dumps(d, ensure_ascii=False, separators=(",", ":"),
                     sort_keys=True) + "\n").encode() for d in docs)
 
-    monkeypatch.setattr(config, "ARCHIVE_AGE_RECIPIENTS", [publique])
     monkeypatch.setattr(config, "ARCHIVE_ZSTD_NIVEAU", 3)
     monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
     monkeypatch.setattr(archive, "pages", lambda idx, taille=None: iter([docs]))
@@ -160,7 +216,7 @@ def test_destinataire_invalide_ne_laisse_pas_de_fichier(tmp_path, monkeypatch):
     """Une chaîne en échec ne doit JAMAIS laisser son fichier derrière elle : un
     fichier tronqué qui monte dans S3 se fait passer pour une archive valide
     jusqu'au jour où on en a besoin."""
-    monkeypatch.setattr(config, "ARCHIVE_AGE_RECIPIENTS", ["age1pasunecle"])
+    monkeypatch.setattr(archive, "destinataires", lambda: ["age1pasunecle"])
     monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
     monkeypatch.setattr(archive, "pages", lambda idx, taille=None: iter(
         [[{"_index": "i", "_id": "1", "_source": {}}]]))
@@ -187,7 +243,7 @@ def test_manifeste_porte_de_quoi_relire_sans_le_code(monkeypatch):
     """Le manifeste doit suffire à un humain dans trois ans : la chaîne exacte,
     les destinataires, et l'empreinte du clair qui fait la différence entre une
     sauvegarde et une preuve."""
-    monkeypatch.setattr(config, "ARCHIVE_AGE_RECIPIENTS", ["age1abc"])
+    monkeypatch.setattr(archive, "destinataires", lambda: ["age1abc"])
     monkeypatch.setattr(config, "ARCHIVE_ZSTD_NIVEAU", 19)
     man = archive.manifeste(
         {"index_base": "wazuh-web", "periode": "2026-05",

@@ -1247,9 +1247,12 @@ RETENTION_ISM_ENABLED = os.environ.get(
 #  - un objet par (index set × mois), en NDJSON compressé. Pas de snapshot
 #    OpenSearch : un snapshot ne se relit qu'avec un cluster de version
 #    compatible, et son arborescence est opaque. Une archive doit valoir seule.
-#  - chiffrement CÔTÉ CLIENT avant l'upload. La prod ne détient que la clé
-#    PUBLIQUE : qui prend root sur cet hôte peut écrire de nouvelles archives,
-#    il ne peut pas relire les douze mois précédents.
+#  - chiffrement CÔTÉ CLIENT avant l'upload, avec une clé que le SOC détient en
+#    entier : il chiffre et déchiffre ses propres archives. Le fournisseur n'a
+#    jamais que de l'opaque, ce qui est le point ; en revanche qui obtient root
+#    sur cet hôte obtient la clé, donc la lecture de tout l'historique. Choix
+#    d'exploitation assumé (drill complet automatique, restauration sans geste
+#    manuel) — cf. la section « Modèle de menace » de docs/ARCHIVAGE.md.
 #  - rien n'est déclaré archivé sans que l'objet ait été relu côté S3. Le repère
 #    vit en Postgres, jamais dans le système distant — même leçon que les pièces
 #    Evidence d'IRIS, qui se reposaient en boucle parce que la liste des « déjà
@@ -1291,42 +1294,77 @@ ARCHIVE_S3_APP_KEY = _archive_requis("ARCHIVE_S3_APP_KEY")
 # la clé applicative à ce seul bucket.
 ARCHIVE_S3_PREFIX = os.environ.get("ARCHIVE_S3_PREFIX", "").strip("/")
 
-# Destinataires `age` (X25519), séparés par des virgules. La clé PRIVÉE ne doit
-# PAS être sur cet hôte.
+# Fichier de clé `age` détenu par le SOC, vu depuis le conteneur. Il porte la
+# clé COMPLÈTE : le module chiffre avec et déchiffre avec.
 #
-# En mettre DEUX est la seule protection contre la perte : personne ne récupère
-# une archive age dont la clé est perdue, ni Backblaze ni nous. Deuxième
-# destinataire = clé de secours, hors ligne, en coffre.
-ARCHIVE_AGE_RECIPIENTS = [
-    r.strip() for r in os.environ.get("ARCHIVE_AGE_RECIPIENTS", "").split(",")
-    if r.strip()]
+# Un seul secret pour les deux sens, et c'est ce qui est voulu : le drill de
+# restauration peut aller jusqu'au déchiffrement tout seul (donc prouver la
+# LISIBILITÉ d'une archive, pas seulement son intégrité), et restaurer un mois ne
+# demande aucun montage de clé à la main.
+#
+# Ce que ça coûte, à savoir plutôt qu'à découvrir : ce fichier est la seule chose
+# qui sépare un attaquant ayant root sur cet hôte de la lecture des douze mois
+# d'archives. Le protéger (0400, root, hors de tout volume partagé) fait partie
+# du dispositif, pas des bonnes manières.
+#
+# Le fichier est monté en LECTURE SEULE depuis un RÉPERTOIRE de l'hôte
+# (ARCHIVE_KEY_DIR_HOST). Monter le fichier directement expose au piège maison :
+# si le chemin source n'existe pas, docker crée un RÉPERTOIRE à sa place et le
+# conteneur casse au démarrage sans message clair (cf. SSH_KEY_HOST).
+ARCHIVE_AGE_KEYFILE = os.environ.get(
+    "ARCHIVE_AGE_KEYFILE", "/run/secrets/aura-archive-age.key")
+
+# Destinataires SUPPLÉMENTAIRES, en clés publiques age séparées par des virgules.
+# Facultatif, et utile pour une seule chose : une clé de secours dont la privée
+# dort hors ligne, en coffre. Chaque archive devient alors déchiffrable par le
+# SOC *ou* par cette clé — le SOC peut perdre la sienne sans perdre l'historique.
+ARCHIVE_AGE_RECIPIENTS_EXTRA = [
+    r.strip() for r in
+    os.environ.get("ARCHIVE_AGE_RECIPIENTS_EXTRA", "").split(",") if r.strip()]
 
 if ARCHIVAGE_ENABLED:
-    if not ARCHIVE_AGE_RECIPIENTS:
-        sys.exit("ARCHIVE_AGE_RECIPIENTS est vide alors que ARCHIVAGE_ENABLED=true : "
-                 "refus d'archiver en clair. Générer une paire avec "
-                 "`age-keygen -o cle-archive.txt` et publier la ligne "
-                 "« public key: age1... » ici (cf. docs/ARCHIVAGE.md).")
-    # Un destinataire mal recopié rend illisibles tous les mois écrits d'ici à
-    # ce que quelqu'un s'en aperçoive. `age` refuserait de lui-même, mais à
-    # 2 h du matin dans un conteneur : autant échouer au démarrage.
-    mauvais = [r for r in ARCHIVE_AGE_RECIPIENTS
-               if not (r.startswith("age1") and len(r) >= 58)]
-    if mauvais:
-        sys.exit(f"ARCHIVE_AGE_RECIPIENTS : destinataire(s) invalide(s) {mauvais}. "
-                 "Attendu une clé publique age (« age1… », 62 caractères), pas "
-                 "un chemin de fichier ni une clé privée.")
-    if len(ARCHIVE_AGE_RECIPIENTS) == 1:
-        print("AVERTISSEMENT archivage : un seul destinataire age. Perdre cette "
-              "clé privée rend DÉFINITIVEMENT illisibles toutes les archives. "
-              "Ajouter une clé de secours hors ligne.", file=sys.stderr)
-
-# Identité age (clé PRIVÉE) pour le drill COMPLET, qui déchiffre et recompte les
-# documents. Vide par défaut, et c'est le bon réglage : la poser ici remet sur
-# la machine de prod la clé qui déverrouille douze mois d'archives, et annule
-# l'essentiel du bénéfice du chiffrement asymétrique. À n'utiliser que pour un
-# `--drill-complet` lancé à la main, avec un montage temporaire.
-ARCHIVE_AGE_IDENTITE = os.environ.get("ARCHIVE_AGE_IDENTITE", "") or None
+    _kf = Path(ARCHIVE_AGE_KEYFILE)
+    if not _kf.is_file():
+        sys.exit(
+            f"ARCHIVE_AGE_KEYFILE introuvable : {ARCHIVE_AGE_KEYFILE}. Refus "
+            "d'archiver en clair. Générer la clé sur l'hôte avec "
+            "`age-keygen -o /etc/aura/keys/aura-archive-age.key` puis vérifier "
+            "que ARCHIVE_KEY_DIR_HOST est monté (cf. docs/ARCHIVAGE.md).")
+    try:
+        _contenu = _kf.read_text(encoding="utf-8", errors="replace")
+    except OSError as _e:
+        sys.exit(f"ARCHIVE_AGE_KEYFILE illisible ({ARCHIVE_AGE_KEYFILE}) : {_e}")
+    if "AGE-SECRET-KEY-1" not in _contenu:
+        sys.exit(
+            f"ARCHIVE_AGE_KEYFILE ({ARCHIVE_AGE_KEYFILE}) ne contient pas de clé "
+            "age (« AGE-SECRET-KEY-1… »). Ne pas y mettre une clé PUBLIQUE : ce "
+            "fichier doit permettre de déchiffrer, sinon le drill de "
+            "restauration ne peut rien prouver.")
+    # Une clé lisible par tout le monde n'est plus un secret. On le dit sans
+    # bloquer : c'est une permission sur l'hôte, pas une erreur de configuration,
+    # et refuser de démarrer ferait perdre l'archivage pour un chmod.
+    try:
+        _mode = _kf.stat().st_mode & 0o077
+        if _mode:
+            print(f"AVERTISSEMENT archivage : {ARCHIVE_AGE_KEYFILE} est lisible "
+                  f"au-delà de son propriétaire (mode …{_mode:03o}). Cette clé "
+                  "déchiffre TOUTES les archives : `chmod 400` sur l'hôte.",
+                  file=sys.stderr)
+    except OSError:
+        pass
+    if not ARCHIVE_AGE_RECIPIENTS_EXTRA:
+        print("AVERTISSEMENT archivage : aucune clé de secours "
+              "(ARCHIVE_AGE_RECIPIENTS_EXTRA vide). Perdre "
+              f"{ARCHIVE_AGE_KEYFILE} rendrait DÉFINITIVEMENT illisibles toutes "
+              "les archives — personne ne les récupère, ni Backblaze ni nous. "
+              "Sauvegarder ce fichier hors ligne, ou ajouter une clé de secours.",
+              file=sys.stderr)
+    _mauvais = [r for r in ARCHIVE_AGE_RECIPIENTS_EXTRA
+                if not (r.startswith("age1") and len(r) >= 58)]
+    if _mauvais:
+        sys.exit(f"ARCHIVE_AGE_RECIPIENTS_EXTRA : valeur(s) invalide(s) "
+                 f"{_mauvais}. Attendu une clé PUBLIQUE age (« age1… », 62 "
+                 "caractères), pas un chemin de fichier ni une clé privée.")
 
 # Object Lock (WORM). C'est ce qui distingue un archivage d'une sauvegarde :
 # permet d'affirmer devant un auditeur que l'objet n'a pas pu être modifié.
@@ -1405,14 +1443,20 @@ ARCHIVE_MARGE_JOURS = int(os.environ.get("ARCHIVE_MARGE_JOURS", "7"))
 ARCHIVE_TAILLE_LOT = int(os.environ.get("ARCHIVE_TAILLE_LOT", "5000"))
 
 # Drill de restauration. À chaque passage, les N archives vérifiées le moins
-# récemment sont retéléchargées et leur SHA-256 recalculé. Une archive non
-# testée est une croyance, pas une copie.
+# récemment sont retéléchargées, leur SHA-256 recalculé, puis DÉCHIFFRÉES et
+# recomptées contre leur manifeste. Une archive non testée est une croyance, pas
+# une copie.
 #
-# Ce drill automatique prouve l'INTÉGRITÉ, pas la lisibilité : sans la clé
-# privée (qui n'a rien à faire ici) il ne peut pas déchiffrer. Le drill complet
-# est un geste humain — cf. `--drill-complet` et docs/ARCHIVAGE.md.
+# Le drill va jusqu'au déchiffrement parce que le SOC détient sa clé : il prouve
+# donc la LISIBILITÉ, pas seulement l'intégrité du stockage. C'est le principal
+# bénéfice d'exploitation du choix de clé symétrique.
+#
+# COMPLET=false s'arrête au SHA-256 de l'objet. Utile transitoirement (clé
+# momentanément absente) pour ne pas déclarer en échec ce qu'on n'a pas su lire.
 ARCHIVE_DRILL_LOT = int(os.environ.get("ARCHIVE_DRILL_LOT", "3"))
 ARCHIVE_DRILL_JOURS = int(os.environ.get("ARCHIVE_DRILL_JOURS", "90"))
+ARCHIVE_DRILL_COMPLET = os.environ.get(
+    "ARCHIVE_DRILL_COMPLET", "true").lower() == "true"
 
 # Répertoire de travail. L'archive y est écrite DÉJÀ CHIFFRÉE — le clair ne
 # touche jamais le disque, il ne traverse que des tubes. Prévoir de la place :

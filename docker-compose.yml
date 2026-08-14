@@ -457,13 +457,24 @@ services:
   #    archives anciennes. C'est le seul moment où l'on apprend qu'une copie
   #    d'il y a huit mois ne tient plus.
   #
-  # Aucun volume : ce service ne touche ni les règles, ni la queue du manager.
-  # Il lit l'indexer, écrit dans S3 et tient son repère en Postgres. Son seul
-  # besoin local est du temporaire (ARCHIVE_TMP_DIR), où il n'écrit QUE du
-  # chiffré — le clair ne traverse que des tubes.
+  # Un seul volume, en LECTURE SEULE : le RÉPERTOIRE qui contient la clé age.
+  #
+  # Le répertoire et pas le fichier, délibérément. Docker crée un RÉPERTOIRE à la
+  # place d'une source de bind mount absente : monter directement le fichier
+  # ferait échouer le conteneur au démarrage sans message clair le jour où la clé
+  # est déplacée ou pas encore générée (même piège que SSH_KEY_HOST). En montant
+  # le répertoire, l'absence de la clé est signalée par `config.py`, qui nomme le
+  # fichier attendu et la commande pour le créer.
+  #
+  # Rien d'autre : ce service ne touche ni les règles, ni la queue du manager. Il
+  # lit l'indexer, écrit dans S3 et tient son repère en Postgres. Son seul besoin
+  # local est du temporaire (ARCHIVE_TMP_DIR), où il n'écrit QUE du chiffré — le
+  # clair ne traverse que des tubes.
   soc-agent-archive:
     <<: *soc-agent
     container_name: soc-agent-archive
+    volumes:
+      - ${ARCHIVE_KEY_DIR_HOST:-/etc/aura/keys}:/run/secrets:ro
     command: sh -c "while true; do python -m soc_agent.archive; sleep 86400; done"
 
   # Serveur MCP AURA : un seul endpoint pour piloter le SOC depuis un client IA

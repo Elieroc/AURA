@@ -66,24 +66,71 @@ Le prix payé, assumé : pas d'incrémental, et la restauration n'est pas un cli
 
 ## Les trois propriétés qui tiennent le reste
 
-### 1. La prod ne détient que la clé publique
+### 1. Le SOC détient sa clé, et s'en sert dans les deux sens
 
 Le chiffrement est `age` (X25519 + ChaCha20-Poly1305), **côté client, avant
-l'upload**. Seule la clé **publique** est dans le `.env` de la prod.
+l'upload**. Le fichier de clé (`ARCHIVE_AGE_KEYFILE`) vit sur l'hôte du SOC et
+porte la clé **complète** : le module chiffre avec, et déchiffre avec.
 
-Qui prend root sur l'hôte du SOC peut écrire de nouvelles archives ; il ne peut
-**pas relire les douze mois précédents**. C'est la propriété qui compte, et elle
-a un corollaire dérangeant qu'il faut assumer : **ce code est incapable de
-vérifier que ses propres archives se déchiffrent.** Le drill automatique prouve
-l'intégrité, le drill complet est un geste humain (voir plus bas).
+La clé publique n'est **jamais recopiée dans le `.env`** — elle est dérivée du
+fichier de clé (`archive.cle_publique()`). Ça supprime une classe entière de
+pannes : un destinataire mal recopié produirait des archives que le SOC ne peut
+pas relire, et personne ne s'en apercevrait avant le premier drill.
 
-Ce qui a été écarté, et pourquoi :
+#### Modèle de menace
+
+C'est le point à comprendre avant de juger le reste du dispositif.
+
+| Menace | Couverte ? |
+|---|---|
+| Backblaze (ou un sous-traitant, ou une réquisition US) lit les archives | **oui** — le fournisseur ne voit que de l'opaque. C'est l'objectif, et il est atteint |
+| Fuite d'un bucket mal configuré, clé applicative volée | **oui** — sans le fichier de clé, les objets ne valent rien |
+| Un tiers modifie une archive sans se faire voir | **oui** — AEAD (ChaCha20-Poly1305) + SHA-256 au manifeste |
+| **Compromission root de l'hôte du SOC** | **non** — l'attaquant obtient la clé, donc la lecture des douze mois |
+
+Ce dernier point est un arbitrage explicite, pas un oubli. Ce qu'il achète :
+
+- le **drill de restauration déchiffre tout seul** et prouve la *lisibilité* d'une
+  archive, pas seulement l'intégrité de son stockage. C'est le gain réel : sans la
+  clé, on ne pourrait vérifier que « l'objet n'a pas bougé », et on n'apprendrait
+  qu'une archive est illisible qu'au moment d'en avoir besoin ;
+- restaurer un mois ne demande **aucune manipulation de clé**, donc se fait sous
+  pression sans se tromper.
+
+La variante asymétrique (clé publique seule sur la prod, privée hors ligne)
+protégerait aussi de la compromission de l'hôte : un attaquant root pourrait
+écrire de nouvelles archives mais pas relire l'historique. Elle a été écartée au
+profit de l'exploitabilité. Pour la reprendre, il suffirait de retirer la partie
+privée du keyfile et de repasser le drill en `ARCHIVE_DRILL_COMPLET=false`.
+
+Conséquence pratique, à traiter comme une mesure et non comme une bonne manière :
+
+```bash
+chmod 400 /etc/aura/keys/aura-archive-age.key   # root uniquement
+```
+
+Le module **avertit au démarrage** si le fichier est lisible au-delà de son
+propriétaire. Il n'en fait pas une erreur bloquante : c'est une permission sur
+l'hôte, et refuser de démarrer ferait perdre l'archivage pour un `chmod`.
+
+#### La clé de secours
+
+`ARCHIVE_AGE_RECIPIENTS_EXTRA` accepte des clés **publiques** supplémentaires.
+Chaque archive devient alors déchiffrable par le SOC **ou** par cette clé, dont la
+privée dort hors ligne. C'est ce qui permet au SOC de perdre sa clé — hôte refait,
+disque mort — sans perdre l'historique.
+
+Sans clé de secours, la **sauvegarde hors ligne du keyfile est la seule
+protection**. Le module avertit au démarrage si aucune n'est déclarée.
+
+#### Ce qui a été écarté
 
 | Écarté | Raison |
 |---|---|
 | Mot de passe d'archive (`zip -e`, `7z -p`) | dérivation de clé faible, noms de fichiers en clair en ZIP standard, mot de passe partagé entre humains donc fuité, pas d'intégrité vérifiable |
 | **SSE-B2** (chiffrement serveur, clé Backblaze) | Backblaze détient la clé. Face à un audit RGPD ou au CLOUD Act, ça coche une case et ne protège rien |
 | **SSE-C** (clé fournie à chaque requête) | la clé transite en en-tête HTTP à chaque appel, atterrit dans les logs et l'historique shell |
+| `age -p` (passphrase, vrai symétrique scrypt) | exige un terminal, donc inutilisable depuis un conteneur non interactif. Le fichier de clé donne la même propriété (un seul secret, les deux sens) sans bricolage |
 
 Chiffrer **après** compresser, jamais l'inverse : du chiffré est incompressible.
 
@@ -157,11 +204,11 @@ quoi savoir ce que l'objet contient et comment le relire :
   "octets_objet": 41943040,
   "sha256_clair": "…",
   "sha256_chiffre": "…",
-  "chaine": "zstd -19 --long=27 | age -r age1… -r age1secours…",
-  "destinataires_age": ["age1…", "age1secours…"],
+  "chaine": "zstd -19 --long=27 | age -r age1<soc> -r age1<secours>",
+  "destinataires_age": ["age1<soc>", "age1<secours>"],
   "champs_exclus": [],
   "schema_ligne": "{_index, _id, _source}",
-  "relecture": "age -d -i <cle-privee> <objet> | zstd -d | jq -c '…'"
+  "relecture": "age -d -i <cle-age> <objet> | zstd -d | jq -c '…'"
 }
 ```
 
@@ -232,45 +279,66 @@ deux minutes.
 Une archive non testée est une croyance, pas une copie.
 
 À chaque passage, les `ARCHIVE_DRILL_LOT` (3) archives vérifiées **le moins
-récemment** sont retéléchargées et leur SHA-256 recalculé. Sélection par
-`verifie_a NULLS FIRST` : déterministe, et chaque archive finit par passer. Un
-tirage au sort laisserait durablement des trous.
+récemment** sont reprises. Sélection par `verifie_a NULLS FIRST` : déterministe,
+et chaque archive finit par passer. Un tirage au sort laisserait durablement des
+trous.
 
-**Ce drill automatique prouve l'intégrité, pas la lisibilité.** Sans la clé privée
-— qui n'a rien à faire sur cet hôte — il ne peut pas déchiffrer. C'est la limite
-structurelle du chiffrement asymétrique, et c'est le prix de la propriété qui
-compte.
+Trois vérifications qui ne disent pas la même chose, dans cet ordre :
 
-Le **drill complet**, à faire une fois par trimestre, à la main :
+1. l'objet est **présent** — sinon quelqu'un ou quelque chose l'a supprimé ;
+2. son **SHA-256 correspond** — le stockage ne l'a ni altéré ni tronqué ;
+3. il se **déchiffre** et rend le compte de documents du manifeste.
+
+La troisième est la seule qui prouve qu'une archive sert à quelque chose, et elle
+n'est possible que parce que le SOC détient sa clé. C'est le bénéfice concret du
+choix de clé symétrique : **le drill complet est automatique**, il n'y a pas de
+geste trimestriel à ne pas oublier.
 
 ```bash
-# monter temporairement la clé privée, hors du .env
-docker compose -p aura run --rm \
-  -v /media/coffre/cle-archive-aura.txt:/tmp/cle:ro \
-  soc-agent-archive \
-  python -m soc_agent.archive --drill-complet --identite /tmp/cle --lot 5
+docker compose -p aura exec soc-agent-archive \
+  python -m soc_agent.archive --drill --lot 10
 ```
 
-Il déchiffre, décompresse, compare le SHA-256 du **clair** et le nombre de
-documents au manifeste. C'est le seul qui prouve qu'une archive est lisible.
+`ARCHIVE_DRILL_COMPLET=false` (ou `--sans-dechiffrer`) s'arrête après (2). Utile
+transitoirement, si la clé est momentanément indisponible : mieux vaut un contrôle
+partiel qu'un faux échec qui ouvre un dossier `archivage:drill` en High.
+
+Pour valider la clé de **secours** — c'est-à-dire vérifier qu'elle marche *avant*
+d'en avoir besoin :
+
+```bash
+docker compose -p aura run --rm \
+  -v /media/coffre/aura-archive-secours.key:/tmp/cle:ro \
+  soc-agent-archive \
+  python -m soc_agent.archive --drill --identite /tmp/cle --lot 2
+```
 
 ## Mise en service
 
-### 1. Les clés — le geste irréversible
+### 1. La clé — le geste irréversible
+
+Sur l'hôte de prod :
 
 ```bash
-age-keygen -o cle-archive-aura.txt          # clé principale
-age-keygen -o cle-archive-secours.txt       # clé de secours
+apt-get install -y age                    # aussi utile pour lire une archive à la main
+install -d -m 700 /etc/aura/keys
+age-keygen -o /etc/aura/keys/aura-archive-age.key
+chmod 400 /etc/aura/keys/aura-archive-age.key
 ```
 
-**Perdre la clé privée = perdre définitivement toutes les archives.** Personne ne
-les récupère, ni Backblaze ni nous. D'où deux destinataires : la seconde clé dort
-hors ligne, dans un coffre ou une enveloppe scellée, et ne sert que si la première
-est perdue.
+**Perdre ce fichier = perdre définitivement toutes les archives.** Personne ne les
+récupère, ni Backblaze ni nous. Deux protections, à choisir (ou cumuler) :
 
-Les fichiers `age-keygen` contiennent la clé **privée**. Ils ne vont ni dans le
-dépôt, ni dans le `.env`, ni sur la prod. Seule la ligne
-`# public key: age1...` de chacun est recopiée dans `ARCHIVE_AGE_RECIPIENTS`.
+- **le sauvegarder hors ligne** (support chiffré, coffre, enveloppe scellée) — le
+  fichier fait 200 octets ;
+- **déclarer une clé de secours** : `age-keygen -o aura-archive-secours.key` sur
+  une machine hors ligne, la ligne `# public key: age1…` dans
+  `ARCHIVE_AGE_RECIPIENTS_EXTRA`, et la privée reste hors ligne. Chaque archive
+  devient déchiffrable par le SOC *ou* par elle.
+
+Ne rien mettre du contenu de ces fichiers dans le dépôt ni dans le `.env` : le
+`.env` ne porte que le **chemin** de la clé du SOC et les clés **publiques** de
+secours.
 
 ### 2. Le bucket B2
 
@@ -309,13 +377,20 @@ Avant de le passer à `true` :
 ### 4. Préflight, puis activation
 
 ```bash
-python -m soc_agent.archive --verifier   # bucket, droits, versioning, Object Lock
+python -m soc_agent.archive --verifier   # clé, puis bucket/droits/Object Lock
 python -m soc_agent.archive --plan       # ce qui serait archivé, sans rien écrire
 ```
 
-`--verifier` vérifie aussi ce qui devrait être **absent** : il tente une
-suppression et signale `suppression: POSSIBLE` si la clé porte `deleteFiles`. Une
-clé de prod qui peut supprimer est un rançongiciel qui peut effacer les douze mois.
+`--verifier` fait deux choses, la clé d'abord — un bucket parfait ne sert à rien si
+ce qu'on y écrit est illisible :
+
+- **aller-retour réel de la clé** : il chiffre un témoin de trois octets et le
+  redéchiffre. Une clé publique collée par erreur dans le fichier, une identité
+  tronquée à la copie, un `age` absent de l'image : tout ça passe les contrôles de
+  `config.py` et se voit ici ;
+- **ce qui devrait être absent** côté B2 : il tente une suppression et signale
+  `suppression: POSSIBLE` si la clé applicative porte `deleteFiles`. Une clé de
+  prod qui peut supprimer est un rançongiciel qui peut effacer les douze mois.
 
 Puis `ARCHIVAGE_ENABLED=true` dans le `.env` et :
 
@@ -333,14 +408,16 @@ d'archivage, il fait croire que la copie existe.
 
 ## Restaurer
 
+La clé étant sur place, il n'y a rien à monter :
+
 ```bash
-docker compose -p aura run --rm \
-  -v /media/coffre/cle-archive-aura.txt:/tmp/cle:ro \
-  -v /srv/restore:/out \
-  soc-agent-archive \
+docker compose -p aura run --rm -v /srv/restore:/out soc-agent-archive \
   python -m soc_agent.archive --restaurer wazuh-firewall/2026-03 \
-    --identite /tmp/cle --vers /out/firewall-2026-03.ndjson
+    --vers /out/firewall-2026-03.ndjson
 ```
+
+`--identite /chemin/cle` permet de passer par la clé de **secours**, pour le cas
+qui justifie qu'elle existe : la clé du SOC est perdue, ou l'hôte a été refait.
 
 Vérifier l'empreinte contre le manifeste, puis exploiter selon le besoin :
 
@@ -386,6 +463,16 @@ Les deux postes qui mordraient réellement à plus grande échelle, dans l'ordre
 - **`zstd` et `age` sont des binaires de l'image**, pas des paquets pip. Un
   `docker compose up` sans `--build` après cette mise en place donne un conteneur
   qui échoue avec « `age` absent de l'image ».
+- **C'est le RÉPERTOIRE de la clé qui est monté**, pas le fichier
+  (`ARCHIVE_KEY_DIR_HOST` → `/run/secrets:ro`). Docker crée un *répertoire* à la
+  place d'une source de bind mount absente : monter le fichier ferait échouer le
+  conteneur sans message clair le jour où la clé est déplacée ou pas encore
+  générée. En montant le répertoire, l'absence est signalée par `config.py`, qui
+  nomme le fichier attendu et la commande pour le créer.
+- **Ne pas recopier la clé publique dans le `.env`.** Elle est dérivée du keyfile.
+  Un destinataire recopié à la main qui divergerait de la clé réelle produirait
+  des archives que le SOC ne peut pas relire, et le drill serait le premier à
+  l'apprendre.
 - **Le fichier de travail est du chiffré**, jamais du clair : le NDJSON ne
   traverse que des tubes. Mais il faut de la place — un export est refusé s'il n'a
   pas de quoi s'écrire, parce qu'un disque plein arrête tout le SOC.
