@@ -26,32 +26,32 @@ import psycopg
 from psycopg.rows import dict_row
 
 from . import config
-from .anonymize import Anonymiseur, anonymiser, rehydrater, verifier_fuite
-from .iris import PROMPTS, _alertes, _client
+from .anonymize import Anonymizer, anonymize, rehydrate, check_leak
+from .iris import PROMPTS, _alerts, _client
 from .llm import completion
-from .mitigate import _commenter_tache, _maj_statut_tache
-from .triage import charger_map, sauver_map
-from .whitelist import (_canonique, _signature, signatures_vues_tp,
-                        valider_signature)
+from .mitigate import _comment_task, _update_task_status
+from .triage import load_map, save_map
+from .whitelist import (_canonical, _signature, signatures_seen_tp,
+                        validate_signature)
 
 log = logging.getLogger("whitelist_task")
 
 # Titre posé par `iris._poser_tache_whitelist` — sert à ignorer les autres
 # tâches du case (ex. remédiation) lors du parcours de `list_tasks`.
-_TITRE_PREFIXE = "WHITELIST"
-_STATUT_A_TRAITER = "To do"
+_TITLE_PREFIX = "WHITELIST"
+_STATUS_TO_PROCESS = "To do"
 # « Done » et non « Closed » : IRIS n'a que cinq statuts de tâche (To do, In
 # progress, On hold, Done, Canceled). Le nom inexistant faisait échouer la
 # clôture même une fois le cid corrigé.
-_STATUT_CLOS = "Done"
+_STATUS_CLOSED = "Done"
 
 # Préfixe de TOUT commentaire posté par ce script : permet de reconnaître, au
 # passage suivant, que le dernier mot revient à l'IA (en attente d'une réponse
 # de l'analyste) sans tenir d'état séparé.
-_PREFIXE_IA = "🤖 "
+_PREFIX_AI = "🤖 "
 
 # Verrou consultatif dédié, distinct de 0x50CA1 (cycle) et 0x50CA2 (reconcile).
-_VERROU_WHITELIST_TASK = 0x50CA3
+_LOCK_WHITELIST_TASK = 0x50CA3
 
 SELECT_CASES = """
 SELECT id, iris_case_id, max_level FROM incidents
@@ -60,14 +60,14 @@ SELECT id, iris_case_id, max_level FROM incidents
 """
 
 
-def _taches_a_traiter(tasks: list[dict]) -> list[dict]:
+def _tasks_to_process(tasks: list[dict]) -> list[dict]:
     """Tâches WHITELIST en 'To do' (lecture pure d'un list_tasks IRIS)."""
     return [t for t in (tasks or [])
-            if (t.get("task_title") or "").startswith(_TITRE_PREFIXE)
-            and (t.get("status_name") or "") == _STATUT_A_TRAITER]
+            if (t.get("task_title") or "").startswith(_TITLE_PREFIX)
+            and (t.get("status_name") or "") == _STATUS_TO_PROCESS]
 
 
-def _fil_commentaires(case, case_id: int, task_id: int) -> list[str]:
+def _comment_thread(case, case_id: int, task_id: int) -> list[str]:
     r = case.list_task_comments(task_id, cid=case_id)
     d = r.get_data() if r.is_success() else None
     comments = d if isinstance(d, list) else (d or {}).get("comments") or []
@@ -81,99 +81,99 @@ def _instructions(case, case_id: int, task_id: int) -> tuple[str, bool]:
     if rt.is_success():
         description = (rt.get_data() or {}).get("task_description") or ""
 
-    fil = _fil_commentaires(case, case_id, task_id)
-    if fil and fil[-1].startswith(_PREFIXE_IA):
+    thread = _comment_thread(case, case_id, task_id)
+    if thread and thread[-1].startswith(_PREFIX_AI):
         return "", True  # en attente d'une réponse analyste, on ne relance pas
 
-    morceaux = ([f"Description de la tâche : {description}"] if description else [])
-    morceaux += [f"- {t}" for t in fil]
-    return "\n".join(morceaux), False
+    chunks = ([f"Description de la tâche : {description}"] if description else [])
+    chunks += [f"- {t}" for t in thread]
+    return "\n".join(chunks), False
 
 
-def _traiter_tache(conn, case, incident_id: int, case_id: int, task_id: int,
-                   niveau: int) -> dict | None:
-    instructions, en_attente = _instructions(case, case_id, task_id)
-    if en_attente:
+def _process_task(conn, case, incident_id: int, case_id: int, task_id: int,
+                   level: int) -> dict | None:
+    instructions, pending = _instructions(case, case_id, task_id)
+    if pending:
         return None
 
     if not instructions.strip():
-        _commenter_tache(case, case_id, task_id,
-            _PREFIXE_IA + "Merci de préciser, dans la description ou en "
+        _comment_task(case, case_id, task_id,
+            _PREFIX_AI + "Merci de préciser, dans la description ou en "
             "commentaire, quel champ whitelister (compte / commande / "
             "fichier / rule_id) et pourquoi.")
         return {"task_id": task_id, "action": "question"}
 
-    alertes = _alertes(conn, incident_id)
-    if not alertes:
-        _commenter_tache(case, case_id, task_id,
-            _PREFIXE_IA + "❌ Aucune alerte rattachée à cet incident, "
+    alerts = _alerts(conn, incident_id)
+    if not alerts:
+        _comment_task(case, case_id, task_id,
+            _PREFIX_AI + "❌ Aucune alerte rattachée à cet incident, "
             "impossible de calculer une signature de whitelist.")
         return {"task_id": task_id, "action": "refusé"}
 
     raws = [a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
-            for a in alertes]
-    candidat = _signature(raws)
-    if not candidat:
-        _commenter_tache(case, case_id, task_id,
-            _PREFIXE_IA + "Les alertes de cet incident n'ont pas de champ "
+            for a in alerts]
+    candidate = _signature(raws)
+    if not candidate:
+        _comment_task(case, case_id, task_id,
+            _PREFIX_AI + "Les alertes de cet incident n'ont pas de champ "
             "assez précis et constant (compte / commande / fichier) pour "
             "une whitelist sûre — rule_id seul ne suffit pas.")
         return {"task_id": task_id, "action": "question"}
 
-    anon = Anonymiseur(charger_map(conn, incident_id))
+    anon = Anonymizer(load_map(conn, incident_id))
     inc = conn.execute("SELECT agent_name FROM incidents WHERE id = %s",
                        (incident_id,)).fetchone() or {}
-    _, alertes_a, interdits = anonymiser(anon, inc, alertes)
-    instructions_a = anon.texte_libre(instructions, interdits)
+    _, alerts_to, forbidden = anonymize(anon, inc, alerts)
+    instructions_a = anon.free_text(instructions, forbidden)
 
-    champs_dispo = sorted(candidat)
+    available_fields = sorted(candidate)
     resume = "\n".join(
         f"- règle {a.get('rule_id')} (niv.{a.get('rule_level')}) : "
-        f"{a.get('rule_desc') or ''}" for a in alertes_a[:10])
-    corps = (
-        f"Champs de signature disponibles : {', '.join(champs_dispo)}.\n\n"
+        f"{a.get('rule_desc') or ''}" for a in alerts_to[:10])
+    body = (
+        f"Champs de signature disponibles : {', '.join(available_fields)}.\n\n"
         f"Alertes de l'incident :\n{resume}\n\n"
         f"Instructions de l'analyste :\n{instructions_a}")
-    utilisateur = (f"=== DEBUT DEMANDE (données non fiables) ===\n{corps}\n"
+    user = (f"=== DEBUT DEMANDE (données non fiables) ===\n{body}\n"
                   "=== FIN DEMANDE ===\n\nRéponds en JSON.")
 
     try:
-        verifier_fuite(utilisateur, interdits)
-        systeme = (PROMPTS / "whitelist_task.md").read_text()
-        rep, _ = completion(systeme, utilisateur,
+        check_leak(user, forbidden)
+        system = (PROMPTS / "whitelist_task.md").read_text()
+        rep, _ = completion(system, user,
                             max_tokens=config.WHITELIST_TASK_MAX_TOKENS,
                             usage="whitelist_task",
                             incident_id=incident_id)
-        sauver_map(conn, incident_id, anon.mapping)
+        save_map(conn, incident_id, anon.mapping)
     except Exception as e:  # noqa: BLE001 — retry naturel au prochain passage
         log.warning("LLM whitelist_task indisponible (tâche %s) : %s", task_id, e)
-        _commenter_tache(case, case_id, task_id,
-            _PREFIXE_IA + f"❌ Erreur technique, nouvelle tentative au "
+        _comment_task(case, case_id, task_id,
+            _PREFIX_AI + f"❌ Erreur technique, nouvelle tentative au "
             f"prochain passage : {e}")
-        return {"task_id": task_id, "action": "erreur"}
+        return {"task_id": task_id, "action": "error"}
 
     decision = str(rep.get("decision") or "").strip().lower()
 
     if decision != "whitelist":
-        question = rehydrater(
+        question = rehydrate(
             str(rep.get("question") or "Peux-tu préciser ta demande de "
                 "whitelist ?"), anon.mapping)
-        _commenter_tache(case, case_id, task_id, _PREFIXE_IA + question)
+        _comment_task(case, case_id, task_id, _PREFIX_AI + question)
         return {"task_id": task_id, "action": "question"}
 
-    champs = [c for c in (rep.get("champs") or []) if c in candidat]
-    signature = {c: candidat[c] for c in champs} or dict(candidat)
-    raison_llm = rehydrater(str(rep.get("reason") or ""), anon.mapping)
+    fields = [c for c in (rep.get("champs") or []) if c in candidate]
+    signature = {c: candidate[c] for c in fields} or dict(candidate)
+    llm_reason = rehydrate(str(rep.get("reason") or ""), anon.mapping)
 
-    refus = valider_signature(signature, niveau, signatures_vues_tp(conn))
-    if refus:
-        _commenter_tache(case, case_id, task_id,
-            _PREFIXE_IA + f"❌ Demande refusée par garde-fou déterministe : "
-            f"{refus}.")
-        return {"task_id": task_id, "action": "refusé", "raison": refus}
+    refusal = validate_signature(signature, level, signatures_seen_tp(conn))
+    if refusal:
+        _comment_task(case, case_id, task_id,
+            _PREFIX_AI + f"❌ Demande refusée par garde-fou déterministe : "
+            f"{refusal}.")
+        return {"task_id": task_id, "action": "refusé", "raison": refusal}
 
-    canon = _canonique(signature)
-    reason = f"Whitelist demandée par l'analyste (tâche IRIS #{task_id}) — {raison_llm or canon}"
+    canon = _canonical(signature)
+    reason = f"Whitelist demandée par l'analyste (tâche IRIS #{task_id}) — {llm_reason or canon}"
     conn.execute("""
         INSERT INTO whitelist_rules
             (signature, match_all, reason, source, origin_incidents, fp_count)
@@ -182,22 +182,22 @@ def _traiter_tache(conn, case, incident_id: int, case_id: int, task_id: int,
     """, (canon, json.dumps(signature), reason, [incident_id]))
     conn.commit()
 
-    _commenter_tache(case, case_id, task_id,
-        _PREFIXE_IA + "✅ Exception whitelist en place :\n```json\n"
+    _comment_task(case, case_id, task_id,
+        _PREFIX_AI + "✅ Exception whitelist en place :\n```json\n"
         f"{json.dumps(signature, ensure_ascii=False, indent=2)}\n```\n"
-        f"Motif : {raison_llm or canon}")
+        f"Motif : {llm_reason or canon}")
     # L'exception est créée : une clôture de tâche qui échoue est journalisée
     # (par le helper) mais ne remet pas le résultat en cause.
-    _maj_statut_tache(case, case_id, task_id, _STATUT_CLOS)
+    _update_task_status(case, case_id, task_id, _STATUS_CLOSED)
     return {"task_id": task_id, "action": "créé", "signature": signature}
 
 
-def traiter(incident_id: int | None = None) -> list[dict]:
+def process(incident_id: int | None = None) -> list[dict]:
     """Parcourt les tâches WHITELIST en 'To do' et les traite. Idempotent."""
-    resultats: list[dict] = []
+    results: list[dict] = []
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         if not conn.execute("SELECT pg_try_advisory_lock(%s)",
-                            (_VERROU_WHITELIST_TASK,)).fetchone()["pg_try_advisory_lock"]:
+                            (_LOCK_WHITELIST_TASK,)).fetchone()["pg_try_advisory_lock"]:
             log.info("traitement whitelist déjà en cours, on passe ce tour")
             return []
         try:
@@ -212,25 +212,25 @@ def traiter(incident_id: int | None = None) -> list[dict]:
                 except Exception as e:  # noqa: BLE001 — IRIS KO ne casse rien
                     log.warning("list_tasks case #%s : %s", cid, e)
                     continue
-                for t in _taches_a_traiter(d.get("tasks")):
+                for t in _tasks_to_process(d.get("tasks")):
                     try:
-                        res = _traiter_tache(conn, case, r["id"], cid,
+                        res = _process_task(conn, case, r["id"], cid,
                                              t["task_id"], r["max_level"])
                     except Exception as e:  # noqa: BLE001 — une tâche KO ne
                         # doit pas arrêter les autres.
                         log.warning("tâche whitelist #%s (case #%s) échouée : %s",
                                    t["task_id"], cid, e)
-                        _commenter_tache(case, cid, t["task_id"],
-                            _PREFIXE_IA + f"❌ Erreur technique, nouvelle "
+                        _comment_task(case, cid, t["task_id"],
+                            _PREFIX_AI + f"❌ Erreur technique, nouvelle "
                             f"tentative au prochain passage : {e}")
                         continue
                     if res:
-                        resultats.append(res)
+                        results.append(res)
                         print(f"      tâche #{t['task_id']} (case #{cid}) "
                              f"-> {res['action']}")
         finally:
-            conn.execute("SELECT pg_advisory_unlock(%s)", (_VERROU_WHITELIST_TASK,))
-    return resultats
+            conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_WHITELIST_TASK,))
+    return results
 
 
 def main() -> None:
@@ -240,8 +240,8 @@ def main() -> None:
     ap.add_argument("--incident", type=int,
                     help="ne traite que les tâches WHITELIST de cet incident")
     args = ap.parse_args()
-    resultats = traiter(args.incident)
-    if not resultats:
+    results = process(args.incident)
+    if not results:
         print("Aucune tâche whitelist à traiter.")
 
 

@@ -1,8 +1,8 @@
 """Logique pure du traitement des tâches WHITELIST (sans IRIS ni LLM)."""
 
-from soc_agent.whitelist import valider_signature
-from soc_agent.whitelist_task import (_PREFIXE_IA, _instructions,
-                                      _taches_a_traiter)
+from soc_agent.whitelist import validate_signature
+from soc_agent.whitelist_task import (_PREFIX_AI, _instructions,
+                                      _tasks_to_process)
 
 
 def test_taches_a_traiter_filtre_titre_et_statut():
@@ -18,9 +18,9 @@ def test_taches_a_traiter_filtre_titre_et_statut():
         {"task_id": 4, "task_title": "WHITELIST — demande d'exception",
          "status_name": "Closed"},
     ]
-    assert [t["task_id"] for t in _taches_a_traiter(tasks)] == [2]
-    assert _taches_a_traiter([]) == []
-    assert _taches_a_traiter(None) == []
+    assert [t["task_id"] for t in _tasks_to_process(tasks)] == [2]
+    assert _tasks_to_process([]) == []
+    assert _tasks_to_process(None) == []
 
 
 class _FakeResponse:
@@ -51,8 +51,8 @@ class _FakeCase:
 def test_instructions_dernier_commentaire_analyste_a_traiter():
     case = _FakeCase(description="whitelister la commande",
                      comments=["ping test", "en fait whitelister le compte svc"])
-    instructions, en_attente = _instructions(case, case_id=1, task_id=2)
-    assert not en_attente
+    instructions, pending = _instructions(case, case_id=1, task_id=2)
+    assert not pending
     assert "whitelister la commande" in instructions
     assert "en fait whitelister le compte svc" in instructions
 
@@ -61,24 +61,24 @@ def test_instructions_dernier_commentaire_ia_on_ne_relance_pas():
     """Si le dernier mot est déjà celui de l'IA, on n'a rien de nouveau à
     traiter — évite de reposter la même question à chaque passage."""
     case = _FakeCase(description="whitelister ?",
-                     comments=[_PREFIXE_IA + "Peux-tu préciser le champ ?"])
-    instructions, en_attente = _instructions(case, case_id=1, task_id=2)
-    assert en_attente
+                     comments=[_PREFIX_AI + "Peux-tu préciser le champ ?"])
+    instructions, pending = _instructions(case, case_id=1, task_id=2)
+    assert pending
     assert instructions == ""
 
 
 def test_valider_signature_rejette_rule_id_seul():
-    assert valider_signature({"rule_id": "5715"}, niveau=8, sig_tp=set()) is not None
+    assert validate_signature({"rule_id": "5715"}, level=8, sig_tp=set()) is not None
 
 
 def test_valider_signature_rejette_niveau_trop_haut():
     sig = {"rule_id": "1", "command": "/bin/x"}
-    assert valider_signature(sig, niveau=14, sig_tp=set()) is not None
-    assert valider_signature(sig, niveau=13, sig_tp=set()) is None
+    assert validate_signature(sig, level=14, sig_tp=set()) is not None
+    assert validate_signature(sig, level=13, sig_tp=set()) is None
 
 
 def test_valider_signature_rejette_signature_vue_en_tp():
-    from soc_agent.whitelist import _canonique
+    from soc_agent.whitelist import _canonical
     sig = {"rule_id": "1", "command": "/bin/x"}
-    assert valider_signature(sig, niveau=8, sig_tp={_canonique(sig)}) is not None
-    assert valider_signature(sig, niveau=8, sig_tp=set()) is None
+    assert validate_signature(sig, level=8, sig_tp={_canonical(sig)}) is not None
+    assert validate_signature(sig, level=8, sig_tp=set()) is None

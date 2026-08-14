@@ -24,13 +24,13 @@ Ce qui n'est **jamais** exposé, à aucun scope :
 from soc_agent import config as soc_config
 from soc_agent import cycle, iris, mitigate, rule_tuning, triage, whitelist
 
-from .. import auth, sortie
-from ..serveur import enregistrer
+from .. import auth, output
+from ..server import register
 
 
-@auth.exige("aura:write")
-def aura_run_cycle(taille_lot: int = 500, limite_triage: int = 20,
-                   depuis: str = "30d") -> dict:
+@auth.require("aura:write")
+def aura_run_cycle(batch_size: int = 500, triage_limit: int = 20,
+                   since: str = "30d") -> dict:
     """Déclenche un cycle AURA complet, sans attendre la boucle de 5 minutes.
 
     Enchaîne ingestion, filtre VirusTotal, UEBA, corrélation, watchdog des
@@ -49,7 +49,7 @@ def aura_run_cycle(taille_lot: int = 500, limite_triage: int = 20,
         depuis: fenêtre d'ingestion initiale (`30d`, `6h`) — ignorée dès qu'un
             curseur d'ingestion existe, ce qui est le cas en régime établi.
     """
-    code = cycle.executer(depuis, taille_lot, limite_triage)
+    code = cycle.run(since, batch_size, triage_limit)
     return {
         "code_sortie": code,
         # `cycle.executer` ne distingue pas « rien à faire » de « verrou déjà
@@ -62,7 +62,7 @@ def aura_run_cycle(taille_lot: int = 500, limite_triage: int = 20,
     }
 
 
-@auth.exige("aura:write")
+@auth.require("aura:write")
 def aura_triage_incident(incident_id: int, forcer: bool = False) -> dict:
     """Fait (re)passer un incident au triage LLM.
 
@@ -79,15 +79,15 @@ def aura_triage_incident(incident_id: int, forcer: bool = False) -> dict:
         incident_id: incident à trier.
         forcer: retrier même s'il l'a déjà été.
     """
-    resultats = triage.trier(1, incident_id, forcer, False)
+    results = triage.sort(1, incident_id, forcer, False)
     return {"incident_id": incident_id,
-            "resultats": sortie.jsonifiable(resultats),
-            "note": None if resultats else
+            "resultats": output.jsonifiable(results),
+            "note": None if results else
                     "Incident déjà trié et hors fenêtre de rafraîchissement — "
                     "utiliser forcer=true pour le reprendre."}
 
 
-@auth.exige("aura:write")
+@auth.require("aura:write")
 def aura_iris_case_sync(incident_id: int | None = None) -> dict:
     """Crée ou met à jour les cases DFIR-IRIS des incidents triés.
 
@@ -104,13 +104,13 @@ def aura_iris_case_sync(incident_id: int | None = None) -> dict:
         incident_id: se limiter à un incident. Sans lui, traite tous ceux qui
             attendent un case.
     """
-    faits = iris.creer_cases(incident_id)
+    faits = iris.create_cases(incident_id)
     return {"cases": [{"incident_id": i, "case_id": c, "verdict": v}
                       for i, c, v in faits],
             "total": len(faits)}
 
 
-@auth.exige("aura:write")
+@auth.require("aura:write")
 def aura_ar_reconcile() -> dict:
     """Fige le résultat réel des remédiations envoyées aux agents.
 
@@ -122,12 +122,12 @@ def aura_ar_reconcile() -> dict:
 
     Idempotent, sans effet destructif.
     """
-    figes = mitigate.reconcilier_resultats_ar()
-    return {"reconciliees": sortie.jsonifiable(figes), "total": len(figes)}
+    frozen = mitigate.reconcile_ar_results()
+    return {"reconciliees": output.jsonifiable(frozen), "total": len(frozen)}
 
 
-@auth.exige("aura:admin")
-def aura_mitigate_execute(incident_id: int, confirmer: bool = False) -> dict:
+@auth.require("aura:admin")
+def aura_mitigate_execute(incident_id: int, confirm: bool = False) -> dict:
     """Exécute les remédiations décidées pour un incident. ACTION RÉELLE.
 
     Peut couper une machine du réseau, tuer un processus, bloquer une adresse,
@@ -145,7 +145,7 @@ def aura_mitigate_execute(incident_id: int, confirmer: bool = False) -> dict:
         confirmer: doit valoir `true` pour agir. À `false` (défaut), l'outil
             rend ce qui serait tenté sans rien envoyer.
     """
-    if not confirmer:
+    if not confirm:
         with_dry = "déjà globalement en dry-run" if not soc_config.MITIGATE_EXECUTE \
             else "ARMÉ : les actions partiraient réellement"
         return {
@@ -156,13 +156,13 @@ def aura_mitigate_execute(incident_id: int, confirmer: bool = False) -> dict:
                        "aura_simulate_decision pour voir ce que les garde-fous "
                        "laissent passer.",
         }
-    faits = mitigate.executer(incident_id)
+    faits = mitigate.run(incident_id)
     return {"execute": True, "mitigate_execute_global": soc_config.MITIGATE_EXECUTE,
-            "actions": sortie.jsonifiable(faits), "total": len(faits)}
+            "actions": output.jsonifiable(faits), "total": len(faits)}
 
 
-@auth.exige("aura:admin")
-def aura_isolate(agent_id: str, motif: str, confirmer: bool = False,
+@auth.require("aura:admin")
+def aura_isolate(agent_id: str, pattern: str, confirm: bool = False,
                  forcer: bool = False) -> dict:
     """Isole un hôte du réseau. ACTION RÉELLE, coupante.
 
@@ -179,24 +179,24 @@ def aura_isolate(agent_id: str, motif: str, confirmer: bool = False,
             compromission établie d'une machine d'infrastructure, en sachant
             ce qu'on coupe.
     """
-    refus = mitigate.raison_non_isolable(agent_id)
-    if not confirmer:
+    refusal = mitigate.not_isolatable_reason(agent_id)
+    if not confirm:
         return {"execute": False,
                 "raison": "confirmer=false — aucune action envoyée.",
-                "serait_refuse_par_la_politique": refus,
-                "forcer_necessaire": bool(refus)}
-    if refus and not forcer:
-        return {"execute": False, "raison": refus,
+                "serait_refuse_par_la_politique": refusal,
+                "forcer_necessaire": bool(refusal)}
+    if refusal and not forcer:
+        return {"execute": False, "raison": refusal,
                 "conseil": "forcer=true passe outre — mesurer ce que l'hôte "
                            "porte avant."}
-    mitigate.isoler(agent_id, motif, forcer)
-    return {"execute": True, "agent_id": agent_id, "motif": motif,
-            "politique_forcee": bool(refus and forcer),
-            "etat": sortie.jsonifiable(mitigate.etat_isolation(agent_id))}
+    mitigate.isolate(agent_id, pattern, forcer)
+    return {"execute": True, "agent_id": agent_id, "pattern": pattern,
+            "politique_forcee": bool(refusal and forcer),
+            "etat": output.jsonifiable(mitigate.isolation_state(agent_id))}
 
 
-@auth.exige("aura:admin")
-def aura_unisolate(agent_id: str, motif: str, confirmer: bool = False) -> dict:
+@auth.require("aura:admin")
+def aura_unisolate(agent_id: str, pattern: str, confirm: bool = False) -> dict:
     """Lève l'isolation d'un hôte. ACTION RÉELLE.
 
     Rend sa connectivité à une machine qui avait été confinée. À ne faire
@@ -209,19 +209,19 @@ def aura_unisolate(agent_id: str, motif: str, confirmer: bool = False) -> dict:
         motif: pourquoi — tracé.
         confirmer: doit valoir `true` pour agir.
     """
-    if not confirmer:
+    if not confirm:
         return {"execute": False,
                 "raison": "confirmer=false — aucune action envoyée.",
                 "rappel": "Vérifier l'absence de persistance (cron, web shell, "
                           "compte UID 0) avant de rendre le réseau."}
-    mitigate.desisoler(agent_id, motif)
-    return {"execute": True, "agent_id": agent_id, "motif": motif,
-            "etat": sortie.jsonifiable(mitigate.etat_isolation(agent_id))}
+    mitigate.unisolate(agent_id, pattern)
+    return {"execute": True, "agent_id": agent_id, "pattern": pattern,
+            "etat": output.jsonifiable(mitigate.isolation_state(agent_id))}
 
 
-@auth.exige("aura:admin")
+@auth.require("aura:admin")
 def aura_whitelist_apply(min_fp: int | None = None,
-                         appliquer: bool = False) -> dict:
+                         apply: bool = False) -> dict:
     """Crée les exceptions de whitelist pour les faux positifs récurrents.
 
     Chaque exception créée est un angle mort assumé : ces alertes ne
@@ -232,17 +232,17 @@ def aura_whitelist_apply(min_fp: int | None = None,
         min_fp: nombre de faux positifs requis avant d'exonérer une signature.
         appliquer: à `false` (défaut), rend les décisions sans rien créer.
     """
-    decisions = whitelist.analyser(
+    decisions = whitelist.analyze(
         min_fp if min_fp is not None else soc_config.WHITELIST_MIN_FP,
-        simulation=not appliquer)
-    return {"applique": appliquer,
-            "decisions": sortie.jsonifiable(decisions),
+        simulation=not apply)
+    return {"applique": apply,
+            "decisions": output.jsonifiable(decisions),
             "total": len(decisions)}
 
 
-@auth.exige("aura:admin")
+@auth.require("aura:admin")
 def aura_rule_tuning_apply(min_fp: int | None = None,
-                           appliquer: bool = False) -> dict:
+                           apply: bool = False) -> dict:
     """Génère et déploie des règles Wazuh d'exception. REDÉMARRE LE MANAGER.
 
     Deuxième étage de la whitelist : le bruit est calmé dans le moteur de
@@ -259,21 +259,21 @@ def aura_rule_tuning_apply(min_fp: int | None = None,
         appliquer: à `false` (défaut), rend le XML sans rien écrire ni
             redémarrer.
     """
-    decisions = rule_tuning.analyser(
+    decisions = rule_tuning.analyze(
         min_fp if min_fp is not None else soc_config.WHITELIST_MIN_FP,
-        simulation=not appliquer)
-    return {"applique": appliquer,
-            "manager_redemarre": appliquer and bool(decisions),
-            "decisions": sortie.jsonifiable(decisions),
+        simulation=not apply)
+    return {"applique": apply,
+            "manager_redemarre": apply and bool(decisions),
+            "decisions": output.jsonifiable(decisions),
             "total": len(decisions)}
 
 
-enregistrer(aura_run_cycle)
-enregistrer(aura_triage_incident)
-enregistrer(aura_iris_case_sync)
-enregistrer(aura_ar_reconcile)
-enregistrer(aura_mitigate_execute)
-enregistrer(aura_isolate)
-enregistrer(aura_unisolate)
-enregistrer(aura_whitelist_apply)
-enregistrer(aura_rule_tuning_apply)
+register(aura_run_cycle)
+register(aura_triage_incident)
+register(aura_iris_case_sync)
+register(aura_ar_reconcile)
+register(aura_mitigate_execute)
+register(aura_isolate)
+register(aura_unisolate)
+register(aura_whitelist_apply)
+register(aura_rule_tuning_apply)

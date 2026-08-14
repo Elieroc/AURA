@@ -51,7 +51,7 @@ from datetime import datetime, timedelta, timezone
 import psycopg
 from psycopg.rows import dict_row
 
-from . import alertes as alertes_mod
+from . import alerts as alerts_mod
 from . import assets, config
 
 # --- Traits observés ---------------------------------------------------------
@@ -63,7 +63,7 @@ from . import assets, config
 # Le POIDS multiplie les bits du trait. `parent_child` pèse plus que `exe` : un
 # `sh` seul est banal, un `nginx -> sh` est un webshell. `hour` pèse peu — un
 # horaire inhabituel est un indice, jamais une preuve.
-POIDS = {
+WEIGHT = {
     "exe":          1.0,   # binaire exécuté
     "fichier":      0.8,   # objet d'une alerte d'intégrité (FIM)
     "parent_child": 1.3,   # couple parent -> enfant (Windows/Sysmon)
@@ -85,7 +85,7 @@ POIDS = {
 # Ordre canonique de la kill chain. Sert au bonus d'ordre : un même ENSEMBLE de
 # tactiques vaut plus s'il PROGRESSE (accès -> exécution -> persistance ->
 # credentials -> exfiltration) que s'il est observé en désordre.
-ORDRE_TACTIQUES = [
+TACTICS_ORDER = [
     "Reconnaissance", "Resource Development", "Initial Access", "Execution",
     "Persistence", "Privilege Escalation", "Defense Evasion",
     "Credential Access", "Discovery", "Lateral Movement", "Collection",
@@ -95,7 +95,7 @@ ORDRE_TACTIQUES = [
 # Poids par tactique. Trois `Discovery` sont du bruit d'administration ;
 # `Credential Access` + `Persistence` + `Exfiltration` sont une intrusion. Sans
 # cette pondération, « 3 tactiques distinctes » remonte surtout des faux positifs.
-POIDS_TACTIQUES = {
+TACTICS_WEIGHT = {
     "Reconnaissance": 1.0, "Resource Development": 1.0, "Initial Access": 3.0,
     "Execution": 2.0, "Persistence": 4.0, "Privilege Escalation": 4.0,
     "Defense Evasion": 3.0, "Credential Access": 5.0, "Discovery": 1.0,
@@ -106,7 +106,7 @@ POIDS_TACTIQUES = {
 # Valeurs trop communes pour porter du signal, même inédites sur un hôte : les
 # scorer ferait remonter le premier `bash` d'une machine fraîchement observée.
 # Même logique que `correlate.ENTITES_GENERIQUES`, appliquée aux traits.
-VALEURS_IGNOREES = {
+VALUES_IGNORED = {
     "/usr/bin/bash", "/bin/bash", "/usr/bin/sh", "/bin/sh", "/usr/bin/dash",
     "/bin/dash", "/usr/bin/zsh", "-", "", "unknown", "n/a", "none",
 }
@@ -125,8 +125,8 @@ VALEURS_IGNOREES = {
 # Le scope `user@host` disparaît aussi pour ces comptes : profiler « le
 # comportement de la personne WIN-DC$ » n'a pas de sens, et ce scope agrégerait
 # tout le trafic de service de la machine sous une identité unique.
-_RE_COMPTE_MACHINE = re.compile(r"\$(@|$)")
-COMPTES_NON_PERSONNE = {
+_RE_ACCOUNT_MACHINE = re.compile(r"\$(@|$)")
+ACCOUNTS_NON_PERSON = {
     "system", "système", "local system", "système local",
     "local service", "service local", "network service", "service réseau",
     "anonymous logon", "connexion anonyme", "nt authority\\system",
@@ -135,22 +135,22 @@ COMPTES_NON_PERSONNE = {
 _WIN_SEP = re.compile(r"[\\/]+")
 
 
-def _norm_compte(valeur) -> str | None:
+def _norm_account(value) -> str | None:
     """Compte normalisé, ou None si ce n'est pas une identité de personne."""
-    v = _norm(valeur)
+    v = _norm(value)
     if v is None:
         return None
-    if _RE_COMPTE_MACHINE.search(v) or v.lower() in COMPTES_NON_PERSONNE:
+    if _RE_ACCOUNT_MACHINE.search(v) or v.lower() in ACCOUNTS_NON_PERSON:
         return None
     return v
 
 
-def _norm(valeur) -> str | None:
+def _norm(value) -> str | None:
     """Valeur normalisée, ou None si elle ne porte rien d'exploitable."""
-    if valeur is None:
+    if value is None:
         return None
-    v = str(valeur).strip()
-    if not v or v.lower() in VALEURS_IGNOREES:
+    v = str(value).strip()
+    if not v or v.lower() in VALUES_IGNORED:
         return None
     return v[:400]
 
@@ -178,22 +178,22 @@ def traits(a: dict) -> list[tuple[str, str, str, str]]:
     geo = raw.get("GeoLocation") or {}
 
     agent = str(a.get("agent_id") or "?")
-    compte = _norm_compte(a.get("srcuser"))
-    hote = ("host", agent)
+    account = _norm_account(a.get("srcuser"))
+    host = ("host", agent)
     # Le scope utilisateur n'existe que si l'événement porte un compte. Sinon on
     # se rabat sur le seul scope machine : inventer un « inconnu@hôte » créerait
     # un profil fourre-tout où tout finirait par paraître normal.
-    perso = ("user@host", f"{compte}@{agent}") if compte else None
+    personal = ("user@host", f"{account}@{agent}") if account else None
 
     out: list[tuple[str, str, str, str]] = []
 
-    def ajouter(trait: str, valeur, sur_perso: bool = True) -> None:
-        v = _norm(valeur)
+    def add(trait: str, value, on_personal: bool = True) -> None:
+        v = _norm(value)
         if v is None:
             return
-        out.append((hote[0], hote[1], trait, v))
-        if perso and sur_perso:
-            out.append((perso[0], perso[1], trait, v))
+        out.append((host[0], host[1], trait, v))
+        if personal and on_personal:
+            out.append((personal[0], personal[1], trait, v))
 
     # Binaire exécuté. UNIQUEMENT auditd et Sysmon — surtout pas le repli
     # `entity`, qui vaut `syscheck.path` pour les alertes FIM : sur Windows
@@ -202,43 +202,43 @@ def traits(a: dict) -> list[tuple[str, str, str, str]]:
     # second est unique par construction — donc « jamais vu » à chaque
     # occurrence. Mesuré en recette : score 1434 sur l'hôte Proxmox, uniquement
     # composé d'archives LVM.
-    ajouter("exe", audit.get("exe") or win.get("image"))
+    add("exe", audit.get("exe") or win.get("image"))
 
     # Objet touché par une alerte d'intégrité (fichier déposé, clé modifiée).
     # Trait séparé et moins pesant que `exe` : un fichier qui apparaît est un
     # indice, un binaire qui s'exécute est un fait. Le garde-fou de cardinalité
     # ci-dessous neutralise les chemins horodatés/rotatifs.
-    ajouter("fichier", a.get("entity"))
+    add("fichier", a.get("entity"))
 
     # Couple parent -> enfant. Uniquement Windows/Sysmon : auditd ne donne pas
     # le nom du parent, seulement son pid, qu'on ne peut pas résoudre après coup.
-    parent, enfant = win.get("parentImage"), win.get("image")
-    if parent and enfant:
-        ajouter("parent_child",
-                f"{_WIN_SEP.split(parent)[-1]}>{_WIN_SEP.split(enfant)[-1]}")
+    parent, child = win.get("parentImage"), win.get("image")
+    if parent and child:
+        add("parent_child",
+                f"{_WIN_SEP.split(parent)[-1]}>{_WIN_SEP.split(child)[-1]}")
 
-    ajouter("srcip", a.get("srcip"))
-    ajouter("pays", geo.get("country_name"))
-    ajouter("dst_port", data.get("dstport"))
+    add("srcip", a.get("srcip"))
+    add("pays", geo.get("country_name"))
+    add("dst_port", data.get("dstport"))
     # Le compte est un trait DU SCOPE MACHINE seulement : sur le scope
     # `user@host`, il est déjà dans la clé, l'observer serait tautologique.
-    ajouter("compte", compte, sur_perso=False)
-    ajouter("rule_id", a.get("rule_id"))
+    add("compte", account, on_personal=False)
+    add("rule_id", a.get("rule_id"))
 
     ts = a.get("ts")
     if isinstance(ts, datetime):
         # Tranche grossière et non l'heure exacte : 24 valeurs par profil
         # demandent des mois pour être mûres, 4 suffisent à distinguer
         # « 3 h du matin un dimanche » de l'activité de bureau.
-        ouvre = ts.weekday() < 5 and 7 <= ts.hour < 20
-        ajouter("heure", "ouvre" if ouvre else "hors_ouvre")
+        opens = ts.weekday() < 5 and 7 <= ts.hour < 20
+        add("heure", "ouvre" if opens else "hors_ouvre")
 
     return out
 
 
 # --- Scoring -----------------------------------------------------------------
 
-def surprisal(compte: int, total: int, distincts: int) -> float:
+def surprisal(account: int, total: int, distinct: int) -> float:
     """Information portée par une valeur vue `compte` fois sur `total`, en bits.
 
     Lissage de Laplace (alpha=0.5) : sans lui, une valeur jamais vue donne une
@@ -247,14 +247,14 @@ def surprisal(compte: int, total: int, distincts: int) -> float:
     d'observations, peu de confiance.
     """
     alpha = 0.5
-    denom = total + alpha * max(distincts, 1)
+    denom = total + alpha * max(distinct, 1)
     if denom <= 0:
         return 0.0
-    p = (compte + alpha) / denom
+    p = (account + alpha) / denom
     return max(0.0, -math.log2(min(p, 1.0)))
 
 
-def cardinalite_exploitable(stats: dict | None) -> bool:
+def usable_cardinality(stats: dict | None) -> bool:
     """Le trait porte-t-il une information, ou change-t-il de valeur à chaque fois ?
 
     Un trait dont presque chaque observation est une valeur neuve (chemins
@@ -266,12 +266,12 @@ def cardinalite_exploitable(stats: dict | None) -> bool:
     motifs : aucune liste noire ne peut anticiper ce qu'un parc produit, alors
     que la statistique se corrige seule quand le comportement change.
     """
-    if not stats or stats.get("total", 0) < config.UEBA_CARDINALITE_MIN_OBS:
+    if not stats or stats.get("total", 0) < config.UEBA_CARDINALITY_MIN_OBS:
         return True   # trop peu d'observations pour conclure : on n'exclut pas
-    return (stats["distincts"] / stats["total"]) <= config.UEBA_CARDINALITE_MAX
+    return (stats["distinct_values"] / stats["total"]) <= config.UEBA_CARDINALITY_MAX
 
 
-def _bits_trait(profil: dict | None, stats: dict | None, flotte: int,
+def _trait_bits(profil: dict | None, stats: dict | None, fleet: int,
                 mature: bool) -> tuple[float, str]:
     """Bits d'un trait + la phrase qui l'explique. (0.0, "") si non scorable."""
     if profil is not None and profil.get("seen_in_tp"):
@@ -280,7 +280,7 @@ def _bits_trait(profil: dict | None, stats: dict | None, flotte: int,
         # normalise son propre outillage en le lançant tous les jours.
         return config.UEBA_FIRSTSEEN_BITS, "déjà vu dans un vrai positif"
 
-    if not cardinalite_exploitable(stats):
+    if not usable_cardinality(stats):
         # Le trait est unique PAR CONSTRUCTION sur ce scope : presque chaque
         # observation apporte une valeur neuve (chemins horodatés, archives
         # rotatives, identifiants de session, GUID). « Jamais vu » n'y veut donc
@@ -303,12 +303,12 @@ def _bits_trait(profil: dict | None, stats: dict | None, flotte: int,
         # Première vue. Modulée par la flotte : inédit ici mais banal ailleurs
         # = déploiement/administration, pas intrusion.
         bits = config.UEBA_FIRSTSEEN_BITS
-        if flotte >= config.UEBA_FLOTTE_BANAL:
+        if fleet >= config.UEBA_FLEET_COMMON:
             bits *= 0.2
-            note = f"inédit ici mais présent sur {flotte} hôtes"
-        elif flotte >= 1:
+            note = f"inédit ici mais présent sur {fleet} hôtes"
+        elif fleet >= 1:
             bits *= 0.6
-            note = f"inédit ici, vu sur {flotte} autre(s) hôte(s)"
+            note = f"inédit ici, vu sur {fleet} autre(s) hôte(s)"
         else:
             note = "jamais vu ici ni ailleurs sur la flotte"
         return bits, note
@@ -316,20 +316,20 @@ def _bits_trait(profil: dict | None, stats: dict | None, flotte: int,
     if stats is None:
         return 0.0, ""
 
-    if profil["days_seen"] >= config.UEBA_JOURS_HABITUEL:
+    if profil["days_seen"] >= config.UEBA_DAYS_USUAL:
         # Vu sur assez de jours DISTINCTS pour être une habitude. Le nombre
         # d'occurrences ne suffit pas : 500 exécutions en un seul jour est un
         # incident, pas une baseline.
         return 0.0, ""
 
-    bits = surprisal(profil["total"], stats["total"], stats["distincts"])
-    if bits < config.UEBA_BITS_MIN_RARETE:
+    bits = surprisal(profil["total"], stats["total"], stats["distinct_values"])
+    if bits < config.UEBA_BITS_MIN_RARITY:
         return 0.0, ""
     return bits, (f"rare : {profil['total']}x sur {stats['total']} "
                   f"observations, {profil['days_seen']} jour(s)")
 
 
-class _Etat:
+class _State:
     """Profils + statistiques de scope chargés en mémoire pour un lot.
 
     On score CHAQUE alerte contre l'état d'AVANT elle, puis on l'absorbe.
@@ -339,201 +339,201 @@ class _Etat:
     rapporte plus le score plein.
     """
 
-    def __init__(self, profils: dict, stats: dict, flotte: dict, maturite: dict):
-        self.profils = profils      # (scope, key, trait, valeur) -> {...}
+    def __init__(self, profiles: dict, stats: dict, fleet: dict, maturity: dict):
+        self.profiles = profiles      # (scope, key, trait, valeur) -> {...}
         self.stats = stats          # (scope, key, trait) -> {total, distincts}
-        self.flotte = flotte        # (trait, valeur) -> nb d'hôtes distincts
-        self.maturite = maturite    # (scope, key, trait) -> bool
-        self.touches: set[tuple] = set()
+        self.fleet = fleet        # (trait, valeur) -> nb d'hôtes distincts
+        self.maturity = maturity    # (scope, key, trait) -> bool
+        self.affected: set[tuple] = set()
         self.obs: dict[tuple, int] = {}   # (scope,key,trait,valeur,jour) -> n
 
     def mature(self, scope: str, key: str, trait: str) -> bool:
-        return self.maturite.get((scope, key, trait), False)
+        return self.maturity.get((scope, key, trait), False)
 
-    def absorber(self, scope: str, key: str, trait: str, valeur: str,
+    def absorb(self, scope: str, key: str, trait: str, value: str,
                  ts: datetime) -> None:
-        cle = (scope, key, trait, valeur)
-        p = self.profils.get(cle)
-        jour = ts.date()
+        profile_key = (scope, key, trait, value)
+        p = self.profiles.get(profile_key)
+        day = ts.date()
         if p is None:
-            self.profils[cle] = {"total": 1, "days_seen": 1,
+            self.profiles[profile_key] = {"total": 1, "days_seen": 1,
                                  "first_seen": ts, "last_seen": ts,
-                                 "jours": {jour}, "seen_in_tp": False}
-            self.flotte[(trait, valeur)] = self.flotte.get((trait, valeur), 0) + (
+                                 "days": {day}, "seen_in_tp": False}
+            self.fleet[(trait, value)] = self.fleet.get((trait, value), 0) + (
                 1 if scope == "host" else 0)
         else:
             p["total"] += 1
             p["last_seen"] = max(p.get("last_seen") or ts, ts)
-            jours = p.setdefault("jours", set())
-            if jour not in jours:
-                jours.add(jour)
+            days = p.setdefault("days", set())
+            if day not in days:
+                days.add(day)
                 p["days_seen"] = p.get("days_seen", 0) + 1
         s = self.stats.setdefault((scope, key, trait),
-                                  {"total": 0, "distincts": 0,
-                                   "premiere_obs": ts})
+                                  {"total": 0, "distinct_values": 0,
+                                   "first_obs": ts})
         s["total"] += 1
         if p is None:
-            s["distincts"] += 1
-        self.touches.add(cle)
-        self.obs[(scope, key, trait, valeur, jour)] = (
-            self.obs.get((scope, key, trait, valeur, jour), 0) + 1)
+            s["distinct_values"] += 1
+        self.affected.add(profile_key)
+        self.obs[(scope, key, trait, value, day)] = (
+            self.obs.get((scope, key, trait, value, day), 0) + 1)
 
 
-SELECT_A_OBSERVER = """
+SELECT_TO_OBSERVE = """
 SELECT id, ts, agent_id, agent_name, rule_id, rule_level, rule_groups,
        mitre_tactics, srcip, srcuser, entity, raw
   FROM alerts
- WHERE NOT ueba_vu AND NOT suppressed
+ WHERE NOT ueba_seen AND NOT suppressed
  ORDER BY ts, id
  LIMIT %s
 """
 
 
-def _charger_etat(conn, cles: set[tuple]) -> _Etat:
+def _load_state(conn, keys: set[tuple]) -> _State:
     """Un aller-retour par table, jamais une requête par alerte."""
-    profils: dict[tuple, dict] = {}
+    profiles: dict[tuple, dict] = {}
     stats: dict[tuple, dict] = {}
-    flotte: dict[tuple, int] = {}
-    maturite: dict[tuple, bool] = {}
-    if not cles:
-        return _Etat(profils, stats, flotte, maturite)
+    fleet: dict[tuple, int] = {}
+    maturity: dict[tuple, bool] = {}
+    if not keys:
+        return _State(profiles, stats, fleet, maturity)
 
     # Listes matérialisées : les quatre colonnes passées à `unnest` doivent être
     # alignées ligne à ligne. Itérer un `set` quatre fois donnerait le même
     # ordre en pratique, mais rien ne le garantit — on fige.
-    cles_l = sorted(cles)
-    scopes = sorted({(s, k, t) for s, k, t, _ in cles})
-    valeurs = sorted({(t, v) for _, _, t, v in cles})
+    keys_l = sorted(keys)
+    scopes = sorted({(s, k, t) for s, k, t, _ in keys})
+    values = sorted({(t, v) for _, _, t, v in keys})
 
-    lignes = conn.execute(
-        "SELECT scope, scope_key, trait, valeur, total, days_seen, first_seen,"
+    lines = conn.execute(
+        "SELECT scope, scope_key, trait, value, total, days_seen, first_seen,"
         "       last_seen, seen_in_tp FROM ueba_profiles "
-        " WHERE (scope, scope_key, trait, valeur) IN "
+        " WHERE (scope, scope_key, trait, value) IN "
         "       (SELECT * FROM unnest(%s::text[], %s::text[], %s::text[], %s::text[]))",
-        ([c[0] for c in cles_l], [c[1] for c in cles_l],
-         [c[2] for c in cles_l], [c[3] for c in cles_l])).fetchall()
-    for l in lignes:
-        profils[(l["scope"], l["scope_key"], l["trait"], l["valeur"])] = dict(l)
+        ([c[0] for c in keys_l], [c[1] for c in keys_l],
+         [c[2] for c in keys_l], [c[3] for c in keys_l])).fetchall()
+    for l in lines:
+        profiles[(l["scope"], l["scope_key"], l["trait"], l["value"])] = dict(l)
 
-    lignes = conn.execute(
-        "SELECT scope, scope_key, trait, total, distincts, premiere_obs "
+    lines = conn.execute(
+        "SELECT scope, scope_key, trait, total, distinct_values, first_obs "
         "  FROM ueba_scopes WHERE (scope, scope_key, trait) IN "
         "       (SELECT * FROM unnest(%s::text[], %s::text[], %s::text[]))",
         ([s[0] for s in scopes], [s[1] for s in scopes],
          [s[2] for s in scopes])).fetchall()
-    seuil = datetime.now(timezone.utc) - timedelta(days=config.UEBA_MATURITE_JOURS)
-    for l in lignes:
-        cle = (l["scope"], l["scope_key"], l["trait"])
-        stats[cle] = dict(l)
-        maturite[cle] = (l["premiere_obs"] is not None
-                         and l["premiere_obs"] <= seuil
-                         and l["total"] >= config.UEBA_MATURITE_MIN_OBS)
+    threshold = datetime.now(timezone.utc) - timedelta(days=config.UEBA_MATURITY_DAYS)
+    for l in lines:
+        key = (l["scope"], l["scope_key"], l["trait"])
+        stats[key] = dict(l)
+        maturity[key] = (l["first_obs"] is not None
+                         and l["first_obs"] <= threshold
+                         and l["total"] >= config.UEBA_MATURITY_MIN_OBS)
 
     # Rareté sur la flotte : sur combien d'HÔTES distincts cette valeur est-elle
     # connue ? Uniquement le scope 'host' — compter les scopes utilisateur
     # gonflerait le chiffre sans rien dire de la diffusion réelle.
-    lignes = conn.execute(
-        "SELECT trait, valeur, count(DISTINCT scope_key) AS n "
-        "  FROM ueba_profiles WHERE scope = 'host' AND (trait, valeur) IN "
+    lines = conn.execute(
+        "SELECT trait, value, count(DISTINCT scope_key) AS n "
+        "  FROM ueba_profiles WHERE scope = 'host' AND (trait, value) IN "
         "       (SELECT * FROM unnest(%s::text[], %s::text[])) "
-        " GROUP BY trait, valeur",
-        ([v[0] for v in valeurs], [v[1] for v in valeurs])).fetchall()
-    for l in lignes:
-        flotte[(l["trait"], l["valeur"])] = l["n"]
+        " GROUP BY trait, value",
+        ([v[0] for v in values], [v[1] for v in values])).fetchall()
+    for l in lines:
+        fleet[(l["trait"], l["value"])] = l["n"]
 
-    return _Etat(profils, stats, flotte, maturite)
+    return _State(profiles, stats, fleet, maturity)
 
 
-def observer(limite: int | None = None) -> tuple[int, int]:
+def observe(limit: int | None = None) -> tuple[int, int]:
     """Score les alertes non encore vues, puis les absorbe dans la baseline.
 
     Retourne (alertes observées, alertes ayant un score non nul).
     """
-    limite = limite or config.UEBA_LOT
+    limit = limit or config.UEBA_BATCH
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-        alertes = conn.execute(SELECT_A_OBSERVER, (limite,)).fetchall()
-        if not alertes:
+        alerts = conn.execute(SELECT_TO_OBSERVE, (limit,)).fetchall()
+        if not alerts:
             return 0, 0
 
-        par_alerte = {a["id"]: traits(a) for a in alertes}
-        cles = {t for ts_ in par_alerte.values() for t in ts_}
-        etat = _charger_etat(conn, cles)
+        by_alert = {a["id"]: traits(a) for a in alerts}
+        keys = {t for ts_ in by_alert.values() for t in ts_}
+        state = _load_state(conn, keys)
 
-        n_scorees = 0
-        for a in alertes:
+        n_scored = 0
+        for a in alerts:
             total_bits = 0.0
             details: list[dict] = []
-            for scope, key, trait, valeur in par_alerte[a["id"]]:
-                bits, note = _bits_trait(
-                    etat.profils.get((scope, key, trait, valeur)),
-                    etat.stats.get((scope, key, trait)),
-                    etat.flotte.get((trait, valeur), 0),
-                    etat.mature(scope, key, trait))
+            for scope, key, trait, value in by_alert[a["id"]]:
+                bits, note = _trait_bits(
+                    state.profiles.get((scope, key, trait, value)),
+                    state.stats.get((scope, key, trait)),
+                    state.fleet.get((trait, value), 0),
+                    state.mature(scope, key, trait))
                 if bits > 0:
-                    pondere = min(bits * POIDS.get(trait, 1.0),
+                    weighted = min(bits * WEIGHT.get(trait, 1.0),
                                   config.UEBA_CAP_TRAIT)
-                    total_bits += pondere
-                    details.append({"trait": trait, "valeur": valeur,
-                                    "scope": scope, "bits": round(pondere, 2),
+                    total_bits += weighted
+                    details.append({"trait": trait, "value": value,
+                                    "scope": scope, "bits": round(weighted, 2),
                                     "note": note})
                 # Absorption APRÈS le score, y compris quand il est nul.
-                etat.absorber(scope, key, trait, valeur, a["ts"])
+                state.absorb(scope, key, trait, value, a["ts"])
 
-            total_bits = min(total_bits, config.UEBA_CAP_ALERTE)
+            total_bits = min(total_bits, config.UEBA_CAP_ALERT)
             details.sort(key=lambda d: -d["bits"])
             if total_bits > 0:
-                n_scorees += 1
+                n_scored += 1
             conn.execute(
-                "UPDATE alerts SET ueba_vu = true, ueba_score = %s, "
+                "UPDATE alerts SET ueba_seen = true, ueba_score = %s, "
                 "ueba_traits = %s WHERE id = %s",
                 (round(total_bits, 2),
                  json.dumps(details[:6], ensure_ascii=False, default=str),
                  a["id"]))
 
-        _persister(conn, etat)
+        _persist(conn, state)
         conn.commit()
-    return len(alertes), n_scorees
+    return len(alerts), n_scored
 
 
-def _persister(conn, etat: _Etat) -> None:
+def _persist(conn, state: _State) -> None:
     """Écrit observations, profils et statistiques de scope.
 
     `days_seen` est RECALCULÉ depuis `ueba_observations` et non incrémenté à
     l'aveugle : rejouer un lot ne doit pas gonfler le nombre de jours distincts,
     sans quoi une valeur rejouée passerait pour une habitude.
     """
-    for (scope, key, trait, valeur, jour), n in etat.obs.items():
+    for (scope, key, trait, value, day), n in state.obs.items():
         conn.execute(
-            "INSERT INTO ueba_observations (scope, scope_key, trait, valeur, "
-            "jour, nb) VALUES (%s, %s, %s, %s, %s, %s) "
-            "ON CONFLICT (scope, scope_key, trait, valeur, jour) DO UPDATE "
-            "SET nb = ueba_observations.nb + EXCLUDED.nb",
-            (scope, key, trait, valeur, jour, n))
+            "INSERT INTO ueba_observations (scope, scope_key, trait, value, "
+            "day, count) VALUES (%s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (scope, scope_key, trait, value, day) DO UPDATE "
+            "SET count = ueba_observations.count + EXCLUDED.count",
+            (scope, key, trait, value, day, n))
 
-    for cle in etat.touches:
-        scope, key, trait, valeur = cle
+    for key in state.affected:
+        scope, key, trait, value = key
         conn.execute(
-            "INSERT INTO ueba_profiles (scope, scope_key, trait, valeur, total,"
+            "INSERT INTO ueba_profiles (scope, scope_key, trait, value, total,"
             " days_seen, first_seen, last_seen) "
-            "SELECT %s, %s, %s, %s, sum(nb), count(*), min(jour), max(jour) "
+            "SELECT %s, %s, %s, %s, sum(count), count(*), min(day), max(day) "
             "  FROM ueba_observations "
-            " WHERE scope=%s AND scope_key=%s AND trait=%s AND valeur=%s "
-            "ON CONFLICT (scope, scope_key, trait, valeur) DO UPDATE "
+            " WHERE scope=%s AND scope_key=%s AND trait=%s AND value=%s "
+            "ON CONFLICT (scope, scope_key, trait, value) DO UPDATE "
             "   SET total = EXCLUDED.total, days_seen = EXCLUDED.days_seen, "
             "       first_seen = EXCLUDED.first_seen, "
             "       last_seen = GREATEST(ueba_profiles.last_seen, "
             "                            EXCLUDED.last_seen)",
-            (scope, key, trait, valeur, scope, key, trait, valeur))
+            (scope, key, trait, value, scope, key, trait, value))
 
-    for (scope, key, trait) in {(c[0], c[1], c[2]) for c in etat.touches}:
+    for (scope, key, trait) in {(c[0], c[1], c[2]) for c in state.affected}:
         conn.execute(
-            "INSERT INTO ueba_scopes (scope, scope_key, trait, total, distincts,"
+            "INSERT INTO ueba_scopes (scope, scope_key, trait, total, distinct_values,"
             " premiere_obs, derniere_obs) "
             "SELECT %s, %s, %s, coalesce(sum(total),0), count(*), "
             "       min(first_seen), max(last_seen) FROM ueba_profiles "
             " WHERE scope=%s AND scope_key=%s AND trait=%s "
             "ON CONFLICT (scope, scope_key, trait) DO UPDATE "
-            "   SET total = EXCLUDED.total, distincts = EXCLUDED.distincts, "
+            "   SET total = EXCLUDED.total, distinct_values = EXCLUDED.distinct_values, "
             "       premiere_obs = EXCLUDED.premiere_obs, "
             "       derniere_obs = EXCLUDED.derniere_obs",
             (scope, key, trait, scope, key, trait))
@@ -551,7 +551,7 @@ SELECT_CANDIDATES = """
 SELECT id, ts, agent_id, agent_name, rule_id, rule_level, mitre_tactics,
        srcuser, ueba_score, ueba_traits
   FROM alerts
- WHERE ueba_vu AND NOT suppressed AND ueba_signal_id IS NULL
+ WHERE ueba_seen AND NOT suppressed AND ueba_signal_id IS NULL
    AND incident_id IS NULL
    AND ueba_score > 0
    AND rule_level < %s
@@ -560,7 +560,7 @@ SELECT id, ts, agent_id, agent_name, rule_id, rule_level, mitre_tactics,
 """
 
 
-def bonus_chaine(tactiques_ordonnees: list[str]) -> tuple[float, str | None]:
+def chain_bonus(ordered_tactics: list[str]) -> tuple[float, str | None]:
     """Bonus lié à la diversité ET à la progression des tactiques MITRE.
 
     Le simple « 3 techniques de 3 tactiques » remonte surtout `Discovery` x3,
@@ -570,35 +570,35 @@ def bonus_chaine(tactiques_ordonnees: list[str]) -> tuple[float, str | None]:
       - un bonus s'ajoute si les tactiques progressent dans l'ordre de la kill
         chain — c'est le signal le plus fort qu'on puisse tirer sans LLM.
     """
-    distinctes = []
-    for t in tactiques_ordonnees:
-        if t not in distinctes:
-            distinctes.append(t)
-    if len(distinctes) < config.UEBA_MIN_TACTIQUES:
+    distinct = []
+    for t in ordered_tactics:
+        if t not in distinct:
+            distinct.append(t)
+    if len(distinct) < config.UEBA_MIN_TACTICS:
         return 0.0, None
 
-    bonus = sum(POIDS_TACTIQUES.get(t, 1.0) for t in distinctes)
+    bonus = sum(TACTICS_WEIGHT.get(t, 1.0) for t in distinct)
 
     # Plus longue sous-suite croissante dans l'ordre canonique : mesure de
     # progression, insensible aux tactiques hors chaîne.
-    rangs = [ORDRE_TACTIQUES.index(t) for t in tactiques_ordonnees
-             if t in ORDRE_TACTIQUES]
-    meilleure = 0
-    longueurs: list[int] = []
-    for i, r in enumerate(rangs):
-        longueurs.append(1 + max([longueurs[j] for j in range(i)
-                                  if rangs[j] < r] or [0]))
-        meilleure = max(meilleure, longueurs[-1])
+    ranks = [TACTICS_ORDER.index(t) for t in ordered_tactics
+             if t in TACTICS_ORDER]
+    best = 0
+    lengths: list[int] = []
+    for i, r in enumerate(ranks):
+        lengths.append(1 + max([lengths[j] for j in range(i)
+                                  if ranks[j] < r] or [0]))
+        best = max(best, lengths[-1])
     progression = ""
-    if meilleure >= config.UEBA_MIN_TACTIQUES:
-        bonus += config.UEBA_BONUS_ORDRE * (meilleure - config.UEBA_MIN_TACTIQUES + 1)
-        progression = f", progression kill-chain sur {meilleure} étapes"
+    if best >= config.UEBA_MIN_TACTICS:
+        bonus += config.UEBA_BONUS_ORDER * (best - config.UEBA_MIN_TACTICS + 1)
+        progression = f", progression kill-chain sur {best} étapes"
 
-    return bonus, (f"{len(distinctes)} tactiques MITRE distinctes "
-                   f"({', '.join(distinctes)}){progression}")
+    return bonus, (f"{len(distinct)} tactiques MITRE distinctes "
+                   f"({', '.join(distinct)}){progression}")
 
 
-def _grouper_signaux(alertes: list[dict]) -> list[list[dict]]:
+def _group_signals(alerts: list[dict]) -> list[list[dict]]:
     """Chaîne les alertes d'un même agent séparées de moins de la fenêtre.
 
     Même esprit que `correlate._grouper`, en beaucoup plus simple : ici on ne
@@ -606,30 +606,30 @@ def _grouper_signaux(alertes: list[dict]) -> list[list[dict]]:
     souvent aucun), on cherche une CONCENTRATION anormale dans le temps sur une
     machine. Le point commun, c'est la machine et la fenêtre.
     """
-    ecart = timedelta(minutes=config.UEBA_FENETRE_MINUTES)
-    duree_max = timedelta(hours=config.UEBA_SIGNAL_MAX_HEURES)
-    groupes: list[list[dict]] = []
-    courant: list[dict] = []
-    for a in alertes:
+    gap = timedelta(minutes=config.UEBA_WINDOW_MINUTES)
+    max_duration = timedelta(hours=config.UEBA_SIGNAL_MAX_HOURS)
+    groups: list[list[dict]] = []
+    current: list[dict] = []
+    for a in alerts:
         # Chaînage de proche en proche : une intrusion discrète est LENTE, et
         # c'est bien elle qu'on cherche. Mais sans plafond de durée, un hôte
         # bavard qui émet une alerte toutes les 50 minutes agglomère sa journée
         # entière en un seul signal — le score enfle par accumulation et non par
         # anomalie, et le prompt part avec des heures de bruit.
-        if (courant and a["agent_id"] == courant[-1]["agent_id"]
-                and a["ts"] - courant[-1]["ts"] <= ecart
-                and a["ts"] - courant[0]["ts"] <= duree_max):
-            courant.append(a)
+        if (current and a["agent_id"] == current[-1]["agent_id"]
+                and a["ts"] - current[-1]["ts"] <= gap
+                and a["ts"] - current[0]["ts"] <= max_duration):
+            current.append(a)
         else:
-            if courant:
-                groupes.append(courant)
-            courant = [a]
-    if courant:
-        groupes.append(courant)
-    return groupes
+            if current:
+                groups.append(current)
+            current = [a]
+    if current:
+        groups.append(current)
+    return groups
 
 
-def scorer_groupe(groupe: list[dict]) -> tuple[float, list[dict]]:
+def score_group(group: list[dict]) -> tuple[float, list[dict]]:
     """Score d'un groupe + les motifs qui le composent.
 
     Somme plafonnée PAR TRAIT et non brute : quarante exécutions du même binaire
@@ -637,28 +637,28 @@ def scorer_groupe(groupe: list[dict]) -> tuple[float, list[dict]]:
     écrase tout le reste. On garde le meilleur de chaque trait, plus une part
     décroissante des répétitions.
     """
-    meilleur_par_trait: dict[str, dict] = {}
-    for a in groupe:
+    best_per_trait: dict[str, dict] = {}
+    for a in group:
         for d in (a.get("ueba_traits") or []):
-            cle = f"{d['trait']}:{d['valeur']}"
-            garde = meilleur_par_trait.get(cle)
-            if garde is None or d["bits"] > garde["bits"]:
-                meilleur_par_trait[cle] = dict(d)
+            key = f"{d['trait']}:{d['value']}"
+            guard = best_per_trait.get(key)
+            if guard is None or d["bits"] > guard["bits"]:
+                best_per_trait[key] = dict(d)
 
-    motifs = sorted(meilleur_par_trait.values(), key=lambda d: -d["bits"])
-    score = sum(min(d["bits"], config.UEBA_CAP_TRAIT) for d in motifs)
+    patterns = sorted(best_per_trait.values(), key=lambda d: -d["bits"])
+    score = sum(min(d["bits"], config.UEBA_CAP_TRAIT) for d in patterns)
 
-    tactiques = [t for a in groupe for t in (a.get("mitre_tactics") or [])]
-    bonus, phrase = bonus_chaine(tactiques)
+    tactics = [t for a in group for t in (a.get("mitre_tactics") or [])]
+    bonus, phrase = chain_bonus(tactics)
     if bonus:
         score += bonus
-        motifs.append({"trait": "chaine_mitre", "valeur": "", "scope": "host",
+        patterns.append({"trait": "chaine_mitre", "value": "", "scope": "host",
                        "bits": round(bonus, 2), "note": phrase})
 
-    return score, motifs[:8]
+    return score, patterns[:8]
 
 
-def _budget_restant(conn) -> int:
+def _remaining_budget(conn) -> int:
     """Places de promotion restantes sur les 24 dernières heures.
 
     Le seuil de score ne suffit pas à borner la facture : le volume d'alertes
@@ -668,61 +668,61 @@ def _budget_restant(conn) -> int:
     """
     n = conn.execute(
         "SELECT count(*) AS n FROM ueba_signals "
-        " WHERE statut = 'promu' AND created_at >= now() - interval '24 hours'"
+        " WHERE status = 'promu' AND created_at >= now() - interval '24 hours'"
     ).fetchone()["n"]
-    return max(0, config.UEBA_BUDGET_JOUR - n)
+    return max(0, config.UEBA_BUDGET_PER_DAY - n)
 
 
-def evaluer(simulation: bool = False) -> list[dict]:
+def evaluate(simulation: bool = False) -> list[dict]:
     """Regroupe, score, et promeut les meilleurs signaux dans la limite du budget.
 
     Retourne la liste des signaux promus.
     """
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-        alertes = conn.execute(
+        alerts = conn.execute(
             SELECT_CANDIDATES,
             (config.MIN_LEVEL, config.UEBA_RETENTION_HOURS)).fetchall()
-        if not alertes:
+        if not alerts:
             return []
 
-        signaux = []
-        for groupe in _grouper_signaux(alertes):
-            score, motifs = scorer_groupe(groupe)
-            signaux.append({
-                "agent_id": groupe[0]["agent_id"],
-                "agent_name": groupe[0]["agent_name"],
-                "debut": groupe[0]["ts"], "fin": groupe[-1]["ts"],
-                "score": round(score, 2), "motifs": motifs,
-                "alert_ids": [a["id"] for a in groupe],
+        signals = []
+        for group in _group_signals(alerts):
+            score, patterns = score_group(group)
+            signals.append({
+                "agent_id": group[0]["agent_id"],
+                "agent_name": group[0]["agent_name"],
+                "start_ts": group[0]["ts"], "end_ts": group[-1]["ts"],
+                "score": round(score, 2), "patterns": patterns,
+                "alert_ids": [a["id"] for a in group],
             })
         # Budget très serré (UEBA_BUDGET_PAR_CYCLE = 2) : l'ordre décide de ce
         # qui devient un incident aujourd'hui. À score suffisant, l'asset le
         # plus critique passe d'abord — le plancher reste le seul juge de
         # l'éligibilité, la priorité n'arbitre qu'entre signaux déjà éligibles.
-        for s in signaux:
-            s["priorite"] = assets.priorite_agent(
-                conn, s["agent_id"])["priorite"]
-        signaux.sort(key=lambda s: (s["priorite"], -s["score"]))
+        for s in signals:
+            s["priority"] = assets.agent_priority(
+                conn, s["agent_id"])["priority"]
+        signals.sort(key=lambda s: (s["priority"], -s["score"]))
 
         # Les signaux non promus sont recalculés à chaque passage : on efface
         # les « en attente » du tour précédent plutôt que de les mettre à jour,
         # leur périmètre ayant pu changer (alertes nouvellement rattachées).
-        conn.execute("DELETE FROM ueba_signals WHERE statut = 'en_attente'")
+        conn.execute("DELETE FROM ueba_signals WHERE status = 'en_attente'")
 
-        budget = min(_budget_restant(conn), config.UEBA_BUDGET_PAR_CYCLE)
-        promus: list[dict] = []
-        for s in signaux:
-            eligible = (s["score"] >= config.UEBA_SCORE_PLANCHER
-                        and len(promus) < budget and not simulation)
-            statut = "promu" if eligible else "en_attente"
+        budget = min(_remaining_budget(conn), config.UEBA_BUDGET_PER_CYCLE)
+        promoted: list[dict] = []
+        for s in signals:
+            eligible = (s["score"] >= config.UEBA_SCORE_FLOOR
+                        and len(promoted) < budget and not simulation)
+            status = "promu" if eligible else "en_attente"
             sid = conn.execute(
-                "INSERT INTO ueba_signals (agent_id, agent_name, debut, fin, "
+                "INSERT INTO ueba_signals (agent_id, agent_name, start_ts, end_ts, "
                 " score, motifs, alert_ids, statut) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-                (s["agent_id"], s["agent_name"], s["debut"], s["fin"],
-                 s["score"], json.dumps(s["motifs"], ensure_ascii=False,
+                (s["agent_id"], s["agent_name"], s["start_ts"], s["end_ts"],
+                 s["score"], json.dumps(s["patterns"], ensure_ascii=False,
                                         default=str),
-                 s["alert_ids"], statut)).fetchone()["id"]
+                 s["alert_ids"], status)).fetchone()["id"]
             if eligible:
                 # La promotion ne fabrique pas d'incident : elle rend les
                 # alertes GRAINABLES. C'est `correlate` qui décide ensuite du
@@ -732,12 +732,12 @@ def evaluer(simulation: bool = False) -> list[dict]:
                     "UPDATE alerts SET ueba_seed = true, ueba_signal_id = %s "
                     " WHERE id = ANY(%s)", (sid, s["alert_ids"]))
                 s["id"] = sid
-                promus.append(s)
+                promoted.append(s)
         conn.commit()
-    return promus
+    return promoted
 
 
-def marquer_tp(incident_id: int) -> int:
+def mark_tp(incident_id: int) -> int:
     """Interdit à la baseline d'absorber les traits d'un vrai positif.
 
     Sans ça, un attaquant patient normalise son propre outillage : il suffit de
@@ -749,20 +749,20 @@ def marquer_tp(incident_id: int) -> int:
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         # Borné : `marquer_tp` est appelé à la création du case, donc aussi
         # sur les incidents de flood (cf. alertes.py).
-        alertes = alertes_mod.charger_bornees(
-            conn, incident_id, alertes_mod.COLONNES_UEBA, "ueba marquer_tp")
-        cles = {t for a in alertes for t in traits(a)}
-        for scope, key, trait, valeur in cles:
+        alerts = alerts_mod.load_bounded(
+            conn, incident_id, alerts_mod.COLUMNS_UEBA, "ueba marquer_tp")
+        keys = {t for a in alerts for t in traits(a)}
+        for scope, key, trait, value in keys:
             n += conn.execute(
                 "UPDATE ueba_profiles SET seen_in_tp = true "
-                " WHERE scope=%s AND scope_key=%s AND trait=%s AND valeur=%s "
+                " WHERE scope=%s AND scope_key=%s AND trait=%s AND value=%s "
                 "   AND NOT seen_in_tp",
-                (scope, key, trait, valeur)).rowcount
+                (scope, key, trait, value)).rowcount
         conn.commit()
     return n
 
 
-def purger() -> int:
+def purge() -> int:
     """Fait vieillir la baseline.
 
     Un profil qui ne vieillit jamais fige le comportement d'il y a six mois : un
@@ -773,19 +773,19 @@ def purger() -> int:
     """
     with psycopg.connect(config.PG_DSN) as conn:
         n = conn.execute(
-            "DELETE FROM ueba_observations WHERE jour < current_date - %s",
-            (config.UEBA_MEMOIRE_JOURS,)).rowcount
+            "DELETE FROM ueba_observations WHERE day < current_date - %s",
+            (config.UEBA_MEMORY_DAYS,)).rowcount
         if n:
             conn.execute("""
                 UPDATE ueba_profiles p
-                   SET total = a.total, days_seen = a.jours,
-                       first_seen = a.debut, last_seen = a.fin
-                  FROM (SELECT scope, scope_key, trait, valeur, sum(nb) total,
-                               count(*) jours, min(jour) debut, max(jour) fin
+                   SET total = a.total, days_seen = a.days,
+                       first_seen = a.start_ts, last_seen = a.end_ts
+                  FROM (SELECT scope, scope_key, trait, value, sum(count) total,
+                               count(*) days, min(day) start_ts, max(day) end_ts
                           FROM ueba_observations
                          GROUP BY 1,2,3,4) a
                  WHERE p.scope=a.scope AND p.scope_key=a.scope_key
-                   AND p.trait=a.trait AND p.valeur=a.valeur""")
+                   AND p.trait=a.trait AND p.value=a.value""")
             # Profils dont plus aucune observation ne subsiste. `seen_in_tp` est
             # préservé : un trait vu dans un vrai positif ne doit jamais
             # redevenir vierge par simple péremption.
@@ -798,22 +798,22 @@ def purger() -> int:
     return n
 
 
-def tourner() -> tuple[int, int, list[dict]]:
+def run() -> tuple[int, int, list[dict]]:
     """Un passage complet : observation, scoring, promotion. Appelé par cycle.py."""
     if not config.UEBA_ENABLED:
         return 0, 0, []
-    vues, scorees = observer()
-    promus = evaluer()
+    seen, scored = observe()
+    promoted = evaluate()
     # Vieillissement de la baseline. Appelé à chaque passage plutôt que par un
     # job dédié : le DELETE est indexé sur `jour` et ne rend rien la plupart du
     # temps ; le recalcul des profils n'a lieu que s'il a effectivement purgé.
-    purger()
-    return vues, scorees, promus
+    purge()
+    return seen, scored, promoted
 
 
 # --- CLI ---------------------------------------------------------------------
 
-def rapport_etat(limite_signaux: int = 15) -> dict:
+def state_report(signals_limit: int = 15) -> dict:
     """Maturité de la baseline, budget de promotion, derniers signaux."""
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         r = conn.execute(
@@ -821,20 +821,20 @@ def rapport_etat(limite_signaux: int = 15) -> dict:
             "       coalesce(sum(total),0) AS obs FROM ueba_profiles").fetchone()
         murs = conn.execute(
             "SELECT count(*) AS n FROM ueba_scopes "
-            " WHERE premiere_obs <= now() - make_interval(days => %s) "
+            " WHERE first_obs <= now() - make_interval(days => %s) "
             "   AND total >= %s",
-            (config.UEBA_MATURITE_JOURS, config.UEBA_MATURITE_MIN_OBS)
+            (config.UEBA_MATURITY_DAYS, config.UEBA_MATURITY_MIN_OBS)
         ).fetchone()["n"]
         total_scopes = conn.execute(
             "SELECT count(*) AS n FROM ueba_scopes").fetchone()["n"]
-        reste = conn.execute(
-            "SELECT count(*) AS n FROM alerts WHERE NOT ueba_vu AND NOT suppressed"
+        remains = conn.execute(
+            "SELECT count(*) AS n FROM alerts WHERE NOT ueba_seen AND NOT suppressed"
         ).fetchone()["n"]
-        budget = _budget_restant(conn)
-        signaux = conn.execute(
-            "SELECT id, agent_id, agent_name, score, statut, debut, fin, motifs "
+        budget = _remaining_budget(conn)
+        signals = conn.execute(
+            "SELECT id, agent_id, agent_name, score, status, start_ts, end_ts, patterns "
             "  FROM ueba_signals ORDER BY created_at DESC LIMIT %s",
-            (limite_signaux,)).fetchall()
+            (signals_limit,)).fetchall()
 
     return {
         "profils": r["profils"],
@@ -842,25 +842,25 @@ def rapport_etat(limite_signaux: int = 15) -> dict:
         "observations": r["obs"],
         "scopes_murs": murs,
         "scopes_total": total_scopes,
-        "maturite_jours": config.UEBA_MATURITE_JOURS,
-        "maturite_min_obs": config.UEBA_MATURITE_MIN_OBS,
-        "alertes_a_observer": reste,
+        "maturite_jours": config.UEBA_MATURITY_DAYS,
+        "maturite_min_obs": config.UEBA_MATURITY_MIN_OBS,
+        "alertes_a_observer": remains,
         "budget_restant": budget,
-        "budget_jour": config.UEBA_BUDGET_JOUR,
-        "plancher_score": config.UEBA_SCORE_PLANCHER,
+        "budget_jour": config.UEBA_BUDGET_PER_DAY,
+        "plancher_score": config.UEBA_SCORE_FLOOR,
         "signaux": [
             {"id": s["id"], "agent_id": s["agent_id"],
              "agent_name": s["agent_name"], "score": float(s["score"]),
-             "statut": s["statut"], "debut": s["debut"].isoformat(),
-             "fin": s["fin"].isoformat() if s["fin"] else None,
-             "motifs": s["motifs"] or []}
-            for s in signaux
+             "status": s["status"], "start_ts": s["start_ts"].isoformat(),
+             "end_ts": s["end_ts"].isoformat() if s["end_ts"] else None,
+             "patterns": s["patterns"] or []}
+            for s in signals
         ],
     }
 
 
-def etat() -> None:
-    r = rapport_etat()
+def state() -> None:
+    r = state_report()
     print(f"profils : {r['profils']} ({r['scopes']} scopes, "
           f"{r['observations']} observations)")
     print(f"scopes mûrs : {r['scopes_murs']}/{r['scopes_total']} "
@@ -870,10 +870,10 @@ def etat() -> None:
           "promotions restantes sur 24 h")
     for s in r["signaux"]:
         phrases = "; ".join(
-            f"{m['trait']}={m['valeur']} +{m['bits']}" for m in s["motifs"][:3])
-        print(f"  #{s['id']:<5} {s['statut']:<11} {s['score']:6.1f} "
+            f"{m['trait']}={m['value']} +{m['bits']}" for m in s["patterns"][:3])
+        print(f"  #{s['id']:<5} {s['status']:<11} {s['score']:6.1f} "
               f"{str(s['agent_name'] or '?'):<14} "
-              f"{s['debut'][5:16].replace('T', ' ')}  {phrases}")
+              f"{s['start_ts'][5:16].replace('T', ' ')}  {phrases}")
 
 
 def main() -> None:
@@ -887,23 +887,23 @@ def main() -> None:
                     help="fait vieillir la baseline (UEBA_MEMOIRE_JOURS)")
     args = ap.parse_args()
 
-    if args.etat:
-        etat()
+    if args.state:
+        state()
         return
-    if args.purger:
-        print(f"{purger()} observation(s) périmée(s) supprimée(s).")
+    if args.purge:
+        print(f"{purge()} observation(s) périmée(s) supprimée(s).")
         return
 
-    vues, scorees, _ = (0, 0, [])
-    vues, scorees = observer()
-    print(f"observation : {vues} alertes, {scorees} avec un score non nul")
-    promus = evaluer(simulation=args.simulation)
+    seen, scored, _ = (0, 0, [])
+    seen, scored = observe()
+    print(f"observation : {seen} alertes, {scored} avec un score non nul")
+    promoted = evaluate(simulation=args.simulation)
     if args.simulation:
         print("simulation : aucun signal promu.")
-    for s in promus:
+    for s in promoted:
         print(f"  signal #{s['id']} {s['agent_name']} score {s['score']} "
               f"-> {len(s['alert_ids'])} alertes graine")
-    if not promus and not args.simulation:
+    if not promoted and not args.simulation:
         print("aucun signal au-dessus du plancher (ou budget épuisé).")
 
 

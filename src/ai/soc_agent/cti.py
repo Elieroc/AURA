@@ -63,9 +63,9 @@ TIMEOUT = 120
 #              La menace est réelle, l'extraction est automatique et le média
 #              n'est pas un CERT                    -> 100957, niveau 12
 #   masse   -> réputation de volume (blocklists)    -> 100953, niveau 10
-CONFIANCE_CUREE = "curated"
-CONFIANCE_EXTRAITE = "extracted"
-CONFIANCE_MASSE = "bulk"
+CONFIDENCE_CURATED = "curated"
+CONFIDENCE_EXTRACTED = "extracted"
+CONFIDENCE_BULK = "bulk"
 
 # Tag posé par cti_articles.py sur les événements qu'il crée. C'est lui qui
 # porte la distinction de confiance depuis MISP jusqu'à la règle Wazuh : sans
@@ -84,7 +84,7 @@ TAG_EXTRACTION = "aura:source:extracted"
 # un incident et payer un triage LLM sur ce qui est, par construction, la même
 # chose qu'une blocklist. La taxonomie MISP l'annonce elle-même ; il suffisait
 # de la lire.
-TAG_NON_SUPERVISE = 'misp:automation-level="unsupervised"'
+TAG_NON_SUPERVISED = 'misp:automation-level="unsupervised"'
 
 
 # ---------------------------------------------------------------------------
@@ -121,14 +121,14 @@ TYPES = {
 }
 
 
-def normaliser(type_cache: str, valeur: str) -> str | None:
+def normalize(type_cache: str, value: str) -> str | None:
     """Forme canonique d'un IOC, ou None s'il est inutilisable.
 
     Volontairement conservatrice : on ne « répare » pas une valeur douteuse,
     on la jette. Un IOC mal normalisé ne fait pas d'erreur, il fait un faux
     négatif permanent.
     """
-    v = (valeur or "").strip()
+    v = (value or "").strip()
     if not v:
         return None
 
@@ -167,8 +167,8 @@ def normaliser(type_cache: str, valeur: str) -> str | None:
 # Catalogue
 # ---------------------------------------------------------------------------
 
-def charger_catalogue(chemin: str | None = None) -> dict:
-    with open(chemin or config.CTI_CATALOGUE) as f:
+def load_catalog(path: str | None = None) -> dict:
+    with open(path or config.CTI_CATALOG) as f:
         cat = yaml.safe_load(f) or {}
     return {"misp_feeds": cat.get("misp_feeds") or [],
             "blocklists": cat.get("blocklists") or [],
@@ -182,24 +182,24 @@ def charger_catalogue(chemin: str | None = None) -> dict:
 # API MISP
 # ---------------------------------------------------------------------------
 
-def _misp(methode: str, chemin: str, corps: dict | None = None) -> dict | list:
+def _misp(method: str, path: str, body: dict | None = None) -> dict | list:
     if not config.MISP_KEY:
         sys.exit("MISP_KEY manquant : la clé d'API MISP est requise (cf. .env.example)")
-    reponse = requests.request(
-        methode,
-        f"{config.MISP_URL.rstrip('/')}{chemin}",
+    response = requests.request(
+        method,
+        f"{config.MISP_URL.rstrip('/')}{path}",
         headers={"Authorization": config.MISP_KEY,
                  "Accept": "application/json",
                  "Content-Type": "application/json"},
-        json=corps,
+        json=body,
         verify=config.MISP_VERIFY_TLS,
         timeout=TIMEOUT,
     )
-    reponse.raise_for_status()
-    return reponse.json()
+    response.raise_for_status()
+    return response.json()
 
 
-def _corps_feed(feed: dict) -> dict:
+def _feed_body(feed: dict) -> dict:
     """Payload MISP pour un feed du catalogue.
 
     `cache_seulement` est le point important : un feed mis en cache est
@@ -209,8 +209,8 @@ def _corps_feed(feed: dict) -> dict:
     """
     cache = bool(feed.get("cache_seulement"))
     return {
-        "name": feed["nom"],
-        "provider": feed.get("fournisseur", feed["nom"]),
+        "name": feed["name"],
+        "provider": feed.get("fournisseur", feed["name"]),
         "url": feed["url"],
         "source_format": feed.get("format", "misp"),
         "input_source": "network",
@@ -225,7 +225,7 @@ def _corps_feed(feed: dict) -> dict:
     }
 
 
-def _cle_url(url: str) -> str:
+def _url_key(url: str) -> str:
     """Forme de comparaison d'une URL de feed.
 
     Le slash final est ignoré : MISP livre d'origine le feed CIRCL sous
@@ -246,43 +246,43 @@ def bootstrap_feeds(simulation: bool = False, catalogue: dict | None = None) -> 
     — y compris ceux livrés d'origine par MISP — est mis à jour, jamais
     dupliqué : la fonction peut tourner à chaque démarrage.
     """
-    cat = catalogue or charger_catalogue()
-    voulus = list(cat["misp_feeds"]) + [
+    cat = catalogue or load_catalog()
+    wanted = list(cat["misp_feeds"]) + [
         # Une blocklist est déclarée à MISP en cache seul : elle reste
         # interrogeable depuis l'UI (« cette IP est-elle connue ? ») sans
         # peser sur MariaDB. La détection, elle, ne passe pas par là : cti.py
         # tire ces listes en direct (cf. blocklists() plus bas).
-        {"nom": f"{bl['nom']} (cache)", "url": url,
-         "fournisseur": bl.get("fournisseur", bl["nom"]),
+        {"name": f"{bl['name']} (cache)", "url": url,
+         "fournisseur": bl.get("fournisseur", bl["name"]),
          "format": "freetext", "cache_seulement": True}
         for bl in cat["blocklists"] for url in bl["urls"]
     ]
 
-    existants = {_cle_url(f["Feed"]["url"]): f["Feed"]
+    existing = {_url_key(f["Feed"]["url"]): f["Feed"]
                  for f in _misp("GET", "/feeds/index")
                  if isinstance(f, dict) and "Feed" in f} if not simulation else {}
 
     resume = {"crees": [], "mis_a_jour": [], "inchanges": []}
-    for feed in voulus:
-        corps = _corps_feed(feed)
-        deja = existants.get(_cle_url(feed["url"]))
+    for feed in wanted:
+        body = _feed_body(feed)
+        already = existing.get(_url_key(feed["url"]))
         if simulation:
-            resume["crees" if not deja else "mis_a_jour"].append(feed["nom"])
+            resume["crees" if not already else "mis_a_jour"].append(feed["name"])
             continue
-        if not deja:
-            _misp("POST", "/feeds/add", {"Feed": corps})
-            resume["crees"].append(feed["nom"])
-        elif any(str(deja.get(k, "")).lower() != str(v).lower()
-                 for k, v in (("enabled", corps["enabled"]),
-                              ("caching_enabled", corps["caching_enabled"]))):
-            _misp("POST", f"/feeds/edit/{deja['id']}", {"Feed": corps})
-            resume["mis_a_jour"].append(feed["nom"])
+        if not already:
+            _misp("POST", "/feeds/add", {"Feed": body})
+            resume["crees"].append(feed["name"])
+        elif any(str(already.get(k, "")).lower() != str(v).lower()
+                 for k, v in (("enabled", body["enabled"]),
+                              ("caching_enabled", body["caching_enabled"]))):
+            _misp("POST", f"/feeds/edit/{already['id']}", {"Feed": body})
+            resume["mis_a_jour"].append(feed["name"])
         else:
-            resume["inchanges"].append(feed["nom"])
+            resume["inchanges"].append(feed["name"])
     return resume
 
 
-def rafraichir_feeds(simulation: bool = False) -> None:
+def refresh_feeds(simulation: bool = False) -> None:
     """Demande à MISP de tirer ses feeds maintenant, sans attendre son cron.
 
     Les deux appels sont asynchrones (MISP met des jobs en file) : ils rendent
@@ -303,7 +303,7 @@ def rafraichir_feeds(simulation: bool = False) -> None:
 # Extraction des IOC
 # ---------------------------------------------------------------------------
 
-def _confiance(tags: list[str]) -> str:
+def _confidence(tags: list[str]) -> str:
     """Confiance d'un attribut MISP, d'après les tags de son événement.
 
     L'ordre des deux tests compte : un événement produit par NOTRE extraction
@@ -312,14 +312,14 @@ def _confiance(tags: list[str]) -> str:
     relayés par les feeds OSINT) est de la réputation de masse, quelle que soit
     l'organisation qui le publie.
     """
-    if TAG_NON_SUPERVISE in tags:
-        return CONFIANCE_MASSE
+    if TAG_NON_SUPERVISED in tags:
+        return CONFIDENCE_BULK
     if TAG_EXTRACTION in tags:
-        return CONFIANCE_EXTRAITE
-    return CONFIANCE_CUREE
+        return CONFIDENCE_EXTRACTED
+    return CONFIDENCE_CURATED
 
 
-def _ip_perimee(type_cache: str, evenement: dict) -> bool:
+def _ip_expired(type_cache: str, event: dict) -> bool:
     """Une IP dont l'événement d'origine est trop vieux ne vaut plus rien.
 
     `CTI_FENETRE` ne filtre PAS l'âge du renseignement : le paramètre `last` de
@@ -335,9 +335,9 @@ def _ip_perimee(type_cache: str, evenement: dict) -> bool:
     domaine reste rattaché à qui l'a déposé. D'où une péremption qui ne vise
     que les IP, sur la date de l'ÉVÉNEMENT et non celle de l'attribut.
     """
-    if type_cache != "ip" or not config.CTI_IP_MAX_JOURS:
+    if type_cache != "ip" or not config.CTI_IP_MAX_DAYS:
         return False
-    date = (evenement or {}).get("date") or ""
+    date = (event or {}).get("date") or ""
     if not date:
         return False   # sans date, on ne jette pas : on ne sait pas
     try:
@@ -345,10 +345,10 @@ def _ip_perimee(type_cache: str, evenement: dict) -> bool:
                - datetime.fromisoformat(date).replace(tzinfo=timezone.utc)).days
     except ValueError:
         return False
-    return age > config.CTI_IP_MAX_JOURS
+    return age > config.CTI_IP_MAX_DAYS
 
 
-def attributs_misp(page_taille: int = 5000):
+def misp_attributes(page_size: int = 5000):
     """IOC curés de MISP : attributs `to_ids`, publiés, dans la fenêtre.
 
     `to_ids=1` est le filtre décisif. MISP contient beaucoup d'attributs de
@@ -361,7 +361,7 @@ def attributs_misp(page_taille: int = 5000):
     page = 1
     total = 0
     while True:
-        reponse = _misp("POST", "/attributes/restSearch", {
+        response = _misp("POST", "/attributes/restSearch", {
             "returnFormat": "json",
             "type": config.CTI_TYPES_MISP,
             "to_ids": 1,
@@ -369,37 +369,37 @@ def attributs_misp(page_taille: int = 5000):
             "published": 1,
             "enforceWarninglist": 1,   # écarte ce que MISP sait être bénin
             "includeEventTags": 1,
-            "last": config.CTI_FENETRE,
-            "limit": page_taille,
+            "last": config.CTI_WINDOW,
+            "limit": page_size,
             "page": page,
         })
-        lot = (reponse or {}).get("response", {}).get("Attribute", [])
-        if not lot:
+        batch = (response or {}).get("response", {}).get("Attribute", [])
+        if not batch:
             return
-        for attr in lot:
+        for attr in batch:
             type_cache = TYPES.get(attr.get("type", ""))
             if not type_cache:
                 continue
-            valeur = normaliser(type_cache, attr.get("value", ""))
-            if not valeur:
+            value = normalize(type_cache, attr.get("value", ""))
+            if not value:
                 continue
-            evenement = attr.get("Event") or {}
-            if _ip_perimee(type_cache, evenement):
+            event = attr.get("Event") or {}
+            if _ip_expired(type_cache, event):
                 continue
             tags = [t.get("name", "") for t in (attr.get("Tag") or [])]
             yield {
-                "valeur": valeur,
+                "value": value,
                 "type": type_cache,
-                "source": (evenement.get("Orgc") or {}).get("name") or "MISP",
+                "source": (event.get("Orgc") or {}).get("name") or "MISP",
                 "categorie": attr.get("category", ""),
-                "evenement": (evenement.get("info") or "")[:200],
+                "evenement": (event.get("info") or "")[:200],
                 "event_id": str(attr.get("event_id") or ""),
                 "tags": ",".join(t for t in tags if t)[:300],
-                "niveau_menace": int(evenement.get("threat_level_id") or 4),
+                "niveau_menace": int(event.get("threat_level_id") or 4),
                 # Tout remonte par le même chemin — c'est voulu, MISP est la
                 # seule mémoire — mais tout ne vaut pas la même chose, et les
                 # tags sont le seul endroit où la différence survit.
-                "confiance": _confiance(tags),
+                "confiance": _confidence(tags),
             }
             total += 1
             if total > config.CTI_MAX_IOC:
@@ -415,45 +415,45 @@ def blocklists(catalogue: dict | None = None):
     pas de contexte à corréler, et leur volume rendrait la base MISP
     inutilisable pour ce qu'elle sait faire de mieux.
     """
-    cat = catalogue or charger_catalogue()
+    cat = catalogue or load_catalog()
     for bl in cat["blocklists"]:
         type_cache = bl.get("type", "ip")
         for url in bl["urls"]:
             try:
-                reponse = requests.get(url, timeout=TIMEOUT)
-                reponse.raise_for_status()
+                response = requests.get(url, timeout=TIMEOUT)
+                response.raise_for_status()
             except Exception as exc:
                 # Un feed indisponible ne doit pas faire échouer les autres :
                 # le cache est reconstruit en entier à chaque passe, perdre
                 # une source, c'est perdre sa couverture, pas toute la CTI.
-                log.warning("blocklist %s injoignable (%s) : %s", bl["nom"], url, exc)
+                log.warning("blocklist %s injoignable (%s) : %s", bl["name"], url, exc)
                 continue
-            compte = 0
-            for ligne in reponse.text.splitlines():
-                ligne = ligne.strip()
-                if not ligne or ligne.startswith(("#", ";", "//")):
+            account = 0
+            for line in response.text.splitlines():
+                line = line.strip()
+                if not line or line.startswith(("#", ";", "//")):
                     continue
-                valeur = normaliser(type_cache, ligne.split()[0])
-                if not valeur:
+                value = normalize(type_cache, line.split()[0])
+                if not value:
                     continue
-                compte += 1
-                if compte > config.CTI_MAX_IOC:
+                account += 1
+                if account > config.CTI_MAX_IOC:
                     raise RuntimeError(
-                        f"{bl['nom']} au-delà de CTI_MAX_IOC ({config.CTI_MAX_IOC})")
+                        f"{bl['name']} au-delà de CTI_MAX_IOC ({config.CTI_MAX_IOC})")
                 yield {
-                    "valeur": valeur,
+                    "value": value,
                     "type": type_cache,
-                    "source": bl["nom"],
+                    "source": bl["name"],
                     "categorie": bl.get("categorie", ""),
-                    "evenement": bl.get("commentaire", ""),
+                    "evenement": bl.get("comment", ""),
                     "event_id": "",
                     "tags": ",".join(bl.get("tags") or [])[:300],
                     # Pas de niveau de menace : une liste de masse ne qualifie
                     # rien. 4 = « indéterminé » dans MISP, et c'est exact.
                     "niveau_menace": 4,
-                    "confiance": CONFIANCE_MASSE,
+                    "confiance": CONFIDENCE_BULK,
                 }
-            log.info("blocklist %s : %d IOC (%s)", bl["nom"], compte, url)
+            log.info("blocklist %s : %d IOC (%s)", bl["name"], account, url)
 
 
 # ---------------------------------------------------------------------------
@@ -462,7 +462,7 @@ def blocklists(catalogue: dict | None = None):
 
 SCHEMA = """
 CREATE TABLE ioc (
-  valeur        TEXT NOT NULL,
+  value        TEXT NOT NULL,
   type          TEXT NOT NULL,
   source        TEXT NOT NULL,
   categorie     TEXT,
@@ -471,14 +471,14 @@ CREATE TABLE ioc (
   tags          TEXT,
   niveau_menace INTEGER,
   confiance     TEXT NOT NULL,
-  PRIMARY KEY (valeur, type, source)
+  PRIMARY KEY (value, type, source)
 );
-CREATE INDEX idx_ioc_valeur ON ioc(valeur);
-CREATE TABLE meta (cle TEXT PRIMARY KEY, valeur TEXT);
+CREATE INDEX idx_ioc_valeur ON ioc(value);
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 
-def ecrire_cache(iocs, chemin: str | None = None) -> dict:
+def write_cache(iocs, path: str | None = None) -> dict:
     """Reconstruit le cache en entier, puis le substitue d'un seul coup.
 
     Écriture dans un fichier temporaire du MÊME répertoire puis `os.replace` :
@@ -487,34 +487,34 @@ def ecrire_cache(iocs, chemin: str | None = None) -> dict:
     ce qui fait DISPARAÎTRE les IOC retirés des feeds — sans quoi une IP
     réhabilitée continuerait d'alerter indéfiniment.
     """
-    chemin = chemin or config.CTI_CACHE
-    os.makedirs(os.path.dirname(chemin) or ".", exist_ok=True)
-    fd, temporaire = tempfile.mkstemp(dir=os.path.dirname(chemin) or ".",
+    path = path or config.CTI_CACHE
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=os.path.dirname(path) or ".",
                                       prefix=".ioc-", suffix=".db")
     os.close(fd)
-    os.unlink(temporaire)
+    os.unlink(temporary)
 
-    compte = {}
+    account = {}
     try:
-        conn = sqlite3.connect(temporaire)
+        conn = sqlite3.connect(temporary)
         try:
             conn.executescript(SCHEMA)
-            lot = []
+            batch = []
             for ioc in iocs:
-                compte[ioc["confiance"]] = compte.get(ioc["confiance"], 0) + 1
-                lot.append((ioc["valeur"], ioc["type"], ioc["source"],
+                account[ioc["confiance"]] = account.get(ioc["confiance"], 0) + 1
+                batch.append((ioc["value"], ioc["type"], ioc["source"],
                             ioc.get("categorie", ""), ioc.get("evenement", ""),
                             ioc.get("event_id", ""), ioc.get("tags", ""),
                             ioc.get("niveau_menace", 4), ioc["confiance"]))
-                if len(lot) >= 10000:
-                    conn.executemany("INSERT OR REPLACE INTO ioc VALUES (?,?,?,?,?,?,?,?,?)", lot)
-                    lot = []
-            if lot:
-                conn.executemany("INSERT OR REPLACE INTO ioc VALUES (?,?,?,?,?,?,?,?,?)", lot)
+                if len(batch) >= 10000:
+                    conn.executemany("INSERT OR REPLACE INTO ioc VALUES (?,?,?,?,?,?,?,?,?)", batch)
+                    batch = []
+            if batch:
+                conn.executemany("INSERT OR REPLACE INTO ioc VALUES (?,?,?,?,?,?,?,?,?)", batch)
             conn.execute("INSERT INTO meta VALUES ('synchronise_a', ?)",
                          (datetime.now(timezone.utc).isoformat(),))
             conn.execute("INSERT INTO meta VALUES ('compte', ?)",
-                         (json.dumps(compte),))
+                         (json.dumps(account),))
             # URL publique embarquée dans le cache : c'est elle qui rend les
             # liens des alertes cliquables depuis un poste d'analyste. La poser
             # ici évite de redéclarer la configuration MISP côté manager — le
@@ -525,72 +525,72 @@ def ecrire_cache(iocs, chemin: str | None = None) -> dict:
         finally:
             conn.close()
         # Lisible par l'utilisateur wazuh du manager, qui n'est pas le nôtre.
-        os.chmod(temporaire, 0o644)
-        os.replace(temporaire, chemin)
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
     except BaseException:
-        if os.path.exists(temporaire):
-            os.unlink(temporaire)
+        if os.path.exists(temporary):
+            os.unlink(temporary)
         raise
-    return compte
+    return account
 
 
-def interroger(valeur: str, chemin: str | None = None) -> list[dict]:
+def query(value: str, path: str | None = None) -> list[dict]:
     """Toutes les correspondances d'une valeur, meilleure source d'abord."""
-    chemin = chemin or config.CTI_CACHE
-    conn = sqlite3.connect(f"file:{chemin}?mode=ro", uri=True)
+    path = path or config.CTI_CACHE
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
-        lignes = conn.execute(
-            "SELECT * FROM ioc WHERE valeur = ? ORDER BY "
+        lines = conn.execute(
+            "SELECT * FROM ioc WHERE value = ? ORDER BY "
             "CASE confiance WHEN 'curated' THEN 0 WHEN 'extracted' THEN 1 "
             "ELSE 2 END ASC, niveau_menace ASC",
-            (valeur,)).fetchall()
+            (value,)).fetchall()
     finally:
         conn.close()
-    return [dict(l) for l in lignes]
+    return [dict(l) for l in lines]
 
 
-def etat(chemin: str | None = None) -> dict:
-    chemin = chemin or config.CTI_CACHE
-    if not os.path.exists(chemin):
+def state(path: str | None = None) -> dict:
+    path = path or config.CTI_CACHE
+    if not os.path.exists(path):
         return {"present": False}
-    conn = sqlite3.connect(f"file:{chemin}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
-        meta = dict(conn.execute("SELECT cle, valeur FROM meta").fetchall())
-        par_type = conn.execute(
+        meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+        by_type = conn.execute(
             "SELECT type, confiance, COUNT(*) FROM ioc GROUP BY type, confiance"
         ).fetchall()
-        par_source = conn.execute(
+        by_source = conn.execute(
             "SELECT source, COUNT(*) c FROM ioc GROUP BY source ORDER BY c DESC"
         ).fetchall()
     finally:
         conn.close()
-    synchronise_a = meta.get("synchronise_a", "")
+    synced_at = meta.get("synchronise_a", "")
     age = None
-    if synchronise_a:
+    if synced_at:
         age = (datetime.now(timezone.utc)
-               - datetime.fromisoformat(synchronise_a)).total_seconds() / 3600
-    return {"present": True, "synchronise_a": synchronise_a,
+               - datetime.fromisoformat(synced_at)).total_seconds() / 3600
+    return {"present": True, "synchronise_a": synced_at,
             "age_heures": age, "perime": age is not None
-            and age > config.CTI_PEREMPTION_HEURES,
-            "par_type": par_type, "par_source": par_source}
+            and age > config.CTI_EXPIRY_HOURS,
+            "par_type": by_type, "par_source": by_source}
 
 
 # ---------------------------------------------------------------------------
 
-def synchroniser(simulation: bool = False, catalogue: dict | None = None) -> dict:
-    cat = catalogue or charger_catalogue()
+def sync(simulation: bool = False, catalogue: dict | None = None) -> dict:
+    cat = catalogue or load_catalog()
 
     def tout():
-        yield from attributs_misp()
+        yield from misp_attributes()
         yield from blocklists(cat)
 
     if simulation:
-        compte = {}
+        account = {}
         for ioc in tout():
-            compte[ioc["confiance"]] = compte.get(ioc["confiance"], 0) + 1
-        return compte
-    return ecrire_cache(tout())
+            account[ioc["confiance"]] = account.get(ioc["confiance"], 0) + 1
+        return account
+    return write_cache(tout())
 
 
 def main() -> None:
@@ -607,28 +607,28 @@ def main() -> None:
                          help="compte les IOC sans écrire le cache")
     args = parseur.parse_args()
 
-    if args.etat:
-        e = etat()
+    if args.state:
+        e = state()
         if not e["present"]:
             sys.exit(f"cache absent : {config.CTI_CACHE} — lancer `python -m soc_agent.cti`")
         print(f"cache        {config.CTI_CACHE}")
         print(f"synchronisé  {e['synchronise_a']} ({e['age_heures']:.1f} h)"
               + ("  ** PÉRIMÉ **" if e["perime"] else ""))
-        for type_, confiance, n in e["par_type"]:
-            print(f"  {type_:8} {confiance:8} {n:>8}")
+        for type_, confidence, n in e["par_type"]:
+            print(f"  {type_:8} {confidence:8} {n:>8}")
         print("sources :")
         for source, n in e["par_source"]:
             print(f"  {source:30} {n:>8}")
         return
 
     if args.test:
-        type_devine = next((t for t in ("ip", "hash", "url", "domain")
-                            if normaliser(t, args.test)), None)
-        if not type_devine:
+        guessed_type = next((t for t in ("ip", "hash", "url", "domain")
+                            if normalize(t, args.test)), None)
+        if not guessed_type:
             sys.exit(f"valeur inexploitable : {args.test}")
-        resultats = interroger(normaliser(type_devine, args.test))
-        print(json.dumps(resultats, indent=2, ensure_ascii=False)
-              if resultats else "aucune correspondance")
+        results = query(normalize(guessed_type, args.test))
+        print(json.dumps(results, indent=2, ensure_ascii=False)
+              if results else "aucune correspondance")
         return
 
     if args.feeds:
@@ -636,12 +636,12 @@ def main() -> None:
         log.info("feeds MISP : %d créés, %d mis à jour, %d inchangés",
                  len(resume["crees"]), len(resume["mis_a_jour"]),
                  len(resume["inchanges"]))
-        rafraichir_feeds(simulation=args.simulation)
+        refresh_feeds(simulation=args.simulation)
         return
 
-    compte = synchroniser(simulation=args.simulation)
+    account = sync(simulation=args.simulation)
     log.info("cache d'IOC%s : %s", " (simulation)" if args.simulation else "",
-             ", ".join(f"{k}={v}" for k, v in sorted(compte.items())) or "vide")
+             ", ".join(f"{k}={v}" for k, v in sorted(account.items())) or "vide")
 
 
 if __name__ == "__main__":

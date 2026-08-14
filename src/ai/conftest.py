@@ -18,9 +18,9 @@ explicite (`SOC_AI_TEST_LLM=1`), jamais la simple présence d'une clé.
 
 import os
 
-for nom, bouchon in (
+for name, stub in (
     ("INDEXER_PASSWORD", "bouchon-de-test"),
     ("PGPASSWORD", "bouchon-de-test"),
     ("DEEPSEEK_API_KEY", "bouchon-de-test"),
 ):
-    os.environ.setdefault(nom, bouchon)
+    os.environ.setdefault(name, stub)

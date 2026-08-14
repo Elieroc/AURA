@@ -17,10 +17,10 @@ from psycopg.rows import dict_row
 from . import config
 
 # 15 à 25 s par triage, mesurées sur DeepSeek. On prend le haut de la fourchette.
-SECONDES_PAR_TRIAGE = 25
+SECONDS_PER_TRIAGE = 25
 
 
-def rapport() -> dict:
+def report() -> dict:
     """Entonnoir de filtrage et charge LLM induite, en données brutes.
 
     `{"vide": True}` si aucune alerte n'a encore été ingérée — l'appelant doit
@@ -31,18 +31,18 @@ def rapport() -> dict:
         if not total:
             return {"vide": True}
 
-        jours = float(conn.execute(
+        days = float(conn.execute(
             "SELECT greatest(extract(epoch FROM max(ts) - min(ts)) / 86400, 1) j "
             "FROM alerts").fetchone()["j"])
-        supprimees = conn.execute(
+        deleted = conn.execute(
             "SELECT count(*) n FROM alerts WHERE suppressed").fetchone()["n"]
-        retenues = conn.execute(
+        kept = conn.execute(
             "SELECT count(*) n FROM alerts "
             "WHERE rule_level >= %s AND NOT suppressed",
             (config.MIN_LEVEL,)).fetchone()["n"]
         incidents = conn.execute("SELECT count(*) n FROM incidents").fetchone()["n"]
 
-        par_niveau = [
+        by_level = [
             {"niveau": r["rule_level"], "n": r["n"],
              "traite": r["rule_level"] >= config.MIN_LEVEL}
             for r in conn.execute(
@@ -62,15 +62,15 @@ def rapport() -> dict:
                  LIMIT 15""")
         ]
 
-    par_jour = incidents / jours
-    secondes = par_jour * SECONDES_PAR_TRIAGE
+    per_day = incidents / days
+    seconds = per_day * SECONDS_PER_TRIAGE
     # Sans corrélation, chaque alerte partirait au triage. C'est la mesure de ce
     # que la phase 1 rapporte réellement.
-    sans = retenues / jours * SECONDES_PAR_TRIAGE
+    sans = kept / days * SECONDS_PER_TRIAGE
 
-    if secondes > 8 * 3600:
+    if seconds > 8 * 3600:
         verdict = "intenable"
-    elif secondes > 2 * 3600:
+    elif seconds > 2 * 3600:
         verdict = "tendu"
     else:
         verdict = "large"
@@ -79,36 +79,36 @@ def rapport() -> dict:
         "vide": False,
         "entonnoir": {
             "total": total,
-            "jours": jours,
-            "par_jour": total / jours,
-            "supprimees": supprimees,
-            "retenues": retenues,
+            "days": days,
+            "par_jour": total / days,
+            "supprimees": deleted,
+            "retenues": kept,
             "min_level": config.MIN_LEVEL,
-            "part_retenues_pct": 100 * retenues / total,
+            "part_retenues_pct": 100 * kept / total,
             "incidents": incidents,
-            "facteur": (retenues / incidents) if incidents else None,
+            "facteur": (kept / incidents) if incidents else None,
         },
-        "par_niveau": par_niveau,
+        "par_niveau": by_level,
         "incidents": top,
         "charge_llm": {
-            "incidents_par_jour": par_jour,
-            "secondes_par_triage": SECONDES_PAR_TRIAGE,
-            "minutes_par_jour": secondes / 60,
+            "incidents_par_jour": per_day,
+            "secondes_par_triage": SECONDS_PER_TRIAGE,
+            "minutes_par_jour": seconds / 60,
             "minutes_par_jour_sans_correlation": sans / 60,
-            "gain_correlation": sans / max(secondes, 1),
+            "gain_correlation": sans / max(seconds, 1),
             "verdict": verdict,
         },
     }
 
 
-VERDICTS_TEXTE = {
+VERDICTS_TEXT = {
     "intenable": "intenable. Filtrer davantage avant d'aller plus loin.",
     "tendu": "tendu. Viable, mais sans marge — surveiller la dérive.",
     "large": "large. On peut se permettre plus de contexte par triage.",
 }
 
 
-def afficher(r: dict) -> None:
+def show(r: dict) -> None:
     if r["vide"]:
         print("Base vide — lancer l'ingestion d'abord.")
         return
@@ -118,7 +118,7 @@ def afficher(r: dict) -> None:
     print("ENTONNOIR DE FILTRAGE")
     print("=" * 66)
     print(f"  Alertes ingérées            {e['total']:6d}   "
-          f"sur {e['jours']:.1f} jours ({e['par_jour']:.0f}/jour)")
+          f"sur {e['days']:.1f} jours ({e['par_jour']:.0f}/jour)")
     print(f"  Écartées (noise filter)     {e['supprimees']:6d}   "
           f"post-retrieval, conservées pour l'audit")
     print(f"  Retenues (niveau >= {e['min_level']:2d})     {e['retenues']:6d}   "
@@ -131,8 +131,8 @@ def afficher(r: dict) -> None:
     print("RÉPARTITION PAR NIVEAU")
     print("-" * 66)
     for n in r["par_niveau"]:
-        marque = " <- traité" if n["traite"] else ""
-        print(f"  niveau {n['niveau']:2d}  {n['n']:6d}{marque}")
+        mark = " <- traité" if n["traite"] else ""
+        print(f"  niveau {n['niveau']:2d}  {n['n']:6d}{mark}")
 
     print()
     print("-" * 66)
@@ -154,11 +154,11 @@ def afficher(r: dict) -> None:
           f"de CPU par jour")
     print(f"  Sans corrélation : {c['minutes_par_jour_sans_correlation']:.1f} "
           f"min/jour ({c['gain_correlation']:.1f}x plus)")
-    print(f"\n  VERDICT : {VERDICTS_TEXTE[c['verdict']]}")
+    print(f"\n  VERDICT : {VERDICTS_TEXT[c['verdict']]}")
 
 
 def main() -> None:
-    afficher(rapport())
+    show(report())
 
 
 if __name__ == "__main__":

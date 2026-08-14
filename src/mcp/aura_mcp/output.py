@@ -21,49 +21,49 @@ from datetime import date, datetime
 
 from . import config
 
-DEBUT = "<untrusted>"
-FIN = "</untrusted>"
+START = "<untrusted>"
+END = "</untrusted>"
 
 
-def untrusted(valeur):
+def untrusted(value):
     """Balise une chaîne venue des machines surveillées, en la bornant.
 
     `None` et les non-chaînes passent tels quels : un niveau de règle ou un
     identifiant d'agent sont produits par Wazuh, pas par l'attaquant.
     """
-    if not isinstance(valeur, str) or not valeur:
-        return valeur
-    return f"{DEBUT}{borner(valeur)}{FIN}"
+    if not isinstance(value, str) or not value:
+        return value
+    return f"{START}{bound(value)}{END}"
 
 
-def borner(texte: str, maximum: int | None = None) -> str:
+def bound(text: str, maximum: int | None = None) -> str:
     """Tronque en le disant. Une troncature muette ferait conclure à tort."""
-    maximum = maximum or config.TEXTE_MAX
-    if len(texte) <= maximum:
-        return texte
-    return (f"{texte[:maximum]}\n[…tronqué, {len(texte) - maximum} caractères "
+    maximum = maximum or config.MAX_TEXT
+    if len(text) <= maximum:
+        return text
+    return (f"{text[:maximum]}\n[…tronqué, {len(text) - maximum} caractères "
             f"de plus — demander la source complète si nécessaire]")
 
 
-def jsonifiable(valeur):
+def jsonifiable(value):
     """Rend datetime/date sérialisables, récursivement."""
-    if isinstance(valeur, (datetime, date)):
-        return valeur.isoformat()
-    if isinstance(valeur, dict):
-        return {k: jsonifiable(v) for k, v in valeur.items()}
-    if isinstance(valeur, (list, tuple)):
-        return [jsonifiable(v) for v in valeur]
-    return valeur
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: jsonifiable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonifiable(v) for v in value]
+    return value
 
 
-def bornes(limite: int | None, offset: int | None) -> tuple[int, int]:
+def bounds(limit: int | None, offset: int | None) -> tuple[int, int]:
     """Normalise une demande de pagination dans les plafonds du serveur."""
-    limite = config.PAGE_DEFAUT if limite is None else limite
-    limite = max(1, min(int(limite), config.PAGE_MAX))
-    return limite, max(0, int(offset or 0))
+    limit = config.DEFAULT_PAGE if limit is None else limit
+    limit = max(1, min(int(limit), config.MAX_PAGE))
+    return limit, max(0, int(offset or 0))
 
 
-def page(lignes: list, total: int, limite: int, offset: int) -> dict:
+def page(lines: list, total: int, limit: int, offset: int) -> dict:
     """Enveloppe paginée uniforme.
 
     `reste` plutôt qu'un simple `total` : le client doit savoir en un coup
@@ -71,9 +71,9 @@ def page(lignes: list, total: int, limite: int, offset: int) -> dict:
     qu'il conclue sur une page partielle.
     """
     return {
-        "resultats": jsonifiable(lignes),
+        "resultats": jsonifiable(lines),
         "total": total,
         "offset": offset,
-        "limite": limite,
-        "reste": max(0, total - offset - len(lignes)),
+        "limite": limit,
+        "reste": max(0, total - offset - len(lines)),
     }

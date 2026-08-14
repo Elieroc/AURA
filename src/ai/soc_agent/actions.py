@@ -13,7 +13,7 @@ confiance, et les remédiations qui s'appliquent.
 # (XDR autonome, cf. mitigate.py) ; la liste ne sert pas à réclamer un accord
 # humain, mais à les SIGNALER comme telles dans le rapport et à les ordonner
 # par urgence. Leur sûreté tient à des garde-fous déterministes, pas à un clic.
-ACTIONS_A_FORT_IMPACT = {
+HIGH_IMPACT_ACTIONS = {
     "propose_kill_process",              # tue un process en cours
     "propose_isolate_host",              # coupe l'hôte du réseau
     "propose_disable_user",              # verrouille un compte (local ou AD)
@@ -27,7 +27,7 @@ ACTIONS_A_FORT_IMPACT = {
 # isoler vient juste après (arrête tout mais coupe aussi l'investigation).
 # La collecte forensique n'est PAS une action de l'IA (trop lourde, tirée en
 # SSH par le manager, hors périmètre du triage automatique).
-ORDRE = [
+ORDER = [
     "propose_kill_process",
     "propose_quarantine_file",
     "propose_isolate_host",
@@ -40,12 +40,12 @@ ORDRE = [
 ]
 
 
-def _ordonner(actions) -> list[str]:
+def _order(actions) -> list[str]:
     """Actions triées par urgence de présentation (ORDRE)."""
-    return sorted(actions, key=lambda a: ORDRE.index(a) if a in ORDRE else 99)
+    return sorted(actions, key=lambda a: ORDER.index(a) if a in ORDER else 99)
 
 
-def deduire(verdict: str, actions_modele: list[str]) -> list[str]:
+def infer(verdict: str, actions_modele: list[str]) -> list[str]:
     """Actions du modèle + celles qu'impose le verdict, ordonnées."""
     actions = set(actions_modele)
 
@@ -63,16 +63,16 @@ def deduire(verdict: str, actions_modele: list[str]) -> list[str]:
         if not actions:
             actions.add("escalate_human")
 
-    return _ordonner(actions)
+    return _order(actions)
 
 
-def actions_fort_impact(actions: list[str]) -> list[str]:
+def high_impact_actions(actions: list[str]) -> list[str]:
     """Actions à fort impact présentes, pour les SIGNALER dans le rapport.
 
     Elles sont exécutées automatiquement (pas de validation humaine) ; ce filtre
     sert seulement à les mettre en évidence pour l'analyste qui lit le case.
     """
-    return [a for a in actions if a in ACTIONS_A_FORT_IMPACT]
+    return [a for a in actions if a in HIGH_IMPACT_ACTIONS]
 
 
 # Niveau Wazuh à partir duquel une clôture automatique est interdite. 14 et 15
@@ -86,11 +86,11 @@ def actions_fort_impact(actions: list[str]) -> list[str]:
 # qui s'applique : le seuil DESCEND quand l'asset compte (12 sur un contrôleur
 # de domaine). Le coût d'un faux négatif y est sans commune mesure avec celui
 # d'un case de plus à lire.
-NIVEAU_CLOTURE_INTERDITE = 14
+LEVEL_CLOSURE_FORBIDDEN = 14
 
 # Confinements moins invasifs que l'isolation. Tant que l'un d'eux s'applique,
 # il traite la menace sans couper la machine du réseau.
-CONFINEMENT_MOINS_INVASIF = (
+LEAST_INVASIVE_CONFINEMENT = (
     "propose_block_ip",
     "propose_kill_process",
     "propose_disable_user",
@@ -99,23 +99,23 @@ CONFINEMENT_MOINS_INVASIF = (
 )
 
 
-def seuil_cloture(priorite: int | None) -> int:
+def closure_threshold(priority: int | None) -> int:
     """Niveau au-delà duquel la clôture automatique est refusée, selon l'asset.
 
     Import local : `actions` est un module pur (aucune I/O, aucune base) et doit
     le rester pour être testable seul ; `config` ne lit que l'environnement.
     """
     from . import config
-    if priorite is None:
-        return NIVEAU_CLOTURE_INTERDITE
-    return config.CLOTURE_INTERDITE_PAR_PRIORITE.get(
-        int(priorite), NIVEAU_CLOTURE_INTERDITE)
+    if priority is None:
+        return LEVEL_CLOSURE_FORBIDDEN
+    return config.CLOSURE_FORBIDDEN_BY_PRIORITY.get(
+        int(priority), LEVEL_CLOSURE_FORBIDDEN)
 
 
-def appliquer_garde_fous(verdict: str, actions: list[str], max_level: int,
-                         injection_suspectee: bool,
-                         compromission_active: bool = False,
-                         priorite: int | None = None,
+def apply_guardrails(verdict: str, actions: list[str], max_level: int,
+                         suspected_injection: bool,
+                         active_compromise: bool = False,
+                         priority: int | None = None,
                          ) -> tuple[list[str], list[str]]:
     """Barrière déterministe entre la sortie du modèle et une action réelle.
 
@@ -148,22 +148,22 @@ def appliquer_garde_fous(verdict: str, actions: list[str], max_level: int,
 
     Retourne (actions effectives, motifs de l'intervention).
     """
-    motifs: list[str] = []
+    patterns: list[str] = []
 
     if verdict == "false_positive":
-        seuil = seuil_cloture(priorite)
-        if max_level >= seuil:
-            motifs.append(
-                f"clôture refusée : niveau {max_level} >= {seuil}"
-                + (f" (asset P{priorite})" if priorite else ""))
-        if injection_suspectee:
-            motifs.append(
+        threshold = closure_threshold(priority)
+        if max_level >= threshold:
+            patterns.append(
+                f"clôture refusée : niveau {max_level} >= {threshold}"
+                + (f" (asset P{priority})" if priority else ""))
+        if suspected_injection:
+            patterns.append(
                 "clôture refusée : motifs d'injection dans les données")
 
-    if motifs:
+    if patterns:
         # On n'invente pas un verdict à la place du modèle : on refuse
         # seulement la conséquence dangereuse, et on rend la main à un humain.
-        return ["escalate_human", "open_case"], motifs
+        return ["escalate_human", "open_case"], patterns
 
     # --- Isolation en dernier recours ---------------------------------------
     #
@@ -183,24 +183,24 @@ def appliquer_garde_fous(verdict: str, actions: list[str], max_level: int,
     # est incité à préférer le blocage (prompts/system.md), mais l'incitation
     # ne tient pas face à un log hostile. Cette barrière, si.
     if "propose_isolate_host" in actions:
-        moins_invasives = [a for a in CONFINEMENT_MOINS_INVASIF if a in actions]
-        if moins_invasives and compromission_active:
+        less_invasive = [a for a in LEAST_INVASIVE_CONFINEMENT if a in actions]
+        if less_invasive and active_compromise:
             # Compromission active de l'hôte : l'attaquant exécute déjà du code
             # dessus (webshell, reverse shell, rootkit, persistance root). Un
             # confinement moins invasif ne suffit pas — couper une IP laisse le
             # foothold en place. L'isolation EST maintenue, en plus du reste.
-            motifs.append(
+            patterns.append(
                 "isolation MAINTENUE : compromission active de l'hôte "
                 "(post-exploitation avérée) — le confinement moins invasif "
-                f"({', '.join(moins_invasives)}) ne déloge pas un attaquant "
+                f"({', '.join(less_invasive)}) ne déloge pas un attaquant "
                 "déjà installé")
-        elif moins_invasives:
+        elif less_invasive:
             actions = [a for a in actions if a != "propose_isolate_host"]
             if "escalate_human" not in actions:
                 actions.append("escalate_human")
-            actions = _ordonner(actions)
-            motifs.append(
+            actions = _order(actions)
+            patterns.append(
                 "isolation retirée (dernier recours) : "
-                f"{', '.join(moins_invasives)} suffit — escalade à un humain")
+                f"{', '.join(less_invasive)} suffit — escalade à un humain")
 
-    return actions, motifs
+    return actions, patterns

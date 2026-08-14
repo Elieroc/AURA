@@ -17,17 +17,17 @@ import psycopg
 from psycopg.rows import dict_row
 
 from . import config
-from .render import rendre
+from .render import render
 
 VERDICTS = ("true_positive", "false_positive", "needs_investigation")
 
 
-def etat_labels() -> list[dict]:
+def labels_state() -> list[dict]:
     """Un incident par ligne, avec son label humain et le verdict du modèle."""
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-        lignes = conn.execute("""
+        lines = conn.execute("""
             SELECT i.id, i.agent_name, i.first_seen, i.alert_count, i.max_level,
-                   l.verdict AS label, t.verdict AS modele
+                   l.verdict AS label, t.verdict AS model
               FROM incidents i
               LEFT JOIN labels l ON l.incident_id = i.id
               LEFT JOIN LATERAL (
@@ -39,29 +39,29 @@ def etat_labels() -> list[dict]:
     return [{"id": r["id"], "agent_name": r["agent_name"],
              "first_seen": r["first_seen"].isoformat(),
              "alert_count": r["alert_count"], "max_level": r["max_level"],
-             "label": r["label"], "verdict_modele": r["modele"]}
-            for r in lignes]
+             "label": r["label"], "verdict_modele": r["model"]}
+            for r in lines]
 
 
-def lister() -> None:
-    lignes = etat_labels()
-    if not lignes:
+def list() -> None:
+    lines = labels_state()
+    if not lines:
         print("Aucun incident.")
         return
 
     print(f"{'#':<5} {'date':<12} {'hôte':<14} {'lvl':<4} {'alertes':<8} "
           f"{'label humain':<20} {'verdict modèle'}")
-    for r in lignes:
+    for r in lines:
         print(f"{r['id']:<5} {r['first_seen'][5:16].replace('T', ' ')}  "
               f"{r['agent_name'] or '?':<14} {r['max_level']:<4} "
               f"{r['alert_count']:<8} {r['label'] or '— À LABELLISER':<20} "
               f"{r['verdict_modele'] or '-'}")
 
-    manquants = sum(1 for r in lignes if not r["label"])
-    print(f"\n{manquants} incident(s) sans label.")
+    missing = sum(1 for r in lines if not r["label"])
+    print(f"\n{missing} incident(s) sans label.")
 
 
-def vue_incident(incident_id: int) -> dict | None:
+def incident_view(incident_id: int) -> dict | None:
     """L'incident **tel que le modèle le voit** (rendu du prompt) + son triage.
 
     `None` si l'incident n'existe pas. Le rendu est le texte exact envoyé au
@@ -72,7 +72,7 @@ def vue_incident(incident_id: int) -> dict | None:
             "SELECT * FROM incidents WHERE id = %s", (incident_id,)).fetchone()
         if not inc:
             return None
-        alertes = conn.execute(
+        alerts = conn.execute(
             "SELECT id, ts, rule_id, rule_level, rule_desc, srcip, srcuser, "
             "entity, raw FROM alerts WHERE incident_id = %s ORDER BY ts",
             (incident_id,)).fetchall()
@@ -82,45 +82,45 @@ def vue_incident(incident_id: int) -> dict | None:
 
     return {
         "incident_id": incident_id,
-        "rendu": rendre(inc, alertes),
+        "rendu": render(inc, alerts),
         "triage": None if not t else {
-            "modele": t["modele"], "verdict": t["verdict"],
+            "model": t["model"], "verdict": t["verdict"],
             "confidence": t["confidence"], "actions": t["actions"],
             "reason": t["reason"], "created_at": t["created_at"].isoformat(),
-            "incoherences": t["incoherences"],
-            "injection_motifs": t["injection_motifs"],
-            "garde_fous": t["garde_fous"],
+            "inconsistencies": t["inconsistencies"],
+            "injection_patterns": t["injection_patterns"],
+            "guardrails": t["guardrails"],
         },
     }
 
 
-def montrer(incident_id: int) -> None:
+def show(incident_id: int) -> None:
     """Affiche l'incident tel que le modèle le voit, pour juger sur pièces."""
-    v = vue_incident(incident_id)
+    v = incident_view(incident_id)
     if not v:
         print(f"Incident {incident_id} inconnu.")
         return
     print(v["rendu"])
     t = v["triage"]
     if t:
-        print(f"\n-- verdict du modèle ({t['modele']}) --")
+        print(f"\n-- verdict du modèle ({t['model']}) --")
         print(f"   {t['verdict']} / {t['confidence']} -> "
               f"{', '.join(t['actions'])}")
         print(f"   {t['reason']}")
 
 
-def enregistrer(incident_id: int, verdict: str, actions: list[str],
-                commentaire: str | None, par: str) -> None:
+def register(incident_id: int, verdict: str, actions: list[str],
+                comment: str | None, by: str) -> None:
     with psycopg.connect(config.PG_DSN) as conn:
         conn.execute("""
-            INSERT INTO labels (incident_id, verdict, actions, commentaire,
-                                origine, labellise_par)
+            INSERT INTO labels (incident_id, verdict, actions, comment,
+                                origin, labeled_by)
             VALUES (%s, %s, %s, %s, 'humain', %s)
             ON CONFLICT (incident_id) DO UPDATE
               SET verdict = EXCLUDED.verdict, actions = EXCLUDED.actions,
-                  commentaire = EXCLUDED.commentaire,
-                  labellise_par = EXCLUDED.labellise_par
-        """, (incident_id, verdict, actions, commentaire, par))
+                  comment = EXCLUDED.comment,
+                  labeled_by = EXCLUDED.labeled_by
+        """, (incident_id, verdict, actions, comment, by))
         conn.commit()
     print(f"Incident {incident_id} labellisé : {verdict}")
 
@@ -139,17 +139,17 @@ def main() -> None:
     ap.add_argument("--par", default="analyste")
     args = ap.parse_args()
 
-    if args.lister or args.incident is None:
-        lister()
+    if args.list or args.incident is None:
+        list()
         return
-    if args.montrer:
-        montrer(args.incident)
+    if args.show:
+        show(args.incident)
         return
     if not args.verdict:
         ap.error("--verdict requis pour labelliser (ou --montrer / --lister)")
 
     actions = [a.strip() for a in args.actions.split(",") if a.strip()]
-    enregistrer(args.incident, args.verdict, actions, args.commentaire, args.par)
+    register(args.incident, args.verdict, actions, args.comment, args.by)
 
 
 if __name__ == "__main__":

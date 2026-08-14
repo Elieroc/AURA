@@ -13,19 +13,19 @@ from soc_agent import actions as soc_actions
 from soc_agent import config as soc_config
 from soc_agent import mitigate, rule_tuning, ueba, whitelist
 
-from .. import auth, sortie
-from ..db import lecture as base
-from ..serveur import enregistrer
+from .. import auth, output
+from ..db import read as base
+from ..server import register
 
 
-@auth.exige("aura:read")
+@auth.require("aura:read")
 def aura_simulate_decision(
     verdict: str,
-    actions_proposees: list[str],
+    proposed_actions: list[str],
     max_level: int,
-    injection_suspectee: bool = False,
-    compromission_active: bool = False,
-    priorite: int | None = None,
+    suspected_injection: bool = False,
+    active_compromise: bool = False,
+    priority: int | None = None,
 ) -> dict:
     """Que deviendrait ce verdict après les garde-fous déterministes ?
 
@@ -54,23 +54,23 @@ def aura_simulate_decision(
             clôture : sur un P1, le modèle ne peut plus refermer dès le niveau
             12. Absente = seuil historique (14).
     """
-    deduites = soc_actions.deduire(verdict, actions_proposees)
-    finales, garde_fous = soc_actions.appliquer_garde_fous(
-        verdict, deduites, max_level, injection_suspectee,
-        compromission_active, priorite)
+    inferred = soc_actions.infer(verdict, proposed_actions)
+    final, guardrails = soc_actions.apply_guardrails(
+        verdict, inferred, max_level, suspected_injection,
+        active_compromise, priority)
     return {
-        "actions_proposees": actions_proposees,
-        "apres_deduction": deduites,
-        "actions_finales": finales,
-        "garde_fous_declenches": garde_fous,
-        "actions_fort_impact": soc_actions.actions_fort_impact(finales),
-        "priorite": priorite,
-        "niveau_cloture_interdite": soc_actions.seuil_cloture(priorite),
+        "actions_proposees": proposed_actions,
+        "apres_deduction": inferred,
+        "actions_finales": final,
+        "garde_fous_declenches": guardrails,
+        "actions_fort_impact": soc_actions.high_impact_actions(final),
+        "priority": priority,
+        "niveau_cloture_interdite": soc_actions.closure_threshold(priority),
     }
 
 
-@auth.exige("aura:read")
-def aura_validate_whitelist_signature(signature: dict, niveau: int) -> dict:
+@auth.require("aura:read")
+def aura_validate_whitelist_signature(signature: dict, level: int) -> dict:
     """Cette signature pourrait-elle être mise en whitelist ?
 
     Trois refus possibles, tous déterministes et non contournables : absence
@@ -86,18 +86,18 @@ def aura_validate_whitelist_signature(signature: dict, niveau: int) -> dict:
         niveau: niveau Wazuh des alertes concernées.
     """
     with base() as conn:
-        sig_tp = whitelist.signatures_vues_tp(conn)
-    refus = whitelist.valider_signature(signature, niveau, sig_tp)
+        sig_tp = whitelist.signatures_seen_tp(conn)
+    refusal = whitelist.validate_signature(signature, level, sig_tp)
     return {
         "signature": signature,
-        "acceptable": refus is None,
-        "motif_de_refus": refus,
+        "acceptable": refusal is None,
+        "motif_de_refus": refusal,
         "niveau_maximum": soc_config.WHITELIST_MAX_LEVEL,
         "min_fp_requis": soc_config.WHITELIST_MIN_FP,
     }
 
 
-@auth.exige("aura:read")
+@auth.require("aura:read")
 def aura_ueba_score_group(alert_ids: list[str]) -> dict:
     """Quel score UEBA obtiendrait ce groupe d'alertes ?
 
@@ -111,26 +111,26 @@ def aura_ueba_score_group(alert_ids: list[str]) -> dict:
             (`aura_alerts_search` les rend).
     """
     if not alert_ids:
-        return {"erreur": "Aucune alerte fournie."}
+        return {"error": "Aucune alerte fournie."}
     with base() as conn:
-        lignes = conn.execute(
+        lines = conn.execute(
             "SELECT * FROM alerts WHERE id = ANY(%s) ORDER BY ts",
             (list(alert_ids),)).fetchall()
-    if not lignes:
-        return {"erreur": "Aucune de ces alertes n'est en base."}
+    if not lines:
+        return {"error": "Aucune de ces alertes n'est en base."}
 
-    score, motifs = ueba.scorer_groupe([dict(r) for r in lignes])
-    return sortie.jsonifiable({
-        "alertes": len(lignes),
+    score, patterns = ueba.score_group([dict(r) for r in lines])
+    return output.jsonifiable({
+        "alertes": len(lines),
         "score": score,
-        "plancher": soc_config.UEBA_SCORE_PLANCHER,
-        "franchirait_le_plancher": score >= soc_config.UEBA_SCORE_PLANCHER,
-        "motifs": motifs,
+        "plancher": soc_config.UEBA_SCORE_FLOOR,
+        "franchirait_le_plancher": score >= soc_config.UEBA_SCORE_FLOOR,
+        "patterns": patterns,
     })
 
 
-@auth.exige("aura:read")
-def aura_rule_preview(rule_id: int, parent: str, niveau: int,
+@auth.require("aura:read")
+def aura_rule_preview(rule_id: int, parent: str, level: int,
                       signature: dict, n_fp: int = 0,
                       incidents: list[int] | None = None) -> dict:
     """Le XML de la règle d'exception qui serait déployée, sans rien écrire.
@@ -156,26 +156,26 @@ def aura_rule_preview(rule_id: int, parent: str, niveau: int,
     """
     if not (soc_config.RULE_TUNING_ID_MIN <= rule_id
             <= soc_config.RULE_TUNING_ID_MAX):
-        return {"erreur": f"rule_id hors plage réservée "
+        return {"error": f"rule_id hors plage réservée "
                           f"{soc_config.RULE_TUNING_ID_MIN}-"
                           f"{soc_config.RULE_TUNING_ID_MAX}."}
     if int(parent) >= rule_id:
-        return {"erreur": f"La règle {rule_id} ne peut pas être fille de "
+        return {"error": f"La règle {rule_id} ne peut pas être fille de "
                           f"{parent} : une fille doit avoir un identifiant "
                           f"SUPÉRIEUR à sa parente, sinon Wazuh ne l'évalue "
                           f"jamais (sans erreur)."}
 
-    xml = rule_tuning.construire_xml(rule_id, parent, niveau, signature, {},
+    xml = rule_tuning.build_xml(rule_id, parent, level, signature, {},
                                      n_fp, incidents or [])
     return {
-        "rule_id": rule_id, "parent": parent, "niveau": niveau,
+        "rule_id": rule_id, "parent": parent, "niveau": level,
         "traduisible": xml is not None,
         "xml": xml,
-        "niveau_0_autorise": soc_config.RULE_TUNING_AUTORISE_NIVEAU_0,
+        "niveau_0_autorise": soc_config.RULE_TUNING_ALLOWED_LEVEL_0,
     }
 
 
-@auth.exige("aura:read")
+@auth.require("aura:read")
 def aura_isolation_check(agent_id: str) -> dict:
     """Cet agent peut-il être isolé, et l'est-il déjà ?
 
@@ -191,26 +191,26 @@ def aura_isolation_check(agent_id: str) -> dict:
     Args:
         agent_id: identifiant d'agent Wazuh (`003`, `001`…).
     """
-    refus = mitigate.raison_non_isolable(agent_id)
-    reponse = {
+    refusal = mitigate.not_isolatable_reason(agent_id)
+    response = {
         "agent_id": agent_id,
-        "isolable": refus is None,
-        "motif_de_refus": refus,
-        "agents_proteges": sorted(soc_config.AGENTS_PROTEGES),
-        "refus_si_role_inconnu": soc_config.ISOLATION_REFUS_SI_ROLE_INCONNU,
+        "isolable": refusal is None,
+        "motif_de_refus": refusal,
+        "agents_proteges": sorted(soc_config.AGENTS_PROTECTED),
+        "refus_si_role_inconnu": soc_config.ISOLATION_REFUSE_IF_ROLE_UNKNOWN,
     }
     try:
-        reponse["etat"] = mitigate.etat_isolation(agent_id)
+        response["etat"] = mitigate.isolation_state(agent_id)
     except Exception as e:  # noqa: BLE001
         # Un hôte injoignable est une information, pas une panne de l'outil :
         # il peut être éteint, ou déjà coupé du réseau par une isolation.
-        reponse["etat"] = None
-        reponse["etat_indisponible"] = str(e)
-    return reponse
+        response["etat"] = None
+        response["etat_indisponible"] = str(e)
+    return response
 
 
-enregistrer(aura_simulate_decision)
-enregistrer(aura_validate_whitelist_signature)
-enregistrer(aura_ueba_score_group)
-enregistrer(aura_rule_preview)
-enregistrer(aura_isolation_check)
+register(aura_simulate_decision)
+register(aura_validate_whitelist_signature)
+register(aura_ueba_score_group)
+register(aura_rule_preview)
+register(aura_isolation_check)

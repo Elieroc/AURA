@@ -27,20 +27,20 @@ import jwt
 SCOPES = ("aura:read", "aura:write", "aura:admin")
 # Un jeton d'admin peut isoler une machine de production. Sa durée de vie par
 # défaut est courte pour cette raison, et non par principe.
-DUREE_DEFAUT = {"aura:read": 180, "aura:write": 90, "aura:admin": 30}
+DEFAULT_DURATION = {"aura:read": 180, "aura:write": 90, "aura:admin": 30}
 
 
-def lire_env(cle: str) -> str | None:
+def read_env(key: str) -> str | None:
     """Récupère une valeur du .env racine sans dépendance externe."""
-    if os.environ.get(cle):
-        return os.environ[cle]
+    if os.environ.get(key):
+        return os.environ[key]
     env = pathlib.Path(__file__).resolve().parent.parent / ".env"
     if not env.is_file():
         return None
-    for ligne in env.read_text(encoding="utf-8").splitlines():
-        ligne = ligne.strip()
-        if ligne.startswith(f"{cle}=") and not ligne.startswith("#"):
-            return ligne.split("=", 1)[1].strip().strip('"').strip("'")
+    for line in env.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith(f"{key}=") and not line.startswith("#"):
+            return line.split("=", 1)[1].strip().strip('"').strip("'")
     return None
 
 
@@ -57,27 +57,27 @@ def main() -> None:
                          "90 en écriture, 30 en admin)")
     args = ap.parse_args()
 
-    secret = lire_env("AURA_MCP_SECRET")
+    secret = read_env("AURA_MCP_SECRET")
     if not secret:
         sys.exit("AURA_MCP_SECRET introuvable (.env racine). En générer un :\n"
                  "  openssl rand -hex 32")
 
-    jours = args.jours if args.jours is not None else DUREE_DEFAUT[args.scope]
+    days = args.days if args.days is not None else DEFAULT_DURATION[args.scope]
     maintenant = dt.datetime.now(dt.timezone.utc)
-    jeton = jwt.encode(
+    token = jwt.encode(
         {
-            "sub": args.sujet,
+            "sub": args.subject,
             "scope": args.scope,
-            "iss": lire_env("AURA_MCP_ISSUER") or "aura",
-            "aud": lire_env("AURA_MCP_AUDIENCE") or "aura-mcp",
+            "iss": read_env("AURA_MCP_ISSUER") or "aura",
+            "aud": read_env("AURA_MCP_AUDIENCE") or "aura-mcp",
             "iat": maintenant,
-            "exp": maintenant + dt.timedelta(days=jours),
+            "exp": maintenant + dt.timedelta(days=days),
         },
         secret, algorithm="HS256")
 
-    print(jeton)
-    print(f"\n# sujet {args.sujet}, scope {args.scope}, expire le "
-          f"{(maintenant + dt.timedelta(days=jours)):%Y-%m-%d}",
+    print(token)
+    print(f"\n# sujet {args.subject}, scope {args.scope}, expire le "
+          f"{(maintenant + dt.timedelta(days=days)):%Y-%m-%d}",
           file=sys.stderr)
 
 

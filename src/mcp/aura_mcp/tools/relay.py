@@ -12,9 +12,9 @@ un outil masqué est refusé, même si son nom a été appris ailleurs.
 """
 
 from .. import auth, gateway
-from ..serveur import enregistrer
+from ..server import register
 
-REFUS_AR = (
+AR_DENIED = (
     "Cet outil agit directement sur le manager Wazuh, sans connaître la "
     "politique d'AURA : agents protégés, groupes d'infrastructure, comptes "
     "système, plancher de clôture. Il est masqué délibérément. Pour remédier, "
@@ -23,51 +23,51 @@ REFUS_AR = (
 )
 
 
-def _amont(nom: str) -> gateway.Amont | None:
-    return next((a for a in gateway.amonts() if a.nom == nom), None)
+def _upstream(name: str) -> gateway.Upstream | None:
+    return next((a for a in gateway.upstreams() if a.name == name), None)
 
 
-async def _lister(nom: str) -> dict:
-    amont = _amont(nom)
-    if not amont:
+async def _list(name: str) -> dict:
+    upstream = _upstream(name)
+    if not upstream:
         return {"disponible": False,
-                "raison": f"Aucun serveur MCP {nom} configuré "
-                          f"(AURA_MCP_{nom.upper()}_URL)."}
-    outils = await amont.outils()
-    if not outils:
+                "raison": f"Aucun serveur MCP {name} configuré "
+                          f"(AURA_MCP_{name.upper()}_URL)."}
+    tools = await upstream.tools()
+    if not tools:
         return {"disponible": False,
-                "raison": f"Serveur MCP {nom} injoignable — AURA reste "
+                "raison": f"Serveur MCP {name} injoignable — AURA reste "
                           f"interrogeable sans lui."}
-    gardes = [t for t in outils if gateway.autorise(amont, t.name)]
+    guards = [t for t in tools if gateway.allowed(upstream, t.name)]
     return {
         "disponible": True,
-        "outils": [{"nom": t.name, "description": t.description,
-                    "arguments": t.input_schema} for t in gardes],
-        "total_amont": len(outils),
-        "relayes": len(gardes),
-        "note": f"{len(outils) - len(gardes)} outil(s) de l'amont ne sont pas "
+        "outils": [{"name": t.name, "description": t.description,
+                    "arguments": t.input_schema} for t in guards],
+        "total_amont": len(tools),
+        "relayes": len(guards),
+        "note": f"{len(tools) - len(guards)} outil(s) de l'amont ne sont pas "
                 f"relayés (hors liste d'autorisation, ou action masquée).",
     }
 
 
-async def _appeler(nom: str, outil: str, arguments: dict | None) -> dict:
-    amont = _amont(nom)
-    if not amont:
-        return {"erreur": f"Aucun serveur MCP {nom} configuré."}
-    if outil in gateway.WAZUH_MASQUES:
-        return {"erreur": f"Outil {outil} masqué.", "explication": REFUS_AR}
-    if not gateway.autorise(amont, outil):
-        return {"erreur": f"Outil {outil} hors de la liste d'autorisation du "
-                          f"relais {nom}.",
+async def _call(name: str, tool: str, arguments: dict | None) -> dict:
+    upstream = _upstream(name)
+    if not upstream:
+        return {"error": f"Aucun serveur MCP {name} configuré."}
+    if tool in gateway.WAZUH_MASKED:
+        return {"error": f"Outil {tool} masqué.", "explication": AR_DENIED}
+    if not gateway.allowed(upstream, tool):
+        return {"error": f"Outil {tool} hors de la liste d'autorisation du "
+                          f"relais {name}.",
                 "conseil": f"Lister les outils relayés avec "
-                           f"{nom}_tools_list."}
+                           f"{name}_tools_list."}
     try:
-        return await amont.appeler(outil, arguments or {})
+        return await upstream.call(tool, arguments or {})
     except Exception as e:  # noqa: BLE001
-        return {"erreur": f"Appel {nom}.{outil} échoué : {e}"}
+        return {"error": f"Appel {name}.{tool} échoué : {e}"}
 
 
-@auth.exige("aura:read")
+@auth.require("aura:read")
 async def wazuh_tools_list() -> dict:
     """Les outils Wazuh relayés par AURA, avec leurs arguments.
 
@@ -79,21 +79,21 @@ async def wazuh_tools_list() -> dict:
     agiraient sans les garde-fous d'AURA. La remédiation passe par les outils
     `aura_*`.
     """
-    return await _lister("wazuh")
+    return await _list("wazuh")
 
 
-@auth.exige("aura:read")
-async def wazuh_call(outil: str, arguments: dict | None = None) -> dict:
+@auth.require("aura:read")
+async def wazuh_call(tool: str, arguments: dict | None = None) -> dict:
     """Appelle un outil Wazuh relayé.
 
     Args:
         outil: nom exact rendu par `wazuh_tools_list`.
         arguments: arguments de l'outil, tels que décrits par son schéma.
     """
-    return await _appeler("wazuh", outil, arguments)
+    return await _call("wazuh", tool, arguments)
 
 
-@auth.exige("aura:read")
+@auth.require("aura:read")
 async def iris_tools_list() -> dict:
     """Les outils DFIR-IRIS relayés : dossiers, notes, IOC, actifs, tâches.
 
@@ -101,11 +101,11 @@ async def iris_tools_list() -> dict:
     outils-ci servent au travail d'analyste sur un dossier : ajouter une note,
     un IOC découvert à la main, une tâche.
     """
-    return await _lister("iris")
+    return await _list("iris")
 
 
-@auth.exige("aura:write")
-async def iris_call(outil: str, arguments: dict | None = None) -> dict:
+@auth.require("aura:write")
+async def iris_call(tool: str, arguments: dict | None = None) -> dict:
     """Appelle un outil DFIR-IRIS relayé.
 
     En `aura:write` : ces outils écrivent dans les dossiers. C'est réversible
@@ -115,10 +115,10 @@ async def iris_call(outil: str, arguments: dict | None = None) -> dict:
         outil: nom exact rendu par `iris_tools_list`.
         arguments: arguments de l'outil, tels que décrits par son schéma.
     """
-    return await _appeler("iris", outil, arguments)
+    return await _call("iris", tool, arguments)
 
 
-enregistrer(wazuh_tools_list)
-enregistrer(wazuh_call)
-enregistrer(iris_tools_list)
-enregistrer(iris_call)
+register(wazuh_tools_list)
+register(wazuh_call)
+register(iris_tools_list)
+register(iris_call)

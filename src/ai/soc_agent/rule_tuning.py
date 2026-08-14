@@ -83,8 +83,8 @@ import requests
 from psycopg.rows import dict_row
 
 from . import config
-from .noise import CHAMP, FICHIER_CHEMINS, _lire, _valeur_champ
-from .whitelist import (CHAMPS_DISCRIMINANTS, _canonique, _incidents_par_verdict)
+from .noise import FIELD, FILE_PATHS, _read, _value_field
+from .whitelist import (DISCRIMINANT_FIELDS, _canonical, _incidents_by_verdict)
 
 requests.packages.urllib3.disable_warnings()  # certificats auto-signés en local
 
@@ -95,7 +95,7 @@ requests.packages.urllib3.disable_warnings()  # certificats auto-signés en loca
 # `srcuser` n'a PAS de forme `<field name="srcuser">` : c'est un champ statique
 # du moteur, il lève « Field 'srcuser' is static » au chargement. Son option
 # dédiée est `<user>`.
-_OPTION_STATIQUE = {
+_OPTION_STATIC = {
     "src_user": "user",
     "dst_user": "user",
     "url": "url",
@@ -106,33 +106,33 @@ _OPTION_STATIQUE = {
 # contributeur de charge sur cette plateforme (un reverse proxy exposé sur
 # internet). Le filtre post-retrieval ne peut rien en faire d'utile — l'alerte
 # est déjà produite et indexée quand il s'exécute ; une règle fille, si.
-CHAMPS_DISCRIMINANTS_REGLE = CHAMPS_DISCRIMINANTS + ("url",)
+RULE_DISCRIMINANT_FIELDS = DISCRIMINANT_FIELDS + ("url",)
 # Chemin JSON (data.X) -> nom de champ dynamique tel qu'écrit dans une règle.
 # Wazuh nomme le champ dynamique par son chemin SOUS `data.`.
-_PREFIXE_DATA = "data."
+_PREFIX_DATA = "data."
 # syscheck est à part : le champ est exposé comme `file` dans les règles FIM.
-_CHAMP_SYSCHECK = {"syscheck.path": "file"}
+_FIELD_SYSCHECK = {"syscheck.path": "file"}
 
 _RE_SLUG = re.compile(r"[^a-z0-9]+")
 
 
-def _slug(texte: str, taille: int = 40) -> str:
-    return _RE_SLUG.sub("-", str(texte).lower()).strip("-")[:taille] or "signature"
+def _slug(text: str, size: int = 40) -> str:
+    return _RE_SLUG.sub("-", str(text).lower()).strip("-")[:size] or "signature"
 
 
 # Ce qu'un commentaire XML ne peut pas contenir sans cesser d'être un
 # commentaire : `--` (illégal par la spec) et `<`/`>` (qui permettent d'en
 # sortir). Les caractères de contrôle sautent aussi — ils servent à masquer du
 # texte à la relecture humaine.
-_RE_HORS_COMMENTAIRE = re.compile(r"-{2,}|[<>\x00-\x08\x0b-\x1f\x7f]")
+_RE_OUTSIDE_COMMENT = re.compile(r"-{2,}|[<>\x00-\x08\x0b-\x1f\x7f]")
 
 
 # Caractères qu'un document XML 1.0 ne peut pas porter, même échappés : tous
 # les contrôles hors tabulation, retour chariot et saut de ligne.
-_RE_XML_INTERDIT = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_RE_XML_FORBIDDEN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
-def _commentable(valeur, taille: int = 200) -> str:
+def _commentable(value, size: int = 200) -> str:
     """Valeur rendue inoffensive dans un commentaire XML.
 
     Les valeurs de signature (`command`, `file`, `url`, `src_user`) sont écrites
@@ -147,25 +147,25 @@ def _commentable(valeur, taille: int = 200) -> str:
     c'est le plus gros contributeur de faux positifs de cette plateforme, et il
     est intégralement choisi par le client qui frappe le reverse proxy.
     """
-    texte = _RE_HORS_COMMENTAIRE.sub("_", str(valeur)).replace("\n", " ")
-    return texte[:taille]
+    text = _RE_OUTSIDE_COMMENT.sub("_", str(value)).replace("\n", " ")
+    return text[:size]
 
 
 # --- construction des conditions --------------------------------------------
 
-def _chemin_fichier(raw: dict) -> str | None:
+def _file_path(raw: dict) -> str | None:
     """Chemin JSON concret d'où vient le champ virtuel « file » pour CE brut.
 
     « file » n'a pas d'emplacement unique (syscheck, VirusTotal, auditd…). Pour
     écrire une condition de règle il faut le chemin réel, pas le champ virtuel.
     """
-    for chemin in FICHIER_CHEMINS:
-        if _lire(raw, chemin):
-            return chemin
+    for path in FILE_PATHS:
+        if _read(raw, path):
+            return path
     return None
 
 
-def _condition(champ: str, valeur: str, raw: dict) -> str | None:
+def _condition(field: str, value: str, raw: dict) -> str | None:
     """Une ligne XML de condition pour un champ de signature, ou None.
 
     Ancrée (`^…$`) et échappée : une exception ne doit couvrir QUE la valeur
@@ -178,62 +178,62 @@ def _condition(champ: str, valeur: str, raw: dict) -> str | None:
     analysisd refuse de démarrer, `_redemarrer` échoue, le lot entier est retiré
     et le manager redémarre une seconde fois. Refuser en amont vaut mieux.
     """
-    if _RE_XML_INTERDIT.search(valeur):
+    if _RE_XML_FORBIDDEN.search(value):
         return None
-    motif = f"^{re.escape(valeur)}$"
-    option = _OPTION_STATIQUE.get(champ)
+    pattern = f"^{re.escape(value)}$"
+    option = _OPTION_STATIC.get(field)
     if option:
-        return f'    <{option} type="pcre2">{escape(motif)}</{option}>'
+        return f'    <{option} type="pcre2">{escape(pattern)}</{option}>'
 
-    if champ == "file":
-        chemin = _chemin_fichier(raw)
-        if not chemin:
+    if field == "file":
+        path = _file_path(raw)
+        if not path:
             return None
-        nom = _CHAMP_SYSCHECK.get(chemin) or chemin.removeprefix(_PREFIXE_DATA)
+        name = _FIELD_SYSCHECK.get(path) or path.removeprefix(_PREFIX_DATA)
     else:
-        chemin = CHAMP.get(champ, champ)
-        nom = chemin.removeprefix(_PREFIXE_DATA)
+        path = FIELD.get(field, field)
+        name = path.removeprefix(_PREFIX_DATA)
 
-    return (f'    <field name="{escape(nom)}" type="pcre2">'
-            f'{escape(motif)}</field>')
+    return (f'    <field name="{escape(name)}" type="pcre2">'
+            f'{escape(pattern)}</field>')
 
 
-def construire_xml(rule_id: int, parent: str, niveau: int, signature: dict,
+def build_xml(rule_id: int, parent: str, level: int, signature: dict,
                    raw: dict, n_fp: int, incidents: list[int]) -> str | None:
     """XML de la règle fille, ou None si la signature n'est pas traduisible."""
     conditions = []
-    for champ in CHAMPS_DISCRIMINANTS_REGLE:
-        if champ in signature:
-            ligne = _condition(champ, signature[champ], raw)
-            if ligne is None:
+    for field in RULE_DISCRIMINANT_FIELDS:
+        if field in signature:
+            line = _condition(field, signature[field], raw)
+            if line is None:
                 return None
-            conditions.append(ligne)
+            conditions.append(line)
     if not conditions:
         return None
 
-    if niveau == 0:
+    if level == 0:
         effet = ("Suppression : aucune alerte n'est plus produite pour CETTE "
                  "signature. La règle parente reste entière pour tout le reste.")
     else:
-        effet = (f"Sévérité abaissée à {niveau} : l'alerte existe toujours et "
+        effet = (f"Sévérité abaissée à {level} : l'alerte existe toujours et "
                  "reste consultable, elle passe simplement sous le seuil "
                  "d'ouverture d'incident. La règle parente reste entière.")
 
-    valeurs = "\n".join(
+    values = "\n".join(
         f"       - {c} = {_commentable(signature[c])}"
-        for c in CHAMPS_DISCRIMINANTS_REGLE if c in signature)
+        for c in RULE_DISCRIMINANT_FIELDS if c in signature)
 
-    return f"""<!-- Aura-SOC - rule {rule_id} (level {niveau}). GÉNÉRÉ AUTOMATIQUEMENT.
+    return f"""<!-- Aura-SOC - rule {rule_id} (level {level}). GÉNÉRÉ AUTOMATIQUEMENT.
      Ne pas éditer à la main : régénéré par `python -m soc_agent.rule_tuning`.
      Convention de nommage et piège d'ordre de chargement : voir rules/README.md
-     signature-canonique: {_commentable(_canonique(signature), 400)} -->
+     signature-canonique: {_commentable(_canonical(signature), 400)} -->
 <group name="local,soc_ai_auto_tuning,">
 
   <!-- Exception dérivée de {n_fp} incidents jugés `false_positive` par le
        triage IA (incidents {", ".join(f"#{i}" for i in incidents)}).
 
        Signature exonérée :
-{valeurs}
+{values}
 
        {effet}
 
@@ -246,7 +246,7 @@ def construire_xml(rule_id: int, parent: str, niveau: int, signature: dict,
        tombe bien ici et (b) un évènement RÉEL de la même règle parente, avec
        une autre valeur, tombe TOUJOURS sur {parent} à son niveau d'origine. -->
 
-  <rule id="{rule_id}" level="{niveau}">
+  <rule id="{rule_id}" level="{level}">
     <if_sid>{escape(parent)}</if_sid>
 {chr(10).join(conditions)}
     <description>Auto-tuning Aura-SOC: known false positive of rule {escape(parent)}</description>
@@ -281,12 +281,12 @@ def logtest(tok: str, event: str, location: str) -> tuple[str | None, int | None
               "location": location or "soc-ai-rule-tuning"},
         verify=False, timeout=30)
     r.raise_for_status()
-    regle = (((r.json().get("data") or {}).get("output") or {}).get("rule") or {})
-    niveau = regle.get("level")
-    return regle.get("id"), (int(niveau) if niveau is not None else None)
+    rule = (((r.json().get("data") or {}).get("output") or {}).get("rule") or {})
+    level = rule.get("level")
+    return rule.get("id"), (int(level) if level is not None else None)
 
 
-def _redemarrer(tok: str) -> bool:
+def _restart(tok: str) -> bool:
     """Recharge le ruleset. True si le manager est revenu opérationnel.
 
     Un changement de règle n'est pris en compte qu'au redémarrage du manager —
@@ -296,7 +296,7 @@ def _redemarrer(tok: str) -> bool:
                      headers={"Authorization": f"Bearer {tok}"},
                      verify=False, timeout=60)
     r.raise_for_status()
-    for _ in range(config.RULE_TUNING_ATTENTE_ESSAIS):
+    for _ in range(config.RULE_TUNING_WAIT_ATTEMPTS):
         time.sleep(5)
         try:
             tok = _token()
@@ -313,7 +313,7 @@ def _redemarrer(tok: str) -> bool:
 
 # --- sélection des candidats -------------------------------------------------
 
-def _evenement(raw: dict) -> tuple[str, str] | None:
+def _event(raw: dict) -> tuple[str, str] | None:
     """(full_log, location) rejouables, ou None si l'alerte n'est pas rejouable.
 
     Une alerte sans `full_log` (FIM, rootcheck, modules qui produisent du JSON
@@ -326,7 +326,7 @@ def _evenement(raw: dict) -> tuple[str, str] | None:
     return str(log), str(raw.get("location") or "")
 
 
-def _contre_exemple(conn, parent: str, signature: dict) -> tuple[str, str] | None:
+def _counter_example(conn, parent: str, signature: dict) -> tuple[str, str] | None:
     """Évènement RÉEL de la même règle parente, mais d'une autre signature.
 
     C'est lui qui prouve que l'exception ne neutralise pas la règle. Cherché
@@ -334,42 +334,42 @@ def _contre_exemple(conn, parent: str, signature: dict) -> tuple[str, str] | Non
     prouverait seulement que la regex écrite tient, pas que la détection tient
     sur le trafic de cet environnement.
     """
-    lignes = conn.execute(
+    lines = conn.execute(
         "SELECT raw FROM alerts WHERE rule_id = %s "
         "ORDER BY ts DESC LIMIT %s",
-        (parent, config.RULE_TUNING_CANDIDATS_CONTRE_EXEMPLE)).fetchall()
-    for l in lignes:
+        (parent, config.RULE_TUNING_COUNTER_EXAMPLE_CANDIDATES)).fetchall()
+    for l in lines:
         raw = l["raw"] if isinstance(l["raw"], dict) else json.loads(l["raw"])
         # Une seule valeur différente sur un champ discriminant suffit : cet
         # évènement n'est pas couvert par l'exception, il doit rester détecté.
-        if any(str(_valeur_champ(raw, c) or "") != signature[c]
-               for c in CHAMPS_DISCRIMINANTS_REGLE if c in signature):
-            ev = _evenement(raw)
+        if any(str(_value_field(raw, c) or "") != signature[c]
+               for c in RULE_DISCRIMINANT_FIELDS if c in signature):
+            ev = _event(raw)
             if ev:
                 return ev
     return None
 
 
-def _exemple_fp(conn, incidents: list[int]) -> tuple[dict, tuple[str, str]] | None:
+def _fp_example(conn, incidents: list[int]) -> tuple[dict, tuple[str, str]] | None:
     """(raw, évènement) d'une alerte représentative des incidents FP."""
     # BORNÉ : on cherche UNE alerte représentative, pas la collection. Sans
     # limite, une liste d'incidents de flood ramenait des centaines de milliers
     # de `raw` complets pour en retenir une seule (1 Go pour 126 508 alertes,
     # cf. whitelist._signature). Les plus récentes d'abord : c'est l'état
     # courant du FP qu'on veut illustrer.
-    lignes = conn.execute(
+    lines = conn.execute(
         "SELECT raw FROM alerts WHERE incident_id = ANY(%s) "
         "ORDER BY ts DESC LIMIT 500",
         (incidents,)).fetchall()
-    for l in lignes:
+    for l in lines:
         raw = l["raw"] if isinstance(l["raw"], dict) else json.loads(l["raw"])
-        ev = _evenement(raw)
+        ev = _event(raw)
         if ev:
             return raw, ev
     return None
 
 
-def _signatures_deja_traitees(dossier: Path) -> set[str]:
+def _signatures_already_processed(folder: Path) -> set[str]:
     """Signatures canoniques déjà couvertes par une règle générée.
 
     Les valeurs relues ici sont celles ÉCRITES dans le commentaire, donc passées
@@ -378,200 +378,200 @@ def _signatures_deja_traitees(dossier: Path) -> set[str]:
     reconnaîtrait jamais elle-même et sa règle serait régénérée à chaque
     passage — un redémarrage du manager par cycle, indéfiniment.
     """
-    vues: set[str] = set()
-    for f in dossier.glob("*.xml"):
-        texte = f.read_text(encoding="utf-8", errors="replace")
-        m = re.search(r"signature-canonique: (.+)", texte)
+    seen: set[str] = set()
+    for f in folder.glob("*.xml"):
+        text = f.read_text(encoding="utf-8", errors="replace")
+        m = re.search(r"signature-canonique: (.+)", text)
         if m:
-            vues.add(m.group(1).strip())
-    return vues
+            seen.add(m.group(1).strip())
+    return seen
 
 
-def _prochain_id(dossier: Path) -> int:
-    utilises = {int(m.group(1))
-                for f in dossier.glob("*.xml")
+def _next_id(folder: Path) -> int:
+    used = {int(m.group(1))
+                for f in folder.glob("*.xml")
                 if (m := re.match(r"^(\d+)-", f.name))}
     for rid in range(config.RULE_TUNING_ID_MIN, config.RULE_TUNING_ID_MAX + 1):
-        if rid not in utilises:
+        if rid not in used:
             return rid
     raise RuntimeError("plage d'identifiants de règles auto épuisée")
 
 
 # --- orchestration -----------------------------------------------------------
 
-def analyser(min_fp: int, simulation: bool) -> list[dict]:
+def analyze(min_fp: int, simulation: bool) -> list[dict]:
     """Génère, prouve et déploie les règles dues. Retourne les décisions."""
-    dossier = Path(config.RULE_TUNING_DIR)
-    if not dossier.is_dir():
-        raise RuntimeError(f"{dossier} introuvable — le répertoire de règles "
+    folder = Path(config.RULE_TUNING_DIR)
+    if not folder.is_dir():
+        raise RuntimeError(f"{folder} introuvable — le répertoire de règles "
                            "du manager doit être monté dans ce conteneur")
 
-    niveau = config.RULE_TUNING_NIVEAU
-    if niveau == 0 and not config.RULE_TUNING_AUTORISE_NIVEAU_0:
+    level = config.RULE_TUNING_LEVEL
+    if level == 0 and not config.RULE_TUNING_ALLOWED_LEVEL_0:
         raise RuntimeError(
             "RULE_TUNING_NIVEAU=0 (suppression totale) exige "
             "RULE_TUNING_AUTORISE_NIVEAU_0=true")
 
     decisions: list[dict] = []
-    poses: list[tuple[Path, dict]] = []   # (fichier, contexte de vérification)
+    placed: list[tuple[Path, dict]] = []   # (fichier, contexte de vérification)
 
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-        fp_par_sig, sig_tp = _incidents_par_verdict(
-            conn, CHAMPS_DISCRIMINANTS_REGLE)
-        deja = _signatures_deja_traitees(dossier)
-        n_existantes = len(deja)
+        fp_by_sig, sig_tp = _incidents_by_verdict(
+            conn, RULE_DISCRIMINANT_FIELDS)
+        already = _signatures_already_processed(folder)
+        n_existing = len(already)
         tok = _token()
 
-        for canon, e in sorted(fp_par_sig.items()):
+        for canon, e in sorted(fp_by_sig.items()):
             signature, n = e["signature"], len(e["incidents"])
 
-            def refus(raison):
+            def refusal(reason):
                 decisions.append({"signature": canon, "action": "refusé",
-                                  "raison": raison})
+                                  "raison": reason})
 
             # Comparé sous la forme écrite dans le commentaire (cf.
             # _signatures_deja_traitees), pas sous la forme brute.
-            if _commentable(canon, 400) in deja:
+            if _commentable(canon, 400) in already:
                 continue
             if canon in sig_tp:
-                refus("vue aussi en true_positive"); continue
+                refusal("vue aussi en true_positive"); continue
             if e["max_level"] >= config.WHITELIST_MAX_LEVEL:
-                refus(f"niveau {e['max_level']} >= {config.WHITELIST_MAX_LEVEL}")
+                refusal(f"niveau {e['max_level']} >= {config.WHITELIST_MAX_LEVEL}")
                 continue
             if n < min_fp:
                 decisions.append({"signature": canon, "action": "en attente",
                                   "raison": f"{n}/{min_fp} FP"})
                 continue
-            if not any(c in signature for c in CHAMPS_DISCRIMINANTS_REGLE):
-                refus("signature trop large : rule_id seul ne suffit pas"); continue
+            if not any(c in signature for c in RULE_DISCRIMINANT_FIELDS):
+                refusal("signature trop large : rule_id seul ne suffit pas"); continue
             parent = signature.get("rule_id")
             if not parent:
-                refus("pas de rule_id : impossible de chaîner par if_sid"); continue
-            if n_existantes + len(poses) >= config.RULE_TUNING_MAX_REGLES:
-                refus(f"plafond de {config.RULE_TUNING_MAX_REGLES} règles auto atteint")
+                refusal("pas de rule_id : impossible de chaîner par if_sid"); continue
+            if n_existing + len(placed) >= config.RULE_TUNING_MAX_RULES:
+                refusal(f"plafond de {config.RULE_TUNING_MAX_RULES} règles auto atteint")
                 continue
 
-            ex = _exemple_fp(conn, e["incidents"])
+            ex = _fp_example(conn, e["incidents"])
             if ex is None:
-                refus("aucune alerte rejouable (pas de full_log)"); continue
+                refusal("aucune alerte rejouable (pas de full_log)"); continue
             raw_fp, ev_fp = ex
 
-            contre = _contre_exemple(conn, parent, signature)
-            if contre is None:
-                refus("aucun contre-exemple en base : non-invalidation de la "
+            counter = _counter_example(conn, parent, signature)
+            if counter is None:
+                refusal("aucun contre-exemple en base : non-invalidation de la "
                       "règle non prouvable"); continue
 
             # Avant chargement : les deux évènements doivent tomber sur la
             # parente. Sinon la signature ne décrit pas ce qu'on croit, et la
             # vérification d'après serait ininterprétable.
-            rid_fp, niv_fp = logtest(tok, *ev_fp)
-            rid_ce, niv_ce = logtest(tok, *contre)
+            rid_fp, lvl_fp = logtest(tok, *ev_fp)
+            rid_ce, lvl_ce = logtest(tok, *counter)
             if rid_fp != parent:
-                refus(f"rejeu FP tombe sur {rid_fp}, pas sur {parent}"); continue
+                refusal(f"rejeu FP tombe sur {rid_fp}, pas sur {parent}"); continue
             if rid_ce != parent:
-                refus(f"rejeu contre-exemple tombe sur {rid_ce}, pas sur {parent}")
+                refusal(f"rejeu contre-exemple tombe sur {rid_ce}, pas sur {parent}")
                 continue
 
             # Les fichiers du lot ne sont écrits qu'à la fin de la boucle : on
             # décale donc de len(poses) pour ne pas réattribuer le même id.
-            rid = _prochain_id(dossier) + len(poses)
-            xml = construire_xml(rid, parent, niveau, signature, raw_fp, n,
+            rid = _next_id(folder) + len(placed)
+            xml = build_xml(rid, parent, level, signature, raw_fp, n,
                                  e["incidents"])
             if xml is None:
-                refus("signature non traduisible en conditions de règle"); continue
+                refusal("signature non traduisible en conditions de règle"); continue
 
-            chemin = dossier / f"{rid}-auto-{_slug(canon)}.xml"
+            path = folder / f"{rid}-auto-{_slug(canon)}.xml"
             if simulation:
                 decisions.append({"signature": canon, "action": "simulé",
-                                  "fichier": chemin.name, "xml": xml, "fp": n})
+                                  "fichier": path.name, "xml": xml, "fp": n})
                 continue
 
-            chemin.write_text(xml, encoding="utf-8")
-            poses.append((chemin, {
+            path.write_text(xml, encoding="utf-8")
+            placed.append((path, {
                 "canon": canon, "parent": parent, "fp": n,
-                "ev_fp": ev_fp, "contre": contre,
-                "niveau_origine": niv_ce, "fichier": chemin.name}))
+                "ev_fp": ev_fp, "contre": counter,
+                "niveau_origine": lvl_ce, "fichier": path.name}))
 
-        if not poses:
+        if not placed:
             return decisions
 
         # Un seul redémarrage pour tout le lot : c'est l'opération coûteuse.
-        if not _redemarrer(tok):
-            for chemin, ctx in poses:
-                chemin.unlink(missing_ok=True)
+        if not _restart(tok):
+            for path, ctx in placed:
+                path.unlink(missing_ok=True)
                 decisions.append({"signature": ctx["canon"], "action": "annulé",
                                   "raison": "le manager n'est pas revenu "
                                             "opérationnel — règles retirées"})
-            _redemarrer(_token())
+            _restart(_token())
             return decisions
 
         tok = _token()
-        a_retirer = []
-        for chemin, ctx in poses:
-            rid_fp, niv_fp = logtest(tok, *ctx["ev_fp"])
-            rid_ce, niv_ce = logtest(tok, *ctx["contre"])
-            attendu = chemin.name.split("-", 1)[0]
+        to_remove = []
+        for path, ctx in placed:
+            rid_fp, lvl_fp = logtest(tok, *ctx["ev_fp"])
+            rid_ce, lvl_ce = logtest(tok, *ctx["contre"])
+            expected = path.name.split("-", 1)[0]
 
-            if rid_fp != attendu or niv_fp != niveau:
-                a_retirer.append((chemin, ctx,
+            if rid_fp != expected or lvl_fp != level:
+                to_remove.append((path, ctx,
                                   f"l'évènement FP tombe sur {rid_fp} (niveau "
-                                  f"{niv_fp}), attendu {attendu} niveau {niveau}"))
-            elif rid_ce != ctx["parent"] or niv_ce != ctx["niveau_origine"]:
+                                  f"{lvl_fp}), attendu {expected} niveau {level}"))
+            elif rid_ce != ctx["parent"] or lvl_ce != ctx["niveau_origine"]:
                 # LE garde-fou : l'exception a mordu sur autre chose qu'elle.
-                a_retirer.append((chemin, ctx,
+                to_remove.append((path, ctx,
                                   "INVALIDATION DE LA RÈGLE : le contre-exemple "
-                                  f"tombe sur {rid_ce} niveau {niv_ce} au lieu de "
+                                  f"tombe sur {rid_ce} niveau {lvl_ce} au lieu de "
                                   f"{ctx['parent']} niveau {ctx['niveau_origine']}"))
             else:
                 decisions.append({"signature": ctx["canon"], "action": "créé",
                                   "fichier": ctx["fichier"], "fp": ctx["fp"],
-                                  "niveau": niveau, "parent": ctx["parent"]})
+                                  "niveau": level, "parent": ctx["parent"]})
                 conn.execute(
                     "UPDATE incidents SET status = 'whitelisted' "
                     "WHERE id = ANY(%s)",
-                    ([i for i in fp_par_sig[ctx["canon"]]["incidents"]],))
+                    ([i for i in fp_by_sig[ctx["canon"]]["incidents"]],))
                 conn.commit()
 
-        if a_retirer:
-            for chemin, ctx, raison in a_retirer:
-                chemin.unlink(missing_ok=True)
+        if to_remove:
+            for path, ctx, reason in to_remove:
+                path.unlink(missing_ok=True)
                 decisions.append({"signature": ctx["canon"], "action": "annulé",
-                                  "raison": raison})
-            _redemarrer(_token())
+                                  "raison": reason})
+            _restart(_token())
 
     return decisions
 
 
-def regles_generees() -> list[dict]:
+def generated_rules() -> list[dict]:
     """Les règles auto-générées présentes sur disque.
 
     Le répertoire EST l'état (pas de table) : on relit donc les fichiers plutôt
     qu'une base qui pourrait mentir sur ce que le manager charge vraiment.
     """
-    dossier = Path(config.RULE_TUNING_DIR)
-    fichiers = sorted(dossier.glob("*-auto-*.xml")) if dossier.is_dir() else []
-    regles = []
-    for f in fichiers:
-        texte = f.read_text(encoding="utf-8", errors="replace")
-        rid = re.search(r'<rule id="(\d+)" level="(\d+)"', texte)
-        parent = re.search(r"<if_sid>([^<]+)</if_sid>", texte)
-        canon = re.search(r"signature-canonique: (.+)", texte)
-        regles.append({
+    folder = Path(config.RULE_TUNING_DIR)
+    files = sorted(folder.glob("*-auto-*.xml")) if folder.is_dir() else []
+    rules = []
+    for f in files:
+        text = f.read_text(encoding="utf-8", errors="replace")
+        rid = re.search(r'<rule id="(\d+)" level="(\d+)"', text)
+        parent = re.search(r"<if_sid>([^<]+)</if_sid>", text)
+        canon = re.search(r"signature-canonique: (.+)", text)
+        rules.append({
             "fichier": f.name,
             "rule_id": rid.group(1) if rid else None,
             "niveau": int(rid.group(2)) if rid else None,
             "parent": parent.group(1) if parent else None,
             "signature": canon.group(1).strip() if canon else None,
         })
-    return regles
+    return rules
 
 
-def lister() -> None:
-    regles = regles_generees()
-    if not regles:
+def list() -> None:
+    rules = generated_rules()
+    if not rules:
         print("Aucune règle générée automatiquement.")
         return
-    for r in regles:
+    for r in rules:
         print(f"  {r['fichier']}")
         print(f"      parent {r['parent'] or '?'} -> niveau "
               f"{r['niveau'] if r['niveau'] is not None else '?'}   "
@@ -588,11 +588,11 @@ def main() -> None:
     ap.add_argument("--lister", action="store_true")
     args = ap.parse_args()
 
-    if args.lister:
-        lister()
+    if args.list:
+        list()
         return
 
-    for d in analyser(args.min_fp, args.simulation):
+    for d in analyze(args.min_fp, args.simulation):
         if d["action"] == "créé":
             print(f"  CRÉÉ    {d['fichier']}  (parent {d['parent']}, "
                   f"niveau {d['niveau']}, {d['fp']} FP)")

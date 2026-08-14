@@ -13,7 +13,7 @@ import sys
 import uvicorn
 
 from . import config
-from .serveur import construire
+from .server import build
 
 
 def main() -> None:
@@ -24,7 +24,7 @@ def main() -> None:
     logging.getLogger("aura_mcp").info(
         "serveur MCP AURA sur http://%s:%d%s", config.HOST, config.PORT,
         config.PATH)
-    uvicorn.run(construire(), host=config.HOST, port=config.PORT,
+    uvicorn.run(build(), host=config.HOST, port=config.PORT,
                 log_level="info")
 
 

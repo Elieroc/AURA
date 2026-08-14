@@ -111,20 +111,20 @@ MAX_IOC_ARTICLE = 300
 # sont IDENTIQUES d'un lot à l'autre : DeepSeek les sert depuis son cache de
 # préfixe (50x moins cher, cf. LLM_COUT_USD_PAR_MTOKEN_IN_CACHE). Ce sont les
 # candidats, en fin de prompt, qui changent.
-LOT_CANDIDATS = int(os.environ.get("CTI_ARTICLES_LOT", "20"))
+BATCH_CANDIDATES = int(os.environ.get("CTI_ARTICLES_LOT", "20"))
 MAX_TOKENS = int(os.environ.get("CTI_ARTICLES_MAX_TOKENS", "12000"))
 
 # Garde-fou de dernier recours sur le nombre d'appels par article. Ce qui
 # dépasse est écarté, mais JAMAIS en silence (cf. `arbitrer`) : un plafond muet
 # donnerait l'illusion d'un article entièrement couvert.
-MAX_LOTS = int(os.environ.get("CTI_ARTICLES_MAX_LOTS", "16"))
+MAX_BATCHES = int(os.environ.get("CTI_ARTICLES_MAX_LOTS", "16"))
 
 # Volume de texte envoyé au modèle. Les articles utiles font 5 à 20 k
 # caractères ; au-delà, c'est du commentaire, de la navigation et des articles
 # liés. Tronquer borne le coût sans perdre la section « Indicators of
 # Compromise », qui est presque toujours en fin de corps mais avant les
 # commentaires — d'où la conservation du DÉBUT et de la FIN.
-TEXTE_MAX = 24000
+MAX_TEXT = 24000
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +132,7 @@ TEXTE_MAX = 24000
 # ---------------------------------------------------------------------------
 
 def sources(catalogue: dict | None = None) -> list[dict]:
-    cat = catalogue or cti.charger_catalogue()
+    cat = catalogue or cti.load_catalog()
     return [s for s in (cat.get("articles") or []) if s.get("active", True)]
 
 
@@ -140,68 +140,68 @@ def _http(url: str) -> requests.Response:
     # User-Agent explicite : plusieurs médias renvoient 403 à un client sans
     # agent, et un agent mensonger serait une mauvaise manière de se présenter
     # à des sites qu'on lit gratuitement.
-    reponse = requests.get(
+    response = requests.get(
         url, timeout=TIMEOUT,
         headers={"User-Agent": "AURA-SOC CTI collector (+threat intel, contact SOC)"})
-    reponse.raise_for_status()
-    return reponse
+    response.raise_for_status()
+    return response
 
 
-def entrees_rss(source: dict, depuis: datetime) -> list[dict]:
+def rss_entries(source: dict, since: datetime) -> list[dict]:
     """Articles d'un flux RSS/Atom, plus récents que `depuis`.
 
     Le contenu complet est repris du flux quand il y est (Medium le fournit
     intégralement) : autant d'articles à ne pas retélécharger, et une page HTML
     de moins à nettoyer.
     """
-    racine = ET.fromstring(_http(source["url"]).content)
-    entrees = []
-    for item in racine.findall(".//item") or racine.findall(
+    root = ET.fromstring(_http(source["url"]).content)
+    entries = []
+    for item in root.findall(".//item") or root.findall(
             ".//{http://www.w3.org/2005/Atom}entry"):
-        def texte(*noms):
-            for nom in noms:
-                el = item.find(nom)
+        def text(*names):
+            for name in names:
+                el = item.find(name)
                 if el is not None and el.text:
                     return el.text.strip()
             return ""
 
-        lien = texte("link", "{http://www.w3.org/2005/Atom}id") or ""
-        if not lien.startswith("http"):
+        link = text("link", "{http://www.w3.org/2005/Atom}id") or ""
+        if not link.startswith("http"):
             el = item.find("{http://www.w3.org/2005/Atom}link")
-            lien = el.get("href", "") if el is not None else ""
-        if not lien:
+            link = el.get("href", "") if el is not None else ""
+        if not link:
             continue
 
-        publie = _date_rss(texte("pubDate", "{http://purl.org/dc/elements/1.1/}date",
+        published = _rss_date(text("pubDate", "{http://purl.org/dc/elements/1.1/}date",
                                  "{http://www.w3.org/2005/Atom}published"))
-        if publie and publie < depuis:
+        if published and published < since:
             continue
-        entrees.append({
-            "url": lien,
-            "titre": texte("title", "{http://www.w3.org/2005/Atom}title"),
-            "publie": publie,
-            "contenu": texte("{http://purl.org/rss/1.0/modules/content/}encoded",
+        entries.append({
+            "url": link,
+            "titre": text("title", "{http://www.w3.org/2005/Atom}title"),
+            "publie": published,
+            "contenu": text("{http://purl.org/rss/1.0/modules/content/}encoded",
                              "description",
                              "{http://www.w3.org/2005/Atom}content"),
             "contexte": "",
         })
-    return entrees
+    return entries
 
 
-def _date_rss(brut: str) -> datetime | None:
-    if not brut:
+def _rss_date(raw: str) -> datetime | None:
+    if not raw:
         return None
     for fmt in ("%a, %d %b %Y %H:%M:%S %z", "%a, %d %b %Y %H:%M:%S %Z",
                 "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ"):
         try:
-            d = datetime.strptime(brut.strip(), fmt)
+            d = datetime.strptime(raw.strip(), fmt)
             return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
         except ValueError:
             continue
     return None
 
 
-def entrees_malpedia(source: dict, deja_vues: set[str]) -> list[dict]:
+def malpedia_entries(source: dict, already_seen: set[str]) -> list[dict]:
     """Nouveaux rapports de la bibliographie Malpedia, avec leur attribution.
 
     Malpedia n'expose pas d'IOC sans clé d'API (`/api/list/samples` répond 403),
@@ -216,36 +216,36 @@ def entrees_malpedia(source: dict, deja_vues: set[str]) -> list[dict]:
     rien traiter. Sans lui, la première exécution essaierait de télécharger et
     de faire lire au modèle l'intégralité de la littérature du domaine.
     """
-    donnees = _http(source["url"]).json()
-    references = donnees.get("references", donnees) or {}
-    entrees = []
-    for url, cibles in references.items():
-        if not url.startswith("http") or url in deja_vues:
+    data = _http(source["url"]).json()
+    references = data.get("references", data) or {}
+    entries = []
+    for url, targets in references.items():
+        if not url.startswith("http") or url in already_seen:
             continue
-        familles = [c.get("common_name") or c.get("id", "")
-                    for c in (cibles or []) if isinstance(c, dict)]
-        entrees.append({
+        families = [c.get("common_name") or c.get("id", "")
+                    for c in (targets or []) if isinstance(c, dict)]
+        entries.append({
             "url": url,
             "titre": "",          # la bibliographie ne porte pas de titre
             "publie": None,       # ni de date : le curseur joue ce rôle
             "contenu": "",
-            "contexte": ", ".join(f for f in familles if f)[:300],
+            "contexte": ", ".join(f for f in families if f)[:300],
         })
-    return entrees
+    return entries
 
 
 # ---------------------------------------------------------------------------
 # Texte
 # ---------------------------------------------------------------------------
 
-_BLOCS_INUTILES = re.compile(
+_BLOCKS_USELESS = re.compile(
     r"<(script|style|noscript|nav|footer|header|form)\b.*?</\1>", re.S | re.I)
-_BALISES = re.compile(r"<[^>]+>")
-_ESPACES = re.compile(r"[ \t\r\f\v]+")
-_LIGNES = re.compile(r"\n{3,}")
+_TAGS = re.compile(r"<[^>]+>")
+_SPACES = re.compile(r"[ \t\r\f\v]+")
+_LINES = re.compile(r"\n{3,}")
 
 
-def texte_brut(html_source: str) -> str:
+def plain_text(html_source: str) -> str:
     """Texte lisible d'une page, sans dépendance de parsing HTML.
 
     Un vrai extracteur de contenu (readability, trafilatura) ferait mieux, mais
@@ -255,20 +255,20 @@ def texte_brut(html_source: str) -> str:
     sont retirés parce qu'ils sont pleins de domaines tiers — donc de faux
     candidats.
     """
-    sans_blocs = _BLOCS_INUTILES.sub(" ", html_source or "")
+    without_blocks = _BLOCKS_USELESS.sub(" ", html_source or "")
     # Les balises deviennent des sauts de ligne : sans ça, un tableau d'IOC
     # ressort collé en un seul mot et plus aucune valeur n'est reconnaissable.
-    texte = _BALISES.sub("\n", sans_blocs)
-    texte = html.unescape(texte)
-    texte = _ESPACES.sub(" ", texte)
-    return _LIGNES.sub("\n\n", texte).strip()
+    text = _TAGS.sub("\n", without_blocks)
+    text = html.unescape(text)
+    text = _SPACES.sub(" ", text)
+    return _LINES.sub("\n\n", text).strip()
 
 
-def tronquer(texte: str, plafond: int = TEXTE_MAX) -> str:
-    if len(texte) <= plafond:
-        return texte
-    moitie = plafond // 2
-    return f"{texte[:moitie]}\n\n[...]\n\n{texte[-moitie:]}"
+def truncate(text: str, cap: int = MAX_TEXT) -> str:
+    if len(text) <= cap:
+        return text
+    half = cap // 2
+    return f"{text[:half]}\n\n[...]\n\n{text[-half:]}"
 
 
 # ---------------------------------------------------------------------------
@@ -288,21 +288,21 @@ DEFANG = [
     (re.compile(r"\bmeow\b|\bhxxp\b", re.I), "http"),
 ]
 
-MOTIF_IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
-MOTIF_URL = re.compile(r"https?://[^\s\"'<>\)\]]{4,300}")
-MOTIF_DOMAINE = re.compile(
+PATTERN_IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+PATTERN_URL = re.compile(r"https?://[^\s\"'<>\)\]]{4,300}")
+PATTERN_DOMAIN = re.compile(
     r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"(?:com|net|org|info|biz|ru|cn|top|xyz|club|online|site|shop|icu|vip|cc|io|"
     r"co|me|tv|pw|su|ws|link|live|fun|store|space|website|host|press|tech|app|dev|"
     r"cloud|de|fr|uk|nl|eu|br|in|ir|kr|jp|pl|tk|ml|ga|cf|gq|zip|mov)\b", re.I)
-MOTIF_HASH = re.compile(r"\b[0-9a-fA-F]{64}\b|\b[0-9a-fA-F]{40}\b|\b[0-9a-fA-F]{32}\b")
+PATTERN_HASH = re.compile(r"\b[0-9a-fA-F]{64}\b|\b[0-9a-fA-F]{40}\b|\b[0-9a-fA-F]{32}\b")
 
 # Domaines à ne jamais retenir : ceux des médias sources et des plateformes
 # qu'ils citent en boucle. Le modèle les écarte déjà (le prompt le lui demande),
 # mais une exclusion en code ne dépend pas de son humeur. Un IOC légitimement
 # hébergé sur un de ces domaines est perdu — c'est le prix, et il est faible
 # devant une alerte de niveau 12 sur github.com.
-DOMAINES_EXCLUS = {
+DOMAINS_EXCLUDED = {
     "thehackernews.com", "bleepingcomputer.com", "medium.com", "malpedia.caad.fkie.fraunhofer.de",
     "twitter.com", "x.com", "linkedin.com", "facebook.com", "youtube.com", "reddit.com",
     "github.com", "githubusercontent.com", "gitlab.com", "bitbucket.org",
@@ -322,33 +322,33 @@ DOMAINES_EXCLUS = {
 
 # Réseaux de documentation et de test (RFC 5737, RFC 3849, TEST-NET) : les
 # articles s'en servent pour illustrer sans exposer une vraie cible.
-RESEAUX_DOC = [ipaddress.ip_network(r) for r in (
+NETWORKS_DOC = [ipaddress.ip_network(r) for r in (
     "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "233.252.0.0/24")]
 
 
-def defanger(texte: str) -> str:
-    for motif, remplacement in DEFANG:
-        texte = motif.sub(remplacement, texte)
-    return texte
+def defanger(text: str) -> str:
+    for pattern, replacement in DEFANG:
+        text = pattern.sub(replacement, text)
+    return text
 
 
-def _domaine_exclu(valeur: str) -> bool:
-    hote = (urlparse(valeur).hostname if valeur.startswith("http") else valeur) or ""
-    hote = hote.lower().rstrip(".")
+def _domain_excluded(value: str) -> bool:
+    host = (urlparse(value).hostname if value.startswith("http") else value) or ""
+    host = host.lower().rstrip(".")
     # Comparaison par suffixe : `cdn.microsoft.com` doit tomber avec
     # `microsoft.com`, sinon l'exclusion ne tient que sur le domaine nu.
-    return any(hote == d or hote.endswith("." + d) for d in DOMAINES_EXCLUS)
+    return any(host == d or host.endswith("." + d) for d in DOMAINS_EXCLUDED)
 
 
-def _ip_a_ignorer(valeur: str) -> bool:
+def _ip_to_ignore(value: str) -> bool:
     try:
-        ip = ipaddress.ip_address(valeur)
+        ip = ipaddress.ip_address(value)
     except ValueError:
         return True
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast \
             or ip.is_reserved or ip.is_unspecified:
         return True
-    if any(ip in reseau for reseau in RESEAUX_DOC):
+    if any(ip in network for network in NETWORKS_DOC):
         return True
     # L'infrastructure du SOC et nos propres réseaux ne peuvent pas être des
     # IOC publiés par un tiers. Si ça arrive, c'est une erreur de l'article ou
@@ -356,10 +356,10 @@ def _ip_a_ignorer(valeur: str) -> bool:
     # le SOC contre lui-même.
     if str(ip) in config.SOC_INFRA_IPS:
         return True
-    return any(ip in reseau for reseau in _reseaux_internes())
+    return any(ip in network for network in _internal_networks())
 
 
-def _reseaux_internes() -> list:
+def _internal_networks() -> list:
     """`config.RESEAUX_INTERNES` converti en réseaux comparables.
 
     La configuration les livre en CHAÎNES ("192.168.1.0/24, ..."), et
@@ -368,62 +368,62 @@ def _reseaux_internes() -> list:
     mal écrite est ignorée plutôt que fatale : elle ne doit pas décider de la
     disponibilité de la veille.
     """
-    reseaux = []
-    for brut in getattr(config, "RESEAUX_INTERNES", None) or []:
-        if isinstance(brut, (ipaddress.IPv4Network, ipaddress.IPv6Network)):
-            reseaux.append(brut)
+    networks = []
+    for raw in getattr(config, "NETWORKS_INTERNAL", None) or []:
+        if isinstance(raw, (ipaddress.IPv4Network, ipaddress.IPv6Network)):
+            networks.append(raw)
             continue
         try:
-            reseaux.append(ipaddress.ip_network(str(brut).strip(), strict=False))
+            networks.append(ipaddress.ip_network(str(raw).strip(), strict=False))
         except ValueError:
-            log.debug("RESEAUX_INTERNES : entrée ignorée %r", brut)
-    return reseaux
+            log.debug("RESEAUX_INTERNES : entrée ignorée %r", raw)
+    return networks
 
 
-def candidats(texte: str) -> dict[str, list[str]]:
+def candidates(text: str) -> dict[str, list[str]]:
     """Valeurs qui ressemblent à un IOC, par type, déjà filtrées du bruit dur.
 
     Ne juge PAS la malveillance : c'est le rôle de l'étage suivant. Ne fait ici
     que retirer ce qui ne peut structurellement pas être un indicateur.
     """
-    clair = defanger(texte)
-    trouves = {"ip": [], "domain": [], "url": [], "hash": []}
-    vus = set()
+    plain = defanger(text)
+    found = {"ip": [], "domain": [], "url": [], "hash": []}
+    seen = set()
 
-    def ajouter(type_, brut):
-        valeur = cti.normaliser(type_, brut)
-        if not valeur or valeur in vus:
+    def add(type_, raw):
+        value = cti.normalize(type_, raw)
+        if not value or value in seen:
             return
-        if type_ == "ip" and _ip_a_ignorer(valeur):
+        if type_ == "ip" and _ip_to_ignore(value):
             return
-        if type_ in ("domain", "url") and _domaine_exclu(valeur):
+        if type_ in ("domain", "url") and _domain_excluded(value):
             return
-        vus.add(valeur)
-        trouves[type_].append(valeur)
+        seen.add(value)
+        found[type_].append(value)
 
-    for brut in MOTIF_URL.findall(clair):
-        ajouter("url", brut.rstrip(".,;:)"))
-    for brut in MOTIF_IP.findall(clair):
-        ajouter("ip", brut)
-    for brut in MOTIF_DOMAINE.findall(clair):
-        ajouter("domain", brut)
-    for brut in MOTIF_HASH.findall(clair):
-        ajouter("hash", brut)
-    return trouves
+    for raw in PATTERN_URL.findall(plain):
+        add("url", raw.rstrip(".,;:)"))
+    for raw in PATTERN_IP.findall(plain):
+        add("ip", raw)
+    for raw in PATTERN_DOMAIN.findall(plain):
+        add("domain", raw)
+    for raw in PATTERN_HASH.findall(plain):
+        add("hash", raw)
+    return found
 
 
 # ---------------------------------------------------------------------------
 # Arbitrage par le modèle
 # ---------------------------------------------------------------------------
 
-def _lots(trouves: dict[str, list[str]]) -> list[list[tuple[str, str]]]:
+def _batches(found: dict[str, list[str]]) -> list[list[tuple[str, str]]]:
     """Candidats découpés en lots de taille bornée, tous types mélangés."""
-    plat = [(type_, v) for type_, valeurs in trouves.items() for v in valeurs]
-    return [plat[i:i + LOT_CANDIDATS]
-            for i in range(0, len(plat), LOT_CANDIDATS)][:MAX_LOTS]
+    plat = [(type_, v) for type_, values in found.items() for v in values]
+    return [plat[i:i + BATCH_CANDIDATES]
+            for i in range(0, len(plat), BATCH_CANDIDATES)][:MAX_BATCHES]
 
 
-def arbitrer(article: dict, trouves: dict[str, list[str]]) -> dict:
+def arbitrate(article: dict, found: dict[str, listing[str]]) -> dict:
     """Demande au modèle lesquels des candidats sont des IOC de la menace.
 
     Pas de pseudonymisation ici, contrairement au triage (cf. anonymize.py) :
@@ -436,15 +436,15 @@ def arbitrer(article: dict, trouves: dict[str, list[str]]) -> dict:
     juger des valeurs sans le récit qui les qualifie. Le préfixe étant
     identique d'un appel à l'autre, il est servi par le cache du fournisseur.
     """
-    systeme = (PROMPTS / "cti_extraction.md").read_text()
-    entete = (
+    system = (PROMPTS / "cti_extraction.md").read_text()
+    header = (
         f"TITRE : {article.get('titre') or '(inconnu)'}\n"
         f"URL : {article['url']}\n"
         + (f"FAMILLES ASSOCIÉES (attribution Malpedia) : {article['contexte']}\n"
            if article.get("contexte") else ""))
-    corps_article = f"\nARTICLE :\n{tronquer(article['texte'])}\n"
+    article_body = f"\nARTICLE :\n{truncate(article['texte'])}\n"
 
-    def demander(lot: list[tuple[str, str]], etiquette: str) -> dict | None:
+    def request(batch: listing[tuple[str, str]], label: str) -> dict | None:
         """Un appel au modèle sur un lot de candidats. None si l'appel échoue.
 
         Rejoue une fois en DEUX MOITIÉS quand le budget a été épuisé : le
@@ -454,60 +454,60 @@ def arbitrer(article: dict, trouves: dict[str, list[str]]) -> dict:
         surdimensionner le budget de tous les appels pour les rares qui
         débordent.
         """
-        par_type: dict[str, list[str]] = {}
-        for type_, valeur in lot:
-            par_type.setdefault(type_, []).append(valeur)
-        liste = "\n".join(f"{t} : " + ", ".join(v) for t, v in par_type.items())
+        by_type: dict[str, listing[str]] = {}
+        for type_, value in batch:
+            by_type.setdefault(type_, []).append(value)
+        listing = "\n".join(f"{t} : " + ", ".join(v) for t, v in by_type.items())
         try:
-            reponse, _ = llm.completion(
-                systeme, entete + corps_article + f"\nCANDIDATS ({etiquette}) :\n{liste}\n",
+            response, _ = llm.completion(
+                system, header + article_body + f"\nCANDIDATS ({label}) :\n{listing}\n",
                 usage="cti_extraction", max_tokens=MAX_TOKENS)
-            return reponse
+            return response
         except Exception as exc:                              # noqa: BLE001
-            budget_epuise = "finish_reason=length" in str(exc) or "Unterminated" in str(exc)
-            if budget_epuise and len(lot) > 4:
-                milieu = len(lot) // 2
+            budget_exhausted = "finish_reason=length" in str(exc) or "Unterminated" in str(exc)
+            if budget_exhausted and len(batch) > 4:
+                middle = len(batch) // 2
                 log.info("lot %s trop lourd pour le budget, redécoupé en deux",
-                         etiquette)
-                gauche = demander(lot[:milieu], f"{etiquette}a")
-                droite = demander(lot[milieu:], f"{etiquette}b")
-                if gauche is None and droite is None:
+                         label)
+                left = request(batch[:middle], f"{label}a")
+                right = request(batch[middle:], f"{label}b")
+                if left is None and right is None:
                     return None
-                return {"iocs": (gauche or {}).get("iocs", [])
-                                + (droite or {}).get("iocs", []),
-                        "menace": (gauche or droite or {}).get("menace", ""),
-                        "resume": (gauche or droite or {}).get("resume", ""),
-                        "confiance": (gauche or droite or {}).get("confiance", "")}
+                return {"iocs": (left or {}).get("iocs", [])
+                                + (right or {}).get("iocs", []),
+                        "threat": (left or right or {}).get("threat", ""),
+                        "resume": (left or right or {}).get("resume", ""),
+                        "confiance": (left or right or {}).get("confiance", "")}
             # Un lot perdu ne doit pas emporter l'article : les autres ont
             # peut-être livré de vrais indicateurs, et les jeter pour un
             # accident d'API serait payer deux fois.
-            log.warning("lot %s en échec sur %s : %s", etiquette, article["url"], exc)
+            log.warning("lot %s en échec sur %s : %s", label, article["url"], exc)
             return None
 
-    fusion = {"iocs": [], "menace": "", "resume": "", "confiance": ""}
-    lots = _lots(trouves)
-    total = sum(len(v) for v in trouves.values())
-    couverts = sum(len(lot) for lot in lots)
-    if couverts < total:
+    merge = {"iocs": [], "threat": "", "resume": "", "confiance": ""}
+    batches = _batches(found)
+    total = sum(len(v) for v in found.values())
+    covered = sum(len(batch) for batch in batches)
+    if covered < total:
         log.warning("%s : %d candidats sur %d soumis au modèle (plafond de "
-                    "%d lots) — %d NON examinés", article["url"], couverts,
-                    total, MAX_LOTS, total - couverts)
-    for numero, lot in enumerate(lots, 1):
-        reponse = demander(lot, f"{numero}/{len(lots)}")
-        if reponse is None:
+                    "%d lots) — %d NON examinés", article["url"], covered,
+                    total, MAX_BATCHES, total - covered)
+    for number, batch in enumerate(batches, 1):
+        response = request(batch, f"{number}/{len(batches)}")
+        if response is None:
             continue
-        fusion["iocs"].extend(reponse.get("iocs") or [])
+        merge["iocs"].extend(response.get("iocs") or [])
         # Menace, résumé et confiance sont des propriétés de l'ARTICLE, pas du
         # lot : on garde la première réponse non vide plutôt que d'écraser à
         # chaque tour, un lot ne contenant parfois aucun IOC et donc aucun
         # contexte.
-        for cle in ("menace", "resume", "confiance"):
-            if not fusion[cle] and reponse.get(cle):
-                fusion[cle] = str(reponse[cle])
-    return fusion
+        for key in ("threat", "resume", "confiance"):
+            if not merge[key] and response.get(key):
+                merge[key] = str(response[key])
+    return merge
 
 
-def valider(reponse: dict, trouves: dict[str, list[str]]) -> list[dict]:
+def validate(response: dict, found: dict[str, list[str]]) -> list[dict]:
     """Garde-fou déterministe sur la sortie du modèle.
 
     Trois rejets, dans cet ordre, et aucun n'est négociable :
@@ -520,31 +520,31 @@ def valider(reponse: dict, trouves: dict[str, list[str]]) -> list[dict]:
     3. exclusions dures rejouées. Le prompt les demande déjà, mais un prompt
        n'est pas un contrôle.
     """
-    autorises = {v: t for t, valeurs in trouves.items() for v in valeurs}
-    retenus, vus = [], set()
-    for brut in (reponse.get("iocs") or [])[:MAX_IOC_ARTICLE * 2]:
-        if not isinstance(brut, dict):
+    allowed = {v: t for t, values in found.items() for v in values}
+    kept, seen = [], set()
+    for raw in (response.get("iocs") or [])[:MAX_IOC_ARTICLE * 2]:
+        if not isinstance(raw, dict):
             continue
-        valeur = str(brut.get("valeur", "")).strip()
-        type_annonce = str(brut.get("type", "")).strip().lower()
+        value = str(raw.get("value", "")).strip()
+        announced_type = str(raw.get("type", "")).strip().lower()
         # Normalise avec le type annoncé s'il est plausible, sinon avec celui
         # sous lequel le candidat a réellement été trouvé.
-        valeur = cti.normaliser(type_annonce, valeur) or cti.normaliser(
-            autorises.get(valeur, ""), valeur) or valeur
-        type_reel = autorises.get(valeur)
-        if not type_reel:
-            log.warning("IOC rejeté (absent des candidats) : %r", brut.get("valeur"))
+        value = cti.normalize(announced_type, value) or cti.normalize(
+            allowed.get(value, ""), value) or value
+        real_type = allowed.get(value)
+        if not real_type:
+            log.warning("IOC rejeté (absent des candidats) : %r", raw.get("value"))
             continue
-        if valeur in vus:
+        if value in seen:
             continue
-        if type_reel == "ip" and _ip_a_ignorer(valeur):
+        if real_type == "ip" and _ip_to_ignore(value):
             continue
-        if type_reel in ("domain", "url") and _domaine_exclu(valeur):
+        if real_type in ("domain", "url") and _domain_excluded(value):
             continue
-        vus.add(valeur)
-        retenus.append({"valeur": valeur, "type": type_reel,
-                        "role": str(brut.get("role", ""))[:100]})
-    return retenus
+        seen.add(value)
+        kept.append({"value": value, "type": real_type,
+                        "role": str(raw.get("role", ""))[:100]})
+    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -558,11 +558,11 @@ def valider(reponse: dict, trouves: dict[str, list[str]]) -> list[dict]:
 TYPE_MISP = {"ip": "ip-dst", "domain": "domain", "url": "url"}
 
 
-def _type_hash(valeur: str) -> str:
-    return {32: "md5", 40: "sha1", 64: "sha256"}[len(valeur)]
+def _type_hash(value: str) -> str:
+    return {32: "md5", 40: "sha1", 64: "sha256"}[len(value)]
 
 
-def filtrer_warninglists(valeurs: list[str]) -> set[str]:
+def filter_warninglists(values: list[str]) -> set[str]:
     """Valeurs que MISP connaît comme NE DEVANT PAS être des IOC.
 
     Les warninglists de MISP recensent ce qu'un indicateur ne devrait jamais
@@ -576,19 +576,19 @@ def filtrer_warninglists(valeurs: list[str]) -> set[str]:
     En cas d'échec de l'appel, on ne filtre rien plutôt que de tout jeter : la
     perte serait invisible.
     """
-    if not valeurs:
+    if not values:
         return set()
     try:
-        reponse = cti._misp("POST", "/warninglists/checkValue", valeurs)
+        response = cti._misp("POST", "/warninglists/checkValue", values)
     except Exception as exc:                                  # noqa: BLE001
         log.warning("warninglists MISP injoignables (%s) : aucun filtrage", exc)
         return set()
-    if isinstance(reponse, dict):
-        return {v for v, listes in reponse.items() if listes}
+    if isinstance(response, dict):
+        return {v for v, lists in response.items() if lists}
     return set()
 
 
-def creer_evenement(article: dict, iocs: list[dict], reponse: dict,
+def create_event(article: dict, iocs: list[dict], response: dict,
                     source: dict) -> int | None:
     """Publie un événement MISP portant les IOC de l'article.
 
@@ -601,71 +601,71 @@ def creer_evenement(article: dict, iocs: list[dict], reponse: dict,
     niveau de la règle Wazuh. `analysis: 2` (terminé) et publication immédiate :
     sans publication, `cti.py` ne les verrait jamais (il filtre `published=1`).
     """
-    menace = str(reponse.get("menace") or "").strip()
-    resume = str(reponse.get("resume") or "").strip()
-    titre = (article.get("titre") or article["url"])[:200]
-    info = f"[AURA/{source['nom']}] {menace + ' — ' if menace else ''}{titre}"
+    threat = str(response.get("threat") or "").strip()
+    resume = str(response.get("resume") or "").strip()
+    title = (article.get("titre") or article["url"])[:200]
+    info = f"[AURA/{source['name']}] {threat + ' — ' if threat else ''}{title}"
 
-    attributs = [{
+    attributes = [{
         "type": "link", "category": "External analysis", "value": article["url"],
         "to_ids": False, "comment": "Source article",
     }]
     for ioc in iocs:
-        type_misp = TYPE_MISP.get(ioc["type"]) or _type_hash(ioc["valeur"])
-        attributs.append({
+        type_misp = TYPE_MISP.get(ioc["type"]) or _type_hash(ioc["value"])
+        attributes.append({
             "type": type_misp,
             "category": "Payload delivery" if ioc["type"] == "hash"
                         else "Network activity",
-            "value": ioc["valeur"],
+            "value": ioc["value"],
             "to_ids": True,
             "comment": ioc["role"] or resume[:100],
         })
 
-    tags = [{"name": TAG_SOURCE}, {"name": f"aura:feed:{source['nom']}"},
+    tags = [{"name": TAG_SOURCE}, {"name": f"aura:feed:{source['name']}"},
             {"name": "tlp:clear"}]
-    confiance = str(reponse.get("confiance") or "").lower()
-    if confiance in ("haute", "moyenne", "basse"):
-        tags.append({"name": f"aura:extraction-confidence:{confiance}"})
+    confidence = str(response.get("confiance") or "").lower()
+    if confidence in ("haute", "moyenne", "basse"):
+        tags.append({"name": f"aura:extraction-confidence:{confidence}"})
     if article.get("contexte"):
         tags.append({"name": "aura:attribution:malpedia"})
 
-    corps = {"Event": {
+    body = {"Event": {
         "info": info[:255],
         "date": (article.get("publie") or datetime.now(timezone.utc)).strftime("%Y-%m-%d"),
         "analysis": "2",
         "threat_level_id": "2",
         "distribution": "0",
         "published": True,
-        "Attribute": attributs,
+        "Attribute": attributes,
         "Tag": tags,
     }}
-    reponse_misp = cti._misp("POST", "/events/add", corps)
-    evenement = (reponse_misp or {}).get("Event") or {}
-    return int(evenement["id"]) if evenement.get("id") else None
+    misp_response = cti._misp("POST", "/events/add", body)
+    event = (misp_response or {}).get("Event") or {}
+    return int(event["id"]) if event.get("id") else None
 
 
 # ---------------------------------------------------------------------------
 # Curseur
 # ---------------------------------------------------------------------------
 
-def _connexion():
+def _connection():
     return psycopg.connect(config.PG_DSN)
 
 
-def deja_vues(conn, source: str) -> set[str]:
+def already_seen(conn, source: str) -> set[str]:
     return {u for (u,) in conn.execute(
         "SELECT url FROM cti_articles WHERE source = %s", (source,))}
 
 
-def marquer(conn, source: str, url: str, nb_iocs: int, event_id: int | None,
-            menace: str = "", motif: str = "") -> None:
+def mark(conn, source: str, url: str, nb_iocs: int, event_id: int | None,
+            threat: str = "", pattern: str = "") -> None:
     conn.execute(
-        "INSERT INTO cti_articles (source, url, iocs_retenus, misp_event_id, "
-        "menace, motif) VALUES (%s, %s, %s, %s, %s, %s) "
-        "ON CONFLICT (url) DO UPDATE SET iocs_retenus = EXCLUDED.iocs_retenus, "
+        "INSERT INTO cti_articles (source, url, iocs_kept, misp_event_id, "
+        "threat, pattern) VALUES (%s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (url) DO UPDATE SET iocs_kept = EXCLUDED.iocs_kept, "
         "misp_event_id = COALESCE(EXCLUDED.misp_event_id, cti_articles.misp_event_id), "
         "menace = EXCLUDED.menace, motif = EXCLUDED.motif",
-        (source, url, nb_iocs, event_id, menace[:200], motif[:200]))
+        (source, url, nb_iocs, event_id, threat[:200], pattern[:200]))
     conn.commit()
 
 
@@ -673,142 +673,142 @@ def marquer(conn, source: str, url: str, nb_iocs: int, event_id: int | None,
 # Traitement
 # ---------------------------------------------------------------------------
 
-def charger_texte(article: dict) -> str:
+def load_text(article: dict) -> str:
     """Texte de l'article : celui du flux s'il est complet, sinon la page."""
-    du_flux = texte_brut(article.get("contenu") or "")
+    du_flux = plain_text(article.get("contenu") or "")
     # Un extrait RSS fait quelques centaines de caractères : il ne contient
     # jamais la section des IOC. On ne s'en contente que s'il est substantiel.
     if len(du_flux) > 3000:
         return du_flux
-    return texte_brut(_http(article["url"]).text)
+    return plain_text(_http(article["url"]).text)
 
 
-def traiter(article: dict, source: dict, simulation: bool = False) -> dict:
+def process(article: dict, source: dict, simulation: bool = False) -> dict:
     """Un article, de la récupération à l'événement MISP.
 
     Rend un compte rendu, y compris quand rien n'est retenu : « aucun IOC »
     est le résultat normal pour la majorité des articles de presse, et le
     tracer évite de retraiter le même texte à chaque passe.
     """
-    resultat = {"url": article["url"], "iocs": [], "event_id": None,
-                "menace": "", "motif": ""}
+    result = {"url": article["url"], "iocs": [], "event_id": None,
+                "threat": "", "pattern": ""}
     try:
-        article["texte"] = charger_texte(article)
+        article["texte"] = load_text(article)
     except Exception as exc:                                  # noqa: BLE001
-        resultat["motif"] = f"article illisible : {exc}"
-        return resultat
+        result["pattern"] = f"article illisible : {exc}"
+        return result
     if len(article["texte"]) < 500:
-        resultat["motif"] = "texte trop court pour être un rapport"
-        return resultat
+        result["pattern"] = "texte trop court pour être un rapport"
+        return result
 
-    trouves = candidats(article["texte"])
-    if not any(trouves.values()):
-        resultat["motif"] = "aucun candidat dans le texte"
-        return resultat
+    found = candidates(article["texte"])
+    if not any(found.values()):
+        result["pattern"] = "aucun candidat dans le texte"
+        return result
 
-    reponse = arbitrer(article, trouves)
-    iocs = valider(reponse, trouves)
-    resultat["menace"] = str(reponse.get("menace") or "")[:200]
+    response = arbitrate(article, found)
+    iocs = validate(response, found)
+    result["threat"] = str(response.get("threat") or "")[:200]
     if not iocs:
-        resultat["motif"] = "aucun IOC retenu par l'arbitrage"
-        return resultat
-    plafond = int(source.get("max_iocs") or MAX_IOC_ARTICLE)
-    if len(iocs) > plafond:
+        result["pattern"] = "aucun IOC retenu par l'arbitrage"
+        return result
+    cap = int(source.get("max_iocs") or MAX_IOC_ARTICLE)
+    if len(iocs) > cap:
         # Ne pas publier plutôt que publier n'importe quoi, et le DIRE : une
         # troncature muette laisserait croire à une couverture complète.
-        resultat["motif"] = (f"{len(iocs)} IOC extraits, au-delà du plafond "
-                             f"de {plafond} : article non publié")
-        log.warning("%s : %s", article["url"], resultat["motif"])
-        return resultat
+        result["pattern"] = (f"{len(iocs)} IOC extraits, au-delà du plafond "
+                             f"de {cap} : article non publié")
+        log.warning("%s : %s", article["url"], result["pattern"])
+        return result
 
-    connus = filtrer_warninglists([i["valeur"] for i in iocs])
-    if connus:
-        log.info("%d IOC écartés par les warninglists MISP", len(connus))
-    iocs = [i for i in iocs if i["valeur"] not in connus]
-    resultat["iocs"] = iocs
+    known = filter_warninglists([i["value"] for i in iocs])
+    if known:
+        log.info("%d IOC écartés par les warninglists MISP", len(known))
+    iocs = [i for i in iocs if i["value"] not in known]
+    result["iocs"] = iocs
     if not iocs:
-        resultat["motif"] = "tous les IOC écartés par les warninglists MISP"
-        return resultat
+        result["pattern"] = "tous les IOC écartés par les warninglists MISP"
+        return result
 
     if not simulation:
-        resultat["event_id"] = creer_evenement(article, iocs, reponse, source)
-    return resultat
+        result["event_id"] = create_event(article, iocs, response, source)
+    return result
 
 
 # Sources qui n'ont ni date ni flux de nouveautés : c'est le curseur des URL
 # vues qui en tient lieu, donc elles DOIVENT être amorcées avant la première
 # passe. Les flux RSS, eux, sont déjà bornés par leur fenêtre de fraîcheur.
-TYPES_A_AMORCER = {"malpedia_references"}
+TYPES_TO_BOOTSTRAP = {"malpedia_references"}
 
 
-def collecter(source: dict, deja: set[str], depuis: datetime,
-              maximum: int, amorcage: bool, simulation: bool,
-              journal=None) -> list[dict]:
-    if amorcage and source.get("type") not in TYPES_A_AMORCER:
+def collect(source: dict, already: set[str], since: datetime,
+              maximum: int, bootstrap: bool, simulation: bool,
+              ledger=None) -> list[dict]:
+    if bootstrap and source.get("type") not in TYPES_TO_BOOTSTRAP:
         # Ne PAS marquer les flux RSS pendant un amorçage : ce serait griller
         # les articles récents, qui sont précisément ceux qu'on veut traiter à
         # la première vraie passe. L'amorçage n'existe que pour les sources sans
         # date (cf. TYPES_A_AMORCER).
-        log.info("%s : rien à amorcer (source datée)", source["nom"])
+        log.info("%s : rien à amorcer (source datée)", source["name"])
         return []
 
     if source.get("type") == "malpedia_references":
-        entrees = entrees_malpedia(source, deja)
+        entries = malpedia_entries(source, already)
     else:
-        entrees = [e for e in entrees_rss(source, depuis) if e["url"] not in deja]
-    log.info("%s : %d entrée(s) nouvelle(s)", source["nom"], len(entrees))
+        entries = [e for e in rss_entries(source, since) if e["url"] not in already]
+    log.info("%s : %d entrée(s) nouvelle(s)", source["name"], len(entries))
 
-    if amorcage:
+    if bootstrap:
         # Marquer sans traiter : c'est ce qui rend la première exécution
         # possible sur une bibliographie de plusieurs dizaines de milliers de
         # rapports.
-        return [{"url": e["url"], "iocs": [], "event_id": None, "menace": "",
-                 "motif": "amorçage"} for e in entrees]
+        return [{"url": e["url"], "iocs": [], "event_id": None, "threat": "",
+                 "pattern": "amorçage"} for e in entries]
 
-    resultats = []
-    for entree in entrees[:maximum]:
-        log.info("→ %s", entree["url"])
-        resultat = traiter(entree, source, simulation=simulation)
-        resultats.append(resultat)
+    results = []
+    for entry in entries[:maximum]:
+        log.info("→ %s", entry["url"])
+        result = process(entry, source, simulation=simulation)
+        results.append(result)
         # Marquage IMMÉDIAT, article par article, et non à la fin de la source :
         # une panne au milieu d'une passe (ou un arrêt du conteneur) perdrait
         # sinon le travail déjà fait, appels au modèle compris. Constaté en prod
         # le 2026-08-12 sur une erreur de type — l'article traité juste avant a
         # été payé puis oublié.
-        if journal is not None and not simulation:
-            marquer(journal, source["nom"], resultat["url"],
-                    len(resultat["iocs"]), resultat["event_id"],
-                    resultat["menace"], resultat["motif"])
-    return resultats
+        if ledger is not None and not simulation:
+            mark(ledger, source["name"], result["url"],
+                    len(result["iocs"]), result["event_id"],
+                    result["threat"], result["pattern"])
+    return results
 
 
-def passe(nom_source: str | None = None, maximum: int = 10,
-          heures: int = 48, amorcage: bool = False,
+def passe(source_name: str | None = None, maximum: int = 10,
+          hours: int = 48, bootstrap: bool = False,
           simulation: bool = False) -> list[dict]:
-    depuis = datetime.now(timezone.utc) - timedelta(hours=heures)
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
     tous = []
-    with _connexion() as conn:
+    with _connection() as conn:
         for source in sources():
-            if nom_source and source["nom"] != nom_source:
+            if source_name and source["name"] != source_name:
                 continue
-            deja = deja_vues(conn, source["nom"])
+            already = already_seen(conn, source["name"])
             try:
-                resultats = collecter(source, deja, depuis, maximum, amorcage,
-                                      simulation, journal=conn)
+                results = collect(source, already, since, maximum, bootstrap,
+                                      simulation, ledger=conn)
             except Exception as exc:                          # noqa: BLE001
                 # Une source en panne ne doit pas emporter les autres : elles
                 # sont indépendantes, et le renseignement perdu serait celui
                 # de tout le monde. Les articles déjà traités de cette source
                 # sont, eux, déjà enregistrés (marquage au fil de l'eau).
-                log.warning("source %s en échec : %s", source["nom"], exc)
+                log.warning("source %s en échec : %s", source["name"], exc)
                 continue
-            for r in resultats:
-                if amorcage and not simulation:
-                    marquer(conn, source["nom"], r["url"], 0, None, "", "amorçage")
+            for r in results:
+                if bootstrap and not simulation:
+                    mark(conn, source["name"], r["url"], 0, None, "", "amorçage")
                 if r["iocs"]:
                     log.info("%d IOC publiés (event %s) — %s", len(r["iocs"]),
-                             r["event_id"], r["menace"] or "menace non nommée")
-            tous.extend(resultats)
+                             r["event_id"], r["threat"] or "menace non nommée")
+            tous.extend(results)
     return tous
 
 
@@ -830,20 +830,20 @@ def main() -> None:
     args = p.parse_args()
 
     if args.url:
-        source = {"nom": args.source or "manuel"}
-        r = traiter({"url": args.url, "titre": "", "publie": None,
+        source = {"name": args.source or "manuel"}
+        r = process({"url": args.url, "titre": "", "publie": None,
                      "contenu": "", "contexte": ""}, source,
                     simulation=args.simulation)
         print(json.dumps(r, indent=2, ensure_ascii=False))
         return
 
-    resultats = passe(args.source, args.max, args.heures, args.amorcage,
+    results = passe(args.source, args.max, args.hours, args.bootstrap,
                       args.simulation)
-    publies = sum(len(r["iocs"]) for r in resultats)
-    log.info("%d article(s) traité(s), %d IOC%s", len(resultats), publies,
+    published = sum(len(r["iocs"]) for r in results)
+    log.info("%d article(s) traité(s), %d IOC%s", len(results), published,
              " (simulation)" if args.simulation else " publiés dans MISP")
     if args.simulation:
-        print(json.dumps([r for r in resultats if r["iocs"] or r["motif"]],
+        print(json.dumps([r for r in results if r["iocs"] or r["pattern"]],
                          indent=2, ensure_ascii=False, default=str))
 
 

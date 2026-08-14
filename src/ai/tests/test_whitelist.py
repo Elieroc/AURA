@@ -5,11 +5,11 @@ trop large neutraliserait toute une règle de détection : c'est l'erreur à
 rendre impossible, et elle se teste sans base ni LLM.
 """
 
-from soc_agent.noise import NoiseFilter, _valeur_champ
-from soc_agent.whitelist import _canonique, _signature
+from soc_agent.noise import NoiseFilter, _value_field
+from soc_agent.whitelist import _canonical, _signature
 
 
-def _alerte(rule_id="87105", srcuser=None, command=None, file=None):
+def _alert(rule_id="87105", srcuser=None, command=None, file=None):
     data = {}
     if srcuser:
         data["srcuser"] = srcuser
@@ -21,50 +21,50 @@ def _alerte(rule_id="87105", srcuser=None, command=None, file=None):
 
 
 def test_champ_virtuel_file_resout_plusieurs_chemins():
-    assert _valeur_champ({"syscheck": {"path": "/etc/passwd"}}, "file") == "/etc/passwd"
-    assert _valeur_champ(
+    assert _value_field({"syscheck": {"path": "/etc/passwd"}}, "file") == "/etc/passwd"
+    assert _value_field(
         {"data": {"virustotal": {"source": {"file": "/tmp/x"}}}}, "file") == "/tmp/x"
-    assert _valeur_champ({"data": {}}, "file") is None
+    assert _value_field({"data": {}}, "file") is None
 
 
 def test_signature_precise_avec_fichier():
     """EICAR : rule + file, discriminant présent -> signature valide."""
-    alertes = [_alerte(file="/tmp/eicar.com") for _ in range(3)]
-    sig = _signature(alertes)
+    alerts = [_alert(file="/tmp/eicar.com") for _ in range(3)]
+    sig = _signature(alerts)
     assert sig == {"rule_id": "87105", "file": "/tmp/eicar.com"}
 
 
 def test_rule_id_seul_refuse():
     """Sans discriminant, on neutraliserait toute la règle : refusé."""
-    alertes = [_alerte(rule_id="5715") for _ in range(3)]
-    assert _signature(alertes) is None
+    alerts = [_alert(rule_id="5715") for _ in range(3)]
+    assert _signature(alerts) is None
 
 
 def test_champ_non_constant_exclu_de_la_signature():
     """Un compte qui varie entre alertes n'entre pas dans la signature."""
-    alertes = [_alerte(rule_id="5402", srcuser="alice", command="/bin/x"),
-               _alerte(rule_id="5402", srcuser="bob", command="/bin/x")]
-    sig = _signature(alertes)
+    alerts = [_alert(rule_id="5402", srcuser="alice", command="/bin/x"),
+               _alert(rule_id="5402", srcuser="bob", command="/bin/x")]
+    sig = _signature(alerts)
     # srcuser varie -> exclu ; command constant -> discriminant retenu.
     assert sig == {"rule_id": "5402", "command": "/bin/x"}
 
 
 def test_signature_canonique_stable():
-    a = _canonique({"rule_id": "1", "file": "/x"})
-    b = _canonique({"file": "/x", "rule_id": "1"})
+    a = _canonical({"rule_id": "1", "file": "/x"})
+    b = _canonical({"file": "/x", "rule_id": "1"})
     assert a == b  # indépendant de l'ordre des clés
 
 
 def test_exception_file_suppression_bout_en_bout():
     """Une exception composite sur file supprime l'alerte visée, pas les autres."""
     f = NoiseFilter({})
-    f.ajouter_composite({"rule_id": "87105", "file": "/tmp/eicar.com"}, "EICAR")
+    f.add_composite({"rule_id": "87105", "file": "/tmp/eicar.com"}, "EICAR")
     vise = {"rule": {"id": "87105"},
             "data": {"virustotal": {"source": {"file": "/tmp/eicar.com"}}}}
-    autre = {"rule": {"id": "87105"},
+    other = {"rule": {"id": "87105"},
              "data": {"virustotal": {"source": {"file": "/tmp/malware.bin"}}}}
-    assert f.raison_suppression(vise) == "EICAR"
-    assert f.raison_suppression(autre) is None
+    assert f.deletion_reason(vise) == "EICAR"
+    assert f.deletion_reason(other) is None
 
 
 # --- parcours en flux (correctif OOM du 2026-08-14) --------------------------
@@ -76,9 +76,9 @@ def test_exception_file_suppression_bout_en_bout():
 def test_signature_accepte_un_generateur():
     """Un curseur serveur ne se parcourt qu'une fois : la fonction ne doit
     jamais relire son entrée."""
-    alertes = [_alerte(command="/usr/bin/borg", file="/etc/passwd"),
-               _alerte(command="/usr/bin/borg", file="/etc/passwd")]
-    sig = _signature(a for a in alertes)
+    alerts = [_alert(command="/usr/bin/borg", file="/etc/passwd"),
+               _alert(command="/usr/bin/borg", file="/etc/passwd")]
+    sig = _signature(a for a in alerts)
     assert sig is not None
     assert sig["command"] == "/usr/bin/borg"
 
@@ -90,8 +90,8 @@ def test_signature_voit_la_valeur_divergente_tardive():
     calculée sur les N premières alertes déclarerait `command` constant et
     produirait une exception plus large que l'incident réellement observé.
     """
-    alertes = ([_alerte(command="/usr/bin/borg", file="/etc/passwd")] * 5000
-               + [_alerte(command="/usr/bin/curl", file="/etc/passwd")])
-    sig = _signature(a for a in alertes)
+    alerts = ([_alert(command="/usr/bin/borg", file="/etc/passwd")] * 5000
+               + [_alert(command="/usr/bin/curl", file="/etc/passwd")])
+    sig = _signature(a for a in alerts)
     assert "command" not in sig      # divergent, donc écarté
     assert sig["file"] == "/etc/passwd"

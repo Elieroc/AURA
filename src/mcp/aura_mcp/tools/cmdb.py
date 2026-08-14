@@ -15,13 +15,13 @@ SOC lent là où il devrait être le plus rapide.
 from soc_agent import assets as soc_assets
 from soc_agent import config as soc_config
 
-from .. import auth, sortie
-from ..serveur import enregistrer
+from .. import auth, output
+from ..server import register
 
 
-@auth.exige("aura:read")
-def aura_assets_list(priorite: int | None = None,
-                     dette_seulement: bool = False) -> dict:
+@auth.require("aura:read")
+def aura_assets_list(priority: int | None = None,
+                     debt_only: bool = False) -> dict:
     """Inventaire des machines surveillées, avec leur priorité SOC.
 
     `dette_seulement` répond à la question qui compte vraiment : **quelles
@@ -33,31 +33,31 @@ def aura_assets_list(priorite: int | None = None,
         priorite: ne rendre que les assets de cette priorité (1 à 4).
         dette_seulement: ne rendre que les assets sans rôle déclaré.
     """
-    if priorite is not None and not 1 <= int(priorite) <= 4:
-        return {"erreur": "priorite hors échelle P1-P4."}
+    if priority is not None and not 1 <= int(priority) <= 4:
+        return {"error": "priorite hors échelle P1-P4."}
 
-    couverture = soc_assets.couverture()
-    if dette_seulement:
-        return sortie.jsonifiable({
-            "dette": couverture["dette"],
-            "priorite_appliquee": soc_config.PRIORITE_DEFAUT,
-            "assets": couverture["sans_role_declare"],
+    coverage = soc_assets.coverage()
+    if debt_only:
+        return output.jsonifiable({
+            "dette": coverage["dette"],
+            "priorite_appliquee": soc_config.DEFAULT_PRIORITY,
+            "assets": coverage["sans_role_declare"],
             "remede": "aura_asset_set(agent_id, role=…) ou, mieux, ranger la "
                       "machine dans son groupe Wazuh role-<role> : la CMDB s'y "
                       "réaligne toute seule au cycle suivant.",
         })
-    return sortie.jsonifiable({
-        "assets": soc_assets.lister(priorite),
-        "repartition": couverture["par_priorite"],
-        "dette": couverture["dette"],
-        "roles_connus": dict(sorted(soc_config.PRIORITE_ROLES.items(),
+    return output.jsonifiable({
+        "assets": soc_assets.list(priority),
+        "repartition": coverage["par_priorite"],
+        "dette": coverage["dette"],
+        "roles_connus": dict(sorted(soc_config.PRIORITY_ROLES.items(),
                                     key=lambda kv: (kv[1], kv[0]))),
     })
 
 
-@auth.exige("aura:write")
+@auth.require("aura:write")
 def aura_asset_set(agent_id: str, role: str | None = None,
-                   priorite: int | None = None,
+                   priority: int | None = None,
                    notes: str | None = None) -> dict:
     """Classe un asset : son rôle, donc sa priorité. NE TOUCHE PAS la machine.
 
@@ -73,18 +73,18 @@ def aura_asset_set(agent_id: str, role: str | None = None,
         notes: justification, lue par le prochain analyste qui s'interrogera.
     """
     try:
-        ligne = soc_assets.definir(agent_id, role=role, priorite=priorite,
+        line = soc_assets.definir(agent_id, role=role, priority=priority,
                                    notes=notes)
     except ValueError as e:
-        return {"erreur": str(e)}
-    return sortie.jsonifiable({
-        "asset": ligne,
+        return {"error": str(e)}
+    return output.jsonifiable({
+        "asset": line,
         "effet": f"les prochains incidents de cet agent naîtront en "
-                 f"P{ligne['priorite']} ; les incidents DÉJÀ ouverts gardent "
+                 f"P{line['priority']} ; les incidents DÉJÀ ouverts gardent "
                  f"la priorité qu'ils avaient (elle est figée à l'ouverture, "
                  f"pour qu'un case reste lisible avec son contexte d'origine).",
     })
 
 
-enregistrer(aura_assets_list)
-enregistrer(aura_asset_set)
+register(aura_assets_list)
+register(aura_asset_set)

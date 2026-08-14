@@ -32,17 +32,17 @@ log = logging.getLogger("cycle")
 # Clé arbitraire du verrou consultatif Postgres. Un seul cycle à la fois :
 # l'ingestion et le triage écrivent les mêmes tables, et le triage sature déjà
 # le CPU. Deux cycles en parallèle se marcheraient dessus sans rien gagner.
-VERROU = 0x50CA1
+LOCK = 0x50CA1
 
 
-def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
+def run(since: str, batch_size: int, triage_limit: int) -> int:
     """Enchaîne les trois étapes. Retourne un code de sortie."""
     # Connexion dédiée au verrou, maintenue ouverte toute la durée du cycle :
     # le verrou consultatif de session est libéré à la fermeture.
-    with psycopg.connect(config.PG_DSN) as garde:
-        pris = garde.execute(
-            "SELECT pg_try_advisory_lock(%s)", (VERROU,)).fetchone()[0]
-        if not pris:
+    with psycopg.connect(config.PG_DSN) as guard:
+        taken = guard.execute(
+            "SELECT pg_try_advisory_lock(%s)", (LOCK,)).fetchone()[0]
+        if not taken:
             # Cas normal si le cycle précédent déborde sur l'intervalle du
             # timer. On sort proprement, le prochain déclenchement reprendra.
             log.info("cycle déjà en cours, on passe ce tour")
@@ -55,12 +55,12 @@ def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
             # le plus intéressant — naît en P4 par défaut et le reste.
             # Best-effort : une API Wazuh injoignable ne coûte pas un cycle.
             try:
-                r = assets.synchroniser()
+                r = assets.sync()
                 log.info("cmdb : %d assets (%d créés)", r["vus"], r["crees"])
             except Exception as e:  # noqa: BLE001
                 log.warning("synchronisation CMDB sautée : %s", e)
 
-            n = ingest.ingerer(depuis, taille_lot)
+            n = ingest.ingerer(since, batch_size)
             log.info("ingest : %d alertes traitées", n)
 
             # Fenêtre de training ouverte : on INGÈRE et rien de plus. Pas de
@@ -70,7 +70,7 @@ def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
             # sur du bruit métier. Le conteneur soc-training apprend de ces
             # alertes ; à la clôture il réapplique le noise filter à tout
             # l'existant, et la corrélation reprend sur ce qui reste.
-            if training.en_cours(garde):
+            if training.in_progress(guard):
                 log.info("training en cours : corrélation, triage, cases et "
                          "remédiation suspendus (cf. soc_agent.training --etat)")
                 return 0
@@ -79,7 +79,7 @@ def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
             # suppressé, donc il ne graine ni ne rejoint un case (correlate lit
             # NOT suppressed). Best-effort : une panne VT ne casse pas le cycle.
             try:
-                n_vt = vt.filtrer()
+                n_vt = vt.filter()
                 if n_vt:
                     log.info("vt : %d alerte(s) écartée(s) (exe légitime)", n_vt)
             except Exception as e:  # noqa: BLE001
@@ -95,27 +95,27 @@ def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
             # Best-effort, comme VT : un moteur comportemental en panne ne doit
             # pas empêcher le pipeline de niveau >= 12 de tourner.
             try:
-                vues, scorees, promus = ueba.tourner()
-                if vues:
+                seen, scored, promoted = ueba.run()
+                if seen:
                     log.info("ueba : %d alertes observées, %d scorées, "
-                             "%d signal/signaux promus", vues, scorees,
-                             len(promus))
-                for s in promus:
+                             "%d signal/signaux promus", seen, scored,
+                             len(promoted))
+                for s in promoted:
                     log.info("ueba : signal #%s %s score %.1f -> %d alertes "
                              "graine", s["id"], s["agent_name"], s["score"],
                              len(s["alert_ids"]))
             except Exception as e:  # noqa: BLE001
                 log.warning("ueba sauté : %s", e)
 
-            n_inc, n_alertes = correlate.correler(config.MIN_LEVEL)
-            log.info("correlate : %d alertes -> %d incidents", n_alertes, n_inc)
+            n_inc, n_alerts = correlate.correlate(config.MIN_LEVEL)
+            log.info("correlate : %d alertes -> %d incidents", n_alerts, n_inc)
 
             # Capteur muet : un flux établi qui se tait (Suricata étouffé, lecteur
             # journald figé, audit coupé) rend des pans du ruleset inertes sans la
             # moindre alerte. Détecté côté base, donc pas soumis au backlog de
             # l'agent. Log-only pour l'instant (escalade IRIS = revue à part).
             try:
-                watchdog.verifier()  # journalise chaque capteur muet en WARNING
+                watchdog.check()  # journalise chaque capteur muet en WARNING
             except Exception as e:  # noqa: BLE001 — un watchdog ne casse pas le cycle
                 log.warning("watchdog capteur muet sauté : %s", e)
 
@@ -124,7 +124,7 @@ def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
             # de la valeur, et les incidents non triés seront repris au prochain
             # tour.
             try:
-                triage.trier(limite_triage, None, False, False)
+                triage.sort(triage_limit, None, False, False)
             except Exception as e:  # noqa: BLE001 — on veut tout rattraper ici
                 # Un échec du triage NE DOIT PAS couper la création de cases : les
                 # incidents déjà triés lors des cycles précédents attendent leur
@@ -136,17 +136,17 @@ def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
 
             # Boucle fermée : les FP récurrents deviennent des exceptions. Ne
             # tourne qu'après le triage, il lui faut des verdicts frais.
-            crees = [d for d in whitelist.analyser(config.WHITELIST_MIN_FP, False)
+            created = [d for d in whitelist.analyze(config.WHITELIST_MIN_FP, False)
                      if d["action"] == "créé"]
-            if crees:
+            if created:
                 log.info("whitelist : %d exception(s) créée(s) : %s",
-                         len(crees), ", ".join(d["signature"] for d in crees))
+                         len(created), ", ".join(d["signature"] for d in created))
 
             # Un case IRIS par incident trié. Après la whitelist : un incident
             # qui vient de passer en 'whitelisted' n'a pas de verdict à verser
             # (déjà écarté), les autres oui.
             try:
-                cases = iris.creer_cases()
+                cases = iris.create_cases()
                 if cases:
                     log.info("IRIS : %d case(s) créé(s)", len(cases))
             except Exception as e:  # noqa: BLE001 — IRIS down ne casse pas le cycle
@@ -158,7 +158,7 @@ def executer(depuis: str, taille_lot: int, limite_triage: int) -> int:
             # reverse) et ne doit pas attendre le triage qui sature le CPU.
             return 0
         finally:
-            garde.execute("SELECT pg_advisory_unlock(%s)", (VERROU,))
+            guard.execute("SELECT pg_advisory_unlock(%s)", (LOCK,))
 
 
 def main() -> None:
@@ -171,7 +171,7 @@ def main() -> None:
                     help="plafond d'incidents triés par cycle, garde-fou "
                          "contre un afflux qui saturerait le CPU")
     args = ap.parse_args()
-    sys.exit(executer(args.depuis, args.taille_lot, args.limite_triage))
+    sys.exit(run(args.since, args.batch_size, args.triage_limit))
 
 
 if __name__ == "__main__":

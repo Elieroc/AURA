@@ -17,7 +17,7 @@ import unicodedata
 
 # Motifs d'instruction. Leur présence dans un champ de log est en soi anormale
 # et vaut signalement, indépendamment de l'efficacité de l'injection.
-MOTIFS_INJECTION = [
+INJECTION_PATTERNS = [
     (r"ignore[rz]?\s+(les\s+)?(instructions|consignes)", "consigne d'oubli"),
     (r"disregard\s+(all\s+)?(previous|prior)", "consigne d'oubli (en)"),
     # `assistant:` seul : une vraie balise de rôle d'injection. On NE matche PLUS
@@ -49,21 +49,21 @@ MOTIFS_INJECTION = [
     (r"tu\s+dois\s+(répondre|rendre|proposer)", "injonction directe"),
 ]
 
-_COMPILES = [(re.compile(m, re.IGNORECASE | re.MULTILINE), nom)
-             for m, nom in MOTIFS_INJECTION]
+_COMPILED = [(re.compile(m, re.IGNORECASE | re.MULTILINE), name)
+             for m, name in INJECTION_PATTERNS]
 
 # Longueur au-delà de laquelle un champ de log ne porte plus d'information
 # utile au verdict. Une injection a besoin de place ; la tronquer la casse
 # souvent, et fait gagner des tokens.
-LONGUEUR_MAX = 160
+MAX_LENGTH = 160
 
 
-def detecter(texte: str) -> list[str]:
+def detect(text: str) -> list[str]:
     """Noms des motifs d'injection repérés dans le texte."""
-    return sorted({nom for motif, nom in _COMPILES if motif.search(texte)})
+    return sorted({name for pattern, name in _COMPILED if pattern.search(text)})
 
 
-def neutraliser(valeur: str | None, longueur_max: int = LONGUEUR_MAX) -> str:
+def neutralize(value: str | None, max_length: int = MAX_LENGTH) -> str:
     """Rend une valeur de log inoffensive à afficher dans un prompt.
 
     - Les retours à la ligne deviennent des espaces : c'est par eux qu'une
@@ -73,16 +73,16 @@ def neutraliser(valeur: str | None, longueur_max: int = LONGUEUR_MAX) -> str:
     - La valeur est tronquée puis encadrée de guillemets simples, pour qu'elle
       se lise visiblement comme une donnée cinglée dans un champ.
     """
-    if not valeur:
+    if not value:
         return "-"
 
-    texte = unicodedata.normalize("NFKC", str(valeur))
-    texte = "".join(
-        c for c in texte
+    text = unicodedata.normalize("NFKC", str(value))
+    text = "".join(
+        c for c in text
         if unicodedata.category(c)[0] != "C" or c in "\t")
-    texte = re.sub(r"\s+", " ", texte).strip()
+    text = re.sub(r"\s+", " ", text).strip()
 
-    if len(texte) > longueur_max:
-        texte = texte[:longueur_max] + "…"
+    if len(text) > max_length:
+        text = text[:max_length] + "…"
 
-    return f"«{texte}»"
+    return f"«{text}»"

@@ -1,6 +1,6 @@
 # Routage des sources de log — contrôle et création automatiques
 
-Module [`src/ai/soc_agent/routage.py`](../src/ai/soc_agent/routage.py) ·
+Module [`src/ai/soc_agent/routing.py`](../src/ai/soc_agent/routing.py) ·
 table `routage_sources` ([`schema.sql`](../src/ai/soc_agent/schema.sql)) ·
 exécuté par le watchdog (toutes les 2 min)
 
@@ -64,7 +64,7 @@ appliquer -> les cinq pièces
 réparer   -> le pipeline en service porte-t-il encore nos branches ?
 ```
 
-`python -m soc_agent.routage --observer` répond à la seule question qui compte
+`python -m soc_agent.routing --observer` répond à la seule question qui compte
 au départ — qui écrit où — **sans toucher ni la base ni le modèle**.
 
 ## Convention de nommage
@@ -159,9 +159,9 @@ ouverture unique, alerte IRIS, **clôture automatique** au retour à la normale.
 ## Arbitrage humain
 
 ```bash
-python -m soc_agent.routage --observer                      # qui écrit où
-python -m soc_agent.routage                                 # état, dry-run
-python -m soc_agent.routage --appliquer                     # crée ce qui manque
-python -m soc_agent.routage --source decoder:x --index wazuh-web   # forcer
-python -m soc_agent.routage --source decoder:x --refuser           # ne plus proposer
+python -m soc_agent.routing --observer                      # qui écrit où
+python -m soc_agent.routing                                 # état, dry-run
+python -m soc_agent.routing --appliquer                     # crée ce qui manque
+python -m soc_agent.routing --source decoder:x --index wazuh-web   # forcer
+python -m soc_agent.routing --source decoder:x --refuser           # ne plus proposer
 ```

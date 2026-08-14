@@ -25,10 +25,10 @@ from . import config
 # Scopes du jeton porté par la requête en cours. Vide = non authentifié : le
 # défaut est le refus, pas la lecture.
 SCOPES: ContextVar[frozenset[str]] = ContextVar("scopes", default=frozenset())
-SUJET: ContextVar[str] = ContextVar("sujet", default="anonyme")
+SUBJECT: ContextVar[str] = ContextVar("sujet", default="anonyme")
 
 
-class Refus(Exception):
+class Denied(Exception):
     """Scope insuffisant. Remonte au client comme une erreur d'outil.
 
     Message volontairement explicite (« il faut aura:admin ») : le client est
@@ -37,7 +37,7 @@ class Refus(Exception):
     """
 
 
-def scopes_du_jeton(token: str) -> tuple[str, frozenset[str]]:
+def scopes_of_token(token: str) -> tuple[str, frozenset[str]]:
     """(sujet, scopes effectifs). Lève `jwt.PyJWTError` si le jeton est mauvais.
 
     Les scopes sont *développés* par implication : `aura:admin` donne aussi
@@ -47,50 +47,50 @@ def scopes_du_jeton(token: str) -> tuple[str, frozenset[str]]:
     charge = jwt.decode(token, config.SECRET, algorithms=["HS256"],
                         audience=config.AUDIENCE, issuer=config.ISSUER,
                         options={"require": ["exp", "sub"]})
-    brut = charge.get("scope", "")
-    demandes = set(brut.split()) if isinstance(brut, str) else set(brut)
-    effectifs: set[str] = set()
-    for s in demandes:
-        effectifs |= config.IMPLIQUE.get(s, set())
-    return charge["sub"], frozenset(effectifs)
+    raw = charge.get("scope", "")
+    requests = set(raw.split()) if isinstance(raw, str) else set(raw)
+    effective: set[str] = set()
+    for s in requests:
+        effective |= config.IMPLIES.get(s, set())
+    return charge["sub"], frozenset(effective)
 
 
-def exige(scope: str):
+def require(scope: str):
     """Décorateur d'outil : impose un scope minimal.
 
     S'applique à des fonctions synchrones comme asynchrones — les outils de
     lecture appellent psycopg en bloquant, ceux du gateway sont async.
     """
-    def decorateur(fn):
+    def decorator(fn):
         @wraps(fn)
         def sync(*a, **kw):
-            _verifier(scope, fn.__name__)
+            _verify(scope, fn.__name__)
             return fn(*a, **kw)
 
         @wraps(fn)
-        async def asynchrone(*a, **kw):
-            _verifier(scope, fn.__name__)
+        async def asynchronous(*a, **kw):
+            _verify(scope, fn.__name__)
             return await fn(*a, **kw)
 
-        enveloppe = asynchrone if _est_async(fn) else sync
-        enveloppe.scope_requis = scope  # lu par serveur.py pour l'inventaire
-        return enveloppe
-    return decorateur
+        envelope = asynchronous if _is_async(fn) else sync
+        envelope.required_scope = scope  # lu par serveur.py pour l'inventaire
+        return envelope
+    return decorator
 
 
-def _est_async(fn) -> bool:
+def _is_async(fn) -> bool:
     import inspect
     return inspect.iscoroutinefunction(fn)
 
 
-def _verifier(scope: str, nom: str) -> None:
+def _verify(scope: str, name: str) -> None:
     if scope not in SCOPES.get():
-        raise Refus(
-            f"L'outil {nom} demande le scope {scope}. Le jeton présenté porte "
+        raise Denied(
+            f"L'outil {name} demande le scope {scope}. Le jeton présenté porte "
             f"{' '.join(sorted(SCOPES.get())) or 'aucun scope'}.")
 
 
-class Authentification:
+class Authentication:
     """Middleware ASGI : Bearer JWT obligatoire sur le chemin MCP.
 
     `/health` reste ouvert — c'est le healthcheck du conteneur, il ne révèle
@@ -99,64 +99,64 @@ class Authentification:
 
     def __init__(self, app):
         self.app = app
-        self._appels: dict[str, deque[float]] = defaultdict(deque)
+        self._calls: dict[str, deque[float]] = defaultdict(deque)
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope["path"] == "/health":
             await self.app(scope, receive, send)
             return
 
-        entetes = {k.decode().lower(): v.decode() for k, v in scope["headers"]}
-        pair = entetes.get("authorization", "").split(" ", 1)
+        headers = {k.decode().lower(): v.decode() for k, v in scope["headers"]}
+        pair = headers.get("authorization", "").split(" ", 1)
         if len(pair) != 2 or pair[0].lower() != "bearer":
-            await _erreur(send, 401, "Jeton Bearer requis.")
+            await _error(send, 401, "Jeton Bearer requis.")
             return
 
         try:
-            sujet, scopes = scopes_du_jeton(pair[1])
+            subject, scopes = scopes_of_token(pair[1])
         except jwt.PyJWTError as e:
-            await _erreur(send, 401, f"Jeton refusé : {e}")
+            await _error(send, 401, f"Jeton refusé : {e}")
             return
         if not scopes:
-            await _erreur(send, 403,
+            await _error(send, 403,
                           "Jeton sans scope AURA reconnu (aura:read / "
                           "aura:write / aura:admin).")
             return
 
-        if not self._sous_le_debit(sujet):
-            await _erreur(send, 429,
-                          f"Plus de {config.DEBIT_MAX} appels par minute.")
+        if not self._under_rate_limit(subject):
+            await _error(send, 429,
+                          f"Plus de {config.MAX_RATE} appels par minute.")
             return
 
-        jeton_scopes = SCOPES.set(scopes)
-        jeton_sujet = SUJET.set(sujet)
+        token_scopes = SCOPES.set(scopes)
+        token_subject = SUBJECT.set(subject)
         try:
             await self.app(scope, receive, send)
         finally:
-            SCOPES.reset(jeton_scopes)
-            SUJET.reset(jeton_sujet)
+            SCOPES.reset(token_scopes)
+            SUBJECT.reset(token_subject)
 
-    def _sous_le_debit(self, sujet: str) -> bool:
+    def _under_rate_limit(self, subject: str) -> bool:
         """Fenêtre glissante d'une minute, comptée par sujet du jeton.
 
         Par sujet et non par IP : tous les clients arrivent de la loopback,
         l'IP ne distingue rien.
         """
         maintenant = time.monotonic()
-        recents = self._appels[sujet]
-        while recents and maintenant - recents[0] > 60:
-            recents.popleft()
-        if len(recents) >= config.DEBIT_MAX:
+        recent = self._calls[subject]
+        while recent and maintenant - recent[0] > 60:
+            recent.popleft()
+        if len(recent) >= config.MAX_RATE:
             return False
-        recents.append(maintenant)
+        recent.append(maintenant)
         return True
 
 
-async def _vide():
+async def _empty():
     """`receive` factice : une réponse d'erreur ne lit jamais le corps."""
     return {"type": "http.disconnect"}
 
 
-async def _erreur(send, code: int, message: str) -> None:
-    reponse = JSONResponse({"error": message}, status_code=code)
-    await reponse({"type": "http"}, _vide, send)
+async def _error(send, code: int, message: str) -> None:
+    response = JSONResponse({"error": message}, status_code=code)
+    await response({"type": "http"}, _empty, send)

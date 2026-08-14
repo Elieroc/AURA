@@ -7,16 +7,16 @@ Tous en `aura:read`. Ils lisent la base `socagent` en transaction read-only
 from soc_agent import config as soc_config
 from soc_agent import evaluate, label, report, training, ueba, whitelist
 
-from .. import auth, sortie
-from ..db import lecture as base
-from ..serveur import enregistrer
+from .. import auth, output
+from ..db import read as base
+from ..server import register
 
 # Colonnes de l'incident rendues en liste. Pas `entities` ni `rule_ids` en
 # entier : sur un incident à 300 alertes, ces tableaux font l'essentiel du
 # poids de la réponse alors que la liste sert à choisir sur quoi zoomer.
 SELECT_INCIDENTS = """
     SELECT i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
-           i.alert_count, i.max_level, i.priorite, i.severite, i.status,
+           i.alert_count, i.max_level, i.priority, i.severity, i.status,
            i.iris_case_id,
            i.needs_refresh, i.ueba, i.ueba_score, i.mitre_tactics,
            t.verdict, t.confidence, t.created_at AS triage_at
@@ -25,7 +25,7 @@ SELECT_INCIDENTS = """
             SELECT verdict, confidence, created_at FROM triages
              WHERE incident_id = i.id ORDER BY created_at DESC LIMIT 1
       ) t ON true
-     WHERE (%(statut)s::text IS NULL OR i.status = %(statut)s)
+     WHERE (%(status)s::text IS NULL OR i.status = %(status)s)
        AND (%(agent)s::text IS NULL
             OR i.agent_id = %(agent)s OR i.agent_name = %(agent)s)
        AND (%(min_level)s::int IS NULL OR i.max_level >= %(min_level)s)
@@ -36,8 +36,8 @@ SELECT_INCIDENTS = """
      -- puis la sévérité effective. Un analyste qui ouvre cette liste doit voir
      -- ce que le pipeline a traité en premier, sinon les deux vues racontent
      -- deux histoires différentes du même parc.
-     ORDER BY COALESCE(i.priorite, %(prio_defaut)s),
-              COALESCE(i.severite, i.max_level) DESC, i.last_seen DESC
+     ORDER BY COALESCE(i.priority, %(prio_defaut)s),
+              COALESCE(i.severity, i.max_level) DESC, i.last_seen DESC
      LIMIT %(limite)s OFFSET %(offset)s
 """
 
@@ -48,7 +48,7 @@ COUNT_INCIDENTS = """
             SELECT verdict FROM triages
              WHERE incident_id = i.id ORDER BY created_at DESC LIMIT 1
       ) t ON true
-     WHERE (%(statut)s::text IS NULL OR i.status = %(statut)s)
+     WHERE (%(status)s::text IS NULL OR i.status = %(status)s)
        AND (%(agent)s::text IS NULL
             OR i.agent_id = %(agent)s OR i.agent_name = %(agent)s)
        AND (%(min_level)s::int IS NULL OR i.max_level >= %(min_level)s)
@@ -58,14 +58,14 @@ COUNT_INCIDENTS = """
 """
 
 
-@auth.exige("aura:read")
+@auth.require("aura:read")
 def aura_incidents_list(
-    statut: str | None = None,
+    status: str | None = None,
     agent: str | None = None,
     min_level: int | None = None,
     verdict: str | None = None,
-    depuis_heures: int | None = None,
-    limite: int | None = None,
+    since_hours: int | None = None,
+    limit: int | None = None,
     offset: int | None = None,
 ) -> dict:
     """Liste les incidents AURA, du plus grave au plus récent.
@@ -85,21 +85,21 @@ def aura_incidents_list(
         limite: taille de page (défaut 25, plafond 100).
         offset: décalage de pagination.
     """
-    limite, offset = sortie.bornes(limite, offset)
-    filtres = {"statut": statut, "agent": agent, "min_level": min_level,
-               "verdict": verdict, "depuis_heures": depuis_heures}
+    limit, offset = output.bounds(limit, offset)
+    filters = {"status": status, "agent": agent, "min_level": min_level,
+               "verdict": verdict, "depuis_heures": since_hours}
     with base() as conn:
-        total = conn.execute(COUNT_INCIDENTS, filtres).fetchone()["n"]
-        lignes = conn.execute(
+        total = conn.execute(COUNT_INCIDENTS, filters).fetchone()["n"]
+        lines = conn.execute(
             SELECT_INCIDENTS,
-            {**filtres, "limite": limite, "offset": offset,
-             "prio_defaut": soc_config.PRIORITE_DEFAUT},
+            {**filters, "limite": limit, "offset": offset,
+             "prio_defaut": soc_config.DEFAULT_PRIORITY},
         ).fetchall()
-    return sortie.page([dict(r) for r in lignes], total, limite, offset)
+    return output.page([dict(r) for r in lines], total, limit, offset)
 
 
-@auth.exige("aura:read")
-def aura_incident_get(incident_id: int, avec_rendu: bool = True) -> dict:
+@auth.require("aura:read")
+def aura_incident_get(incident_id: int, with_rendered: bool = True) -> dict:
     """Un incident en détail, tel que le modèle de triage l'a vu.
 
     `rendu` est le texte EXACT soumis au LLM, pas une reformulation : c'est ce
@@ -112,41 +112,41 @@ def aura_incident_get(incident_id: int, avec_rendu: bool = True) -> dict:
         avec_rendu: joindre le rendu complet. Le couper économise beaucoup de
             contexte quand on ne veut que le verdict et les remédiations.
     """
-    vue = label.vue_incident(incident_id)
+    vue = label.incident_view(incident_id)
     if not vue:
-        return {"erreur": f"Incident {incident_id} inconnu."}
+        return {"error": f"Incident {incident_id} inconnu."}
 
     with base() as conn:
         inc = conn.execute(
             "SELECT * FROM incidents WHERE id = %s", (incident_id,)).fetchone()
         remediations = conn.execute(
-            "SELECT action, cible, agent_id, statut, details, tentatives, "
+            "SELECT action, target, agent_id, status, details, attempts, "
             "       executed_at, iris_task_id "
             "  FROM mitigations WHERE incident_id = %s ORDER BY id",
             (incident_id,)).fetchall()
         signal = None
         if inc["ueba"]:
             signal = conn.execute(
-                "SELECT DISTINCT s.id, s.score, s.statut, s.motifs "
+                "SELECT DISTINCT s.id, s.score, s.status, s.patterns "
                 "  FROM ueba_signals s JOIN alerts a "
                 "    ON a.ueba_signal_id = s.id "
                 " WHERE a.incident_id = %s", (incident_id,)).fetchone()
 
-    reponse = {
-        "incident": sortie.jsonifiable(dict(inc)),
+    response = {
+        "incident": output.jsonifiable(dict(inc)),
         "triage": vue["triage"],
-        "remediations": sortie.jsonifiable([dict(r) for r in remediations]),
-        "ueba_signal": sortie.jsonifiable(dict(signal)) if signal else None,
+        "remediations": output.jsonifiable([dict(r) for r in remediations]),
+        "ueba_signal": output.jsonifiable(dict(signal)) if signal else None,
     }
-    if avec_rendu:
+    if with_rendered:
         # Plafond dédié : le rendu d'un incident à 300 alertes dépasse
         # largement une réponse d'outil raisonnable.
-        reponse["rendu"] = sortie.untrusted(
-            sortie.borner(vue["rendu"], 12000))
-    return reponse
+        response["rendu"] = output.untrusted(
+            output.bound(vue["rendu"], 12000))
+    return response
 
 
-SELECT_ALERTES = """
+SELECT_ALERTS = """
     SELECT id, ts, agent_id, agent_name, container, rule_id, rule_level,
            rule_desc, rule_groups, mitre_ids, mitre_tactics, srcip, srcuser,
            entity, incident_id, suppressed, suppress_reason, ueba_score
@@ -170,10 +170,10 @@ SELECT_ALERTES = """
 
 # Champs écrits par les machines surveillées : un attaquant choisit un nom de
 # fichier ou une description de règle déclenchée. Balisés à la sortie.
-CHAMPS_HOSTILES = ("rule_desc", "entity", "srcuser", "suppress_reason")
+HOSTILE_FIELDS = ("rule_desc", "entity", "srcuser", "suppress_reason")
 
 
-@auth.exige("aura:read")
+@auth.require("aura:read")
 def aura_alerts_search(
     incident_id: int | None = None,
     agent: str | None = None,
@@ -181,10 +181,10 @@ def aura_alerts_search(
     min_level: int | None = None,
     srcip: str | None = None,
     srcuser: str | None = None,
-    recherche: str | None = None,
-    depuis_heures: int | None = None,
-    inclure_supprimees: bool = False,
-    limite: int | None = None,
+    search: str | None = None,
+    since_hours: int | None = None,
+    include_deleted: bool = False,
+    limit: int | None = None,
     offset: int | None = None,
 ) -> dict:
     """Cherche des alertes Wazuh dans la base AURA (les plus récentes d'abord).
@@ -208,32 +208,32 @@ def aura_alerts_search(
         limite: taille de page (défaut 25, plafond 100).
         offset: décalage de pagination.
     """
-    limite, offset = sortie.bornes(limite, offset)
-    filtres = {
+    limit, offset = output.bounds(limit, offset)
+    filters = {
         "incident_id": incident_id, "agent": agent, "rule_id": rule_id,
         "min_level": min_level, "srcip": srcip, "srcuser": srcuser,
-        "recherche": recherche, "depuis_heures": depuis_heures,
-        "inclure_supprimees": inclure_supprimees,
+        "recherche": search, "depuis_heures": since_hours,
+        "inclure_supprimees": include_deleted,
     }
     with base() as conn:
-        lignes = conn.execute(
-            SELECT_ALERTES, {**filtres, "limite": limite, "offset": offset}
+        lines = conn.execute(
+            SELECT_ALERTS, {**filters, "limite": limit, "offset": offset}
         ).fetchall()
         total = conn.execute(
             "SELECT count(*) AS n FROM (" +
-            SELECT_ALERTES.replace("LIMIT %(limite)s OFFSET %(offset)s", "") +
-            ") t", filtres).fetchone()["n"]
+            SELECT_ALERTS.replace("LIMIT %(limite)s OFFSET %(offset)s", "") +
+            ") t", filters).fetchone()["n"]
 
-    alertes = []
-    for r in lignes:
+    alerts = []
+    for r in lines:
         a = dict(r)
-        for champ in CHAMPS_HOSTILES:
-            a[champ] = sortie.untrusted(a.get(champ))
-        alertes.append(a)
-    return sortie.page(alertes, total, limite, offset)
+        for field in HOSTILE_FIELDS:
+            a[field] = output.untrusted(a.get(field))
+        alerts.append(a)
+    return output.page(alerts, total, limit, offset)
 
 
-@auth.exige("aura:read")
+@auth.require("aura:read")
 def aura_triage_history(incident_id: int) -> dict:
     """Tous les passages de triage d'un incident, du plus récent au plus ancien.
 
@@ -243,30 +243,30 @@ def aura_triage_history(incident_id: int) -> dict:
     version du prompt qui a produit chaque verdict.
     """
     with base() as conn:
-        lignes = conn.execute(
-            "SELECT id, verdict, confidence, mitre, actions, reason, modele, "
+        lines = conn.execute(
+            "SELECT id, verdict, confidence, mitre, actions, reason, model, "
             "       prompt_sha, prompt_tokens, duree_ms, mode, incoherences, "
             "       injection_motifs, garde_fous, created_at "
             "  FROM triages WHERE incident_id = %s ORDER BY created_at DESC",
             (incident_id,)).fetchall()
-        humain = conn.execute(
-            "SELECT verdict, actions, commentaire, origine, labellise_par "
+        human = conn.execute(
+            "SELECT verdict, actions, comment, origin, labeled_by "
             "  FROM labels WHERE incident_id = %s", (incident_id,)).fetchone()
 
     return {
         "incident_id": incident_id,
-        "triages": sortie.jsonifiable([dict(r) for r in lignes]),
-        "label_humain": sortie.jsonifiable(dict(humain)) if humain else None,
+        "triages": output.jsonifiable([dict(r) for r in lines]),
+        "label_humain": output.jsonifiable(dict(human)) if human else None,
     }
 
 
-@auth.exige("aura:read")
+@auth.require("aura:read")
 def aura_mitigations_list(
     incident_id: int | None = None,
-    statut: str | None = None,
+    status: str | None = None,
     agent: str | None = None,
-    depuis_heures: int | None = None,
-    limite: int | None = None,
+    since_hours: int | None = None,
+    limit: int | None = None,
     offset: int | None = None,
 ) -> dict:
     """Historique des remédiations, appliquées ou non.
@@ -284,34 +284,34 @@ def aura_mitigations_list(
         limite: taille de page (défaut 25, plafond 100).
         offset: décalage de pagination.
     """
-    limite, offset = sortie.bornes(limite, offset)
+    limit, offset = output.bounds(limit, offset)
     where = """
          WHERE (%(incident_id)s::bigint IS NULL
                 OR incident_id = %(incident_id)s)
-           AND (%(statut)s::text IS NULL OR statut = %(statut)s)
+           AND (%(status)s::text IS NULL OR status = %(status)s)
            AND (%(agent)s::text IS NULL OR agent_id = %(agent)s)
            AND (%(depuis_heures)s::int IS NULL
                 OR executed_at >= now()
                    - make_interval(hours => %(depuis_heures)s))
     """
-    filtres = {"incident_id": incident_id, "statut": statut, "agent": agent,
-               "depuis_heures": depuis_heures}
+    filters = {"incident_id": incident_id, "status": status, "agent": agent,
+               "depuis_heures": since_hours}
     with base() as conn:
         total = conn.execute(
             "SELECT count(*) AS n FROM mitigations" + where,
-            filtres).fetchone()["n"]
-        lignes = conn.execute(
-            "SELECT id, incident_id, action, cible, agent_id, statut, details, "
+            filters).fetchone()["n"]
+        lines = conn.execute(
+            "SELECT id, incident_id, action, target, agent_id, status, details, "
             "       undo, iris_task_id, tentatives, executed_at "
             "  FROM mitigations" + where +
             " ORDER BY executed_at DESC NULLS LAST, id DESC "
             " LIMIT %(limite)s OFFSET %(offset)s",
-            {**filtres, "limite": limite, "offset": offset}).fetchall()
-    return sortie.page([dict(r) for r in lignes], total, limite, offset)
+            {**filters, "limite": limit, "offset": offset}).fetchall()
+    return output.page([dict(r) for r in lines], total, limit, offset)
 
 
-@auth.exige("aura:read")
-def aura_whitelist_list(actives_seulement: bool = True) -> dict:
+@auth.require("aura:read")
+def aura_whitelist_list(active_only: bool = True) -> dict:
     """Les exceptions de whitelist : ce qu'AURA a décidé de ne plus voir.
 
     Chaque exception est un angle mort assumé. Quatre origines : `auto` (FP
@@ -320,14 +320,14 @@ def aura_whitelist_list(actives_seulement: bool = True) -> dict:
     exception révoquée reste listée avec `active: false` — l'historique de ce
     qu'on a cessé de voir compte autant que l'état courant.
     """
-    lignes = whitelist.exceptions()
-    if actives_seulement:
-        lignes = [r for r in lignes if r["active"]]
-    return {"exceptions": sortie.jsonifiable(lignes), "total": len(lignes)}
+    lines = whitelist.exceptions()
+    if active_only:
+        lines = [r for r in lines if r["active"]]
+    return {"exceptions": output.jsonifiable(lines), "total": len(lines)}
 
 
-@auth.exige("aura:read")
-def aura_ueba_state(limite_signaux: int | None = None) -> dict:
+@auth.require("aura:read")
+def aura_ueba_state(signals_limit: int | None = None) -> dict:
     """État du moteur comportemental : maturité, budget, derniers signaux.
 
     L'UEBA promeut en incident des comportements rares qu'aucune règle Wazuh
@@ -339,11 +339,11 @@ def aura_ueba_state(limite_signaux: int | None = None) -> dict:
       signaux sont scorés et enregistrés mais ne partent plus au triage,
       ce qui borne la facture LLM d'une dérive.
     """
-    limite, _ = sortie.bornes(limite_signaux, 0)
-    return sortie.jsonifiable(ueba.rapport_etat(limite))
+    limit, _ = output.bounds(signals_limit, 0)
+    return output.jsonifiable(ueba.state_report(limit))
 
 
-@auth.exige("aura:read")
+@auth.require("aura:read")
 def aura_funnel_report() -> dict:
     """Entonnoir de filtrage et charge LLM induite.
 
@@ -352,10 +352,10 @@ def aura_funnel_report() -> dict:
     `verdict` (`large` / `tendu` / `intenable`) dit si l'architecture tient au
     volume actuel.
     """
-    return sortie.jsonifiable(report.rapport())
+    return output.jsonifiable(report.report())
 
 
-@auth.exige("aura:read")
+@auth.require("aura:read")
 def aura_metrics() -> dict:
     """Justesse et cohérence du triage, plus l'état des fenêtres de training.
 
@@ -365,18 +365,18 @@ def aura_metrics() -> dict:
     label — c'est le signal disponible tout de suite après un changement de
     prompt.
     """
-    return sortie.jsonifiable({
-        **evaluate.rapport(),
-        "training": training.rapport_etat(),
+    return output.jsonifiable({
+        **evaluate.report(),
+        "training": training.state_report(),
     })
 
 
-enregistrer(aura_incidents_list)
-enregistrer(aura_incident_get)
-enregistrer(aura_alerts_search)
-enregistrer(aura_triage_history)
-enregistrer(aura_mitigations_list)
-enregistrer(aura_whitelist_list)
-enregistrer(aura_ueba_state)
-enregistrer(aura_funnel_report)
-enregistrer(aura_metrics)
+register(aura_incidents_list)
+register(aura_incident_get)
+register(aura_alerts_search)
+register(aura_triage_history)
+register(aura_mitigations_list)
+register(aura_whitelist_list)
+register(aura_ueba_state)
+register(aura_funnel_report)
+register(aura_metrics)

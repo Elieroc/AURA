@@ -35,33 +35,33 @@ import pathlib
 import re
 import sys
 
-RACINE = pathlib.Path(__file__).resolve().parent.parent
-ENV = RACINE / ".env"
-USERS = RACINE / "src/wazuh/config/wazuh_indexer/internal_users.yml"
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+ENV = ROOT / ".env"
+USERS = ROOT / "src/wazuh/config/wazuh_indexer/internal_users.yml"
 
 # Compte -> variable du .env qui porte son mot de passe.
-COMPTES = {
+ACCOUNTS = {
     "admin": "INDEXER_PASSWORD",
     "kibanaserver": "DASHBOARD_PASSWORD",
 }
 
 
-def lire_env(cle: str) -> str:
+def read_env(key: str) -> str:
     if not ENV.is_file():
-        sortir(f"{ENV} introuvable — copier .env.example en .env d'abord.")
-    for ligne in ENV.read_text(encoding="utf-8").splitlines():
-        ligne = ligne.strip()
-        if ligne.startswith(f"{cle}="):
-            return ligne.split("=", 1)[1].strip().strip('"').strip("'")
-    sortir(f"{cle} absent de {ENV}.")
+        exit_with(f"{ENV} introuvable — copier .env.example en .env d'abord.")
+    for line in ENV.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1].strip().strip('"').strip("'")
+    exit_with(f"{key} absent de {ENV}.")
 
 
-def sortir(message: str) -> None:
+def exit_with(message: str) -> None:
     print(f"erreur : {message}", file=sys.stderr)
     raise SystemExit(1)
 
 
-def hacher(motdepasse: str) -> str:
+def hash(password: str) -> str:
     """Hachage bcrypt, par le module Python s'il est là, sinon par l'indexer.
 
     Le repli n'est pas du confort : `bcrypt` n'est installé ni sur l'hôte de
@@ -73,12 +73,12 @@ def hacher(motdepasse: str) -> str:
     try:
         import bcrypt
     except ImportError:
-        return _hacher_par_conteneur(motdepasse)
+        return _hash_in_container(password)
     # rounds=12 et préfixe 2b : ce que génère l'outil hash.sh d'OpenSearch.
-    return bcrypt.hashpw(motdepasse.encode(), bcrypt.gensalt(12, b"2b")).decode()
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt(12, b"2b")).decode()
 
 
-def _hacher_par_conteneur(motdepasse: str) -> str:
+def _hash_in_container(password: str) -> str:
     """Délègue à `hash.sh` dans le conteneur de l'indexer.
 
     Le conteneur est retrouvé par son label compose plutôt que par un nom en
@@ -87,14 +87,14 @@ def _hacher_par_conteneur(motdepasse: str) -> str:
     """
     import subprocess
 
-    trouve = subprocess.run(
+    found = subprocess.run(
         ["docker", "ps", "--filter",
          "label=com.docker.compose.service=wazuh.indexer",
          "--format", "{{.Names}}"],
         capture_output=True, text=True)
-    conteneur = (trouve.stdout or "").split("\n")[0].strip()
-    if not conteneur:
-        sortir("ni le module bcrypt ni le conteneur wazuh.indexer ne sont "
+    container = (found.stdout or "").split("\n")[0].strip()
+    if not container:
+        exit_with("ni le module bcrypt ni le conteneur wazuh.indexer ne sont "
                "disponibles. Démarrer l'indexer, ou : pip install bcrypt")
 
     # Le mot de passe passe par l'argument -p, donc par la ligne de commande du
@@ -102,45 +102,45 @@ def _hacher_par_conteneur(motdepasse: str) -> str:
     # est root sur cet hôte — qui a déjà le .env.
     r = subprocess.run(
         ["docker", "exec", "-e", "JAVA_HOME=/usr/share/wazuh-indexer/jdk",
-         conteneur,
+         container,
          "bash", "/usr/share/wazuh-indexer/plugins/opensearch-security/tools/"
-                 "hash.sh", "-p", motdepasse],
+                 "hash.sh", "-p", password],
         capture_output=True, text=True)
     if r.returncode != 0:
-        sortir(f"hash.sh a échoué dans {conteneur} : {r.stderr.strip()[:300]}")
+        exit_with(f"hash.sh a échoué dans {container} : {r.stderr.strip()[:300]}")
     # hash.sh écrit des avertissements avant le hachage : on garde la dernière
     # ligne qui ressemble à du bcrypt.
-    for ligne in reversed(r.stdout.splitlines()):
-        ligne = ligne.strip()
-        if ligne.startswith("$2"):
-            return ligne
-    sortir(f"hachage introuvable dans la sortie de hash.sh : "
+    for line in reversed(r.stdout.splitlines()):
+        line = line.strip()
+        if line.startswith("$2"):
+            return line
+    exit_with(f"hachage introuvable dans la sortie de hash.sh : "
            f"{r.stdout.strip()[:300]}")
 
 
-def poser(compte: str, hachage: str) -> None:
-    texte = USERS.read_text(encoding="utf-8")
+def set(account: str, hashing: str) -> None:
+    text = USERS.read_text(encoding="utf-8")
     # Remplace la ligne `hash:` du bloc de CE compte seulement : on ancre sur le
     # nom du compte pour ne pas réécrire celui du voisin.
-    motif = re.compile(
-        rf"(^{re.escape(compte)}:\n(?:[ \t]+.*\n)*?[ \t]+hash:[ \t]*)\S.*$",
+    pattern = re.compile(
+        rf"(^{re.escape(account)}:\n(?:[ \t]+.*\n)*?[ \t]+hash:[ \t]*)\S.*$",
         re.MULTILINE)
-    nouveau, n = motif.subn(rf'\g<1>"{hachage}"', texte)
+    new, n = pattern.subn(rf'\g<1>"{hashing}"', text)
     if n != 1:
-        sortir(f"bloc « {compte} » introuvable (ou en double) dans {USERS}.")
-    USERS.write_text(nouveau, encoding="utf-8")
+        exit_with(f"bloc « {account} » introuvable (ou en double) dans {USERS}.")
+    USERS.write_text(new, encoding="utf-8")
 
 
 def main() -> None:
-    if len(sys.argv) != 2 or sys.argv[1] not in COMPTES:
-        sortir(f"usage : {sys.argv[0]} {{{'|'.join(COMPTES)}}}")
-    compte = sys.argv[1]
-    motdepasse = lire_env(COMPTES[compte])
-    if not motdepasse or motdepasse in ("changeme", "__CHANGE_ME__"):
-        sortir(f"{COMPTES[compte]} vaut « {motdepasse} » dans {ENV} — "
+    if len(sys.argv) != 2 or sys.argv[1] not in ACCOUNTS:
+        exit_with(f"usage : {sys.argv[0]} {{{'|'.join(ACCOUNTS)}}}")
+    account = sys.argv[1]
+    password = read_env(ACCOUNTS[account])
+    if not password or password in ("changeme", "__CHANGE_ME__"):
+        exit_with(f"{ACCOUNTS[account]} vaut « {password} » dans {ENV} — "
                f"générer un vrai secret : openssl rand -hex 32")
-    poser(compte, hacher(motdepasse))
-    print(f"{compte} : hachage posé dans {USERS.relative_to(RACINE)}")
+    set(account, hash(password))
+    print(f"{account} : hachage posé dans {USERS.relative_to(ROOT)}")
     print("Recharger la configuration de sécurité de l'indexer "
           "(voir l'en-tête de ce script) : sans cela, l'indexer sert "
           "toujours l'ancienne base d'utilisateurs.")

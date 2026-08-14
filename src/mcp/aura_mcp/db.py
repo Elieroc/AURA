@@ -16,7 +16,7 @@ from soc_agent import config as soc_config
 
 
 @contextmanager
-def lecture():
+def read():
     """Connexion en lecture seule — la transaction ne peut rien écrire.
 
     Garde-fou de fond : la majorité des outils exposés sont des outils de

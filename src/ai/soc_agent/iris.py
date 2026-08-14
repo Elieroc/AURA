@@ -31,12 +31,12 @@ import urllib3
 from psycopg.rows import dict_row
 
 from . import config, correlate
-from . import alertes as alertes_mod
-from .anonymize import Anonymiseur, anonymiser, rehydrater, verifier_fuite
+from . import alerts as alerts_mod
+from .anonymize import Anonymizer, anonymize, rehydrate, check_leak
 from .llm import completion
-from .render import rendre
-from .triage import charger_map, sauver_map
-from .whitelist import _canonique, _signature
+from .render import render
+from .triage import load_map, save_map
+from .whitelist import _canonical, _signature
 
 log = logging.getLogger("iris")
 
@@ -50,8 +50,8 @@ PROMPTS = Path(__file__).parent / "prompts"
 # ids issus de /manage/case-classifications/list.
 CLASSIF_RANSOMWARE = 6      # malicious-code:ransomware
 CLASSIF_INTRUSION = 14      # intrusion-attempts:exploit-known-vuln
-CLASSIF_BRUTE = 15          # intrusion-attempts:login-attempts
-CLASSIF_DEFAUT = CLASSIF_INTRUSION
+CLASSIF_RAW = 15          # intrusion-attempts:login-attempts
+CLASSIF_DEFAULT = CLASSIF_INTRUSION
 
 # --------------------------------------------------------------------------
 # Sévérité du case IRIS
@@ -82,7 +82,7 @@ SEV_HIGH, SEV_CRITICAL = "High", "Critical"
 #
 #   docker exec iris-db psql -U postgres -d iris_db \
 #     -c "select case_id, severity_id from cases order by case_id desc limit 5"
-CHAMP_SEVERITE = "severity_id"
+FIELD_SEVERITY = "severity_id"
 
 # Correspondance sévérité effective (échelle Wazuh 1-15, cf. assets.severite)
 # -> nom IRIS. Bornes basses inclusives, lues de haut en bas.
@@ -92,7 +92,7 @@ CHAMP_SEVERITE = "severity_id"
 # définition de la gravité. L'analyste retrouve donc dans la file IRIS l'ordre
 # exact que le pipeline a appliqué, et la valeur affichée dans la description du
 # case (« sévérité effective 14/15 ») explique la couleur qu'il voit.
-SEUILS_SEVERITE = (
+THRESHOLDS_SEVERITY = (
     (15, SEV_CRITICAL),   # attaque avérée sur un asset qui compte
     (12, SEV_HIGH),       # niveau d'ouverture d'incident du pipeline
     (8, SEV_MEDIUM),
@@ -101,7 +101,7 @@ SEUILS_SEVERITE = (
 )
 
 
-def nom_severite(severite: int, ueba: bool = False, verdict: str = "",
+def severity_name(severity: int, ueba: bool = False, verdict: str = "",
                  actions=()) -> str:
     """Nom de sévérité IRIS pour un incident. Fonction pure.
 
@@ -121,62 +121,62 @@ def nom_severite(severite: int, ueba: bool = False, verdict: str = "",
        décision qu'on vient de refuser — exactement ce qu'une injection cherche
        à obtenir.
     """
-    nom = SEV_INFO
-    for plancher, libelle in SEUILS_SEVERITE:
-        if severite >= plancher:
-            nom = libelle
+    name = SEV_INFO
+    for floor, label in THRESHOLDS_SEVERITY:
+        if severity >= floor:
+            name = label
             break
 
-    ordre = [SEV_INFO, SEV_LOW, SEV_MEDIUM, SEV_HIGH, SEV_CRITICAL]
-    if ueba and ordre.index(nom) < ordre.index(SEV_MEDIUM):
-        nom = SEV_MEDIUM
+    order = [SEV_INFO, SEV_LOW, SEV_MEDIUM, SEV_HIGH, SEV_CRITICAL]
+    if ueba and order.index(name) < order.index(SEV_MEDIUM):
+        name = SEV_MEDIUM
     if (verdict == "false_positive" and "escalate_human" not in (actions or [])
-            and ordre.index(nom) > ordre.index(SEV_LOW)):
-        nom = SEV_LOW
-    return nom
+            and order.index(name) > order.index(SEV_LOW)):
+        name = SEV_LOW
+    return name
 
 
 # Correspondance nom -> id, lue une fois par processus sur le serveur IRIS.
-_SEVERITES_ID: dict[str, int] | None = None
+_SEVERITIES_ID: dict[str, int] | None = None
 
 # Repli si `/manage/severities/list` est injoignable : les ids observés sur
 # IRIS 2.4. Le repli est explicitement DÉCLARÉ faux-possible — mieux vaut une
 # sévérité approchée qu'un case sans sévérité, mais on journalise.
-_SEVERITES_REPLI = {"informational": 3, "low": 4, "medium": 1, "high": 5,
+_SEVERITIES_FALLBACK = {"informational": 3, "low": 4, "medium": 1, "high": 5,
                     "critical": 6}
 
 
-def _id_severite(case, nom: str) -> int | None:
-    global _SEVERITES_ID
-    if _SEVERITES_ID is None:
+def _severity_id(case, name: str) -> int | None:
+    global _SEVERITIES_ID
+    if _SEVERITIES_ID is None:
         try:
-            liste = case._s.pi_get("/manage/severities/list").get_data()
-            _SEVERITES_ID = {str(s["severity_name"]).lower(): s["severity_id"]
-                             for s in liste}
+            items = case._s.pi_get("/manage/severities/list").get_data()
+            _SEVERITIES_ID = {str(s["severity_name"]).lower(): s["severity_id"]
+                             for s in items}
         except Exception as e:  # noqa: BLE001
             log.warning("liste des sévérités IRIS illisible (%s) : repli sur "
                         "les ids par défaut", e)
-            _SEVERITES_ID = dict(_SEVERITES_REPLI)
-    return _SEVERITES_ID.get(nom.lower())
+            _SEVERITIES_ID = dict(_SEVERITIES_FALLBACK)
+    return _SEVERITIES_ID.get(name.lower())
 
 
-def _poser_severite(case, case_id: int, incident: dict, triage: dict) -> str | None:
+def _set_severity(case, case_id: int, incident: dict, triage: dict) -> str | None:
     """Règle la sévérité du case. Best-effort : jamais bloquant.
 
     `add_case` ne prend pas de sévérité (tous les cases naissent « Low ») et
     `update_case` du client non plus : on passe par l'endpoint brut.
     """
-    severite = incident.get("severite") or incident.get("max_level") or 0
-    nom = nom_severite(severite, bool(incident.get("ueba")),
+    severity = incident.get("severity") or incident.get("max_level") or 0
+    name = severity_name(severity, bool(incident.get("ueba")),
                        triage.get("verdict") or "", triage.get("actions") or [])
-    sid = _id_severite(case, nom)
+    sid = _severity_id(case, name)
     if sid is None:
         log.warning("sévérité « %s » inconnue du serveur IRIS : case #%s laissé "
-                    "tel quel", nom, case_id)
+                    "tel quel", name, case_id)
         return None
     try:
         r = case._s.pi_post(f"/manage/cases/update/{case_id}",
-                            data={CHAMP_SEVERITE: sid})
+                            data={FIELD_SEVERITY: sid})
         if not r.is_success():
             log.warning("sévérité non posée sur le case #%s : %s", case_id,
                         r.get_msg())
@@ -184,10 +184,10 @@ def _poser_severite(case, case_id: int, incident: dict, triage: dict) -> str | N
     except Exception as e:  # noqa: BLE001
         log.warning("sévérité non posée sur le case #%s : %s", case_id, e)
         return None
-    return nom
+    return name
 
 
-def _description(incident: dict, verdict: str, maj: bool = False) -> str:
+def _description(incident: dict, verdict: str, update: bool = False) -> str:
     """Description du case. UNE seule forme, création comme rafraîchissement.
 
     Le rafraîchissement réécrivait une description sans la priorité de l'asset :
@@ -197,18 +197,18 @@ def _description(incident: dict, verdict: str, maj: bool = False) -> str:
     desc = (f"Incident #{incident['id']} corrélé par le soc-agent, "
             f"{incident['alert_count']} alertes, niveau max "
             f"{incident['max_level']}/15")
-    if incident.get("priorite"):
+    if incident.get("priority"):
         role = incident.get("asset_role") or "rôle non déclaré"
-        desc += (f", asset P{incident['priorite']} ({role}), sévérité effective "
-                 f"{incident.get('severite') or incident['max_level']}/15")
+        desc += (f", asset P{incident['priority']} ({role}), sévérité effective "
+                 f"{incident.get('severity') or incident['max_level']}/15")
     desc += f". Verdict IA : {verdict}."
-    if maj:
+    if update:
         desc += " (mis à jour — nouvelles alertes rattachées)"
     return desc
 
 
 # Descriptions courtes des actions, pour un rapport lisible par un humain.
-LIBELLE_ACTION = {
+LABEL_ACTION = {
     "propose_kill_process": "Tuer le process malveillant",
     "propose_isolate_host": "Isoler l'hôte du réseau",
     "propose_disable_user": "Désactiver le compte compromis",
@@ -230,22 +230,22 @@ def _client():
 
 
 # Répertoire de notes où atterrit l'analyse IA (créé au besoin).
-DIR_ANALYSE = "Analyse IA"
+DIR_ANALYSIS = "Analyse IA"
 
 # Répertoire de la note d'exposition aux vulnérabilités. SÉPARÉ de « Analyse IA »
 # à dessein : son contenu est calculé en Python à partir de l'inventaire Wazuh,
 # il n'est ni produit ni relu par le modèle. Les mélanger ferait porter à des
 # faits l'avertissement « verdict produit par un LLM » du rapport — et
 # inversement donnerait au récit du modèle l'autorité d'une mesure.
-DIR_EXPOSITION = "Exposition"
-TITRE_EXPOSITION = "Exposition aux vulnérabilités"
+EXPOSURE_DIR = "Exposition"
+EXPOSURE_TITLE = "Exposition aux vulnérabilités"
 
 # Tag posé sur les évènements de timeline créés par le soc-agent : c'est à ça
 # qu'on les reconnaît pour les remplacer au rafraîchissement.
 TAG_AUTO = "soc-agent"
 
 
-def _taguer(case, case_id: int, agent_name: str | None,
+def _tag(case, case_id: int, agent_name: str | None,
             *extras: str | None) -> None:
     """Ajoute le hostname de la machine touchée aux tags du case (union).
 
@@ -256,27 +256,27 @@ def _taguer(case, case_id: int, agent_name: str | None,
     `extras` : tags supplémentaires (priorité de l'asset, « P1 »…), ignorés
     quand ils sont vides.
     """
-    nouveaux = {t for t in (agent_name, *extras) if t}
-    if not nouveaux:
+    new = {t for t in (agent_name, *extras) if t}
+    if not new:
         return
     tags: set[str] = set()
     try:
         gc = case.get_case(case_id)
         if gc.is_success():
-            brut = gc.get_data().get("case_tags") or ""
-            tags = {t.strip() for t in brut.split(",") if t.strip()}
+            raw = gc.get_data().get("case_tags") or ""
+            tags = {t.strip() for t in raw.split(",") if t.strip()}
     except Exception as e:  # noqa: BLE001 — le tag ne bloque pas le case
         log.debug("lecture tags case #%s : %s", case_id, e)
-    if nouveaux <= tags:
+    if new <= tags:
         return
-    tags |= nouveaux
+    tags |= new
     try:
         case.update_case(case_id=case_id, case_tags=sorted(tags))
     except Exception as e:  # noqa: BLE001
         log.debug("tag case #%s : %s", case_id, e)
 
 
-def _case_existe(case, case_id: int | None) -> bool:
+def _case_exists(case, case_id: int | None) -> bool:
     """Le case est-il encore là ? False s'il a été supprimé dans IRIS.
 
     Aucune exception ne remonte : ce test sert à DÉCIDER quoi faire ensuite, il
@@ -291,7 +291,7 @@ def _case_existe(case, case_id: int | None) -> bool:
         return False
 
 
-def _poser_iocs(case, case_id: int, alertes: list[dict]) -> dict[str, int]:
+def _set_iocs(case, case_id: int, alerts: list[dict]) -> dict[str, int]:
     """Met le case à jour : ajoute les IOC manquants, rafraîchit les descriptions.
 
     Renvoie la table valeur → ioc_id de TOUS les IOC du case (existants
@@ -315,33 +315,33 @@ def _poser_iocs(case, case_id: int, alertes: list[dict]) -> dict[str, int]:
                 descriptions[i["ioc_value"]] = i.get("ioc_description") or ""
     except Exception as e:  # noqa: BLE001
         log.debug("liste IOC case #%s : %s", case_id, e)
-    for valeur, type_ioc, description in _iocs(alertes):
-        if valeur in ids:
+    for value, type_ioc, description in _iocs(alerts):
+        if value in ids:
             # Seulement si elle a changé : une écriture inutile par IOC et par
             # rafraîchissement, sur tous les cases, chargerait IRIS pour rien.
-            if descriptions.get(valeur) != description:
+            if descriptions.get(value) != description:
                 try:
-                    case.update_ioc(ids[valeur], description=description,
+                    case.update_ioc(ids[value], description=description,
                                     cid=case_id)
                 except Exception as e:  # noqa: BLE001
-                    log.debug("MAJ description IOC %s : %s", valeur, e)
+                    log.debug("MAJ description IOC %s : %s", value, e)
             continue
         try:
-            r = case.add_ioc(value=valeur, ioc_type=type_ioc,
+            r = case.add_ioc(value=value, ioc_type=type_ioc,
                              description=description, cid=case_id)
             if r.is_success():
-                ids[valeur] = (r.get_data() or {}).get("ioc_id")
+                ids[value] = (r.get_data() or {}).get("ioc_id")
         except Exception as e:  # noqa: BLE001
-            log.debug("IOC ignoré (%s/%s) : %s", type_ioc, valeur, e)
+            log.debug("IOC ignoré (%s/%s) : %s", type_ioc, value, e)
     return {v: i for v, i in ids.items() if i}
 
 
-def _type_asset(alertes: list[dict]) -> str:
+def _type_asset(alerts: list[dict]) -> str:
     """Type d'asset IRIS de la machine touchée, déduit des alertes."""
-    for a in alertes:
+    for a in alerts:
         raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
-        groupes = (raw.get("rule", {}) or {}).get("groups") or []
-        if any("windows" in str(g).lower() for g in groupes) or \
+        groups = (raw.get("rule", {}) or {}).get("groups") or []
+        if any("windows" in str(g).lower() for g in groups) or \
                 "win" in (raw.get("data", {}) or {}):
             return "Windows - Computer"
     return "Linux - Server"
@@ -361,34 +361,34 @@ def _assets_case(case, case_id: int) -> dict[str, int]:
     return out
 
 
-def _poser_asset_machine(case, case_id: int, incident: dict,
-                         alertes: list[dict], compromis: bool) -> list[int]:
+def _set_asset_machine(case, case_id: int, incident: dict,
+                         alerts: list[dict], compromised: bool) -> list[int]:
     """Crée (ou retrouve) l'asset « machine touchée » du case.
 
     C'est le nœud pivot du graphe : chaque évènement de timeline lui est
     rattaché, les IOC de l'évènement s'y accrochent en étoile. Sans au moins
     un asset lié à un évènement, l'onglet Graph reste vide même avec des IOC.
     """
-    nom = incident.get("agent_name") or str(incident["agent_id"])
-    existants = _assets_case(case, case_id)
-    if nom in existants:
-        return [existants[nom]]
+    name = incident.get("agent_name") or str(incident["agent_id"])
+    existing = _assets_case(case, case_id)
+    if name in existing:
+        return [existing[name]]
 
     ip = None
-    for a in alertes:
+    for a in alerts:
         raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
         ip = (raw.get("agent", {}) or {}).get("ip")
         if ip:
             break
     try:
         r = case.add_asset(
-            name=nom,
-            asset_type=_type_asset(alertes),
+            name=name,
+            asset_type=_type_asset(alerts),
             analysis_status="Started",
             # 1 = compromised, 0 = to be determined. En dur plutôt qu'en nom :
             # le graphe teste `asset_compromise_status_id == 1` pour choisir
             # l'icône, et on évite un aller-retour de lookup par case.
-            compromise_status=1 if compromis else 0,
+            compromise_status=1 if compromised else 0,
             description=(f"Endpoint Wazuh {incident['agent_id']} — "
                          f"{incident['alert_count']} alertes corrélées, "
                          f"niveau max {incident['max_level']}/15."),
@@ -404,21 +404,21 @@ def _poser_asset_machine(case, case_id: int, incident: dict,
 
 # Marque d'un rapport écrit sans analyse LLM (repli sur la raison du triage).
 # Sert aussi de garde : un rapport dégradé n'écrase pas un rapport abouti.
-MARQUE_DEGRADE = "⚠️ **Rapport dégradé"
+MARK_DEGRADED = "⚠️ **Rapport dégradé"
 
 
-def _note_est_degradee(case, case_id: int, note_id: int) -> bool:
+def _note_is_degraded(case, case_id: int, note_id: int) -> bool:
     """Vrai si la note existante est déjà un repli (ou illisible)."""
     try:
         d = case.get_note(note_id, cid=case_id).get_data() or {}
-        return MARQUE_DEGRADE in (d.get("note_content") or "")
+        return MARK_DEGRADED in (d.get("note_content") or "")
     except Exception as e:  # noqa: BLE001 — dans le doute, on n'écrase pas
         log.debug("lecture note %s : %s", note_id, e)
         return False
 
 
-def _poser_note(case, case_id: int, titre: str, contenu: str,
-                repertoire: str = DIR_ANALYSE) -> None:
+def _set_note(case, case_id: int, title: str, content: str,
+                directory: str = DIR_ANALYSIS) -> None:
     """Crée ou MET À JOUR une note dans le répertoire demandé.
 
     Au rafraîchissement d'un case, on remplace le contenu de la note existante
@@ -436,30 +436,30 @@ def _poser_note(case, case_id: int, titre: str, contenu: str,
     note_id = None
     try:
         for d in case.list_notes_directories(cid=case_id).get_data() or []:
-            if d.get("name") == repertoire:
+            if d.get("name") == directory:
                 dir_id = d["id"]
                 for n in d.get("notes") or []:
-                    if n.get("title") == titre:
+                    if n.get("title") == title:
                         note_id = n["id"]
                         break
                 break
     except Exception as e:  # noqa: BLE001
         log.debug("liste notes case #%s : %s", case_id, e)
     if note_id is not None:
-        if (MARQUE_DEGRADE in contenu
-                and not _note_est_degradee(case, case_id, note_id)):
+        if (MARK_DEGRADED in content
+                and not _note_is_degraded(case, case_id, note_id)):
             log.warning("case #%s : rapport dégradé NON écrit, la note "
                         "existante est une analyse aboutie", case_id)
             return
         try:
-            case.update_note(note_id=note_id, note_content=contenu, cid=case_id)
+            case.update_note(note_id=note_id, note_content=content, cid=case_id)
             return
         except Exception as e:  # noqa: BLE001
             log.debug("maj note %s : %s", note_id, e)
     if dir_id is None:
-        rd = case.add_notes_directory(directory_name=repertoire, cid=case_id)
+        rd = case.add_notes_directory(directory_name=directory, cid=case_id)
         dir_id = rd.get_data()["id"] if rd.is_success() else None
-    case.add_note(note_title=titre, note_content=contenu,
+    case.add_note(note_title=title, note_content=content,
                   directory_id=dir_id, cid=case_id)
 
 
@@ -478,10 +478,10 @@ def _est_auto_legacy(case, case_id: int, ev: dict) -> bool:
         return False
 
 
-def _reconstruire_timeline(case, case_id: int, alertes: list[dict],
+def _rebuild_timeline(case, case_id: int, alerts: list[dict],
                            agent_id: str, asset_ids: list[int] | None = None,
                            ioc_ids: dict[str, int] | None = None,
-                           assets_nom: dict[str, int] | None = None) -> None:
+                           assets_name: dict[str, int] | None = None) -> None:
     """Efface les évènements auto (tag `soc-agent`) et les reconstruit.
 
     Une salve rattachée allonge un groupe de règle ou en crée un ; re-poser
@@ -506,27 +506,27 @@ def _reconstruire_timeline(case, case_id: int, alertes: list[dict],
             case.delete_event(ev["event_id"], cid=case_id)
         except Exception as e:  # noqa: BLE001
             log.debug("suppr évènement %s : %s", ev.get("event_id"), e)
-    _timeline(case, case_id, alertes, agent_id, asset_ids, ioc_ids, assets_nom)
+    _timeline(case, case_id, alerts, agent_id, asset_ids, ioc_ids, assets_name)
 
 
-def _classification(incident: dict, alertes: list[dict]) -> int:
-    groups = {g for a in alertes for g in (a.get("rule_groups") or [])}
+def _classification(incident: dict, alerts: list[dict]) -> int:
+    groups = {g for a in alerts for g in (a.get("rule_groups") or [])}
     tactics = set(incident.get("mitre_tactics") or [])
     if "ransomware" in groups or "Impact" in tactics:
         return CLASSIF_RANSOMWARE
     if {"authentication_failed", "authentication_failures"} & groups:
-        return CLASSIF_BRUTE
-    return CLASSIF_DEFAUT
+        return CLASSIF_RAW
+    return CLASSIF_DEFAULT
 
 
 # Répertoires où un fichier signale une activité malveillante. Ailleurs
 # (/usr, /bin, /etc…), un chemin est un binaire/config légitime que
 # l'attaquant a seulement *utilisé* — pas un IOC. /etc/passwd n'est pas un
 # indicateur ; /dev/shm/.kworker en est un.
-_DIRS_SUSPECTS = ("/tmp/", "/var/tmp/", "/dev/shm/", "/run/shm/",
+_DIRS_SUSPICIOUS = ("/tmp/", "/var/tmp/", "/dev/shm/", "/run/shm/",
                   "/root/.ssh", "/var/www/", "/usr/lib/cgi-bin/")
 # Comptes système : leur présence dans un log n'est pas un IOC.
-_COMPTES_SYSTEME = {"root", "www-data", "daemon", "nobody", "sync", "sys", "bin"}
+_ACCOUNTS_SYSTEM = {"root", "www-data", "daemon", "nobody", "sync", "sys", "bin"}
 # Cible d'un reverse shell dans une redirection /dev/tcp|udp/<ip>/<port>.
 _RE_REVSHELL = re.compile(r"/dev/(?:tcp|udp)/(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,5})")
 # proctitle auditd : la ligne de commande complète, encodée en hex.
@@ -537,26 +537,26 @@ _RE_USERADD = re.compile(r"\b(?:useradd|adduser)\b.*?([A-Za-z_][\w-]*)\s*$")
 # (avec ou sans /domain). Capte le backdoor AD quand seul le net.exe est vu.
 _RE_NETUSER_ADD = re.compile(r"\bnet\d?\s+user\s+([^\s/]+).*?/add", re.IGNORECASE)
 # Préfixe du montage sshfs du scanner YARA : /mnt/yaritrust/<hôte>_<ip>/…
-_RE_MONTAGE_SCAN = re.compile(r"^/mnt/yaritrust/[^/]+/")
+_RE_MOUNT_SCAN = re.compile(r"^/mnt/yaritrust/[^/]+/")
 # Chemin absolu dans une ligne de commande. On s'arrête aux caractères qui
 # séparent les tokens d'un shell plutôt qu'à une liste de caractères permis :
 # un nom de fichier d'attaquant peut contenir à peu près n'importe quoi.
-_RE_CHEMIN_ARGV = re.compile(r"/[^\s'\"><|;,()]+")
+_RE_PATH_ARGV = re.compile(r"/[^\s'\"><|;,()]+")
 # Chemins de /tmp qui appartiennent à la machinerie du système, pas à
 # l'attaquant : montages privés des units systemd, sockets X11/ICE.
-_RE_ARGV_BRUIT = re.compile(
+_RE_ARGV_NOISE = re.compile(
     r"^/tmp/(?:systemd-private-|\.X11-unix|\.ICE-unix|\.font-unix|\.XIM-unix)")
 
 # Réseaux internes du parc, précompilés une fois.
-_NETS_INTERNES = []
-for _cidr in config.RESEAUX_INTERNES:
+_NETS_INTERNAL = []
+for _cidr in config.NETWORKS_INTERNAL:
     try:
-        _NETS_INTERNES.append(ipaddress.ip_network(_cidr, strict=False))
+        _NETS_INTERNAL.append(ipaddress.ip_network(_cidr, strict=False))
     except ValueError:
         log.warning("RESEAUX_INTERNES: cidr invalide ignoré: %r", _cidr)
 
 
-def _ip_ioc_valide(ip: str) -> bool:
+def _ip_ioc_valid(ip: str) -> bool:
     """IP exploitable comme IOC : ni 'none', ni loopback, ni non-spécifiée, ni
     l'infrastructure du SOC.
 
@@ -579,7 +579,7 @@ def _ip_ioc_valide(ip: str) -> bool:
                 or o.is_multicast)
 
 
-def _ip_interne(ip: str) -> bool:
+def _ip_internal(ip: str) -> bool:
     """Vrai si l'IP appartient à un subnet du parc (cf. config.RESEAUX_INTERNES).
 
     Volontairement PAS `is_private` : un C2 peut être en RFC1918 (VPN, cloud
@@ -589,7 +589,7 @@ def _ip_interne(ip: str) -> bool:
         o = ipaddress.ip_address(str(ip).strip())
     except ValueError:
         return False
-    return any(o in n for n in _NETS_INTERNES)
+    return any(o in n for n in _NETS_INTERNAL)
 
 
 # Coquilles d'accent récurrentes du modèle (français écrit sans accents),
@@ -604,12 +604,12 @@ _ACCENTS = {
 _RE_ACCENTS = re.compile(r"\b(" + "|".join(_ACCENTS) + r")\b", re.IGNORECASE)
 
 
-def _corriger_accents(txt: str) -> str:
+def _fix_accents(txt: str) -> str:
     """Remplace les coquilles d'accent du récit LLM, en préservant la casse."""
     def repl(m):
-        mot = m.group(0)
-        corr = _ACCENTS[mot.lower()]
-        return corr.capitalize() if mot[0].isupper() else corr
+        word = m.group(0)
+        corr = _ACCENTS[word.lower()]
+        return corr.capitalize() if word[0].isupper() else corr
     return _RE_ACCENTS.sub(repl, txt or "")
 
 
@@ -625,7 +625,7 @@ def _decoder_proctitle(full_log: str) -> str:
         return ""
 
 
-def _ips_revshell(alerte: dict) -> set[str]:
+def _ips_revshell(alert: dict) -> set[str]:
     """IP cibles d'une redirection /dev/tcp|/dev/udp dans la commande de l'alerte.
 
     Cherche dans le full_log en clair, le proctitle hex décodé et la description.
@@ -633,19 +633,19 @@ def _ips_revshell(alerte: dict) -> set[str]:
     de blocage). C'est la seule source de l'IP du C2 pour un reverse shell
     auditd — l'événement execve ne porte pas de `srcip`, donc sans ça le C2
     détecté (rule 100650) n'était jamais bloqué (régression mesurée)."""
-    raw = alerte["raw"] if isinstance(alerte.get("raw"), dict) else json.loads(
-        alerte.get("raw") or "{}")
+    raw = alert["raw"] if isinstance(alert.get("raw"), dict) else json.loads(
+        alert.get("raw") or "{}")
     full_log = raw.get("full_log") or ""
     ips: set[str] = set()
-    for texte in (full_log, _decoder_proctitle(full_log),
-                  alerte.get("rule_desc") or ""):
-        for ip, _port in _RE_REVSHELL.findall(texte):
-            if _ip_ioc_valide(ip):
+    for text in (full_log, _decoder_proctitle(full_log),
+                  alert.get("rule_desc") or ""):
+        for ip, _port in _RE_REVSHELL.findall(text):
+            if _ip_ioc_valid(ip):
                 ips.add(ip)
     return ips
 
 
-def _chemin_cible(p: str | None) -> str | None:
+def _path_target(p: str | None) -> str | None:
     """Chemin réel sur la machine scannée, sans le préfixe du montage sshfs.
 
     Le scanner YARITRUST monte chaque hôte sous /mnt/yaritrust/<hôte>_<ip>/ et
@@ -657,20 +657,20 @@ def _chemin_cible(p: str | None) -> str | None:
     """
     if not p:
         return None
-    return _RE_MONTAGE_SCAN.sub("/", p, count=1)
+    return _RE_MOUNT_SCAN.sub("/", p, count=1)
 
 
-def _chemin_suspect(p: str | None) -> bool:
+def _path_suspicious(p: str | None) -> bool:
     if not p:
         return False
-    if any(p.startswith(d) for d in _DIRS_SUSPECTS):
+    if any(p.startswith(d) for d in _DIRS_SUSPICIOUS):
         return True
     base = p.rsplit("/", 1)[-1]
     # Exécutable planqué (nom en point) hors des emplacements légitimes.
     return base.startswith(".") and not p.startswith(("/etc", "/home", "/root/."))
 
 
-def _chemins_argv(audit: dict, full_log: str) -> list[str]:
+def _paths_argv(audit: dict, full_log: str) -> list[str]:
     """Chemins de fichiers suspects cités en ARGUMENT d'une commande auditd.
 
     `audit.file.name` et `entity` portent le binaire que le NOYAU a chargé, pas
@@ -685,27 +685,27 @@ def _chemins_argv(audit: dict, full_log: str) -> list[str]:
     machinerie de session (montages privés systemd, sockets X11) sont écartés :
     ils sont dans /tmp sans rien devoir à l'attaquant.
     """
-    morceaux: list[str] = []
+    chunks: list[str] = []
     execve = audit.get("execve")
     if isinstance(execve, dict):
-        def _rang(cle: str) -> tuple[int, str]:
-            suffixe = str(cle).lstrip("a")
-            return (int(suffixe), "") if suffixe.isdigit() else (10**6, str(cle))
-        morceaux += [str(v) for _, v in sorted(execve.items(),
-                                               key=lambda kv: _rang(kv[0]))]
-    morceaux.append(_decoder_proctitle(full_log))
+        def _rank(key: str) -> tuple[int, str]:
+            suffix = str(key).lstrip("a")
+            return (int(suffix), "") if suffix.isdigit() else (10**6, str(key))
+        chunks += [str(v) for _, v in sorted(execve.items(),
+                                               key=lambda kv: _rank(kv[0]))]
+    chunks.append(_decoder_proctitle(full_log))
 
     out: list[str] = []
-    vus: set[str] = set()
-    for texte in morceaux:
-        for chemin in _RE_CHEMIN_ARGV.findall(texte or ""):
-            chemin = chemin.rstrip(".,;:")
-            if chemin in vus or _RE_ARGV_BRUIT.search(chemin):
+    seen: set[str] = set()
+    for text in chunks:
+        for path in _RE_PATH_ARGV.findall(text or ""):
+            path = path.rstrip(".,;:")
+            if path in seen or _RE_ARGV_NOISE.search(path):
                 continue
-            if not _chemin_suspect(chemin):
+            if not _path_suspicious(path):
                 continue
-            vus.add(chemin)
-            out.append(chemin)
+            seen.add(path)
+            out.append(path)
     return out
 
 
@@ -713,10 +713,10 @@ def _chemins_argv(audit: dict, full_log: str) -> list[str]:
 # identifie le contenu : il survit à un renommage, vaut sur n'importe quelle
 # machine, et se partage tel quel avec un tiers ou un moteur de réputation. Un
 # chemin ne vaut que sur l'hôte où il a été vu. D'où hash > filename.
-_PRIORITE_IOC_FICHIER = ("sha256", "sha1", "md5")
+_PRIORITY_IOC_FILE = ("sha256", "sha1", "md5")
 
 
-def _ioc_fichier(chemin: str | None, hashes: dict, contexte: str
+def _ioc_file(path: str | None, hashes: dict, context: str
                  ) -> tuple[str, str, str] | None:
     """UN seul IOC pour un fichier, le reste replié dans la description.
 
@@ -729,37 +729,37 @@ def _ioc_fichier(chemin: str | None, hashes: dict, contexte: str
     écrits dans la description, donc lisibles dans le case et cherchables. Ce
     qui change est le nombre de LIGNES : une par artefact réel.
     """
-    principal = next(((t, hashes[t]) for t in _PRIORITE_IOC_FICHIER
+    principal = next(((t, hashes[t]) for t in _PRIORITY_IOC_FILE
                       if hashes.get(t)), None)
-    complements = []
+    extras = []
     if principal:
-        type_ioc, valeur = principal
-        if chemin:
-            complements.append(f"fichier {chemin}")
-    elif chemin:
-        type_ioc, valeur = "filename", chemin
+        type_ioc, value = principal
+        if path:
+            extras.append(f"fichier {path}")
+    elif path:
+        type_ioc, value = "filename", path
     else:
         return None
 
     # Les hashs non retenus comme valeur principale restent affichés : un
     # analyste qui n'a qu'un MD5 sous la main doit pouvoir faire le lien.
-    complements += [f"{t} {hashes[t]}" for t in _PRIORITE_IOC_FICHIER
-                    if hashes.get(t) and hashes[t] != valeur]
+    extras += [f"{t} {hashes[t]}" for t in _PRIORITY_IOC_FILE
+                    if hashes.get(t) and hashes[t] != value]
 
-    description = contexte
-    if complements:
-        description = f"{contexte} · " + " · ".join(complements)
-    return str(valeur), type_ioc, description
+    description = context
+    if extras:
+        description = f"{context} · " + " · ".join(extras)
+    return str(value), type_ioc, description
 
 
 # Extensions retenues pour un « exécutable » Windows déposé.
 _EXE_WIN = (".exe", ".dll", ".ps1", ".bat", ".scr", ".com", ".vbs", ".js")
 
 
-def _mitre_observes(alertes: list[dict]) -> set[str]:
+def _mitre_observed(alerts: list[dict]) -> set[str]:
     """Identifiants ATT&CK portés par les règles qui ont tiré sur l'incident."""
     out: set[str] = set()
-    for a in alertes:
+    for a in alerts:
         for t in (a.get("mitre_ids") or []):
             if t:
                 out.add(str(t).strip())
@@ -771,7 +771,7 @@ def _mitre_observes(alertes: list[dict]) -> set[str]:
 # nettoyé. Un exercice purple-team a détecté `kerberos::golden` sans que rien
 # nulle part ne dise que le secret krbtgt était à changer — l'incident était
 # clos avec un ticket forgé valable dix ans.
-_REMEDIATIONS_HORS_PORTEE = {
+_REMEDIATIONS_OUTSIDE_SCOPE = {
     "T1558.001": (
         "Golden Ticket — le hash du compte **krbtgt** est compromis",
         "Aucune action automatique ne corrige cela. Tant que le secret n'est "
@@ -797,8 +797,8 @@ _REMEDIATIONS_HORS_PORTEE = {
 }
 
 
-def _section_remediation_hors_portee(triage: dict,
-                                     alertes: list[dict]) -> str:
+def _section_remediation_outside_scope(triage: dict,
+                                     alerts: list[dict]) -> str:
     """Ce que l'automatisation ne peut PAS réparer, et qu'il faut faire à la main.
 
     Une remédiation autonome isole, bloque, tue et désactive. Elle ne renouvelle
@@ -806,12 +806,12 @@ def _section_remediation_hors_portee(triage: dict,
     credentials AD, l'incident n'est pas terminé une fois l'hôte nettoyé, et le
     rapport doit le dire en toutes lettres.
     """
-    vues = _mitre_observes(alertes) | {(triage.get("mitre") or "").strip()}
-    concernees = [(t, _REMEDIATIONS_HORS_PORTEE[t])
-                  for t in sorted(_REMEDIATIONS_HORS_PORTEE) if t in vues]
-    if not concernees:
+    seen = _mitre_observed(alerts) | {(triage.get("mitre") or "").strip()}
+    concerned = [(t, _REMEDIATIONS_OUTSIDE_SCOPE[t])
+                  for t in sorted(_REMEDIATIONS_OUTSIDE_SCOPE) if t in seen]
+    if not concerned:
         return ""
-    lignes = [
+    lines = [
         "## À faire à la main — hors de portée de la remédiation automatique",
         "",
         "Les actions automatiques (isolation, blocage, arrêt de process, "
@@ -819,12 +819,12 @@ def _section_remediation_hors_portee(triage: dict,
         "points ne sont pas traités, l'attaquant garde un moyen de revenir.",
         "",
     ]
-    for tech, (titre, quoi) in concernees:
-        lignes += [f"### {tech} — {titre}", "", quoi, ""]
-    return "\n".join(lignes)
+    for tech, (title, quoi) in concerned:
+        lines += [f"### {tech} — {title}", "", quoi, ""]
+    return "\n".join(lines)
 
 
-def _norm_chemin_win(brut) -> str:
+def _norm_win_path(raw) -> str:
     """Chemin Windows aux backslashes simples.
 
     Le JSON de l'eventchannel arrive avec les backslashes DOUBLÉS et Wazuh les
@@ -834,32 +834,32 @@ def _norm_chemin_win(brut) -> str:
     envoyé 26 ordres de quarantaine sur des binaires de System32 le
     2026-08-02 (cf. `mitigate._norm_chemin_win`, même correctif).
     """
-    p = str(brut or "").strip().strip('"')
+    p = str(raw or "").strip().strip('"')
     while "\\\\" in p:
         p = p.replace("\\\\", "\\")
     return p
 
 
-def _exe_windows_suspect(chemin: str) -> bool:
+def _exe_windows_suspicious(path: str) -> bool:
     """Exécutable Windows hors répertoire système : candidat IOC.
 
     Un binaire signé de System32 lancé par l'attaquant relève de la détection
     comportementale, pas de l'indicateur : le chasser sur le parc ne
     donnerait que du bruit. Ce qui se chasse, c'est ce qu'il a APPORTÉ.
     """
-    pl = chemin.lower()
-    return bool(chemin and ":\\" in chemin and pl.endswith(_EXE_WIN)
-                and not pl.startswith(config.VT_DIRS_SYSTEME)
+    pl = path.lower()
+    return bool(path and ":\\" in path and pl.endswith(_EXE_WIN)
+                and not pl.startswith(config.VT_DIRS_SYSTEM)
                 and "__psscriptpolicytest_" not in pl)
 
 
-def _est_cle_registre(chemin: str | None) -> bool:
+def _is_registry_key(path: str | None) -> bool:
     """Vrai pour une clé de registre Windows (pas un fichier, donc pas un IOC)."""
-    return str(chemin or "").upper().startswith(("HKEY_", "HKLM\\", "HKCU\\",
+    return str(path or "").upper().startswith(("HKEY_", "HKLM\\", "HKCU\\",
                                                  "HKLM/", "HKCU/"))
 
 
-def _vt_malveillant(vt: dict) -> bool:
+def _vt_malicious(vt: dict) -> bool:
     """Vrai si VirusTotal a bien rendu un verdict POSITIF.
 
     L'intégration écrit `found` (VT connaît-il ce hash) et `malicious` (nombre
@@ -874,7 +874,7 @@ def _vt_malveillant(vt: dict) -> bool:
     return _n(vt.get("found")) > 0 and _n(vt.get("malicious")) > 0
 
 
-def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
+def _iocs(alerts: list[dict]) -> list[tuple[str, str, str]]:
     """Vrais indicateurs d'attaque, dédupliqués. Best-effort.
 
     On ne remonte QUE ce qui caractérise l'attaquant : IP/port du C2, comptes
@@ -882,16 +882,16 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
     Les fichiers système simplement lus/modifiés (/etc/passwd, /usr/bin/cat)
     ne sont PAS des IOC et sont écartés.
     """
-    vus: set[str] = set()
-    fichiers_vus: set[str] = set()
+    seen: set[str] = set()
+    files_seen: set[str] = set()
     out: list[tuple[str, str, str]] = []
 
-    def ajouter(valeur, type_ioc, desc):
-        if valeur and str(valeur) not in vus:
-            vus.add(str(valeur))
-            out.append((str(valeur), type_ioc, desc))
+    def add(value, type_ioc, desc):
+        if value and str(value) not in seen:
+            seen.add(str(value))
+            out.append((str(value), type_ioc, desc))
 
-    def ajouter_fichier(chemin, hashes, contexte):
+    def add_file(path, hashes, context):
         """Un fichier = UN IOC (cf. _ioc_fichier), hash prioritaire sur chemin.
 
         Dédup supplémentaire sur le CHEMIN : le même fichier vu par deux alertes
@@ -899,16 +899,16 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
         un fichier réécrit entre deux scans change de hash tout en restant le
         même artefact, et on ne veut pas deux lignes pour autant.
         """
-        ioc = _ioc_fichier(chemin, hashes or {}, contexte)
+        ioc = _ioc_file(path, hashes or {}, context)
         if ioc is None:
             return
-        if chemin and str(chemin) in fichiers_vus:
+        if path and str(path) in files_seen:
             return
-        if chemin:
-            fichiers_vus.add(str(chemin))
-        ajouter(*ioc)
+        if path:
+            files_seen.add(str(path))
+        add(*ioc)
 
-    for a in alertes:
+    for a in alerts:
         raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
         data = raw.get("data", {})
         audit = data.get("audit", {})
@@ -919,40 +919,40 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
         # (tout le /24 balayé sur le port 22) est du mouvement latéral / scan,
         # pas un C2 — l'appeler C2 polluait la threat intel et pointait un
         # blocage vers l'infra interne.
-        for texte in (full_log, _decoder_proctitle(full_log),
+        for text in (full_log, _decoder_proctitle(full_log),
                       a.get("rule_desc") or ""):
-            for ip, port in _RE_REVSHELL.findall(texte):
-                if not _ip_ioc_valide(ip):
+            for ip, port in _RE_REVSHELL.findall(text):
+                if not _ip_ioc_valid(ip):
                     continue
-                if _ip_interne(ip):
-                    ajouter(ip, "ip-any", "Cible interne — connexion /dev/tcp "
+                if _ip_internal(ip):
+                    add(ip, "ip-any", "Cible interne — connexion /dev/tcp "
                             f"(mouvement latéral / scan, port {port})")
                 else:
-                    ajouter(ip, "ip-any",
+                    add(ip, "ip-any",
                             f"IP C2 — cible reverse shell (port {port})")
 
         # IP source d'une attaque réseau (ex. web). Interne = pivot/latéral.
         srcip = a.get("srcip")
-        if srcip and _ip_ioc_valide(srcip):
-            ajouter(srcip, "ip-any",
+        if srcip and _ip_ioc_valid(srcip):
+            add(srcip, "ip-any",
                     "IP source interne (pivot / mouvement latéral)"
-                    if _ip_interne(srcip) else "IP source externe de l'attaque")
+                    if _ip_internal(srcip) else "IP source externe de l'attaque")
 
         # Compte créé/manipulé (useradd : dstuser + home/shell).
         dstuser = data.get("dstuser")
-        if dstuser and dstuser not in _COMPTES_SYSTEME and (
+        if dstuser and dstuser not in _ACCOUNTS_SYSTEM and (
                 data.get("home") or data.get("shell")):
             home = (data.get("home") or "?").rstrip(",")
             shell = (data.get("shell") or "?").rstrip(",")
-            ajouter(dstuser, "account",
+            add(dstuser, "account",
                     f"Compte créé par l'attaquant (home {home}, shell {shell})")
 
         # Compte créé vu dans la commande auditd (useradd/adduser) : capte le
         # backdoor account même quand l'alerte syslog 5902 (sans uid ni lien)
         # n'entre pas dans l'incident. Le compte = dernier argument non-option.
         m = _RE_USERADD.search(_decoder_proctitle(full_log))
-        if m and m.group(1) not in _COMPTES_SYSTEME:
-            ajouter(m.group(1), "account", "Compte créé par l'attaquant (useradd)")
+        if m and m.group(1) not in _ACCOUNTS_SYSTEM:
+            add(m.group(1), "account", "Compte créé par l'attaquant (useradd)")
 
         # Compte Windows créé par l'attaquant : event 4720 (targetUserName) ou une
         # ligne de commande « net user <nom> /add ». Sans ça, la création d'un
@@ -964,16 +964,16 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
         tuser = wev.get("targetUserName")
         if (str(wsys.get("eventID") or "") == "4720" and tuser
                 and not str(tuser).endswith("$")):
-            ajouter(tuser, "account", "Compte Windows créé par l'attaquant (4720)")
+            add(tuser, "account", "Compte Windows créé par l'attaquant (4720)")
         mw = _RE_NETUSER_ADD.search(str(wev.get("commandLine") or full_log or ""))
         if mw and not mw.group(1).endswith("$"):
-            ajouter(mw.group(1), "account",
+            add(mw.group(1), "account",
                     "Compte créé par l'attaquant (net user /add)")
 
         # Fichier déposé dans un emplacement suspect (binaire droppé, webshell).
-        fichier = (audit.get("file", {}) or {}).get("name") or a.get("entity")
-        if _chemin_suspect(fichier):
-            ajouter(fichier, "filename", "Fichier déposé (emplacement suspect)")
+        file = (audit.get("file", {}) or {}).get("name") or a.get("entity")
+        if _path_suspicious(file):
+            add(file, "filename", "Fichier déposé (emplacement suspect)")
 
         # Fichier cité en ARGUMENT de la commande. Les deux champs ci-dessus ne
         # portent que le binaire chargé par le noyau : `insmod /tmp/rootkit.ko`
@@ -985,8 +985,8 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
         # le chemin dans `fichiers_vus` empêcherait un bloc suivant (FIM, VT,
         # YARA) de publier le MÊME fichier porté par son hash — la valeur la
         # plus utile des deux.
-        for chemin in _chemins_argv(audit, full_log):
-            ajouter(chemin, "filename", "Fichier déposé en emplacement suspect "
+        for path in _paths_argv(audit, full_log):
+            add(path, "filename", "Fichier déposé en emplacement suspect "
                     "(cité en argument de commande)")
 
         # Outil offensif Windows, exécuté ou déposé hors des répertoires
@@ -996,10 +996,10 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
         # figurait pas — alors que c'est l'artefact qu'un analyste cherche en
         # premier et le seul qu'il puisse chasser sur le reste du parc. Un
         # autre case du même exercice n'avait, lui, aucun IOC du tout.
-        for champ in ("image", "targetFilename", "sourceImage"):
-            chemin = _norm_chemin_win(wev.get(champ))
-            if _exe_windows_suspect(chemin):
-                ajouter_fichier(chemin,
+        for field in ("image", "targetFilename", "sourceImage"):
+            path = _norm_win_path(wev.get(field))
+            if _exe_windows_suspicious(path):
+                add_file(path,
                                 {"sha256": wev.get("sha256"),
                                  "sha1": wev.get("sha1"),
                                  "md5": wev.get("md5")},
@@ -1020,22 +1020,22 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
         # doit pouvoir aller voir le fichier sur l'hôte concerné.
         yara = data.get("yara") or {}
         if yara or data.get("event_type") == "file_match":
-            hote = yara.get("scanned_host") or data.get("hostname") or "?"
+            host = yara.get("scanned_host") or data.get("hostname") or "?"
             score = data.get("score")
-            suffixe = f" (score {score})" if score else ""
+            suffix = f" (score {score})" if score else ""
             # Nom de la première règle YARA qui a matché : ce qui dit CE qu'est
             # le fichier, et la seule chose vraiment réutilisable en chasse.
-            raisons = data.get("reasons") or []
-            regle = (raisons[0].get("message") or "").replace(
-                "YARA match with rule ", "") if raisons else ""
-            detail = f" — {regle}" if regle else ""
+            reasons = data.get("reasons") or []
+            rule = (reasons[0].get("message") or "").replace(
+                "YARA match with rule ", "") if reasons else ""
+            detail = f" — {rule}" if rule else ""
             # Normalisé dans les deux cas : `file_path` lui-même arrive préfixé
             # sur les alertes antérieures au correctif du scanner.
-            ajouter_fichier(
-                _chemin_cible(data.get("file_path") or yara.get("scan_path")),
+            add_file(
+                _path_target(data.get("file_path") or yara.get("scan_path")),
                 {"sha256": data.get("sha256"), "sha1": data.get("sha1"),
                  "md5": data.get("md5")},
-                f"Fichier détecté par YARA sur {hote}{suffixe}{detail}")
+                f"Fichier détecté par YARA sur {host}{suffix}{detail}")
 
         # Fichier jugé malveillant par VirusTotal. Même raison que pour YARA de
         # ne pas filtrer sur le répertoire : la qualification vient du moteur.
@@ -1055,8 +1055,8 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
         #     l'accompagne ne désigne aucun binaire.
         vt_bloc = data.get("virustotal", {}) or {}
         vt = vt_bloc.get("source", {}) or {}
-        if _vt_malveillant(vt_bloc) and not _est_cle_registre(vt.get("file")):
-            ajouter_fichier(vt.get("file"),
+        if _vt_malicious(vt_bloc) and not _is_registry_key(vt.get("file")):
+            add_file(vt.get("file"),
                             {"sha256": vt.get("sha256"), "sha1": vt.get("sha1"),
                              "md5": vt.get("md5")},
                             "Fichier signalé par VirusTotal "
@@ -1065,8 +1065,8 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
         # Fichier suspect modifié (FIM) : ici le répertoire compte, aucun moteur
         # n'a jugé le contenu.
         sc = raw.get("syscheck", {})
-        if _chemin_suspect(sc.get("path")):
-            ajouter_fichier(sc.get("path"),
+        if _path_suspicious(sc.get("path")):
+            add_file(sc.get("path"),
                             {"sha256": sc.get("sha256_after"),
                              "sha1": sc.get("sha1_after"),
                              "md5": sc.get("md5_after")},
@@ -1074,13 +1074,13 @@ def _iocs(alertes: list[dict]) -> list[tuple[str, str, str]]:
     return out
 
 
-def _grouper_regles(alertes: list[dict]) -> list[tuple[str, dict]]:
+def _group_rules(alerts: list[dict]) -> list[tuple[str, dict]]:
     """Alertes regroupées par règle, avec fenêtre temporelle, ordre chrono."""
-    par: dict[str, dict] = {}
-    for a in alertes:
-        e = par.get(a["rule_id"])
+    by: dict[str, dict] = {}
+    for a in alerts:
+        e = by.get(a["rule_id"])
         if e is None:
-            par[a["rule_id"]] = {
+            by[a["rule_id"]] = {
                 "level": a["rule_level"], "desc": a["rule_desc"] or "",
                 "n": 1, "first": a["ts"], "last": a["ts"],
                 "users": {a["srcuser"]} if a.get("srcuser") else set(),
@@ -1097,10 +1097,10 @@ def _grouper_regles(alertes: list[dict]) -> list[tuple[str, dict]]:
                 e["users"].add(a["srcuser"])
             if a.get("entity"):
                 e["entities"].add(a["entity"])
-    return sorted(par.items(), key=lambda kv: kv[1]["first"])
+    return sorted(by.items(), key=lambda kv: kv[1]["first"])
 
 
-def _uids_suspects(alertes: list[dict]) -> set[str]:
+def _uids_suspicious(alerts: list[dict]) -> set[str]:
     """UID sous lesquels l'activité malveillante a tiré (alertes >= MIN_LEVEL).
 
     Sert à isoler les commandes de l'attaquant du bruit de fond. Une privesc par
@@ -1108,7 +1108,7 @@ def _uids_suspects(alertes: list[dict]) -> set[str]:
     sur cet uid capture donc TOUTE la chaîne, y compris les actions root.
     """
     uids: set[str] = set()
-    for a in alertes:
+    for a in alerts:
         if a["rule_level"] < config.MIN_LEVEL:
             continue
         raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
@@ -1128,7 +1128,7 @@ def _uids_suspects(alertes: list[dict]) -> set[str]:
 # ET l'attaque : ce filtre écarte le résidu de bruit de login qui tomberait dans
 # la fenêtre d'attaque. Best-effort, ancré sur le binaire (pas une simple
 # mention) pour ne pas masquer une commande d'attaquant qui les nommerait.
-_RE_BRUIT_SESSION = re.compile(
+_RE_NOISE_SESSION = re.compile(
     r"\b(?:gpgconf|gpg-agent|dbus-launch|dbus-update-activation-environment|"
     r"systemd-xdg-autostart-generator)\b"
     r"|/usr/lib/systemd/"
@@ -1143,9 +1143,9 @@ _RE_BRUIT_SESSION = re.compile(
 # collecte d'inventaire) tirait les mêmes règles 92039 que l'énumération d'un
 # attaquant et remplissait la section. Le parent est le discriminant : on ne
 # masque une commande que sur ce que son PARENT est, pas sur son texte.
-_RE_BRUIT_WIN_PARENT = re.compile(r"ossec-agent|wazuh-agent\.exe", re.I)
+_RE_NOISE_WIN_PARENT = re.compile(r"ossec-agent|wazuh-agent\.exe", re.I)
 # Télémétrie/maintenance Microsoft, elle ancrée sur le binaire appelé.
-_RE_BRUIT_WIN = re.compile(
+_RE_NOISE_WIN = re.compile(
     r"\b(?:CompatTelRunner|MpCmdRun|MpSigStub|TrustedInstaller|"
     r"consent|conhost)\.exe\b", re.I)
 
@@ -1183,7 +1183,7 @@ def _decoder_encodedcommand(cmd: str) -> str:
     return _RE_ENCODEDCMD.sub(repl, cmd)
 
 
-def _users_suspects_win(alertes: list[dict]) -> set[str]:
+def _users_suspicious_win(alerts: list[dict]) -> set[str]:
     """Comptes Windows sous lesquels l'activité malveillante a tiré.
 
     Équivalent de `_uids_suspects` côté eventchannel. Pas d'exclusion analogue à
@@ -1191,7 +1191,7 @@ def _users_suspects_win(alertes: list[dict]) -> set[str]:
     (service, tâche planifiée, PsExec), écarter SYSTEM effacerait l'attaque.
     """
     users: set[str] = set()
-    for a in alertes:
+    for a in alerts:
         if a["rule_level"] < config.MIN_LEVEL:
             continue
         raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
@@ -1202,7 +1202,7 @@ def _users_suspects_win(alertes: list[dict]) -> set[str]:
     return users
 
 
-def _cmds_windows(alertes: list[dict]) -> tuple[list[tuple], set[str]]:
+def _cmds_windows(alerts: list[dict]) -> tuple[list[tuple], set[str]]:
     """(ts, commande) reconstitués depuis Sysmon EID 1 / Security 4688.
 
     Pendant Windows de la reconstitution auditd : la section « Commandes
@@ -1210,9 +1210,9 @@ def _cmds_windows(alertes: list[dict]) -> tuple[list[tuple], set[str]]:
     la ligne de commande complète est dans `data.win.eventdata.commandLine`.
     Retourne aussi les comptes retenus, pour la phrase de portée.
     """
-    users = _users_suspects_win(alertes)
+    users = _users_suspicious_win(alerts)
     occ: list[tuple] = []
-    for a in alertes:
+    for a in alerts:
         raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
         ed = _win_eventdata(raw)
         if not ed:
@@ -1222,18 +1222,18 @@ def _cmds_windows(alertes: list[dict]) -> tuple[list[tuple], set[str]]:
             continue
         parent = _deswap_win(str(ed.get("parentCommandLine")
                                  or ed.get("parentImage") or ""))
-        if parent and _RE_BRUIT_WIN_PARENT.search(parent):
+        if parent and _RE_NOISE_WIN_PARENT.search(parent):
             continue
         cmd = (ed.get("commandLine") or ed.get("processCommandLine")
                or ed.get("newProcessName") or ed.get("image") or "")
         cmd = _decoder_encodedcommand(_deswap_win(str(cmd)).strip())
-        if not cmd or _RE_BRUIT_WIN.search(cmd):
+        if not cmd or _RE_NOISE_WIN.search(cmd):
             continue
         occ.append((a["ts"], cmd))
     return occ, users
 
 
-def _clusters_lies_attaque(occ: list[tuple], anchors: list, gap) -> list[tuple]:
+def _clusters_linked_attack(occ: list[tuple], anchors: list, gap) -> list[tuple]:
     """Ne garde que les commandes rattachées à l'attaque.
 
     `occ` : (ts, cmd) triés par ts. On segmente en clusters séparés par un
@@ -1245,24 +1245,24 @@ def _clusters_lies_attaque(occ: list[tuple], anchors: list, gap) -> list[tuple]:
     if not occ or not anchors:
         return occ
 
-    def touche(cluster: list[tuple]) -> bool:
+    def affects(cluster: list[tuple]) -> bool:
         return any(min(abs(t - a) for a in anchors) <= gap for t, _ in cluster)
 
-    gardees: list[tuple] = []
+    kept: list[tuple] = []
     cluster = [occ[0]]
-    for prec, cur in zip(occ, occ[1:]):
-        if cur[0] - prec[0] <= gap:
+    for prev, cur in zip(occ, occ[1:]):
+        if cur[0] - prev[0] <= gap:
             cluster.append(cur)
         else:
-            if touche(cluster):
-                gardees += cluster
+            if affects(cluster):
+                kept += cluster
             cluster = [cur]
-    if touche(cluster):
-        gardees += cluster
-    return gardees
+    if affects(cluster):
+        kept += cluster
+    return kept
 
 
-def _section_commandes(alertes: list[dict]) -> str:
+def _section_commands(alerts: list[dict]) -> str:
     """Historique des commandes de l'attaquant : auditd (Linux) ET Sysmon EID 1 /
     Security 4688 (Windows), fusionnés dans une seule chronologie — un case de
     campagne couvre les deux OS.
@@ -1280,12 +1280,12 @@ def _section_commandes(alertes: list[dict]) -> str:
     tombées dans la fenêtre (`_RE_BRUIT_SESSION`). L'uid du compte compromis borne
     déjà le périmètre. Déterministe, note locale.
     """
-    uids = _uids_suspects(alertes)
-    anchors = [a["ts"] for a in alertes if a["rule_level"] >= config.MIN_LEVEL]
+    uids = _uids_suspicious(alerts)
+    anchors = [a["ts"] for a in alerts if a["rule_level"] >= config.MIN_LEVEL]
     gap = timedelta(seconds=config.COMMAND_CLUSTER_GAP_S)
 
     occ: list[tuple] = []
-    for a in sorted(alertes, key=lambda x: x["ts"]):
+    for a in sorted(alerts, key=lambda x: x["ts"]):
         raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
         audit = raw.get("data", {}).get("audit", {}) or {}
         if uids and str(audit.get("uid")) not in uids:
@@ -1293,53 +1293,53 @@ def _section_commandes(alertes: list[dict]) -> str:
         cmd = _decoder_proctitle(raw.get("full_log") or "").strip()
         if not cmd:
             cmd = str(audit.get("command") or "").strip()
-        if not cmd or _RE_BRUIT_SESSION.search(cmd):
+        if not cmd or _RE_NOISE_SESSION.search(cmd):
             continue
         occ.append((a["ts"], cmd))
 
-    occ_win, users_win = _cmds_windows(alertes)
+    occ_win, users_win = _cmds_windows(alerts)
     occ = sorted(occ + occ_win, key=lambda o: o[0])
 
     # Rattachement à l'attaque, PUIS dédup (une commande vue dans le bruit ET
     # dans l'attaque doit être conservée avec son ts d'attaque).
-    occ = _clusters_lies_attaque(occ, anchors, gap)
-    vus: set[str] = set()
+    occ = _clusters_linked_attack(occ, anchors, gap)
+    seen: set[str] = set()
     cmds: list[tuple] = []
     for ts, cmd in occ:
-        if cmd in vus:
+        if cmd in seen:
             continue
-        vus.add(cmd)
+        seen.add(cmd)
         cmds.append((ts, cmd))
 
     if not cmds:
         return ("## Commandes exécutées\n\nAucune commande "
                 "reconstituée (pas d'alerte d'audit de commande dans le "
                 "périmètre).")
-    comptes = [f"uid {u}" for u in sorted(uids)] + sorted(users_win)
-    portee = (f"sous le(s) compte(s) compromis {', '.join(comptes)}" if comptes
+    accounts = [f"uid {u}" for u in sorted(uids)] + sorted(users_win)
+    scope = (f"sous le(s) compte(s) compromis {', '.join(accounts)}" if accounts
               else "tous comptes (compte compromis non identifié)")
-    lignes = [
+    lines = [
         "## Commandes exécutées",
         "",
         f"{len(cmds)} commandes distinctes reconstituées depuis la télémétrie "
-        f"d'exécution ({portee}), rattachées à l'attaque, ordre chronologique :",
+        f"d'exécution ({scope}), rattachées à l'attaque, ordre chronologique :",
         "",
         "```",
     ]
     # Date incluse si les commandes s'étalent sur plusieurs jours UTC, sinon
     # l'heure seule rend l'ordre chronologique ambigu (mêmes HH:MM d'un jour à
     # l'autre).
-    jours = {ts.astimezone(timezone.utc).date() for ts, _ in cmds}
-    fmt = "%m-%d %H:%M:%S" if len(jours) > 1 else "%H:%M:%S"
+    days = {ts.astimezone(timezone.utc).date() for ts, _ in cmds}
+    fmt = "%m-%d %H:%M:%S" if len(days) > 1 else "%H:%M:%S"
     for ts, cmd in cmds[:80]:
-        lignes.append(f"{ts.astimezone(timezone.utc):{fmt}}  {cmd[:300]}")
+        lines.append(f"{ts.astimezone(timezone.utc):{fmt}}  {cmd[:300]}")
     if len(cmds) > 80:
-        lignes.append(f"... (+{len(cmds) - 80} autres)")
-    lignes.append("```")
-    return "\n".join(lignes)
+        lines.append(f"... (+{len(cmds) - 80} autres)")
+    lines.append("```")
+    return "\n".join(lines)
 
 
-def _fmt_intervalle(first, last) -> str:
+def _fmt_interval(first, last) -> str:
     """Fenêtre lisible. Ajoute la date (mm-jj) dès que l'intervalle franchit un
     jour UTC — sans elle, `%H:%M:%S` seul faisait paraître un span multi-jours à
     l'envers (ex. `15:44 → 13:47`, fin < début, alors que le dernier est le
@@ -1356,18 +1356,18 @@ def _fmt_intervalle(first, last) -> str:
 # Au-delà de ce nombre d'occurrences pour une même règle, le compte reflète des
 # tirs répétés (ex. une écriture /dev/tcp par cible balayée), pas autant
 # d'évènements distincts : on l'annote pour ne pas surestimer l'ampleur.
-_SEUIL_RAFALE = 500
+_THRESHOLD_BURST = 500
 
 
-def _lien_attaque(tid: str) -> str:
+def _link_attack(tid: str) -> str:
     """URL ATT&CK d'une technique. Une sous-technique T1547.006 vit sous
     `/techniques/T1547/006/`, pas `/techniques/T1547.006/`."""
-    base, _, sous = tid.partition(".")
-    return (f"https://attack.mitre.org/techniques/{base}/{sous}/" if sous
+    base, _, under = tid.partition(".")
+    return (f"https://attack.mitre.org/techniques/{base}/{under}/" if under
             else f"https://attack.mitre.org/techniques/{base}/")
 
 
-def _section_mitre(alertes: list[dict]) -> str:
+def _section_mitre(alerts: list[dict]) -> str:
     """Tableau ATT&CK des techniques du case (déterministe, pas le LLM).
 
     Ce que les RÈGLES ont mappé, pas la seule technique retenue au triage : le
@@ -1380,30 +1380,30 @@ def _section_mitre(alertes: list[dict]) -> str:
     occurrence, le tableau se lit donc comme la progression de l'attaque.
     """
     techs: dict[str, dict] = {}
-    for a in alertes:
+    for a in alerts:
         raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
         mitre = (raw.get("rule") or {}).get("mitre") or {}
         ids = list(mitre.get("id") or a.get("mitre_ids") or [])
-        noms = list(mitre.get("technique") or [])
-        tactiques = list(mitre.get("tactic") or a.get("mitre_tactics") or [])
+        names = list(mitre.get("technique") or [])
+        tactics = list(mitre.get("tactic") or a.get("mitre_tactics") or [])
         for i, tid in enumerate(ids):
             tid = str(tid).strip()
             if not tid:
                 continue
-            e = techs.setdefault(tid, {"nom": "", "tactiques": set(),
+            e = techs.setdefault(tid, {"name": "", "tactiques": set(),
                                        "n": 0, "first": a["ts"]})
             # Les listes id/technique sont parallèles quand la règle mappe
             # plusieurs techniques ; on ne prend le nom que s'il est en face.
-            if not e["nom"] and i < len(noms):
-                e["nom"] = str(noms[i]).strip()
-            e["tactiques"].update(str(t).strip() for t in tactiques if t)
+            if not e["name"] and i < len(names):
+                e["name"] = str(names[i]).strip()
+            e["tactiques"].update(str(t).strip() for t in tactics if t)
             e["n"] += 1
             e["first"] = min(e["first"], a["ts"])
 
     if not techs:
         return ("## Techniques MITRE ATT&CK\n\nAucune technique mappée par les "
                 "règles déclenchées sur cet incident.")
-    lignes = [
+    lines = [
         "## Techniques MITRE ATT&CK",
         "",
         f"{len(techs)} technique(s) mappée(s) par les règles Wazuh qui ont "
@@ -1413,14 +1413,14 @@ def _section_mitre(alertes: list[dict]) -> str:
         "|:---|:---|:---|:---:|",
     ]
     for tid, e in sorted(techs.items(), key=lambda kv: (kv[1]["first"], kv[0])):
-        nom = e["nom"] or "—"
+        name = e["name"] or "—"
         tac = ", ".join(sorted(e["tactiques"])) or "—"
-        lignes.append(f"| [{tid}]({_lien_attaque(tid)}) | {nom} | {tac} "
+        lines.append(f"| [{tid}]({_link_attack(tid)}) | {name} | {tac} "
                       f"| {e['n']} |")
-    return "\n".join(lignes)
+    return "\n".join(lines)
 
 
-def _section_alertes(alertes: list[dict], agent_id: str) -> str:
+def _section_alerts(alerts: list[dict], agent_id: str) -> str:
     """Tableau des alertes Wazuh du case (déterministe, valeurs réelles).
 
     Regroupées par règle et ordonnées par première occurrence : le tableau se
@@ -1428,34 +1428,34 @@ def _section_alertes(alertes: list[dict], agent_id: str) -> str:
     (référence markdown en bas de section : garde le tableau compact et évite
     les parenthèses de l'URL dans une cellule).
     """
-    lignes = [
+    lines = [
         "## Alertes Wazuh impliquées",
         "",
-        f"{len(alertes)} alertes corrélées, regroupées par règle "
+        f"{len(alerts)} alertes corrélées, regroupées par règle "
         "(ordre chronologique) :",
         "",
         "| Niveau | Règle | Occ. | Fenêtre UTC | Description | Log |",
         "|:---:|:---:|:---:|:---|:---|:---:|",
     ]
     refs = []
-    for rid, e in _grouper_regles(alertes):
-        fen = _fmt_intervalle(e["first"], e["last"])
-        occ = f"{e['n']} ⚠️rafale" if e["n"] >= _SEUIL_RAFALE else str(e["n"])
+    for rid, e in _group_rules(alerts):
+        fen = _fmt_interval(e["first"], e["last"])
+        occ = f"{e['n']} ⚠️rafale" if e["n"] >= _THRESHOLD_BURST else str(e["n"])
         desc = (e["desc"][:78] + "…") if len(e["desc"]) > 78 else e["desc"]
         label = f"w-{rid}"
-        lignes.append(f"| {e['level']} | {rid} | {occ} | {fen} | {desc} "
+        lines.append(f"| {e['level']} | {rid} | {occ} | {fen} | {desc} "
                       f"| [🔎][{label}] |")
-        refs.append(f"[{label}]: <{_lien_wazuh(agent_id, rid, e['first'], e['last'])}>")
-    lignes.append("")
-    lignes.extend(refs)          # définitions de référence des liens Discover
-    return "\n".join(lignes)
+        refs.append(f"[{label}]: <{_link_wazuh(agent_id, rid, e['first'], e['last'])}>")
+    lines.append("")
+    lines.extend(refs)          # définitions de référence des liens Discover
+    return "\n".join(lines)
 
 
-def _type_ioc_valeur(valeur: str) -> str:
+def _type_ioc_value(value: str) -> str:
     """Type d'IOC déduit de la seule valeur (pour un IOC déjà sur le case dont on
     n'a pas le type sous la main). Best-effort, aligné sur les types produits par
     `_iocs` : hash, ip, domain, sinon filename."""
-    v = valeur.strip()
+    v = value.strip()
     if re.fullmatch(r"[0-9a-fA-F]{64}", v):
         return "sha256"
     if re.fullmatch(r"[0-9a-fA-F]{40}", v):
@@ -1469,7 +1469,7 @@ def _type_ioc_valeur(valeur: str) -> str:
     return "filename"
 
 
-def _iocs_du_case(case, case_id: int, alertes: list[dict]) -> list[tuple[str, str, str]]:
+def _iocs_du_case(case, case_id: int, alerts: list[dict]) -> list[tuple[str, str, str]]:
     """IOC AUTORITAIRES du case = ceux réellement posés dans l'onglet IOC.
 
     Le rapport doit montrer EXACTEMENT la même liste que la section IOC du case,
@@ -1484,32 +1484,32 @@ def _iocs_du_case(case, case_id: int, alertes: list[dict]) -> list[tuple[str, st
     Repli sur `_iocs(alertes)` si l'onglet est illisible : jamais moins que ce
     que le code sait extraire.
     """
-    courant = _iocs(alertes)
-    type_par_valeur = {v: t for v, t, _ in courant}
-    desc_par_valeur = {v: d for v, _, d in courant}
+    current = _iocs(alerts)
+    type_by_value = {v: t for v, t, _ in current}
+    desc_by_value = {v: d for v, _, d in current}
     try:
         d = case.list_iocs(case_id).get_data() or {}
         tab = [(i.get("ioc_value"), i.get("ioc_description") or "")
                for i in (d.get("ioc") or []) if i.get("ioc_value")]
     except Exception as e:  # noqa: BLE001
         log.debug("lecture onglet IOC case #%s pour le rapport : %s", case_id, e)
-        return courant
+        return current
     if not tab:
-        return courant
-    ordre = [v for v, _, _ in courant]
-    rang = {v: n for n, v in enumerate(ordre)}
-    def cle(item):
-        return rang.get(item[0], len(ordre))
+        return current
+    order = [v for v, _, _ in current]
+    rank = {v: n for n, v in enumerate(order)}
+    def key(item):
+        return rank.get(item[0], len(order))
     out: list[tuple[str, str, str]] = []
-    for valeur, desc_tab in sorted(tab, key=cle):
-        type_ioc = type_par_valeur.get(valeur) or _type_ioc_valeur(valeur)
+    for value, desc_tab in sorted(tab, key=key):
+        type_ioc = type_by_value.get(value) or _type_ioc_value(value)
         # Desc de la salve courante si dispo (la plus à jour), sinon celle du case.
-        desc = desc_par_valeur.get(valeur) or desc_tab
-        out.append((valeur, type_ioc, desc))
+        desc = desc_by_value.get(value) or desc_tab
+        out.append((value, type_ioc, desc))
     return out
 
 
-def _section_iocs(alertes: list[dict],
+def _section_iocs(alerts: list[dict],
                   iocs: list[tuple[str, str, str]] | None = None) -> str:
     """Tableau des IOC extraits (déterministe). Note locale : valeurs réelles.
 
@@ -1517,20 +1517,20 @@ def _section_iocs(alertes: list[dict],
     pour que le rapport montre EXACTEMENT la même chose. Absent = recalcul sur les
     alertes (cas d'un rendu hors case)."""
     if iocs is None:
-        iocs = _iocs(alertes)
+        iocs = _iocs(alerts)
     if not iocs:
         return "## Indicateurs de compromission (IOC)\n\nAucun IOC extractible " \
                "automatiquement des champs d'alerte."
-    lignes = [
+    lines = [
         "## Indicateurs de compromission (IOC)",
         "",
         "| Type | Valeur | Contexte |",
         "|:---|:---|:---|",
     ]
-    for valeur, type_ioc, desc in iocs:
-        v = valeur.replace("|", "\\|")
-        lignes.append(f"| {type_ioc} | `{v}` | {desc} |")
-    return "\n".join(lignes)
+    for value, type_ioc, desc in iocs:
+        v = value.replace("|", "\\|")
+        lines.append(f"| {type_ioc} | `{v}` | {desc} |")
+    return "\n".join(lines)
 
 
 # Rendu lisible du statut d'une remédiation.
@@ -1542,7 +1542,7 @@ def _section_iocs(alertes: list[dict],
 # purple-team a affirmé à l'analyste que des dizaines de binaires System32
 # d'un contrôleur de domaine avaient été mis en quarantaine — le script les
 # avait tous refusés. Un rapport qui ment est pire qu'un rapport incomplet.
-_STATUT_REMED = {
+_STATUS_REMED = {
     "émis": "📤 commande émise (effet non encore confirmé)",
     "confirmé": "✅ confirmé par l'agent",
     "sans_effet": "⚪ sans effet (rien à faire sur cette cible)",
@@ -1562,24 +1562,24 @@ def _section_remediations(conn, incident_id: int, triage: dict) -> str:
     pas de ce qui pourrait l'être.
     """
     rows = conn.execute(
-        "SELECT action, cible, statut FROM mitigations WHERE incident_id = %s "
+        "SELECT action, target, status FROM mitigations WHERE incident_id = %s "
         "ORDER BY id", (incident_id,)).fetchall()
-    lignes = ["## Remédiations"]
+    lines = ["## Remédiations"]
 
     if not rows:
         remed = [a for a in triage.get("actions", [])
-                 if a in LIBELLE_ACTION and a.startswith("propose_")]
-        lignes.append("")
+                 if a in LABEL_ACTION and a.startswith("propose_")]
+        lines.append("")
         if remed:
-            lignes.append("Aucune remédiation automatique n'a pu s'appliquer "
+            lines.append("Aucune remédiation automatique n'a pu s'appliquer "
                           "(pas de cible exploitable). Actions décidées au "
                           "triage :")
-            lignes += [f"- {LIBELLE_ACTION.get(a, a)}" for a in remed]
+            lines += [f"- {LABEL_ACTION.get(a, a)}" for a in remed]
         else:
-            lignes.append("Aucune remédiation à exécuter pour cet incident.")
-        return "\n".join(lignes)
+            lines.append("Aucune remédiation à exécuter pour cet incident.")
+        return "\n".join(lines)
 
-    lignes += [
+    lines += [
         "",
         "Actions lancées automatiquement par le soc-agent à l'ouverture du "
         "case. Procédures d'annulation détaillées dans le répertoire "
@@ -1596,29 +1596,29 @@ def _section_remediations(conn, incident_id: int, triage: dict) -> str:
         "|:---|:---|:---:|",
     ]
     for r in rows:
-        libelle = LIBELLE_ACTION.get(r["action"], r["action"])
-        statut = _STATUT_REMED.get(r["statut"], r["statut"])
-        lignes.append(f"| {libelle} | `{r['cible']}` | {statut} |")
+        label = LABEL_ACTION.get(r["action"], r["action"])
+        status = _STATUS_REMED.get(r["status"], r["status"])
+        lines.append(f"| {label} | `{r['target']}` | {status} |")
 
-    refuses = [r for r in rows if r["statut"] == "refusé_agent"]
-    if refuses:
-        lignes += [
+    refused = [r for r in rows if r["status"] == "refusé_agent"]
+    if refused:
+        lines += [
             "",
-            f"> **{len(refuses)} action(s) refusée(s) par un garde-fou de "
+            f"> **{len(refused)} action(s) refusée(s) par un garde-fou de "
             "l'agent.** Le garde-fou a fait son travail, mais le soc-agent a "
             "visé une cible qu'il n'aurait pas dû retenir : la résolution de "
             "cibles est à revoir pour ce type d'incident.",
         ]
-    return "\n".join(lignes)
+    return "\n".join(lines)
 
 
-def _note_fp(triage: dict, regle: dict | None) -> str:
+def _note_fp(triage: dict, rule: dict | None) -> str:
     """Note d'analyse d'un faux positif, avec l'explication de whitelist.
 
     Pure : `regle` est la ligne whitelist_rules correspondant à la signature de
     l'incident (ou None), fournie par l'appelant. Testable sans base.
     """
-    lignes = [
+    lines = [
         "# Analyse — Faux positif",
         "",
         "## Justification",
@@ -1626,33 +1626,33 @@ def _note_fp(triage: dict, regle: dict | None) -> str:
         "",
         "## Whitelist",
     ]
-    if regle:
-        etat = "active" if regle["active"] else "inactive"
-        lignes += [
-            f"Une exception **{etat}** ({regle['source']}) couvre désormais cette "
+    if rule:
+        state = "active" if rule["active"] else "inactive"
+        lines += [
+            f"Une exception **{state}** ({rule['source']}) couvre désormais cette "
             "signature — les alertes identiques seront écartées avant analyse :",
             "",
-            f"```json\n{json.dumps(regle['match_all'], ensure_ascii=False, indent=2)}\n```",
+            f"```json\n{json.dumps(rule['match_all'], ensure_ascii=False, indent=2)}\n```",
             "",
-            f"Motif : {regle['reason']}",
+            f"Motif : {rule['reason']}",
         ]
     else:
-        lignes.append("Pas encore d'exception : ce faux positif n'a pas atteint "
+        lines.append("Pas encore d'exception : ce faux positif n'a pas atteint "
                       "le seuil de récurrence, ou sa signature est trop large "
                       "pour une whitelist automatique sûre.")
-    return "\n".join(lignes)
+    return "\n".join(lines)
 
 
-def _regle_whitelist(conn, alertes: list[dict]) -> dict | None:
+def _rule_whitelist(conn, alerts: list[dict]) -> dict | None:
     """Ligne whitelist_rules correspondant à la signature de l'incident."""
     raws = [a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
-            for a in alertes]
+            for a in alerts]
     signature = _signature(raws)
     if not signature:
         return None
     return conn.execute(
         "SELECT match_all, reason, source, active FROM whitelist_rules "
-        "WHERE signature = %s", (_canonique(signature),)).fetchone()
+        "WHERE signature = %s", (_canonical(signature),)).fetchone()
 
 
 # Familles de capteurs, repérées par les groupes de règles qu'elles produisent.
@@ -1669,7 +1669,7 @@ def _regle_whitelist(conn, alertes: list[dict]) -> dict | None:
 # croyait aveugle aux lignes de commande et ratait DCSync/Golden/création de
 # Domain Admin, MITRE effondré sur T1059.001. Ces groupes rendent la présence
 # visible pour que le modèle analyse enfin les cmdlines.
-_CAPTEURS = (
+_SENSORS = (
     ("exécution de processus (auditd / Sysmon EID1 / 4688)",
      {"audit", "sysmon_event1", "sysmon_eid1_detections",
       "windows_powershell", "powershell"}),
@@ -1680,7 +1680,7 @@ _CAPTEURS = (
 )
 
 
-def _capteurs_actifs(conn, agent_id: str) -> str:
+def _active_sensors(conn, agent_id: str) -> str:
     """Ligne « télémétrie disponible sur cet hôte », d'après les groupes de
     règles réellement émis par l'agent sur la fenêtre récente. Factuel : ancre
     la section « couverture » du rapport pour qu'elle ne soit pas inventée."""
@@ -1688,14 +1688,14 @@ def _capteurs_actifs(conn, agent_id: str) -> str:
         "SELECT DISTINCT unnest(rule_groups) g FROM alerts "
         "WHERE agent_id = %s AND ts >= now() - interval '7 days'",
         (agent_id,)).fetchall()
-    vus = {r["g"] for r in rows}
-    etats = [f"{libelle}={'présent' if vus & groupes else 'ABSENT'}"
-             for libelle, groupes in _CAPTEURS]
-    return "télémétrie disponible sur cet hôte : " + ", ".join(etats)
+    seen = {r["g"] for r in rows}
+    states = [f"{label}={'présent' if seen & groups else 'ABSENT'}"
+             for label, groups in _SENSORS]
+    return "télémétrie disponible sur cet hôte : " + ", ".join(states)
 
 
 # Comptes présents sur tout hôte : lier deux incidents dessus n'a aucun sens.
-_COMPTES_GENERIQUES = {"root", "admin", "administrator", "www-data", "nobody",
+_ACCOUNTS_GENERIC = {"root", "admin", "administrator", "www-data", "nobody",
                        "daemon", "sync", "postgres", "mysql", "-", ""}
 
 # La flotte est en conteneurs LXC ; l'auditd tourne sur l'hôte Proxmox (agent
@@ -1706,20 +1706,20 @@ _COMPTES_GENERIQUES = {"root", "admin", "administrator", "www-data", "nobody",
 _LXC_CT = re.compile(r"lxc_ct=([A-Za-z0-9_.-]+)")
 
 
-def _conteneurs(alertes: list[dict]) -> list[str]:
+def _containers(alerts: list[dict]) -> list[str]:
     """Conteneurs LXC d'origine, extraits du full_log enrichi. Ignore host et
     unknown (exec court non résolu). Vide si l'hôte n'est pas l'agent pve."""
-    vus: set[str] = set()
-    for a in alertes:
+    seen: set[str] = set()
+    for a in alerts:
         raw = a.get("raw")
         raw = raw if isinstance(raw, dict) else json.loads(raw) if raw else {}
         for ct in _LXC_CT.findall(str(raw.get("full_log", ""))):
             if ct not in ("host", "unknown"):
-                vus.add(ct)
-    return sorted(vus)
+                seen.add(ct)
+    return sorted(seen)
 
 
-def _incidents_lies(conn, incident: dict) -> list[dict]:
+def _incidents_linked(conn, incident: dict) -> items[dict]:
     """Cases IRIS ouverts sur d'AUTRES agents partageant une entité forte (même
     IP, même fichier, même compte) dans une fenêtre ±ENTITY_GAP autour de
     celui-ci.
@@ -1734,7 +1734,7 @@ def _incidents_lies(conn, incident: dict) -> list[dict]:
     base soc-agent qu'il ne peut consulter nulle part. Le case du présent
     incident est exclu — la fusion campagne (`_fondre_campagne`) met plusieurs
     incidents, y compris d'autres hôtes, sur un même case."""
-    marge = timedelta(minutes=config.ENTITY_GAP_MINUTES)
+    margin = timedelta(minutes=config.ENTITY_GAP_MINUTES)
     traits = conn.execute(
         "SELECT DISTINCT srcip, entity, srcuser FROM alerts WHERE incident_id=%s",
         (incident["id"],)).fetchall()
@@ -1742,14 +1742,14 @@ def _incidents_lies(conn, incident: dict) -> list[dict]:
     # www-data, admin…) existe sur chaque hôte — lier dessus rapprocherait tous
     # les incidents entre eux. On écarte donc les comptes génériques, on garde
     # les shells génériques déjà exclus côté corrélation.
-    valeurs = {t["srcip"] for t in traits if t["srcip"]}
-    valeurs |= {t["entity"] for t in traits
-                if t["entity"] and not correlate.entite_generique(t["entity"])}
-    valeurs |= {t["srcuser"] for t in traits
-                if t["srcuser"] and t["srcuser"].lower() not in _COMPTES_GENERIQUES}
-    if not valeurs:
+    values = {t["srcip"] for t in traits if t["srcip"]}
+    values |= {t["entity"] for t in traits
+                if t["entity"] and not correlate.generic_entity(t["entity"])}
+    values |= {t["srcuser"] for t in traits
+                if t["srcuser"] and t["srcuser"].lower() not in _ACCOUNTS_GENERIC}
+    if not values:
         return []
-    liste = list(valeurs)
+    items = items(values)
     rows = conn.execute(
         """SELECT DISTINCT i.id, i.agent_name, i.iris_case_id,
                   a.srcip, a.entity, a.srcuser
@@ -1761,25 +1761,25 @@ def _incidents_lies(conn, incident: dict) -> list[dict]:
               AND (a.srcip = ANY(%s) OR a.entity = ANY(%s) OR a.srcuser = ANY(%s))
             ORDER BY i.id""",
         (incident["id"], incident["agent_id"], incident.get("iris_case_id"),
-         incident["first_seen"] - marge, incident["last_seen"] + marge,
-         liste, liste, liste)).fetchall()
+         incident["first_seen"] - margin, incident["last_seen"] + margin,
+         items, items, items)).fetchall()
     # Regroupement par CASE : un case de campagne porte plusieurs incidents, il
     # ne doit apparaître qu'une fois — avec tous les hôtes qu'il couvre.
-    par_case: dict[int, dict] = {}
+    by_case: dict[int, dict] = {}
     for r in rows:
-        partage = next((v for v in (r["srcip"], r["entity"], r["srcuser"])
-                        if v and v in valeurs), None)
-        if not partage:
+        shared = next((v for v in (r["srcip"], r["entity"], r["srcuser"])
+                        if v and v in values), None)
+        if not shared:
             continue
-        e = par_case.setdefault(r["iris_case_id"],
+        e = by_case.setdefault(r["iris_case_id"],
                                 {"case_id": r["iris_case_id"],
                                  "agents": set(), "entites": set()})
         e["agents"].add(r["agent_name"] or "?")
-        e["entites"].add(partage)
-    return sorted(par_case.values(), key=lambda e: e["case_id"])
+        e["entites"].add(shared)
+    return sorted(by_case.values(), key=lambda e: e["case_id"])
 
 
-def _lien_case(case_id: int) -> str:
+def _link_case(case_id: int) -> str:
     """URL du case IRIS. Relative à dessein : la note est lue DANS IRIS, et
     `config.IRIS_URL` vaut la loopback du serveur (127.0.0.1:8443) — un lien
     absolu construit dessus serait mort pour l'analyste, qui accède à IRIS par
@@ -1787,18 +1787,18 @@ def _lien_case(case_id: int) -> str:
     return f"/case?cid={case_id}"
 
 
-def _section_cases_lies(lies: list[dict]) -> str:
+def _section_cases_linked(linked: list[dict]) -> str:
     """Note locale (valeurs réelles). Construite en Python, JAMAIS envoyée au
     LLM : les hostnames des autres hôtes ne partent pas vers le cloud."""
-    if not lies:
+    if not linked:
         return ""
-    lignes = ["## Cases liés (autres hôtes)", "",
+    lines = ["## Cases liés (autres hôtes)", "",
               "Rapprochement par entité partagée, hors du cloisonnement par "
               "agent — possible mouvement latéral ou campagne à investiguer :",
               "",
               "| Case | Hôte(s) | Entité commune |",
               "|:---:|:---|:---|"]
-    for l in lies:
+    for l in linked:
         agents = ", ".join(f"**{a}**" for a in sorted(l["agents"]))
         # Une campagne partage souvent une dizaine d'entités : au-delà de 3 la
         # cellule devient illisible et n'ajoute rien — le case lié est ouvrable.
@@ -1806,9 +1806,9 @@ def _section_cases_lies(lies: list[dict]) -> str:
         ent = ", ".join(f"`{e}`" for e in ents[:3])
         if len(ents) > 3:
             ent += f" (+{len(ents) - 3})"
-        lignes.append(f"| [#{l['case_id']}]({_lien_case(l['case_id'])}) "
+        lines.append(f"| [#{l['case_id']}]({_link_case(l['case_id'])}) "
                       f"| {agents} | {ent} |")
-    return "\n".join(lignes) + "\n"
+    return "\n".join(lines) + "\n"
 
 
 # --------------------------------------------------------------------------
@@ -1834,11 +1834,11 @@ def _section_cases_lies(lies: list[dict]) -> str:
 #  3. Rien de tout cela ne part au modèle en clair. Seul un résumé chiffré, sans
 #     nom d'hôte ni de paquet, lui est fourni comme métadonnée de confiance.
 
-def _lien_cve(cve: str) -> str:
+def _link_cve(cve: str) -> str:
     return f"https://nvd.nist.gov/vuln/detail/{cve}"
 
 
-def _paquet(nom: str) -> str:
+def _package(name: str) -> str:
     """Nom de paquet raccourci pour une cellule de table.
 
     Sur Windows, `package.name` vaut le libellé complet de l'OS, version
@@ -1846,27 +1846,27 @@ def _paquet(nom: str) -> str:
     10.0.20348.587 ») : répété sur dix lignes à côté d'une colonne Version qui
     dit la même chose, il noie la colonne CVE, qui est l'information utile.
     """
-    nom = str(nom or "—")
-    return nom if len(nom) <= 46 else nom[:45] + "…"
+    name = str(name or "—")
+    return name if len(name) <= 46 else name[:45] + "…"
 
 
-def _table_cve(lignes: list[dict], avec_age: bool = True) -> list[str]:
+def _table_cve(lines: list[dict], with_age: bool = True) -> list[str]:
     """Table Markdown de vulnérabilités. Colonnes stables d'un bloc à l'autre
     pour que l'analyste ne relise pas l'en-tête à chaque section."""
-    tete = ["| CVE | Sévérité | CVSS | Paquet | Version |"
-            + (" Ouverte depuis |" if avec_age else ""),
-            "|:---|:---|---:|:---|:---|" + ("---:|" if avec_age else "")]
-    for v in lignes:
-        age = f" {v['age_jours']:.0f} j |" if avec_age else ""
-        tete.append(
-            f"| [{v['cve']}]({_lien_cve(v['cve'])}) "
-            f"| {(v['severite'] or 'non classée').capitalize()} "
-            f"| {v['score_base'] if v['score_base'] is not None else '—'} "
-            f"| `{_paquet(v['paquet'])}` | {v['version'] or '—'} |{age}")
-    return tete
+    head = ["| CVE | Sévérité | CVSS | Paquet | Version |"
+            + (" Ouverte depuis |" if with_age else ""),
+            "|:---|:---|---:|:---|:---|" + ("---:|" if with_age else "")]
+    for v in lines:
+        age = f" {v['age_jours']:.0f} j |" if with_age else ""
+        head.append(
+            f"| [{v['cve']}]({_link_cve(v['cve'])}) "
+            f"| {(v['severity'] or 'non classée').capitalize()} "
+            f"| {v['base_score'] if v['base_score'] is not None else '—'} "
+            f"| `{_package(v['package'])}` | {v['version'] or '—'} |{age}")
+    return head
 
 
-def _note_exposition(conn, incident: dict, alertes: list[dict]) -> str:
+def _exposure_note(conn, incident: dict, alerts: list[dict]) -> str:
     """Note « Exposition aux vulnérabilités » de la machine du case.
 
     Construite en Python à partir du journal VOC (`soc_agent.vulns`) : valeurs
@@ -1877,17 +1877,17 @@ def _note_exposition(conn, incident: dict, alertes: list[dict]) -> str:
     from . import vulns   # import différé : vulns importe assets, pas iris.
 
     agent_id = str(incident["agent_id"])
-    expo = vulns.exposition(conn, agent_id)
-    lien = vulns.lien_incident(conn, agent_id, alertes, expo)
+    expo = vulns.exposure(conn, agent_id)
+    link = vulns.incident_link(conn, agent_id, alerts, expo)
 
-    lignes = [f"# {TITRE_EXPOSITION}", "",
+    lines = [f"# {EXPOSURE_TITLE}", "",
               f"Machine **{incident.get('agent_name') or agent_id}** "
               f"(agent {agent_id}), "
-              f"priorité **P{expo['priorite']}** "
+              f"priorité **P{expo['priority']}** "
               f"({expo['role'] or 'rôle non déclaré'}).", ""]
 
     if not expo["couverte"]:
-        lignes += [
+        lines += [
             "> ⚠️ **Cette machine n'a jamais été inventoriée** par le module "
             "Vulnerability Detection de Wazuh. Il n'y a donc aucune donnée de "
             "vulnérabilité à son sujet — ce qui n'est **pas** la même chose que "
@@ -1899,21 +1899,21 @@ def _note_exposition(conn, incident: dict, alertes: list[dict]) -> str:
             f"{agent_id}` et l'inventaire de paquets côté API Wazuh "
             "(`/syscollector/<agent>/packages`).",
         ]
-        return "\n".join(lignes) + "\n"
+        return "\n".join(lines) + "\n"
 
     # --- Score et répartition ---------------------------------------------
-    sev_lisible = {"critical": "Critical", "high": "High", "medium": "Medium",
+    sev_readable = {"critical": "Critical", "high": "High", "medium": "Medium",
                    "low": "Low", "": "non classée"}
-    repartition = ", ".join(
-        f"**{n}** {sev_lisible.get(s, s)}"
+    distribution = ", ".join(
+        f"**{n}** {sev_readable.get(s, s)}"
         for s, n in sorted(expo["par_severite"].items(),
-                           key=lambda kv: -vulns.poids(kv[0])))
+                           key=lambda kv: -vulns.weight(kv[0])))
 
-    lignes += [
+    lines += [
         f"| | |", "|---|---|",
         f"| **Score d'exposition** | **{expo['score']}/100** — "
         f"exposition {expo['niveau']} |",
-        f"| **Vulnérabilités ouvertes** | {expo['total']} ({repartition}) |",
+        f"| **Vulnérabilités ouvertes** | {expo['total']} ({distribution}) |",
         f"| **Hors délai de correction** | {expo['hors_sla_total']} |",
         f"| **Plus ancienne ouverte** | {expo['plus_ancienne_jours']:.0f} jours |",
         (f"| **Corrigées sur 90 jours** | {expo['corrigees_90j']} "
@@ -1939,10 +1939,10 @@ def _note_exposition(conn, incident: dict, alertes: list[dict]) -> str:
     # 3 jours » sont exacts et trompeurs : ils décrivent notre ancienneté de
     # mesure, pas l'état du parc. Sans cet encadré, un lecteur y verrait un parc
     # tenu à jour alors qu'il traîne peut-être des CVE de 2019.
-    jeune = expo.get("journal_jours")
-    if jeune is not None and jeune < 30:
-        lignes += [
-            f"> ℹ️ **Le suivi VOC n'a que {jeune:.0f} jour(s) d'historique.** "
+    young = expo.get("journal_jours")
+    if young is not None and young < 30:
+        lines += [
+            f"> ℹ️ **Le suivi VOC n'a que {young:.0f} jour(s) d'historique.** "
             f"L'ancienneté et le retard se comptent depuis la première "
             f"observation par AURA, pas depuis la publication de la CVE : "
             f"« {expo['plus_ancienne_jours']:.0f} jours » et "
@@ -1955,8 +1955,8 @@ def _note_exposition(conn, incident: dict, alertes: list[dict]) -> str:
         ]
 
     # --- Lien avec CE case ------------------------------------------------
-    if lien["confirmees"]:
-        lignes += [
+    if link["confirmees"]:
+        lines += [
             "## Vulnérabilités citées dans l'incident",
             "",
             "Ces CVE apparaissent **littéralement** dans les évènements du case "
@@ -1965,7 +1965,7 @@ def _note_exposition(conn, incident: dict, alertes: list[dict]) -> str:
             "l'incident et l'exposition : ce que l'attaquant visait était "
             "effectivement présent ici.",
             "",
-        ] + _table_cve(lien["confirmees"]) + [
+        ] + _table_cve(link["confirmees"]) + [
             "",
             "**Conséquence directe** : remédier l'incident ne suffit pas. Tant "
             "que ces paquets ne sont pas corrigés, le même accès reste "
@@ -1973,8 +1973,8 @@ def _note_exposition(conn, incident: dict, alertes: list[dict]) -> str:
             "",
         ]
 
-    if lien["citees_non_ouvertes"]:
-        lignes += [
+    if link["citees_non_ouvertes"]:
+        lines += [
             "## Vulnérabilités citées mais non ouvertes ici",
             "",
             "CVE mentionnées dans les évènements du case, mais absentes de "
@@ -1983,49 +1983,49 @@ def _note_exposition(conn, incident: dict, alertes: list[dict]) -> str:
             "corrigée depuis. C'est une information sur la MÉTHODE de "
             "l'attaquant, pas sur l'exposition de l'hôte.",
             "",
-            ", ".join(f"[{c}]({_lien_cve(c)})"
-                      for c in lien["citees_non_ouvertes"]),
+            ", ".join(f"[{c}]({_link_cve(c)})"
+                      for c in link["citees_non_ouvertes"]),
             "",
         ]
 
-    if lien["vecteurs_possibles"]:
-        lignes += [
+    if link["vecteurs_possibles"]:
+        lines += [
             "## Vecteurs possibles (hypothèse, non démontrée)",
             "",
             f"L'incident porte une ou des techniques d'exploitation "
-            f"({', '.join(lien['techniques_exploit'])}) et cette machine a des "
+            f"({', '.join(link['techniques_exploit'])}) et cette machine a des "
             f"vulnérabilités graves ouvertes. **Aucun élément du case ne relie "
             f"ces CVE à l'attaque** : elles sont listées parce qu'un analyste "
             f"qui cherche par où l'accès a été obtenu doit les avoir sous les "
             f"yeux, pas parce qu'elles ont été exploitées.",
             "",
-        ] + _table_cve(lien["vecteurs_possibles"]) + [""]
+        ] + _table_cve(link["vecteurs_possibles"]) + [""]
 
     # --- Retard de correction ---------------------------------------------
     if expo["hors_sla"]:
-        top = expo["hors_sla"][:config.VOC_MAX_CVE_RAPPORT]
-        lignes += [
+        top = expo["hors_sla"][:config.VOC_MAX_CVE_REPORT]
+        lines += [
             "## Vulnérabilités hors délai",
             "",
             f"{expo['hors_sla_total']} vulnérabilité(s) ouverte(s) au-delà du "
-            f"délai attendu pour leur sévérité sur un asset P{expo['priorite']}"
+            f"délai attendu pour leur sévérité sur un asset P{expo['priority']}"
             + (f" — les {len(top)} plus en retard :" if len(top) < expo['hors_sla_total']
                else " :"),
             "",
             "| CVE | Sévérité | Paquet | Ouverte depuis | Délai | Retard |",
             "|:---|:---|:---|---:|---:|---:|",
         ] + [
-            f"| [{v['cve']}]({_lien_cve(v['cve'])}) "
-            f"| {(v['severite'] or 'non classée').capitalize()} "
-            f"| `{_paquet(v['paquet'])}` | {v['age_jours']:.0f} j "
+            f"| [{v['cve']}]({_link_cve(v['cve'])}) "
+            f"| {(v['severity'] or 'non classée').capitalize()} "
+            f"| `{_package(v['package'])}` | {v['age_jours']:.0f} j "
             f"| {v['sla_jours']} j | **+{v['retard_jours']:.0f} j** |"
             for v in top
         ] + [""]
 
     # --- Repli : rien de spécifique au case -------------------------------
-    if not (lien["confirmees"] or lien["vecteurs_possibles"]
+    if not (link["confirmees"] or link["vecteurs_possibles"]
             or expo["hors_sla"]):
-        lignes += [
+        lines += [
             "## Pires vulnérabilités ouvertes",
             "",
             "Aucune CVE n'est citée dans les évènements de ce case et aucune "
@@ -2035,7 +2035,7 @@ def _note_exposition(conn, incident: dict, alertes: list[dict]) -> str:
             "",
         ] + _table_cve(expo["pires"]) + [""]
 
-    lignes += [
+    lines += [
         "---",
         "",
         f"Source : module Vulnerability Detection de Wazuh, journalisé par "
@@ -2046,22 +2046,22 @@ def _note_exposition(conn, incident: dict, alertes: list[dict]) -> str:
         f"de l'exploitabilité réelle ni de l'exposition réseau du service "
         f"concerné.",
     ]
-    return "\n".join(lignes) + "\n"
+    return "\n".join(lines) + "\n"
 
 
-def _poser_exposition(case, case_id: int, conn, incident: dict,
-                      alertes: list[dict]) -> None:
+def _set_exposure(case, case_id: int, conn, incident: dict,
+                      alerts: list[dict]) -> None:
     """Pose la note d'exposition. Best-effort : le VOC est un enrichissement,
     son indisponibilité ne doit jamais empêcher un case de s'ouvrir."""
     try:
-        _poser_note(case, case_id, TITRE_EXPOSITION,
-                    _note_exposition(conn, incident, alertes),
-                    repertoire=DIR_EXPOSITION)
+        _set_note(case, case_id, EXPOSURE_TITLE,
+                    _exposure_note(conn, incident, alerts),
+                    directory=EXPOSURE_DIR)
     except Exception as e:  # noqa: BLE001
         log.warning("note d'exposition case #%s : %s", case_id, e)
 
 
-def _resume_exposition(conn, agent_id: str, alertes: list[dict]) -> str:
+def _exposure_summary(conn, agent_id: str, alerts: list[dict]) -> str:
     """Ligne d'exposition destinée au MODÈLE, en métadonnée de confiance.
 
     Volontairement chiffrée et anonyme : ni nom d'hôte, ni nom de paquet, ni
@@ -2073,66 +2073,66 @@ def _resume_exposition(conn, agent_id: str, alertes: list[dict]) -> str:
     """
     try:
         from . import vulns
-        expo = vulns.exposition(conn, str(agent_id))
+        expo = vulns.exposure(conn, str(agent_id))
         if not expo["couverte"]:
             return ("exposition aux vulnérabilités : machine JAMAIS "
                     "inventoriée (aucune donnée — ne pas conclure qu'elle est "
                     "à jour)")
-        lien = vulns.lien_incident(conn, str(agent_id), alertes, expo)
+        link = vulns.incident_link(conn, str(agent_id), alerts, expo)
         bout = (f"exposition aux vulnérabilités : score {expo['score']}/100 "
                 f"({expo['niveau']}), {expo['total']} ouvertes dont "
                 f"{expo['critiques']} critical et {expo['elevees']} high, "
                 f"{expo['hors_sla_total']} hors délai")
-        if lien["confirmees"]:
+        if link["confirmees"]:
             bout += (" ; CVE citées dans l'incident ET ouvertes sur cet hôte : "
-                     + ", ".join(v["cve"] for v in lien["confirmees"]))
+                     + ", ".join(v["cve"] for v in link["confirmees"]))
         return bout
     except Exception as e:  # noqa: BLE001
         log.debug("résumé d'exposition agent %s : %s", agent_id, e)
         return "exposition aux vulnérabilités : non disponible"
 
 
-def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict],
+def _note_tp(conn, incident: dict, triage: dict, alerts: list[dict],
              iocs: list[tuple[str, str, str]] | None = None) -> str:
     """Rapport d'analyse d'un vrai positif. Appelle le LLM pour le récit.
 
     `iocs` = liste autoritaire de l'onglet IOC du case (`_iocs_du_case`) : le
     rapport affiche alors la MÊME liste que la section IOC du case. Absent =
     recalcul sur les alertes."""
-    systeme = (PROMPTS / "report.md").read_text()
+    system = (PROMPTS / "report.md").read_text()
 
     # Même pseudonymisation qu'au triage, jetons réutilisés (map persistée) :
     # rien de sensible ne part vers le cloud, et la réponse est réhydratée.
-    anon = Anonymiseur(charger_map(conn, incident["id"]))
-    inc_a, alertes_a, interdits = anonymiser(anon, incident, alertes)
+    anon = Anonymizer(load_map(conn, incident["id"]))
+    inc_a, alerts_to, forbidden = anonymize(anon, incident, alerts)
     # Rapport = moins pressé que le triage : on montre toute la chaîne au modèle
     # (jusqu'à 20 règles) pour une analyse qui n'oublie aucune étape.
-    corps = rendre(inc_a, alertes_a, max_regles=20)
+    body = render(inc_a, alerts_to, max_rules=20)
     # Métadonnée SOC de confiance (agent_id + noms de groupes, rien de sensible) :
     # dit au modèle quels capteurs existaient, pour ancrer la section couverture.
-    telemetrie = _capteurs_actifs(conn, incident["agent_id"])
+    telemetry = _active_sensors(conn, incident["agent_id"])
     # Seconde métadonnée de confiance : l'exposition de l'hôte, en chiffres et
     # en CVE (aucun nom d'hôte ni de paquet — cf. `_resume_exposition`). Elle
     # évite au rapport de conclure « impossible de savoir si la machine était
     # vulnérable » alors que le SOC a l'inventaire.
-    exposition = _resume_exposition(conn, incident["agent_id"], alertes)
-    utilisateur = (f"=== DEBUT INCIDENT (données non fiables) ===\n{corps}\n"
+    exposure = _exposure_summary(conn, incident["agent_id"], alerts)
+    user = (f"=== DEBUT INCIDENT (données non fiables) ===\n{body}\n"
                    "=== FIN INCIDENT ===\n\n"
                    f"Métadonnées SOC de confiance (non issues des logs) :\n"
-                   f"{telemetrie}\n{exposition}\n\nRédige le rapport.")
+                   f"{telemetry}\n{exposure}\n\nRédige le rapport.")
 
     try:
         # Scan de fuite sur les seules données incident : le prompt système
         # (report.md) est un template dev constant, sans donnée client.
-        verifier_fuite(utilisateur, interdits)
-        rapport, _ = completion(systeme, utilisateur,
+        check_leak(user, forbidden)
+        report, _ = completion(system, user,
                                 max_tokens=config.REPORT_MAX_TOKENS,
                                 usage="report",
                                 incident_id=incident["id"])
-        sauver_map(conn, incident["id"], anon.mapping)
+        save_map(conn, incident["id"], anon.mapping)
     except Exception as e:  # noqa: BLE001 — le case doit se créer même sans LLM
         log.warning("rapport LLM indisponible (#%s) : %s", incident["id"], e)
-        rapport = {}
+        report = {}
     # DeepSeek ne garantit pas les clés du schéma : on tolère les absences.
     #
     # Le repli met la MÊME phrase dans `resume` et dans `analyse` — c'est
@@ -2141,16 +2141,16 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict],
     # sections identiques sans rien signaler, et l'analyste ne pouvait pas
     # savoir qu'il lisait un repli plutôt qu'une analyse. `_degrade` déclenche plus bas le
     # bandeau d'avertissement, ET empêche d'écraser un rapport déjà écrit.
-    degrade = "analyse" not in rapport
-    rapport.setdefault("resume", triage["reason"])
-    rapport.setdefault("analyse", triage["reason"])
+    degraded = "analyse" not in report
+    report.setdefault("resume", triage["reason"])
+    report.setdefault("analyse", triage["reason"])
     # Réhydratation : les jetons redeviennent les vraies valeurs pour l'analyste.
     # Puis correction des coquilles d'accent récurrentes du modèle.
-    for cle in ("resume", "analyse"):
-        rapport[cle] = _corriger_accents(rehydrater(rapport[cle], anon.mapping))
+    for key in ("resume", "analyse"):
+        report[key] = _fix_accents(rehydrate(report[key], anon.mapping))
 
-    cts = _conteneurs(alertes)
-    lignes = ["# Rapport d'analyse — Vrai positif", ""]
+    cts = _containers(alerts)
+    lines = ["# Rapport d'analyse — Vrai positif", ""]
     # Plus de technique en en-tête : le triage n'en rend QU'UNE, celle qui a
     # emporté sa décision, et elle n'est même pas toujours dans le mapping des
     # règles (case 129 : en-tête T1098, table ATT&CK sans T1098). La couverture
@@ -2159,10 +2159,10 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict],
     # Attribution conteneur : l'agent est l'hôte Proxmox (pve) ; le vrai théâtre
     # est le conteneur LXC résolu par l'enrichisseur auditd.
     if cts:
-        lignes.append(f"**Conteneur(s) concerné(s)** : {', '.join(cts)} "
+        lines.append(f"**Conteneur(s) concerné(s)** : {', '.join(cts)} "
                       f"(exécution vue par l'auditd de l'hôte {incident['agent_name']})")
-    if degrade:
-        lignes += [
+    if degraded:
+        lines += [
             "",
             "> ⚠️ **Rapport dégradé — l'analyse LLM n'a pas abouti.** Les deux "
             "sections ci-dessous reprennent la justification du triage, faute "
@@ -2171,36 +2171,36 @@ def _note_tp(conn, incident: dict, triage: dict, alertes: list[dict],
             "Cause la plus fréquente : budget de tokens épuisé par le "
             "raisonnement du modèle (`REPORT_MAX_TOKENS`).",
         ]
-    lignes += [
+    lines += [
         "",
         "## Résumé",
-        rapport["resume"],
+        report["resume"],
         "",
         "## Analyse",
-        rapport["analyse"],
+        report["analyse"],
         "",
     ]
-    lignes += [
-        _section_cases_lies(_incidents_lies(conn, incident)),
-        _section_commandes(alertes),
+    lines += [
+        _section_cases_linked(_incidents_linked(conn, incident)),
+        _section_commands(alerts),
         "",
-        _section_alertes(alertes, incident["agent_id"]),
+        _section_alerts(alerts, incident["agent_id"]),
         "",
-        _section_iocs(alertes, iocs),
+        _section_iocs(alerts, iocs),
         "",
-        _section_mitre(alertes),
+        _section_mitre(alerts),
         "",
         _section_remediations(conn, incident["id"], triage),
         "",
-        _section_remediation_hors_portee(triage, alertes),
+        _section_remediation_outside_scope(triage, alerts),
     ]
-    return "\n".join(lignes)
+    return "\n".join(lines)
 
 
-def _alertes(conn, incident_id: int) -> list[dict]:
+def _alerts(conn, incident_id: int) -> list[dict]:
     """Alertes d'un incident, bornées (cf. `alertes.charger_bornees`)."""
-    return alertes_mod.charger_bornees(conn, incident_id,
-                                       alertes_mod.COLONNES_RAPPORT, "case IRIS")
+    return alerts_mod.load_bounded(conn, incident_id,
+                                       alerts_mod.COLUMNS_REPORT, "case IRIS")
 
 
 def _traits(conn, incident_id: int) -> list[dict]:
@@ -2223,7 +2223,7 @@ def _traits(conn, incident_id: int) -> list[dict]:
         "audit_uid FROM alerts WHERE incident_id = %s", (incident_id,)).fetchall()
 
 
-def _identite_forte(traits: list[dict]) -> tuple[set[str], set[str]]:
+def _strong_identity(traits: list[dict]) -> tuple[set[str], set[str]]:
     """Ce qui NOMME l'intrusion : comptes (uid) et IP compromis. Discriminant.
 
     Root (uid 0) est écarté : une privesc SUID le fait apparaître partout, il ne
@@ -2237,13 +2237,13 @@ def _identite_forte(traits: list[dict]) -> tuple[set[str], set[str]]:
     return uids, ips
 
 
-def _distincts(a: list[dict], b: list[dict]) -> bool:
-    ua, ia = _identite_forte(a)
-    ub, ib = _identite_forte(b)
-    return bool(ua and ub and not (ua & ub)) or bool(ia and ib and not (ia & ib))
+def _distinct(a: list[dict], b: list[dict]) -> bool:
+    ua, ai = _strong_identity(a)
+    ub, ib = _strong_identity(b)
+    return bool(ua and ub and not (ua & ub)) or bool(ai and ib and not (ai & ib))
 
 
-def _apparentes(a: list[dict], b: list[dict]) -> bool:
+def _related(a: list[dict], b: list[dict]) -> bool:
     """Deux incidents partagent-ils un trait de parenté (lien faible inclus) ?
 
     Mêmes critères que correlate.point_commun, appliqués incident à incident :
@@ -2254,15 +2254,15 @@ def _apparentes(a: list[dict], b: list[dict]) -> bool:
         ips = {x["srcip"] for x in al if x.get("srcip")}
         users = {x["srcuser"] for x in al if x.get("srcuser")}
         ents = {x["entity"] for x in al if x.get("entity")
-                and not correlate.entite_generique(x["entity"])}
+                and not correlate.generic_entity(x["entity"])}
         tacs = {t for x in al for t in (x.get("mitre_tactics") or [])}
         grps = ({g for x in al for g in (x.get("rule_groups") or [])}
-                - correlate.GROUPES_GENERIQUES)
+                - correlate.GROUPS_GENERIC)
         return ips, users, ents, tacs, grps
     return any(x & y for x, y in zip(feats(a), feats(b)))
 
 
-def _fondre_si_doublon(conn, incident: dict) -> int | None:
+def _merge_if_duplicate(conn, incident: dict) -> int | None:
     """Dernier garde-fou anti-doublon : idempotence à la création de case.
 
     _rattacher_existants (corrélation) recolle normalement une salve à son
@@ -2274,26 +2274,26 @@ def _fondre_si_doublon(conn, incident: dict) -> int | None:
     une identité forte contradictoire, on fond cet incident dans le frère et on
     réutilise son case — jamais un doublon. Retourne le case_id adopté, ou None.
     """
-    marge = timedelta(hours=config.MAX_INCIDENT_HOURS)
-    freres = conn.execute(
+    margin = timedelta(hours=config.MAX_INCIDENT_HOURS)
+    siblings = conn.execute(
         "SELECT id, iris_case_id FROM incidents WHERE agent_id = %s "
         "AND id <> %s AND iris_case_id IS NOT NULL "
         "AND last_seen >= %s AND first_seen <= %s ORDER BY id",
         (incident["agent_id"], incident["id"],
-         incident["first_seen"] - marge, incident["last_seen"] + marge)).fetchall()
-    if not freres:
+         incident["first_seen"] - margin, incident["last_seen"] + margin)).fetchall()
+    if not siblings:
         return None
 
     traits_x = _traits(conn, incident["id"])
-    for f in freres:
+    for f in siblings:
         traits_f = _traits(conn, f["id"])
-        if _distincts(traits_x, traits_f) or not _apparentes(traits_x, traits_f):
+        if _distinct(traits_x, traits_f) or not _related(traits_x, traits_f):
             continue
-        return _fusionner(conn, incident["id"], f["id"], f["iris_case_id"])
+        return _merge(conn, incident["id"], f["id"], f["iris_case_id"])
     return None
 
 
-def _fusionner(conn, src_id: int, dst_id: int, dst_case: int | None) -> int | None:
+def _merge(conn, src_id: int, dst_id: int, dst_case: int | None) -> int | None:
     """Fond l'incident src dans dst : les alertes de src rejoignent dst, les
     agrégats de dst sont recalculés, dst est marqué à rafraîchir (son case sera
     complété au cycle suivant, remédiation incluse), et src est supprimé (CASCADE
@@ -2315,7 +2315,7 @@ def _fusionner(conn, src_id: int, dst_id: int, dst_case: int | None) -> int | No
     return dst_case
 
 
-def _signature_campagne(alertes: list[dict]) -> set[str]:
+def _signature_campaign(alerts: list[dict]) -> set[str]:
     """Marqueurs APPARTENANT à l'attaquant qui relient les hôtes d'une même
     campagne : comptes créés, IP C2 externes, fichiers/hash malveillants.
 
@@ -2331,14 +2331,14 @@ def _signature_campagne(alertes: list[dict]) -> set[str]:
     l'autre aucun. Ajouter les binaires déposés hors système aux IOC répare les
     deux d'un coup : la liste d'indicateurs du case ET la fusion de campagne."""
     sig: set[str] = set()
-    for valeur, type_ioc, _desc in _iocs(alertes):
-        if type_ioc == "ip-any" and _ip_interne(str(valeur)):
+    for value, type_ioc, _desc in _iocs(alerts):
+        if type_ioc == "ip-any" and _ip_internal(str(value)):
             continue                       # IP interne = pas un marqueur de campagne
-        sig.add(str(valeur))
+        sig.add(str(value))
     return sig
 
 
-def _fondre_campagne(conn, incident: dict) -> int | None:
+def _merge_campaign(conn, incident: dict) -> int | None:
     """Approche A : fond cet incident dans le case d'une campagne DÉJÀ ouverte
     (y compris sur un autre hôte) dès qu'ils partagent un marqueur fort
     appartenant à l'attaquant. Le case devient alors multi-machines ; la
@@ -2347,29 +2347,29 @@ def _fondre_campagne(conn, incident: dict) -> int | None:
 
     Refusé si l'incident n'a aucun marqueur d'attaquant (sans lui, rien ne prouve
     la même campagne) ou si CAMPAGNE_GAP_HOURS = 0. Renvoie le case adopté."""
-    if config.CAMPAGNE_GAP_HOURS <= 0:
+    if config.CAMPAIGN_GAP_HOURS <= 0:
         return None
-    sig = _signature_campagne(_alertes(conn, incident["id"]))
+    sig = _signature_campaign(_alerts(conn, incident["id"]))
     if not sig:
         return None
-    marge = timedelta(hours=config.CAMPAGNE_GAP_HOURS)
-    candidats = conn.execute(
+    margin = timedelta(hours=config.CAMPAIGN_GAP_HOURS)
+    candidates = conn.execute(
         "SELECT id, iris_case_id FROM incidents WHERE id <> %s "
         "AND iris_case_id IS NOT NULL AND last_seen >= %s AND first_seen <= %s "
         "ORDER BY id",
-        (incident["id"], incident["first_seen"] - marge,
-         incident["last_seen"] + marge)).fetchall()
-    for c in candidats:
-        commun = _signature_campagne(_alertes(conn, c["id"])) & sig
-        if commun:
+        (incident["id"], incident["first_seen"] - margin,
+         incident["last_seen"] + margin)).fetchall()
+    for c in candidates:
+        common = _signature_campaign(_alerts(conn, c["id"])) & sig
+        if common:
             log.info("incident #%s fondu dans la campagne du case IRIS #%s "
                      "(marqueur commun : %s)", incident["id"],
-                     c["iris_case_id"], ", ".join(sorted(commun))[:100])
-            return _fusionner(conn, incident["id"], c["id"], c["iris_case_id"])
+                     c["iris_case_id"], ", ".join(sorted(common))[:100])
+            return _merge(conn, incident["id"], c["id"], c["iris_case_id"])
     return None
 
 
-def _lien_wazuh(agent_id: str, rule_id: str, debut, fin) -> str:
+def _link_wazuh(agent_id: str, rule_id: str, start, end) -> str:
     """Deep-link Discover filtré sur (règle, agent) dans la fenêtre de l'évènement.
 
     On vise la règle + l'agent plutôt qu'un _id d'alerte précis : l'évènement de
@@ -2388,11 +2388,11 @@ def _lien_wazuh(agent_id: str, rule_id: str, debut, fin) -> str:
     Le reste du fragment #... reste du rison littéral (non décodé par le
     navigateur avant lecture par l'appli).
     """
-    requete = f'rule.id:"{rule_id}" and agent.id:"{agent_id}"'
-    return _discover_url(requete, debut, fin)
+    query = f'rule.id:"{rule_id}" and agent.id:"{agent_id}"'
+    return _discover_url(query, start, end)
 
 
-def _lien_wazuh_alerte(alert_id: str, ts) -> str:
+def _link_wazuh_alert(alert_id: str, ts) -> str:
     """Deep-link Discover vers UNE alerte précise, par son id Wazuh.
 
     Utilisé par l'onglet Evidence (une pièce = une alerte brute). L'`id` d'une
@@ -2404,7 +2404,7 @@ def _lien_wazuh_alerte(alert_id: str, ts) -> str:
     return _discover_url(f'id:"{alert_id}"', ts, ts)
 
 
-def _discover_url(requete: str, debut, fin) -> str:
+def _discover_url(query: str, start, end) -> str:
     """Construit le deep-link Discover (OSD 2.13 data-explorer) pour une KQL.
 
     Structure calquée sur ce que le Discover d'OSD 2.13 génère lui-même —
@@ -2417,25 +2417,25 @@ def _discover_url(requete: str, debut, fin) -> str:
         c'est la forme qu'OSD sérialise, littéral non garanti côté parseur rison.
     Le reste du fragment #... reste du rison littéral.
     """
-    marge = timedelta(minutes=5)
-    f0 = (debut - marge).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    f1 = (fin + marge).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    margin = timedelta(minutes=5)
+    f0 = (start - margin).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    f1 = (end + margin).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     patt = config.WAZUH_DASHBOARD_INDEX_PATTERN
     g = (f"(filters:!(),refreshInterval:(pause:!t,value:0),"
          f"time:(from:'{f0}',to:'{f1}'))")
     a = (f"(discover:(columns:!(rule.level,rule.description,agent.name),"
          f"isDirty:!f,sort:!(!('timestamp',desc))),"
          f"metadata:(indexPattern:'{patt}',view:discover))")
-    q = f"(filters:!(),query:(language:kuery,query:'{requete}'))"
+    q = f"(filters:!(),query:(language:kuery,query:'{query}'))"
     base = config.WAZUH_DASHBOARD_URL.rstrip("/") + config.WAZUH_DASHBOARD_DISCOVER_PATH
     return (f"{base}#?_a={a}&_g={g}&_q={q}"
             .replace(" ", "%20").replace('"', "%22"))
 
 
-def _timeline(case, case_id: int, alertes: list[dict], agent_id: str,
+def _timeline(case, case_id: int, alerts: list[dict], agent_id: str,
               asset_ids: list[int] | None = None,
               ioc_ids: dict[str, int] | None = None,
-              assets_nom: dict[str, int] | None = None) -> int:
+              assets_name: dict[str, int] | None = None) -> int:
     """Remplit la timeline du case : un évènement par règle déclenchée.
 
     Regroupé par règle plutôt qu'une ligne par alerte : dix détections de
@@ -2453,45 +2453,45 @@ def _timeline(case, case_id: int, alertes: list[dict], agent_id: str,
     """
     asset_ids = asset_ids or []
     ioc_ids = ioc_ids or {}
-    assets_nom = assets_nom or {}
+    assets_name = assets_name or {}
     n = 0
-    for rid, e in _grouper_regles(alertes):
-        titre = (e["desc"][:120] or f"Règle {rid}")
+    for rid, e in _group_rules(alerts):
+        title = (e["desc"][:120] or f"Règle {rid}")
         if e["n"] > 1:
-            titre = f"{titre} (x{e['n']})"
+            title = f"{title} (x{e['n']})"
         occ = f"{e['n']} occurrence(s)"
-        if e["n"] >= _SEUIL_RAFALE:
+        if e["n"] >= _THRESHOLD_BURST:
             occ += " (rafale — tirs répétés, pas autant d'évènements distincts)"
-        contenu = [f"Règle Wazuh **{rid}** — niveau {e['level']}/15",
-                   f"{occ}, {_fmt_intervalle(e['first'], e['last'])} UTC"]
+        content = [f"Règle Wazuh **{rid}** — niveau {e['level']}/15",
+                   f"{occ}, {_fmt_interval(e['first'], e['last'])} UTC"]
         if e["users"]:
-            contenu.append("Comptes : " + ", ".join(sorted(e["users"])))
+            content.append("Comptes : " + ", ".join(sorted(e["users"])))
         if e["entities"]:
-            contenu.append("Objets : " + ", ".join(sorted(e["entities"])[:5]))
-        contenu.append("")
-        contenu.append("Log Wazuh : "
-                       + _lien_wazuh(agent_id, rid, e["first"], e["last"]))
-        couleur = ("#dc3545" if e["level"] >= 12 else
+            content.append("Objets : " + ", ".join(sorted(e["entities"])[:5]))
+        content.append("")
+        content.append("Log Wazuh : "
+                       + _link_wazuh(agent_id, rid, e["first"], e["last"]))
+        color = ("#dc3545" if e["level"] >= 12 else
                    "#fd7e14" if e["level"] >= 10 else "#ffc107")
         # IOC portés par CE groupe de règle, réextraits de ses seules alertes.
-        liens_iocs = [ioc_ids[v] for v, _t, _d in _iocs(e["alertes"])
+        ioc_links = [ioc_ids[v] for v, _t, _d in _iocs(e["alertes"])
                       if v in ioc_ids]
         # Comptes cités par le groupe et connus comme assets (cf. mitigate).
-        liens_assets = list(asset_ids) + [
-            assets_nom[n] for n in (e["users"] | e["entities"])
-            if n in assets_nom and assets_nom[n] not in asset_ids]
+        asset_links = list(asset_ids) + [
+            assets_name[n] for n in (e["users"] | e["entities"])
+            if n in assets_name and assets_name[n] not in asset_ids]
         try:
             case.add_event(
-                title=titre,
+                title=title,
                 date_time=e["first"],
-                content="\n".join(contenu),
+                content="\n".join(content),
                 source="Wazuh",
                 tags=[TAG_AUTO],
-                linked_assets=liens_assets,
-                linked_iocs=liens_iocs,
+                linked_assets=asset_links,
+                linked_iocs=ioc_links,
                 display_in_graph=True,
                 display_in_summary=e["level"] >= 10,
-                color=couleur,
+                color=color,
                 timezone_string="+00:00",
                 cid=case_id,
             )
@@ -2503,11 +2503,11 @@ def _timeline(case, case_id: int, alertes: list[dict], agent_id: str,
 
 # Préfixe des noms de pièces Evidence posées par le soc-agent. Sert AUSSI de
 # repère d'idempotence : l'id d'alerte Wazuh est le 2e champ du nom.
-_EVIDENCE_PREFIXE = "wazuh"
+_EVIDENCE_PREFIX = "wazuh"
 
 
 def _evidences(conn, case, case_id: int, incident_id: int,
-               alertes: list[dict], agent_id: str) -> int:
+               alerts: list[dict], agent_id: str) -> int:
     """Une pièce Evidence par alerte Wazuh brute : le log réel conservé.
 
     Contrairement à la timeline (regroupée par règle) et au lien Discover (qui
@@ -2532,58 +2532,58 @@ def _evidences(conn, case, case_id: int, incident_id: int,
     il est journalisé en WARNING (et la ligne de repère retirée pour que la
     pièce soit retentée) — jamais silencieux.
     """
-    deja = {r["alert_id"] for r in conn.execute(
+    already = {r["alert_id"] for r in conn.execute(
         "SELECT alert_id FROM iris_evidences WHERE incident_id = %s",
         (incident_id,)).fetchall()}
-    reste = config.EVIDENCE_MAX_PAR_CASE - len(deja)
-    if reste <= 0:
+    remains = config.EVIDENCE_MAX_PER_CASE - len(already)
+    if remains <= 0:
         log.info("case #%s : plafond de %d pièces Evidence atteint, %d alerte(s) "
                  "non archivée(s) (consultables dans l'indexer)", case_id,
-                 config.EVIDENCE_MAX_PAR_CASE, len(alertes) - len(deja))
+                 config.EVIDENCE_MAX_PER_CASE, len(alerts) - len(already))
         return 0
     n = 0
-    for a in alertes:
-        if n >= reste:
+    for a in alerts:
+        if n >= remains:
             log.info("case #%s : plafond de %d pièces Evidence atteint",
-                     case_id, config.EVIDENCE_MAX_PAR_CASE)
+                     case_id, config.EVIDENCE_MAX_PER_CASE)
             break
         aid = str(a.get("id") or "").strip()
-        if not aid or aid in deja:
+        if not aid or aid in already:
             continue
-        deja.add(aid)  # garde-fou anti-doublon si l'alerte apparaît deux fois
+        already.add(aid)  # garde-fou anti-doublon si l'alerte apparaît deux fois
         # Le repère est posé AVANT l'appel : si le process meurt entre les deux,
         # on perd une pièce ; l'inverse (poser après) reposte à l'infini dès que
         # l'écriture en base échoue. C'est le sens du correctif.
-        pose = conn.execute(
+        placed = conn.execute(
             "INSERT INTO iris_evidences (incident_id, alert_id) VALUES (%s, %s) "
             "ON CONFLICT DO NOTHING RETURNING alert_id", (incident_id, aid))
-        if not pose.fetchone():
+        if not placed.fetchone():
             continue  # déjà posée par un passage concurrent
         raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
-        brut = json.dumps(raw, ensure_ascii=False, indent=2, sort_keys=True)
+        pretty = json.dumps(raw, ensure_ascii=False, indent=2, sort_keys=True)
         full_log = raw.get("full_log") or ""
         rid, lvl = a["rule_id"], a["rule_level"]
         desc = (a.get("rule_desc") or "").strip()
         ts = a["ts"].astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        corps = [
+        body = [
             f"Règle Wazuh **{rid}** — niveau {lvl}/15",
             desc,
             f"Agent {agent_id} — {ts} UTC",
             f"Alert id Wazuh : `{aid}`",
             "",
-            "Log Wazuh (Discover) : " + _lien_wazuh_alerte(aid, a["ts"]),
+            "Log Wazuh (Discover) : " + _link_wazuh_alert(aid, a["ts"]),
         ]
         if full_log:
-            corps += ["", "**full_log :**", "```", full_log, "```"]
-        corps += ["", "**Alerte brute (JSON) :**", "```json", brut, "```"]
+            body += ["", "**full_log :**", "```", full_log, "```"]
+        body += ["", "**Alerte brute (JSON) :**", "```json", pretty, "```"]
         # Nom lisible dans l'onglet, mais 2e champ = id (repère d'idempotence).
-        nom = f"{_EVIDENCE_PREFIXE} {aid} r{rid} L{lvl} {desc[:60]}".strip()
-        blob = brut.encode("utf-8")
+        name = f"{_EVIDENCE_PREFIX} {aid} r{rid} L{lvl} {desc[:60]}".strip()
+        blob = pretty.encode("utf-8")
         try:
             r = case.add_evidence(
-                filename=nom[:250] + ".json",
+                filename=name[:250] + ".json",
                 file_size=len(blob),
-                description="\n".join(corps),
+                description="\n".join(body),
                 file_hash=hashlib.sha256(blob).hexdigest(),
                 cid=case_id,
             )
@@ -2596,20 +2596,20 @@ def _evidences(conn, case, case_id: int, incident_id: int,
             # qui a masqué la boucle de duplication pendant quatre jours.
             conn.execute("DELETE FROM iris_evidences WHERE incident_id = %s "
                          "AND alert_id = %s", (incident_id, aid))
-            deja.discard(aid)
+            already.discard(aid)
             log.warning("evidence non posée (case #%s, alerte %s) : %s",
                         case_id, aid, exc)
     return n
 
 
-def _nettoyer_operation(op: str) -> str:
+def _clean_operation(op: str) -> str:
     """Nom de code propre : majuscules, lettres/espaces, borné, sans crochets."""
     op = re.sub(r"[^\w\s-]", "", str(op)).strip().upper()
     op = re.sub(r"\s+", " ", op)
     return op[:40]
 
 
-def _nommer_case(conn, incident: dict, triage: dict, alertes: list[dict]) -> str:
+def _name_case(conn, incident: dict, triage: dict, alerts: list[dict]) -> str:
     """Nom du case « [NOM DE CODE] Titre », généré par le LLM.
 
     Le nom de code est un intitulé d'opération (style militaire, inventé) ; le
@@ -2618,35 +2618,35 @@ def _nommer_case(conn, incident: dict, triage: dict, alertes: list[dict]) -> str
     contenir aucune donnée). Repli déterministe si le LLM échoue — un case doit
     toujours pouvoir se créer.
     """
-    defaut = (f"[INCIDENT-{incident['id']}] {incident['agent_name']} — "
-              f"{(alertes[0]['rule_desc'] or 'incident')[:50]}")
+    default = (f"[INCIDENT-{incident['id']}] {incident['agent_name']} — "
+              f"{(alerts[0]['rule_desc'] or 'incident')[:50]}")
     try:
-        systeme = (PROMPTS / "case_name.md").read_text()
-        anon = Anonymiseur(charger_map(conn, incident["id"]))
-        inc_a, alertes_a, interdits = anonymiser(anon, incident, alertes)
-        corps = rendre(inc_a, alertes_a)
-        utilisateur = (f"=== DEBUT INCIDENT (données non fiables) ===\n{corps}\n"
+        system = (PROMPTS / "case_name.md").read_text()
+        anon = Anonymizer(load_map(conn, incident["id"]))
+        inc_a, alerts_to, forbidden = anonymize(anon, incident, alerts)
+        body = render(inc_a, alerts_to)
+        user = (f"=== DEBUT INCIDENT (données non fiables) ===\n{body}\n"
                        f"=== FIN INCIDENT ===\n\nVerdict : {triage['verdict']}.\n"
                        "Nomme ce dossier.")
         # Fuite scannée sur les seules données incident (cf. triage) — le prompt
         # système (case_name.md) est constant et sans donnée client.
-        verifier_fuite(utilisateur, interdits)
+        check_leak(user, forbidden)
         # Température plus haute : on veut de la variété dans les noms de code.
-        rep, _ = completion(systeme, utilisateur,
+        rep, _ = completion(system, user,
                             max_tokens=config.CASE_NAME_MAX_TOKENS,
                             temperature=0.8, usage="case_name",
                             incident_id=incident["id"])
-        sauver_map(conn, incident["id"], anon.mapping)
-        operation = _nettoyer_operation(rep.get("operation") or "")
-        titre = rehydrater(str(rep.get("titre") or "").strip(), anon.mapping)[:80]
-        if operation and titre:
-            return f"[{operation}] {titre}"
+        save_map(conn, incident["id"], anon.mapping)
+        operation = _clean_operation(rep.get("operation") or "")
+        title = rehydrate(str(rep.get("titre") or "").strip(), anon.mapping)[:80]
+        if operation and title:
+            return f"[{operation}] {title}"
     except Exception as e:  # noqa: BLE001 — le nommage ne bloque pas le case
         log.warning("nom de case LLM indisponible (#%s) : %s", incident["id"], e)
-    return defaut
+    return default
 
 
-def _poser_tache_whitelist(case, case_id: int) -> None:
+def _set_whitelist_task(case, case_id: int) -> None:
     try:
         case.add_task(
             title="WHITELIST — demande d'exception",
@@ -2666,7 +2666,7 @@ def _poser_tache_whitelist(case, case_id: int) -> None:
         log.warning("tâche whitelist non créée (case #%s) : %s", case_id, e)
 
 
-def _remediation_autorisee(incident: dict) -> bool:
+def _remediation_allowed(incident: dict) -> bool:
     """La remédiation autonome peut-elle partir sur cet incident ?
 
     Barrière déterministe, décidée hors du modèle. Le pipeline agit sans
@@ -2691,21 +2691,21 @@ def _remediation_autorisee(incident: dict) -> bool:
     return True
 
 
-def creer_case(conn, incident: dict, triage: dict) -> int:
+def create_case(conn, incident: dict, triage: dict) -> int:
     # Garde-fou d'idempotence : si cet incident double un frère déjà versé dans
     # IRIS (raté de _rattacher_existants), on réutilise son case au lieu d'en
     # ouvrir un second. L'incident doublon est fondu dans le frère.
-    adopte = _fondre_si_doublon(conn, incident)
-    if adopte is None:
+    adopted = _merge_if_duplicate(conn, incident)
+    if adopted is None:
         # Approche A : à défaut d'un doublon du même hôte, rattachement à une
         # campagne déjà ouverte (autre hôte inclus) sur marqueur d'attaquant.
-        adopte = _fondre_campagne(conn, incident)
-    if adopte is not None:
+        adopted = _merge_campaign(conn, incident)
+    if adopted is not None:
         log.info("incident #%s → fondu dans le case IRIS #%s "
-                 "(pas de nouveau case)", incident["id"], adopte)
-        return adopte
+                 "(pas de nouveau case)", incident["id"], adopted)
+        return adopted
 
-    alertes = _alertes(conn, incident["id"])
+    alerts = _alerts(conn, incident["id"])
     verdict = triage["verdict"]
     fp = verdict == "false_positive"
 
@@ -2718,19 +2718,19 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
         log.error("  client IRIS échoué : %s", e)
         raise RuntimeError(f"client IRIS échoué : {e}") from e
 
-    nom = _nommer_case(conn, incident, triage, alertes)
+    name = _name_case(conn, incident, triage, alerts)
     # Priorité de l'asset dans la DESCRIPTION et dans un TAG (filtrable côté
     # IRIS). La SÉVÉRITÉ du case, elle, se pose après création : `add_case` ne
     # la prend pas et tous les cases naissent « Low ».
-    priorite = incident.get("priorite")
+    priority = incident.get("priority")
     desc = _description(incident, verdict)
 
-    log.debug("  appel add_case (nom=%s, cust=%s)", nom[:50], config.IRIS_CUSTOMER)
+    log.debug("  appel add_case (nom=%s, cust=%s)", name[:50], config.IRIS_CUSTOMER)
     r = case.add_case(
-        case_name=nom,
+        case_name=name,
         case_description=desc,
         case_customer=config.IRIS_CUSTOMER,
-        case_classification=_classification(incident, alertes),
+        case_classification=_classification(incident, alerts),
         soc_id=f"Aura-SOC-{incident['id']}",
     )
     log.debug("  réponse add_case: success=%s", r.is_success())
@@ -2751,25 +2751,25 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
 
     # Tags = hostname de la machine touchée + priorité de l'asset (add_case ne
     # prend pas de tags, d'où l'update juste après la création).
-    _taguer(case, case_id, incident.get("agent_name"),
-            f"P{priorite}" if priorite else None)
-    sev = _poser_severite(case, case_id, incident, triage)
+    _tag(case, case_id, incident.get("agent_name"),
+            f"P{priority}" if priority else None)
+    sev = _set_severity(case, case_id, incident, triage)
     if sev:
         log.info("case #%s : sévérité IRIS %s (effective %s/15, asset P%s)",
-                 case_id, sev, incident.get("severite"), priorite)
+                 case_id, sev, incident.get("severity"), priority)
 
     # IOC (best-effort : un type inconnu ne doit pas faire échouer le case) et
     # asset « machine touchée ». Les ids récupérés servent à lier la timeline :
     # sans ces liens, l'onglet Graph d'IRIS reste vide.
-    ioc_ids = _poser_iocs(case, case_id, alertes)
-    asset_ids = _poser_asset_machine(case, case_id, incident, alertes,
-                                     compromis=not fp)
+    ioc_ids = _set_iocs(case, case_id, alerts)
+    asset_ids = _set_asset_machine(case, case_id, incident, alerts,
+                                     compromised=not fp)
 
     # Tâche WHITELIST « On hold » : l'analyste la remplit et la passe en
     # 'To do' quand il veut une exception ; soc_agent.whitelist_task la
     # traite alors de façon cyclique. Best-effort : un échec ne bloque pas
     # la création du case.
-    _poser_tache_whitelist(case, case_id)
+    _set_whitelist_task(case, case_id)
 
     # Remédiation AUTOMATIQUE, avant le rapport : les actions décidées au triage
     # sont exécutées maintenant (isolation, blocage, désactivation de compte),
@@ -2777,10 +2777,10 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     # ensuite le récapitulatif. Barrières conservées dans mitigate.executer
     # (dry-run si MITIGATE_EXECUTE=false, suspension si motifs d'injection).
     # Import différé : mitigate importe iris, on casse le cycle à l'appel.
-    if not fp and _remediation_autorisee(incident):
+    if not fp and _remediation_allowed(incident):
         try:
             from . import mitigate
-            mitigate.executer(incident["id"])
+            mitigate.run(incident["id"])
         except Exception as e:  # noqa: BLE001 — une remédiation KO ne bloque
             # pas la création du case ; elle est tracée en 'échec'.
             log.warning("remédiation auto #%s : %s", incident["id"], e)
@@ -2805,7 +2805,7 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
     if not fp and not incident.get("ueba"):
         try:
             from . import ueba
-            n = ueba.marquer_tp(incident["id"])
+            n = ueba.mark_tp(incident["id"])
             if n:
                 log.info("#%s : %d trait(s) UEBA figés (vus en vrai positif)",
                          incident["id"], n)
@@ -2814,34 +2814,34 @@ def creer_case(conn, incident: dict, triage: dict) -> int:
 
     # Note d'analyse, dans un répertoire dédié. Après la remédiation : le récap
     # des actions exécutées en dépend.
-    contenu = (_note_fp(triage, _regle_whitelist(conn, alertes)) if fp
-               else _note_tp(conn, incident, triage, alertes,
-                             _iocs_du_case(case, case_id, alertes)))
-    titre = "Analyse — Faux positif" if fp else "Rapport d'analyse"
-    _poser_note(case, case_id, titre, contenu)
+    content = (_note_fp(triage, _rule_whitelist(conn, alerts)) if fp
+               else _note_tp(conn, incident, triage, alerts,
+                             _iocs_du_case(case, case_id, alerts)))
+    title = "Analyse — Faux positif" if fp else "Rapport d'analyse"
+    _set_note(case, case_id, title, content)
 
     # Exposition aux vulnérabilités de la machine touchée. Posée aussi sur les
     # FAUX POSITIFS : le verdict porte sur l'évènement, pas sur l'état de
     # l'hôte, et une machine hors délai de correction le reste que l'alerte du
     # jour ait été fondée ou non.
-    _poser_exposition(case, case_id, conn, incident, alertes)
+    _set_exposure(case, case_id, conn, incident, alerts)
 
     # Timeline : la kill chain, évènement par règle (TP seulement — un FP n'a
     # pas de chronologie d'attaque à reconstituer).
     # Relu APRÈS la remédiation : mitigate y a posé les comptes visés comme
     # assets, qu'on veut voir apparaître dans le graphe.
     if not fp:
-        _timeline(case, case_id, alertes, incident["agent_id"],
+        _timeline(case, case_id, alerts, incident["agent_id"],
                   asset_ids, ioc_ids, _assets_case(case, case_id))
         # Onglet Evidence : chaque alerte brute archivée (log réel + deep-link).
-        _evidences(conn, case, case_id, incident["id"], alertes,
+        _evidences(conn, case, case_id, incident["id"], alerts,
                    incident["agent_id"])
 
     conn.commit()
     return case_id
 
 
-def _verdict_a_change(conn, incident_id: int) -> bool:
+def _verdict_changed(conn, incident_id: int) -> bool:
     """Le verdict ou les actions ont-ils changé au dernier triage ?
 
     Correctif #1 (explosion tokens du 2026-07-30) : sur un refresh où le triage
@@ -2859,7 +2859,7 @@ def _verdict_a_change(conn, incident_id: int) -> bool:
             or list(rows[0]["actions"]) != list(rows[1]["actions"]))
 
 
-def rafraichir_case(conn, incident: dict, triage: dict) -> int:
+def refresh_case(conn, incident: dict, triage: dict) -> int:
     """Met à jour le case existant d'un incident enrichi de nouvelles alertes.
 
     C'est l'autre moitié du correctif anti-doublon : quand une salve d'une
@@ -2881,39 +2881,39 @@ def rafraichir_case(conn, incident: dict, triage: dict) -> int:
     # `session['permissions']` — absent en authentification par clé d'API
     # (KeyError, cf. iris_engine/access_control/utils.py). Un case supprimé et
     # un vrai défaut de droits produisent donc la même erreur illisible.
-    if not _case_existe(case, case_id):
+    if not _case_exists(case, case_id):
         log.warning("case IRIS #%s introuvable (supprimé ?) — incident #%s "
                     "recréé", case_id, incident["id"])
         conn.execute("UPDATE incidents SET iris_case_id = NULL WHERE id = %s",
                      (incident["id"],))
         conn.commit()
-        return creer_case(conn, dict(incident, iris_case_id=None), triage)
+        return create_case(conn, dict(incident, iris_case_id=None), triage)
 
-    alertes = _alertes(conn, incident["id"])
+    alerts = _alerts(conn, incident["id"])
     fp = triage["verdict"] == "false_positive"
-    desc = _description(incident, triage["verdict"], maj=True)
+    desc = _description(incident, triage["verdict"], update=True)
     try:
         case.update_case(case_id=case_id, case_description=desc)
     except Exception as e:  # noqa: BLE001
         log.debug("maj description case #%s : %s", case_id, e)
 
-    _taguer(case, case_id, incident.get("agent_name"),
-            f"P{incident['priorite']}" if incident.get("priorite") else None)
+    _tag(case, case_id, incident.get("agent_name"),
+            f"P{incident['priority']}" if incident.get("priority") else None)
     # La sévérité est REJOUÉE : une salve peut avoir fait monter le niveau max,
     # donc la sévérité effective. Un case ouvert « High » qui devient une
     # attaque avérée doit changer de couleur dans la file, sans quoi l'analyste
     # trie sur une information périmée.
-    _poser_severite(case, case_id, incident, triage)
-    ioc_ids = _poser_iocs(case, case_id, alertes)
-    asset_ids = _poser_asset_machine(case, case_id, incident, alertes,
-                                     compromis=not fp)
+    _set_severity(case, case_id, incident, triage)
+    ioc_ids = _set_iocs(case, case_id, alerts)
+    asset_ids = _set_asset_machine(case, case_id, incident, alerts,
+                                     compromised=not fp)
 
     # Remédiation rejouée : idempotente (clé unique incident/action/cible), elle
     # ne couvre que d'éventuelles nouvelles cibles apparues avec la salve.
-    if not fp and _remediation_autorisee(incident):
+    if not fp and _remediation_allowed(incident):
         try:
             from . import mitigate
-            mitigate.executer(incident["id"])
+            mitigate.run(incident["id"])
         except Exception as e:  # noqa: BLE001
             log.warning("remédiation refresh #%s : %s", incident["id"], e)
 
@@ -2921,12 +2921,12 @@ def rafraichir_case(conn, incident: dict, triage: dict) -> int:
     # Le rapport TP appelle le LLM : correctif #1, on ne le régénère que si le
     # verdict/les actions ont changé depuis la note en place (sinon identique).
     if fp:
-        _poser_note(case, case_id, "Analyse — Faux positif",
-                    _note_fp(triage, _regle_whitelist(conn, alertes)))
-    elif _verdict_a_change(conn, incident["id"]):
-        _poser_note(case, case_id, "Rapport d'analyse",
-                    _note_tp(conn, incident, triage, alertes,
-                             _iocs_du_case(case, case_id, alertes)))
+        _set_note(case, case_id, "Analyse — Faux positif",
+                    _note_fp(triage, _rule_whitelist(conn, alerts)))
+    elif _verdict_changed(conn, incident["id"]):
+        _set_note(case, case_id, "Rapport d'analyse",
+                    _note_tp(conn, incident, triage, alerts,
+                             _iocs_du_case(case, case_id, alerts)))
     else:
         log.info("#%s rapport non régénéré : verdict inchangé depuis la note "
                  "en place (économie de l'appel LLM report)", incident["id"])
@@ -2934,13 +2934,13 @@ def rafraichir_case(conn, incident: dict, triage: dict) -> int:
     # Toujours régénérée, elle : elle ne coûte aucun appel au modèle, et
     # l'exposition de la machine bouge indépendamment du verdict (un patch
     # appliqué entre deux salves doit se voir dans le case).
-    _poser_exposition(case, case_id, conn, incident, alertes)
+    _set_exposure(case, case_id, conn, incident, alerts)
 
     if not fp:
-        _reconstruire_timeline(case, case_id, alertes, incident["agent_id"],
+        _rebuild_timeline(case, case_id, alerts, incident["agent_id"],
                                asset_ids, ioc_ids, _assets_case(case, case_id))
         # Evidence : ajout seul des alertes nouvellement rattachées (idempotent).
-        _evidences(conn, case, case_id, incident["id"], alertes,
+        _evidences(conn, case, case_id, incident["id"], alerts,
                    incident["agent_id"])
 
     conn.execute(
@@ -2957,22 +2957,22 @@ _SELECT_BASE = """
 SELECT DISTINCT ON (i.id)
        i.id, i.agent_id, i.agent_name, i.first_seen, i.last_seen,
        i.alert_count, i.max_level, i.mitre_tactics, i.entities, i.iris_case_id,
-       i.ueba, i.ueba_score, i.ueba_motifs, i.priorite, i.severite,
+       i.ueba, i.ueba_score, i.ueba_patterns, i.priority, i.severity,
        i.asset_role,
        t.verdict, t.confidence, t.mitre, t.actions, t.reason
   FROM incidents i
   JOIN triages t ON t.incident_id = i.id
- WHERE {filtre}
+ WHERE {filter}
    AND (%(un_seul)s::bigint IS NULL OR i.id = %(un_seul)s)
  ORDER BY i.id, t.created_at DESC
 """
-SELECT_A_TRAITER = _SELECT_BASE.format(
-    filtre="i.iris_case_id IS NULL AND i.status <> 'fp_ueba'")
-SELECT_A_RAFRAICHIR = _SELECT_BASE.format(
-    filtre="i.iris_case_id IS NOT NULL AND i.needs_refresh")
+SELECT_TO_PROCESS = _SELECT_BASE.format(
+    filter="i.iris_case_id IS NULL AND i.status <> 'fp_ueba'")
+SELECT_TO_REFRESH = _SELECT_BASE.format(
+    filter="i.iris_case_id IS NOT NULL AND i.needs_refresh")
 
 
-def creer_cases(un_seul: int | None = None) -> list[tuple[int, int, str]]:
+def create_cases(un_seul: int | None = None) -> list[tuple[int, int, str]]:
     """Crée les cases manquants ET met à jour ceux des incidents enrichis.
 
     Retourne (incident_id, case_id, verdict). Un incident déjà versé dans IRIS
@@ -2981,8 +2981,8 @@ def creer_cases(un_seul: int | None = None) -> list[tuple[int, int, str]]:
     """
     faits: list[tuple[int, int, str]] = []
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-        a_creer = conn.execute(SELECT_A_TRAITER, {"un_seul": un_seul}).fetchall()
-        for inc in a_creer:
+        to_create = conn.execute(SELECT_TO_PROCESS, {"un_seul": un_seul}).fetchall()
+        for inc in to_create:
             # Incident d'origine UEBA jugé faux positif : PAS de case.
             #
             # Un case FP a du sens pour un incident de niveau >= 12 : une règle
@@ -3006,7 +3006,7 @@ def creer_cases(un_seul: int | None = None) -> list[tuple[int, int, str]]:
             triage = {k: inc[k] for k in
                       ("verdict", "confidence", "mitre", "actions", "reason")}
             try:
-                case_id = creer_case(conn, inc, triage)
+                case_id = create_case(conn, inc, triage)
                 faits.append((inc["id"], case_id, inc["verdict"]))
                 print(f"  incident #{inc['id']} -> case IRIS #{case_id} "
                       f"({inc['verdict']})")
@@ -3022,13 +3022,13 @@ def creer_cases(un_seul: int | None = None) -> list[tuple[int, int, str]]:
                            ("case_creation_failed", inc["id"]))
                 conn.commit()
 
-        a_rafraichir = conn.execute(
-            SELECT_A_RAFRAICHIR, {"un_seul": un_seul}).fetchall()
-        for inc in a_rafraichir:
+        to_refresh = conn.execute(
+            SELECT_TO_REFRESH, {"un_seul": un_seul}).fetchall()
+        for inc in to_refresh:
             triage = {k: inc[k] for k in
                       ("verdict", "confidence", "mitre", "actions", "reason")}
             try:
-                case_id = rafraichir_case(conn, inc, triage)
+                case_id = refresh_case(conn, inc, triage)
                 faits.append((inc["id"], case_id, inc["verdict"]))
                 print(f"  incident #{inc['id']} -> case IRIS #{case_id} MAJ "
                       f"({inc['verdict']}, {inc['alert_count']} alertes)")
@@ -3043,7 +3043,7 @@ def creer_cases(un_seul: int | None = None) -> list[tuple[int, int, str]]:
     return faits
 
 
-def nettoyer_iocs(simulation: bool = True) -> list[tuple[int, str, str]]:
+def clean_iocs(simulation: bool = True) -> list[tuple[int, str, str]]:
     """Retire des cases existants les IOC devenus redondants.
 
     `_poser_iocs` n'AJOUTE que le manquant, il ne retire jamais : les cases
@@ -3054,25 +3054,25 @@ def nettoyer_iocs(simulation: bool = True) -> list[tuple[int, str, str]]:
     auparavant pour un fichier désormais représenté par son hash — jamais un IOC
     ajouté à la main par un analyste, qui ne peut pas figurer dans cette liste.
     """
-    a_faire: list[tuple[int, str, str]] = []
+    to_do: list[tuple[int, str, str]] = []
     case = _client()
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         incidents = conn.execute(
             "SELECT id, iris_case_id FROM incidents "
             "WHERE iris_case_id IS NOT NULL ORDER BY id").fetchall()
         for inc in incidents:
-            alertes = conn.execute(
+            alerts = conn.execute(
                 "SELECT * FROM alerts WHERE incident_id = %s ORDER BY ts",
                 (inc["id"],)).fetchall()
-            if not alertes:
+            if not alerts:
                 continue
             # Ce que le code produit AUJOURD'HUI : la liste de référence.
-            gardes = {v for v, _t, _d in _iocs(alertes)}
+            guards = {v for v, _t, _d in _iocs(alerts)}
             # Les valeurs de fichier connues de ces alertes : chemins et hashs.
             # Tout ce qui est là-dedans mais plus dans `gardes` est un reliquat
             # de l'ancienne forme, replié depuis dans une description.
-            connues = _valeurs_fichier(alertes)
-            if not _case_existe(case, inc["iris_case_id"]):
+            known = _values_file(alerts)
+            if not _case_exists(case, inc["iris_case_id"]):
                 print(f"  case #{inc['iris_case_id']} : introuvable dans IRIS "
                       f"(supprimé) — incident #{inc['id']} ignoré, il sera "
                       "recréé au prochain rafraîchissement")
@@ -3085,39 +3085,39 @@ def nettoyer_iocs(simulation: bool = True) -> list[tuple[int, str, str]]:
                             inc["iris_case_id"], e)
                 continue
             for i in presents:
-                valeur = i.get("ioc_value")
-                if not valeur or valeur in gardes or valeur not in connues:
+                value = i.get("ioc_value")
+                if not value or value in guards or value not in known:
                     continue
-                a_faire.append((inc["iris_case_id"], valeur, i.get("ioc_id")))
+                to_do.append((inc["iris_case_id"], value, i.get("ioc_id")))
                 if not simulation:
                     try:
                         case.delete_ioc(i["ioc_id"], cid=inc["iris_case_id"])
                     except Exception as e:                    # noqa: BLE001
-                        log.warning("suppression IOC %s : %s", valeur, e)
-    return a_faire
+                        log.warning("suppression IOC %s : %s", value, e)
+    return to_do
 
 
-def _valeurs_fichier(alertes: list[dict]) -> set[str]:
+def _values_file(alerts: list[dict]) -> set[str]:
     """Chemins et hashs de fichier présents dans ces alertes.
 
     Périmètre du nettoyage : on ne supprime rien qui ne vienne pas de là.
     """
-    valeurs: set[str] = set()
-    for a in alertes:
+    values: set[str] = set()
+    for a in alerts:
         raw = a["raw"] if isinstance(a["raw"], dict) else json.loads(a["raw"])
         data = raw.get("data", {}) or {}
         yara = data.get("yara") or {}
         vt = (data.get("virustotal", {}) or {}).get("source", {}) or {}
         sc = raw.get("syscheck", {}) or {}
         for v in (data.get("file_path"), yara.get("scan_path"),
-                  _chemin_cible(data.get("file_path") or yara.get("scan_path")),
+                  _path_target(data.get("file_path") or yara.get("scan_path")),
                   data.get("sha256"), data.get("sha1"), data.get("md5"),
                   vt.get("file"), vt.get("sha256"), vt.get("sha1"), vt.get("md5"),
                   sc.get("path"), sc.get("sha256_after"), sc.get("sha1_after"),
                   sc.get("md5_after")):
             if v:
-                valeurs.add(str(v))
-    return valeurs
+                values.add(str(v))
+    return values
 
 
 def main() -> None:
@@ -3131,18 +3131,18 @@ def main() -> None:
                          "(sans ce drapeau, simulation)")
     args = ap.parse_args()
 
-    if args.nettoyer_iocs:
-        faits = nettoyer_iocs(simulation=not args.appliquer)
-        verbe = "supprimé" if args.appliquer else "à supprimer"
-        for case_id, valeur, _ in faits:
-            print(f"  case #{case_id} : {verbe} {valeur}")
-        print(f"  {len(faits)} IOC redondant(s) {verbe}.")
-        if faits and not args.appliquer:
+    if args.clean_iocs:
+        faits = clean_iocs(simulation=not args.apply)
+        verb = "supprimé" if args.apply else "à supprimer"
+        for case_id, value, _ in faits:
+            print(f"  case #{case_id} : {verb} {value}")
+        print(f"  {len(faits)} IOC redondant(s) {verb}.")
+        if faits and not args.apply:
             print("  Relancer avec --appliquer pour supprimer.")
         return
 
-    crees = creer_cases(args.incident)
-    if not crees:
+    created = create_cases(args.incident)
+    if not created:
         print("Aucun incident à verser dans IRIS.")
 
 

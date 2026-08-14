@@ -6,10 +6,10 @@ outils puis appelle `serveur.enregistrer`. L'ordre d'import fixe l'ordre du
 d'abord, action ensuite, délibérément.
 """
 
-from . import lecture  # noqa: F401
+from . import read  # noqa: F401
 from . import cmdb  # noqa: F401
 from . import hunting  # noqa: F401
 from . import simulation  # noqa: F401
 from . import action  # noqa: F401
-from . import enrolement  # noqa: F401
-from . import relais  # noqa: F401
+from . import enrollment  # noqa: F401
+from . import relay  # noqa: F401

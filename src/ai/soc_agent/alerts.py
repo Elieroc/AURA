@@ -24,7 +24,7 @@ Deux stratégies, selon ce que l'appelant fait des lignes :
 - `charger_bornees()` quand il lui faut une LISTE en mémoire (ciblage d'une
   remédiation, construction d'un prompt, rendu d'un rapport) ;
 - `parcourir()` quand il ne fait que balayer (calcul d'une signature, mise à
-  jour ligne à ligne) : curseur serveur, rien n'est matérialisé.
+  day ligne à ligne) : curseur serveur, rien n'est matérialisé.
 """
 
 from __future__ import annotations
@@ -40,24 +40,24 @@ log = logging.getLogger(__name__)
 # Jeux de colonnes utilisés dans le pipeline. Nommés plutôt que passés en clair
 # : une chaîne de colonnes construite par l'appelant finirait tôt ou tard par
 # être concaténée depuis une variable.
-COLONNES_RAPPORT = ("id, ts, rule_id, rule_level, rule_desc, rule_groups, "
+COLUMNS_REPORT = ("id, ts, rule_id, rule_level, rule_desc, rule_groups, "
                     "mitre_ids, mitre_tactics, srcip, srcuser, entity, raw")
-COLONNES_TRIAGE = ("id, ts, rule_id, rule_level, rule_desc, srcip, srcuser, "
+COLUMNS_TRIAGE = ("id, ts, rule_id, rule_level, rule_desc, srcip, srcuser, "
                    "entity, raw")
-COLONNES_CIBLAGE = "agent_id, agent_name, srcip, srcuser, entity, raw"
-COLONNES_UEBA = ("id, ts, agent_id, agent_name, rule_id, srcip, srcuser, "
+COLUMNS_TARGETING = "agent_id, agent_name, srcip, srcuser, entity, raw"
+COLUMNS_UEBA = ("id, ts, agent_id, agent_name, rule_id, srcip, srcuser, "
                  "entity, raw")
 
 
-def _porte_ts(colonnes: str) -> bool:
+def _carries_ts(columns: str) -> bool:
     """La colonne `ts` est-elle déjà projetée ? Comparaison sur les noms
     découpés, pas une recherche de sous-chaîne : « rule_groups, mitre_tactics »
     contient « ts » sans porter la colonne."""
-    return "ts" in {c.strip() for c in colonnes.split(",")}
+    return "ts" in {c.strip() for c in columns.split(",")}
 
 
-def charger_bornees(conn, incident_id: int, colonnes: str,
-                    etiquette: str = "") -> list[dict]:
+def load_bounded(conn, incident_id: int, columns: str,
+                    label: str = "") -> list[dict]:
     """Alertes d'un incident, bornées à `config.INCIDENT_MAX_ALERTES`.
 
     On garde les plus ANCIENNES et les plus RÉCENTES à parts égales. Le début
@@ -74,22 +74,22 @@ def charger_bornees(conn, incident_id: int, colonnes: str,
     """
     n = conn.execute("SELECT count(*) c FROM alerts WHERE incident_id = %s",
                      (incident_id,)).fetchone()["c"]
-    plafond = config.INCIDENT_MAX_ALERTES
-    if n <= plafond:
+    cap = config.INCIDENT_MAX_ALERTS
+    if n <= cap:
         return conn.execute(
-            f"SELECT {colonnes} FROM alerts WHERE incident_id = %s ORDER BY ts",
+            f"SELECT {columns} FROM alerts WHERE incident_id = %s ORDER BY ts",
             (incident_id,)).fetchall()
-    moitie = plafond // 2
+    half = cap // 2
     log.warning("incident #%s%s : %d alertes, chargement borné à %d "
                 "(%d plus anciennes + %d plus récentes) — %d non examinée(s)",
-                incident_id, f" ({etiquette})" if etiquette else "",
-                n, plafond, moitie, plafond - moitie, n - plafond)
+                incident_id, f" ({label})" if label else "",
+                n, cap, half, cap - half, n - cap)
     # `ts` doit figurer dans le SELECT des deux branches, puisque l'ORDER BY
     # final porte dessus — mais SEULEMENT s'il n'y est pas déjà : l'ajouter en
     # aveugle le projette deux fois et Postgres refuse la requête entière
     # (« ORDER BY "ts" is ambiguous »). Trois des quatre jeux de colonnes du
     # pipeline contiennent déjà `ts`, donc le cas nominal est celui-là.
-    projection = colonnes if _porte_ts(colonnes) else f"{colonnes}, ts"
+    projection = columns if _carries_ts(columns) else f"{columns}, ts"
     return conn.execute(
         f"(SELECT {projection} FROM alerts WHERE incident_id = %(i)s "
         f" ORDER BY ts ASC LIMIT %(debut)s)"
@@ -100,10 +100,10 @@ def charger_bornees(conn, incident_id: int, colonnes: str,
         f"(SELECT {projection} FROM alerts WHERE incident_id = %(i)s "
         f" ORDER BY ts DESC LIMIT %(fin)s)"
         " ORDER BY ts",
-        {"i": incident_id, "debut": moitie, "fin": plafond - moitie}).fetchall()
+        {"i": incident_id, "start_ts": half, "end_ts": cap - half}).fetchall()
 
 
-def parcourir(conn, incident_id: int, colonnes: str, itersize: int = 2000):
+def iterate(conn, incident_id: int, columns: str, itersize: int = 2000):
     """Générateur sur TOUTES les alertes d'un incident, sans les matérialiser.
 
     Curseur serveur nommé : Postgres garde le jeu de résultats, le client n'en
@@ -113,6 +113,6 @@ def parcourir(conn, incident_id: int, colonnes: str, itersize: int = 2000):
     """
     with conn.cursor(name=f"alertes_{incident_id}", row_factory=tuple_row) as cur:
         cur.itersize = itersize
-        cur.execute(f"SELECT {colonnes} FROM alerts WHERE incident_id = %s "
+        cur.execute(f"SELECT {columns} FROM alerts WHERE incident_id = %s "
                     "ORDER BY ts", (incident_id,))
         yield from cur

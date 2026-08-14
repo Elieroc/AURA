@@ -77,7 +77,7 @@ from . import config
 log = logging.getLogger(__name__)
 
 # Même famille de verrou consultatif que les autres jobs périodiques (0x50CA*).
-_VERROU_ARCHIVE = 0x50CA6
+_LOCK_ARCHIVE = 0x50CA6
 
 # Index DATÉ AU JOUR, seule forme archivée. Ce motif est le vrai filtre du
 # module : il exclut sans aucune liste `wazuh-voc-vulns` (index d'état, il porte
@@ -85,34 +85,34 @@ _VERROU_ARCHIVE = 0x50CA6
 # semaine par Wazuh (`2026.33w`) et qui ne sont pas des alertes.
 _DATE_INDEX = re.compile(r"^(?P<base>.+)-(?P<a>\d{4})\.(?P<m>\d{2})\.(?P<j>\d{2})$")
 
-SUFFIXE_OBJET = "ndjson.zst.age"
-SUFFIXE_MANIFESTE = "manifest.json"
+SUFFIX_OBJECT = "ndjson.zst.age"
+SUFFIX_MANIFEST = "manifest.json"
 
 # Pseudo-capteurs posés dans `capteur_pannes` par le watchdog. Même table, même
 # canal IRIS, même clôture automatique que le disque saturé : une archive
 # manquante est une perte de visibilité future, exactement de la même nature.
-PREFIXE_CAPTEUR = "archivage:"
+PREFIX_SENSOR = "archivage:"
 
 
 # --------------------------------------------------------------------------
 # Indexer
 # --------------------------------------------------------------------------
 
-def _indexer(methode: str, chemin: str, corps: dict | None = None,
+def _indexer(method: str, path: str, body: dict | None = None,
              timeout: int = 120) -> requests.Response:
     return requests.request(
-        methode, f"{config.INDEXER_URL}{chemin}",
+        method, f"{config.INDEXER_URL}{path}",
         auth=(config.INDEXER_USER, config.INDEXER_PASSWORD),
-        json=corps,
+        json=body,
         verify=config.INDEXER_CA if config.INDEXER_VERIFY_TLS else False,
         timeout=timeout)
 
 
-def _exclu(nom: str) -> bool:
-    return any(fnmatch.fnmatch(nom, m) for m in config.ARCHIVE_INDEX_EXCLUS)
+def _excluded(name: str) -> bool:
+    return any(fnmatch.fnmatch(name, m) for m in config.ARCHIVE_INDEX_EXCLUDED)
 
 
-def indices_dates() -> list[dict]:
+def dated_indices() -> list[dict]:
     """Index datés au jour, avec leur base, leur mois et leur taille.
 
     La liste des motifs candidats est délibérément large (`wazuh-*`) : le piège
@@ -121,36 +121,36 @@ def indices_dates() -> list[dict]:
     capteur invisible. Un index set créé demain par `routage.py` doit être
     archivé sans que personne y pense.
     """
-    r = _indexer("GET", f"/_cat/indices/{config.ARCHIVE_INDEX_MOTIFS}"
+    r = _indexer("GET", f"/_cat/indices/{config.ARCHIVE_INDEX_PATTERNS}"
                         "?format=json&h=index,docs.count,pri.store.size"
                         "&bytes=b&expand_wildcards=open")
     if r.status_code == 404:
         return []
     if not r.ok:
         raise RuntimeError(f"_cat/indices refusé ({r.status_code}) : {r.text}")
-    sortie = []
-    for ligne in r.json():
-        nom = ligne["index"]
-        m = _DATE_INDEX.match(nom)
-        if not m or _exclu(nom):
+    output = []
+    for line in r.json():
+        name = line["index"]
+        m = _DATE_INDEX.match(name)
+        if not m or _excluded(name):
             continue
-        sortie.append({
-            "index": nom,
+        output.append({
+            "index": name,
             "base": m.group("base"),
-            "jour": date(int(m.group("a")), int(m.group("m")), int(m.group("j"))),
+            "day": date(int(m.group("a")), int(m.group("m")), int(m.group("j"))),
             "mois": f"{m.group('a')}-{m.group('m')}",
-            "documents": int(ligne.get("docs.count") or 0),
-            "octets": int(ligne.get("pri.store.size") or 0),
+            "documents": int(line.get("docs.count") or 0),
+            "octets": int(line.get("pri.store.size") or 0),
         })
-    return sortie
+    return output
 
 
-def _premier_du_mois_suivant(mois: str) -> date:
-    a, m = (int(x) for x in mois.split("-"))
+def _first_of_next_month(month: str) -> date:
+    a, m = (int(x) for x in month.split("-"))
     return date(a + 1, 1, 1) if m == 12 else date(a, m + 1, 1)
 
 
-def _mois_clos(mois: str, aujourdhui: date | None = None) -> bool:
+def _closed_months(month: str, today: date | None = None) -> bool:
     """Le mois est-il terminé ET assez décanté pour être figé ?
 
     Le délai de grâce n'est pas décoratif : le rattrapage des alertes indexées
@@ -159,12 +159,12 @@ def _mois_clos(mois: str, aujourdhui: date | None = None) -> bool:
     incomplète — et une archive incomplète ne se répare pas, elle se croit
     complète.
     """
-    ref = aujourdhui or datetime.now(timezone.utc).date()
-    return ref >= _premier_du_mois_suivant(mois) + timedelta(
-        days=config.ARCHIVE_DELAI_JOURS)
+    ref = today or datetime.now(timezone.utc).date()
+    return ref >= _first_of_next_month(month) + timedelta(
+        days=config.ARCHIVE_DELAY_DAYS)
 
 
-def lots_a_archiver(conn, aujourdhui: date | None = None) -> list[dict]:
+def batches_to_archive(conn, today: date | None = None) -> list[dict]:
     """Couples (index_base, mois) clos, non encore archivés.
 
     Un mois VIDE produit quand même une archive (quelques centaines d'octets).
@@ -172,41 +172,41 @@ def lots_a_archiver(conn, aujourdhui: date | None = None) -> list[dict]:
     objet » est ce qui rend un trou détectable. Un mois simplement absent serait
     indistinguable d'un mois perdu.
     """
-    deja = {(r["index_base"], r["periode"]) for r in conn.execute(
+    already = {(r["index_base"], r["periode"]) for r in conn.execute(
         "SELECT index_base, periode FROM archives_s3 WHERE format_version=%s",
         (config.ARCHIVE_FORMAT_VERSION,)).fetchall()}
-    lots: dict[tuple[str, str], dict] = {}
-    for i in indices_dates():
-        cle = (i["base"], i["mois"])
-        if cle in deja or not _mois_clos(i["mois"], aujourdhui):
+    batches: dict[tuple[str, str], dict] = {}
+    for i in dated_indices():
+        key = (i["base"], i["mois"])
+        if key in already or not _closed_months(i["mois"], today):
             continue
-        lot = lots.setdefault(cle, {"index_base": i["base"], "periode": i["mois"],
+        batch = batches.setdefault(key, {"index_base": i["base"], "periode": i["mois"],
                                     "indices": [], "documents": 0, "octets": 0})
-        lot["indices"].append(i["index"])
-        lot["documents"] += i["documents"]
-        lot["octets"] += i["octets"]
-    for lot in lots.values():
-        lot["indices"].sort()
-    return sorted(lots.values(), key=lambda l: (l["periode"], l["index_base"]))
+        batch["indices"].append(i["index"])
+        batch["documents"] += i["documents"]
+        batch["octets"] += i["octets"]
+    for batch in batches.values():
+        batch["indices"].sort()
+    return sorted(batches.values(), key=lambda l: (l["periode"], l["index_base"]))
 
 
 # --------------------------------------------------------------------------
 # Export : pagination par scroll (cf. `pages` pour le pourquoi)
 # --------------------------------------------------------------------------
 
-def _corps_recherche(taille: int) -> dict:
-    corps: dict = {"size": taille, "query": {"match_all": {}}}
-    if config.ARCHIVE_CHAMPS_EXCLUS:
-        corps["_source"] = {"excludes": config.ARCHIVE_CHAMPS_EXCLUS}
+def _body_search(size: int) -> dict:
+    body: dict = {"size": size, "query": {"match_all": {}}}
+    if config.ARCHIVE_FIELDS_EXCLUDED:
+        body["_source"] = {"excludes": config.ARCHIVE_FIELDS_EXCLUDED}
     # Compte EXACT et non plafonné. Sans ce réglage, OpenSearch s'arrête de
     # compter à 10 000 et rend `{"value": 10000, "relation": "gte"}` : un
     # plafond qu'on prendrait pour un total, donc une vérification de complétude
     # qui validerait n'importe quel export de plus de 10 000 documents.
-    corps["track_total_hits"] = True
-    return corps
+    body["track_total_hits"] = True
+    return body
 
 
-def _verifier_shards(doc: dict, indices: list[str]) -> None:
+def _check_shards(doc: dict, indices: list[str]) -> None:
     """Refuse un résultat PARTIEL. C'est la vérification qui manquait.
 
     OpenSearch répond `HTTP 200` avec des résultats partiels quand un shard
@@ -222,20 +222,20 @@ def _verifier_shards(doc: dict, indices: list[str]) -> None:
     shards = doc.get("_shards") or {}
     rates = shards.get("failed") or 0
     if rates or doc.get("timed_out"):
-        motifs = "; ".join(
+        patterns = "; ".join(
             f"{e.get('index', '?')}: {e.get('reason', {}).get('reason', e)}"
             for e in (shards.get("failures") or [])[:3]) or "aucun détail fourni"
         raise RuntimeError(
             f"export partiel refusé sur {','.join(indices[:3])}"
             f"{'…' if len(indices) > 3 else ''} : {rates} shard(s) en échec sur "
             f"{shards.get('total', '?')}"
-            f"{', recherche expirée' if doc.get('timed_out') else ''} — {motifs}. "
+            f"{', recherche expirée' if doc.get('timed_out') else ''} — {patterns}. "
             "Un export partiel produirait une archive tronquée qui se croirait "
             "complète. Lot abandonné, il sera repris au prochain passage.")
 
 
-def pages(indices: list[str], taille: int | None = None,
-          controle: dict | None = None):
+def pages(indices: list[str], size: int | None = None,
+          control: dict | None = None):
     """Pagination de l'export par l'API scroll.
 
     Pourquoi le scroll et pas `point_in_time` + `search_after`, qui est la
@@ -263,17 +263,17 @@ def pages(indices: list[str], taille: int | None = None,
     supprime toute course : c'est le même contexte de scroll, donc le même
     ensemble de documents.
     """
-    taille = taille or config.ARCHIVE_TAILLE_LOT
+    size = size or config.ARCHIVE_SIZE_BATCH
     csv = ",".join(indices)
-    r = _indexer("POST", f"/{csv}/_search?scroll=10m", _corps_recherche(taille))
+    r = _indexer("POST", f"/{csv}/_search?scroll=10m", _body_search(size))
     if not r.ok:
         raise RuntimeError(f"scroll refusé ({r.status_code}) : {r.text}")
     doc = r.json()
-    _verifier_shards(doc, indices)
-    if controle is not None:
+    _check_shards(doc, indices)
+    if control is not None:
         total = (doc.get("hits") or {}).get("total") or {}
-        controle["attendu"] = total.get("value")
-        controle["relation"] = total.get("relation")
+        control["attendu"] = total.get("value")
+        control["relation"] = total.get("relation")
     sid = doc.get("_scroll_id")
     try:
         while True:
@@ -289,7 +289,7 @@ def pages(indices: list[str], taille: int | None = None,
             # Sur CHAQUE page : un shard peut tomber au milieu d'un scroll de
             # plusieurs minutes, et la page concernée revient simplement plus
             # courte, sans erreur HTTP.
-            _verifier_shards(doc, indices)
+            _check_shards(doc, indices)
             # L'id de scroll PEUT changer d'un appel à l'autre : réutiliser le
             # premier indéfiniment marche jusqu'au jour où il ne marche plus.
             sid = doc.get("_scroll_id") or sid
@@ -308,7 +308,7 @@ def pages(indices: list[str], taille: int | None = None,
 # Chaîne compression + chiffrement
 # --------------------------------------------------------------------------
 
-def cle_publique() -> str:
+def public_key() -> str:
     """Clé publique correspondant à `ARCHIVE_AGE_KEYFILE`.
 
     `age-keygen` écrit la publique en commentaire de l'identité ; on la lit là
@@ -316,10 +316,10 @@ def cle_publique() -> str:
     `age-keygen -y` si le commentaire a été retiré — ne pas se contenter d'un
     échec ici, ce serait bloquer l'archivage pour une ligne de commentaire.
     """
-    for ligne in Path(config.ARCHIVE_AGE_KEYFILE).read_text(
+    for line in Path(config.ARCHIVE_AGE_KEYFILE).read_text(
             encoding="utf-8", errors="replace").splitlines():
-        if ligne.lower().startswith("# public key:"):
-            return ligne.split(":", 1)[1].strip()
+        if line.lower().startswith("# public key:"):
+            return line.split(":", 1)[1].strip()
     r = subprocess.run(["age-keygen", "-y", config.ARCHIVE_AGE_KEYFILE],
                        capture_output=True)
     if r.returncode:
@@ -329,7 +329,7 @@ def cle_publique() -> str:
     return r.stdout.decode().strip()
 
 
-def destinataires() -> list[str]:
+def recipients() -> list[str]:
     """Clé du SOC, plus les clés de secours éventuelles.
 
     La clé du SOC est DÉRIVÉE du fichier de clé, jamais recopiée dans le `.env`.
@@ -337,29 +337,29 @@ def destinataires() -> list[str]:
     recopié produirait des archives que le SOC ne peut pas relire, et personne ne
     s'en apercevrait avant le premier drill.
     """
-    return [cle_publique(), *config.ARCHIVE_AGE_RECIPIENTS_EXTRA]
+    return [public_key(), *config.ARCHIVE_AGE_RECIPIENTS_EXTRA]
 
 
-def chaine_traitement() -> str:
+def processing_chain() -> str:
     """Description exacte de la chaîne, telle qu'écrite dans le manifeste.
 
     Ce n'est pas cosmétique : c'est ce qui permet de relire une archive dans
     trois ans sans lire le code de cette version-là.
     """
-    return (f"zstd -{config.ARCHIVE_ZSTD_NIVEAU} --long=27 | age -r "
-            + " -r ".join(destinataires()))
+    return (f"zstd -{config.ARCHIVE_ZSTD_LEVEL} --long=27 | age -r "
+            + " -r ".join(recipients()))
 
 
-def _verifier_outils() -> None:
-    for outil in ("zstd", "age"):
-        if not shutil.which(outil):
+def _check_tools() -> None:
+    for tool in ("zstd", "age"):
+        if not shutil.which(tool):
             raise RuntimeError(
-                f"« {outil} » absent de l'image. L'archivage compresse et "
+                f"« {tool} » absent de l'image. L'archivage compresse et "
                 "chiffre par des tubes, jamais en mémoire : les deux binaires "
                 "sont requis (paquets Debian `zstd` et `age`).")
 
 
-def _place_disponible(octets_index: int) -> None:
+def _free_space(index_bytes: int) -> None:
     """Refuser d'exporter faute de place, plutôt que de remplir le disque.
 
     L'archive chiffrée est toujours BEAUCOUP plus petite que le store de
@@ -367,57 +367,57 @@ def _place_disponible(octets_index: int) -> None:
     disque plein arrête l'ingestion sans qu'aucune alerte ne le dise (cf.
     docs/RETENTION.md) : ce job de ménage ne doit pas en être la cause.
     """
-    besoin = max(octets_index, 256 * 1024 * 1024)
-    libre = shutil.disk_usage(config.ARCHIVE_TMP_DIR).free
-    if libre < besoin:
+    need = max(index_bytes, 256 * 1024 * 1024)
+    free = shutil.disk_usage(config.ARCHIVE_TMP_DIR).free
+    if free < need:
         raise RuntimeError(
             f"place insuffisante dans {config.ARCHIVE_TMP_DIR} : "
-            f"{libre / 1073741824:.1f} Go libres, {besoin / 1073741824:.1f} Go "
+            f"{free / 1073741824:.1f} Go libres, {need / 1073741824:.1f} Go "
             "exigés. Export refusé — remplir le disque du SOC arrêterait "
             "l'ingestion.")
 
 
-def exporter(lot: dict, destination: Path) -> dict:
+def export(batch: dict, destination: Path) -> dict:
     """Écrit l'archive CHIFFRÉE dans `destination`. Renvoie les métriques.
 
     Le NDJSON en clair ne touche jamais le disque : il est écrit sur l'entrée de
     `zstd`, dont la sortie alimente `age`, dont la sortie seule est un fichier.
     Le SHA-256 du clair est calculé au vol, pendant qu'on l'a sous la main.
     """
-    _verifier_outils()
-    _place_disponible(lot["octets"])
+    _check_tools()
+    _free_space(batch["octets"])
 
     recipients: list[str] = []
-    for r in destinataires():
+    for r in recipients():
         recipients += ["-r", r]
 
-    sha_clair = hashlib.sha256()
-    octets_clair = documents = 0
-    controle: dict = {}
+    sha_plain = hashlib.sha256()
+    plain_bytes = documents = 0
+    control: dict = {}
 
-    with destination.open("wb") as sortie:
+    with destination.open("wb") as output:
         zstd = subprocess.Popen(
-            ["zstd", f"-{config.ARCHIVE_ZSTD_NIVEAU}", "--long=27", "-T0",
+            ["zstd", f"-{config.ARCHIVE_ZSTD_LEVEL}", "--long=27", "-T0",
              "-q", "-c"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE)
         age = subprocess.Popen(["age", *recipients], stdin=zstd.stdout,
-                               stdout=sortie, stderr=subprocess.PIPE)
+                               stdout=output, stderr=subprocess.PIPE)
         # Indispensable : sans ça, `zstd` ne voit jamais le EOF de son lecteur
         # et la chaîne se bloque à la fermeture.
         zstd.stdout.close()
         try:
-            for page in pages(lot["indices"], controle=controle):
+            for page in pages(batch["indices"], control=control):
                 for hit in page:
-                    ligne = (json.dumps(
+                    line = (json.dumps(
                         {"_index": hit["_index"], "_id": hit["_id"],
                          "_source": hit.get("_source") or {}},
                         ensure_ascii=False, separators=(",", ":"),
                         sort_keys=True) + "\n").encode()
-                    sha_clair.update(ligne)
-                    octets_clair += len(ligne)
+                    sha_plain.update(line)
+                    plain_bytes += len(line)
                     documents += 1
-                    zstd.stdin.write(ligne)
+                    zstd.stdin.write(line)
         except BrokenPipeError as e:
             err = (zstd.stderr.read() or b"").decode(errors="replace")
             raise RuntimeError(f"zstd a rompu le tube : {err or e}") from e
@@ -450,30 +450,30 @@ def exporter(lot: dict, destination: Path) -> dict:
     #
     # Écrit en PLUS n'est pas une erreur : le scroll rend ce qu'il a, et un
     # surplus signifierait au pire un doublon, pas une perte. On le journalise.
-    attendu = controle.get("attendu")
-    if attendu is not None and documents < attendu:
+    expected = control.get("attendu")
+    if expected is not None and documents < expected:
         destination.unlink(missing_ok=True)
         raise RuntimeError(
             f"export INCOMPLET refusé : {documents} documents écrits pour "
-            f"{attendu} annoncés par l'indexer "
-            f"({lot['index_base']}/{lot['periode']}). Le fichier a été supprimé "
+            f"{expected} annoncés par l'indexer "
+            f"({batch['index_base']}/{batch['periode']}). Le fichier a été supprimé "
             "— l'archiver aurait produit une copie tronquée qui se croit "
             "complète. Lot repris au prochain passage.")
-    if attendu is not None and documents > attendu:
+    if expected is not None and documents > expected:
         log.warning("export %s/%s : %d documents écrits pour %d annoncés — "
                     "surplus conservé (aucune perte), à surveiller si ça se "
-                    "répète", lot["index_base"], lot["periode"], documents,
-                    attendu)
+                    "répète", batch["index_base"], batch["periode"], documents,
+                    expected)
 
-    return {"documents": documents, "octets_clair": octets_clair,
-            "sha256_clair": sha_clair.hexdigest(),
-            "octets_objet": destination.stat().st_size,
-            "sha256_chiffre": _sha256_fichier(destination)}
+    return {"documents": documents, "plain_bytes": plain_bytes,
+            "sha256_plain": sha_plain.hexdigest(),
+            "object_bytes": destination.stat().st_size,
+            "sha256_encrypted": _sha256_file(destination)}
 
 
-def _sha256_fichier(chemin: Path) -> str:
+def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
-    with chemin.open("rb") as f:
+    with path.open("rb") as f:
         for bloc in iter(lambda: f.read(1024 * 1024), b""):
             h.update(bloc)
     return h.hexdigest()
@@ -496,7 +496,7 @@ def _s3():
                           retries={"max_attempts": 5, "mode": "standard"}))
 
 
-def cle_objet(index_base: str, periode: str, suffixe: str) -> str:
+def object_key(index_base: str, period: str, suffix: str) -> str:
     """`[prefixe/]<version>/<index-set>/<annee>/<index-set>.<AAAA-MM>.<suffixe>`
 
     Index set AVANT l'année, contrairement à l'intuition. La question posée à une
@@ -508,11 +508,11 @@ def cle_objet(index_base: str, periode: str, suffixe: str) -> str:
     """
     parts = [p for p in (config.ARCHIVE_S3_PREFIX,
                          config.ARCHIVE_FORMAT_VERSION,
-                         index_base, periode[:4]) if p]
-    return "/".join(parts) + f"/{index_base}.{periode}.{suffixe}"
+                         index_base, period[:4]) if p]
+    return "/".join(parts) + f"/{index_base}.{period}.{suffix}"
 
 
-def manifeste(lot: dict, metriques: dict, cle: str) -> dict:
+def manifest(batch: dict, metrics: dict, key: str) -> dict:
     """Manifeste, écrit EN CLAIR à côté de l'objet.
 
     Il ne contient aucune donnée d'alerte — seulement de quoi savoir ce que
@@ -522,18 +522,18 @@ def manifeste(lot: dict, metriques: dict, cle: str) -> dict:
     """
     return {
         "format_version": config.ARCHIVE_FORMAT_VERSION,
-        "index_set": lot["index_base"],
-        "periode": lot["periode"],
-        "indices": lot["indices"],
-        "documents": metriques["documents"],
-        "octets_clair": metriques["octets_clair"],
-        "octets_objet": metriques["octets_objet"],
-        "sha256_clair": metriques["sha256_clair"],
-        "sha256_chiffre": metriques["sha256_chiffre"],
-        "cle": cle,
-        "chaine": chaine_traitement(),
-        "destinataires_age": destinataires(),
-        "champs_exclus": config.ARCHIVE_CHAMPS_EXCLUS,
+        "index_set": batch["index_base"],
+        "periode": batch["periode"],
+        "indices": batch["indices"],
+        "documents": metrics["documents"],
+        "plain_bytes": metrics["plain_bytes"],
+        "object_bytes": metrics["object_bytes"],
+        "sha256_plain": metrics["sha256_plain"],
+        "sha256_encrypted": metrics["sha256_encrypted"],
+        "key": key,
+        "chain": processing_chain(),
+        "destinataires_age": recipients(),
+        "excluded_fields": config.ARCHIVE_FIELDS_EXCLUDED,
         "schema_ligne": "{_index, _id, _source}",
         "genere_le": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "outil": "soc_agent.archive",
@@ -546,16 +546,16 @@ def _args_lock() -> dict:
     if not config.ARCHIVE_OBJECT_LOCK:
         return {}
     jusqu_a = datetime.now(timezone.utc) + timedelta(
-        days=config.ARCHIVE_OBJECT_LOCK_JOURS)
+        days=config.ARCHIVE_OBJECT_LOCK_DAYS)
     return {"ObjectLockMode": config.ARCHIVE_OBJECT_LOCK_MODE,
             "ObjectLockRetainUntilDate": jusqu_a}
 
 
-def televerser(s3, chemin: Path, cle: str, meta: dict) -> None:
+def upload(s3, path: Path, key: str, meta: dict) -> None:
     extra = {"Metadata": {k: str(v) for k, v in meta.items()},
              "ContentType": "application/octet-stream", **_args_lock()}
     try:
-        s3.upload_file(str(chemin), config.ARCHIVE_S3_BUCKET, cle,
+        s3.upload_file(str(path), config.ARCHIVE_S3_BUCKET, key,
                        ExtraArgs=extra)
     except Exception as e:                                        # noqa: BLE001
         if config.ARCHIVE_OBJECT_LOCK and "ObjectLock" in str(e):
@@ -566,44 +566,44 @@ def televerser(s3, chemin: Path, cle: str, meta: dict) -> None:
         raise
 
 
-def _relire(s3, cle: str, octets_attendus: int) -> None:
+def _reread(s3, key: str, expected_bytes: int) -> None:
     """HEAD après upload. Rien n'est déclaré archivé sans cette relecture.
 
     Un `upload_file` qui rend la main sans exception n'est pas une preuve que
     l'objet est là et complet — c'est la promesse d'une bibliothèque cliente.
     """
-    tete = s3.head_object(Bucket=config.ARCHIVE_S3_BUCKET, Key=cle)
-    if tete["ContentLength"] != octets_attendus:
+    head = s3.head_object(Bucket=config.ARCHIVE_S3_BUCKET, Key=key)
+    if head["ContentLength"] != expected_bytes:
         raise RuntimeError(
-            f"objet {cle} relu à {tete['ContentLength']} octets, "
-            f"{octets_attendus} attendus : upload incomplet.")
+            f"objet {key} relu à {head['ContentLength']} octets, "
+            f"{expected_bytes} attendus : upload incomplet.")
 
 
 # --------------------------------------------------------------------------
 # Archivage d'un lot
 # --------------------------------------------------------------------------
 
-def _enregistrer(conn, lot: dict, metriques: dict, cle: str,
-                 cle_man: str) -> None:
+def _record(conn, batch: dict, metrics: dict, key: str,
+                 man_key: str) -> None:
     lock = _args_lock()
     conn.execute(
         """INSERT INTO archives_s3
-               (format_version, index_base, periode, cle, cle_manifeste,
-                indices, documents, octets_clair, octets_objet, sha256_clair,
-                sha256_chiffre, chaine, destinataires, champs_exclus,
-                object_lock_jusqu_a)
+               (format_version, index_base, periode, key, manifest_key,
+                indices, documents, plain_bytes, object_bytes, sha256_plain,
+                sha256_encrypted, chain, recipients, excluded_fields,
+                object_lock_until)
            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
            ON CONFLICT (format_version, index_base, periode) DO NOTHING""",
-        (config.ARCHIVE_FORMAT_VERSION, lot["index_base"], lot["periode"],
-         cle, cle_man, lot["indices"], metriques["documents"],
-         metriques["octets_clair"], metriques["octets_objet"],
-         metriques["sha256_clair"], metriques["sha256_chiffre"],
-         chaine_traitement(), destinataires(),
-         config.ARCHIVE_CHAMPS_EXCLUS, lock.get("ObjectLockRetainUntilDate")))
+        (config.ARCHIVE_FORMAT_VERSION, batch["index_base"], batch["periode"],
+         key, man_key, batch["indices"], metrics["documents"],
+         metrics["plain_bytes"], metrics["object_bytes"],
+         metrics["sha256_plain"], metrics["sha256_encrypted"],
+         processing_chain(), recipients(),
+         config.ARCHIVE_FIELDS_EXCLUDED, lock.get("ObjectLockRetainUntilDate")))
     conn.commit()
 
 
-def _adopter(conn, s3, lot: dict, cle: str, cle_man: str) -> bool:
+def _adopt(conn, s3, batch: dict, key: str, man_key: str) -> bool:
     """Objet déjà présent sans ligne en base : l'adopter au lieu de refaire.
 
     Ce cas arrive si le processus meurt entre l'upload et l'INSERT. La clé étant
@@ -616,72 +616,72 @@ def _adopter(conn, s3, lot: dict, cle: str, cle_man: str) -> bool:
     verrouillée — on paierait deux fois douze mois pour la même donnée.
     """
     try:
-        s3.head_object(Bucket=config.ARCHIVE_S3_BUCKET, Key=cle)
+        s3.head_object(Bucket=config.ARCHIVE_S3_BUCKET, Key=key)
     except Exception:                                             # noqa: BLE001
         return False
     try:
-        corps = s3.get_object(Bucket=config.ARCHIVE_S3_BUCKET,
-                              Key=cle_man)["Body"].read()
-        man = json.loads(corps)
+        body = s3.get_object(Bucket=config.ARCHIVE_S3_BUCKET,
+                              Key=man_key)["Body"].read()
+        man = json.loads(body)
     except Exception as e:                                        # noqa: BLE001
         log.warning("objet orphelin %s sans manifeste lisible (%s) : "
-                    "réarchivage", cle, e)
+                    "réarchivage", key, e)
         return False
-    if man.get("documents") != lot["documents"]:
+    if man.get("documents") != batch["documents"]:
         log.warning("objet orphelin %s : %s documents au manifeste, %s vivants "
-                    "— réarchivage", cle, man.get("documents"),
-                    lot["documents"])
+                    "— réarchivage", key, man.get("documents"),
+                    batch["documents"])
         return False
-    _enregistrer(conn, lot, {
-        "documents": man["documents"], "octets_clair": man["octets_clair"],
-        "octets_objet": man["octets_objet"],
-        "sha256_clair": man["sha256_clair"],
-        "sha256_chiffre": man["sha256_chiffre"]}, cle, cle_man)
+    _record(conn, batch, {
+        "documents": man["documents"], "plain_bytes": man["plain_bytes"],
+        "object_bytes": man["object_bytes"],
+        "sha256_plain": man["sha256_plain"],
+        "sha256_encrypted": man["sha256_encrypted"]}, key, man_key)
     log.warning("archive %s/%s ADOPTÉE : l'objet existait sans repère en base "
                 "(interruption entre l'upload et l'enregistrement).",
-                lot["index_base"], lot["periode"])
+                batch["index_base"], batch["periode"])
     return True
 
 
-def archiver(conn, s3, lot: dict) -> dict:
-    cle = cle_objet(lot["index_base"], lot["periode"], SUFFIXE_OBJET)
-    cle_man = cle_objet(lot["index_base"], lot["periode"], SUFFIXE_MANIFESTE)
+def archive(conn, s3, batch: dict) -> dict:
+    key = object_key(batch["index_base"], batch["periode"], SUFFIX_OBJECT)
+    man_key = object_key(batch["index_base"], batch["periode"], SUFFIX_MANIFEST)
 
-    if _adopter(conn, s3, lot, cle, cle_man):
-        return {"index_base": lot["index_base"], "periode": lot["periode"],
-                "etat": "adoptée", "cle": cle}
+    if _adopt(conn, s3, batch, key, man_key):
+        return {"index_base": batch["index_base"], "periode": batch["periode"],
+                "etat": "adoptée", "key": key}
 
     tmp = Path(tempfile.mkdtemp(prefix="aura-archive-",
                                dir=config.ARCHIVE_TMP_DIR))
     try:
-        objet = tmp / f"{lot['index_base']}.{lot['periode']}.{SUFFIXE_OBJET}"
-        metriques = exporter(lot, objet)
-        man = manifeste(lot, metriques, cle)
+        object_path = tmp / f"{batch['index_base']}.{batch['periode']}.{SUFFIX_OBJECT}"
+        metrics = export(batch, object_path)
+        man = manifest(batch, metrics, key)
 
-        televerser(s3, objet, cle, {
-            "index-set": lot["index_base"], "periode": lot["periode"],
-            "documents": metriques["documents"],
-            "sha256-clair": metriques["sha256_clair"],
-            "sha256-chiffre": metriques["sha256_chiffre"],
+        upload(s3, object_path, key, {
+            "index-set": batch["index_base"], "periode": batch["periode"],
+            "documents": metrics["documents"],
+            "sha256-clair": metrics["sha256_plain"],
+            "sha256-chiffre": metrics["sha256_encrypted"],
             "format-version": config.ARCHIVE_FORMAT_VERSION})
-        _relire(s3, cle, metriques["octets_objet"])
+        _reread(s3, key, metrics["object_bytes"])
 
-        chemin_man = tmp / f"{lot['index_base']}.{lot['periode']}.{SUFFIXE_MANIFESTE}"
-        chemin_man.write_text(json.dumps(man, indent=2, ensure_ascii=False),
+        man_path = tmp / f"{batch['index_base']}.{batch['periode']}.{SUFFIX_MANIFEST}"
+        man_path.write_text(json.dumps(man, indent=2, ensure_ascii=False),
                               encoding="utf-8")
-        televerser(s3, chemin_man, cle_man, {"index-set": lot["index_base"]})
+        upload(s3, man_path, man_key, {"index-set": batch["index_base"]})
 
         # Le repère n'est écrit qu'ici : après que l'objet ET son manifeste ont
         # été relus côté S3.
-        _enregistrer(conn, lot, metriques, cle, cle_man)
-        ratio = (metriques["octets_clair"] / metriques["octets_objet"]
-                 if metriques["octets_objet"] else 0)
+        _record(conn, batch, metrics, key, man_key)
+        ratio = (metrics["plain_bytes"] / metrics["object_bytes"]
+                 if metrics["object_bytes"] else 0)
         log.info("archivé %s/%s : %d documents, %.1f Mo -> %.1f Mo (x%.1f), %s",
-                 lot["index_base"], lot["periode"], metriques["documents"],
-                 metriques["octets_clair"] / 1048576,
-                 metriques["octets_objet"] / 1048576, ratio, cle)
-        return {"index_base": lot["index_base"], "periode": lot["periode"],
-                "etat": "archivée", "cle": cle, **metriques}
+                 batch["index_base"], batch["periode"], metrics["documents"],
+                 metrics["plain_bytes"] / 1048576,
+                 metrics["object_bytes"] / 1048576, ratio, key)
+        return {"index_base": batch["index_base"], "periode": batch["periode"],
+                "etat": "archivée", "key": key, **metrics}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -707,68 +707,68 @@ def archiver(conn, s3, lot: dict) -> dict:
 PREFIXES_TMP = ("aura-archive-", "aura-drill-", "aura-clecheck-")
 
 
-def balayer_temporaires(age_heures: int = 2) -> dict:
+def sweep_temporary(age_hours: int = 2) -> dict:
     """Supprime les répertoires de travail abandonnés par un passage tué."""
     base = Path(config.ARCHIVE_TMP_DIR)
-    limite = time.time() - age_heures * 3600
-    n = octets = 0
-    for chemin in base.glob("*"):
-        if not chemin.is_dir() or not chemin.name.startswith(PREFIXES_TMP):
+    limit = time.time() - age_hours * 3600
+    n = byte_count = 0
+    for path in base.glob("*"):
+        if not path.is_dir() or not path.name.startswith(PREFIXES_TMP):
             continue
         try:
-            if chemin.stat().st_mtime >= limite:
+            if path.stat().st_mtime >= limit:
                 continue          # peut appartenir à un drill en cours
-            octets += sum(f.stat().st_size for f in chemin.rglob("*")
+            byte_count += sum(f.stat().st_size for f in path.rglob("*")
                           if f.is_file())
-            shutil.rmtree(chemin, ignore_errors=True)
+            shutil.rmtree(path, ignore_errors=True)
             n += 1
         except OSError as e:
-            log.debug("résidu %s non supprimé : %s", chemin, e)
+            log.debug("résidu %s non supprimé : %s", path, e)
     if n:
         log.warning("%d répertoire(s) de travail d'archivage abandonné(s) "
                     "supprimé(s) (%.1f Mo) — signe qu'un passage a été tué sans "
-                    "pouvoir se nettoyer", n, octets / 1048576)
-    return {"repertoires": n, "octets": octets}
+                    "pouvoir se nettoyer", n, byte_count / 1048576)
+    return {"repertoires": n, "octets": byte_count}
 
 
-def avorter_multiparts(s3, age_heures: int = 24) -> dict:
+def abort_multiparts(s3, age_hours: int = 24) -> dict:
     """Avorte les téléversements multipart inachevés du bucket.
 
     Best-effort : si la clé applicative n'a pas le droit de les lister ou de les
     avorter, on le dit et on continue. Ne pas archiver du tout serait une bien
     plus mauvaise réponse à un défaut de facturation.
     """
-    limite = datetime.now(timezone.utc) - timedelta(hours=age_heures)
-    avortes, ignores = [], 0
+    limit = datetime.now(timezone.utc) - timedelta(hours=age_hours)
+    aborted, ignored = [], 0
     try:
-        reponse = s3.list_multipart_uploads(Bucket=config.ARCHIVE_S3_BUCKET)
+        response = s3.list_multipart_uploads(Bucket=config.ARCHIVE_S3_BUCKET)
     except Exception as e:                                        # noqa: BLE001
         log.info("multiparts inachevés non listables (%s) : contrôle sauté. "
                  "Poser une règle de cycle de vie côté B2 est de toute façon "
                  "la bonne réponse.", e)
         return {"etat": f"indéterminé : {e}"[:200]}
-    for u in reponse.get("Uploads") or []:
-        if u.get("Initiated") and u["Initiated"] > limite:
-            ignores += 1          # peut être en cours
+    for u in response.get("Uploads") or []:
+        if u.get("Initiated") and u["Initiated"] > limit:
+            ignored += 1          # peut être en cours
             continue
         try:
             s3.abort_multipart_upload(Bucket=config.ARCHIVE_S3_BUCKET,
                                       Key=u["Key"], UploadId=u["UploadId"])
-            avortes.append(u["Key"])
+            aborted.append(u["Key"])
         except Exception as e:                                    # noqa: BLE001
             log.warning("multipart %s non avorté : %s", u["Key"], e)
-    if avortes:
+    if aborted:
         log.warning("%d téléversement(s) multipart inachevé(s) avorté(s) : %s — "
                     "leurs parties étaient facturées et invisibles d'un "
-                    "list_objects", len(avortes), ", ".join(avortes[:5]))
-    return {"avortes": avortes, "en_cours_ignores": ignores}
+                    "list_objects", len(aborted), ", ".join(aborted[:5]))
+    return {"avortes": aborted, "en_cours_ignores": ignored}
 
 
 # --------------------------------------------------------------------------
 # Protection contre la purge
 # --------------------------------------------------------------------------
 
-def indices_en_peril(conn, aujourdhui: date | None = None) -> list[dict]:
+def indices_at_risk(conn, today: date | None = None) -> list[dict]:
     """Index que la purge ISM va supprimer sans qu'une archive existe.
 
     C'est la question qui compte : pas « l'archivage a-t-il réussi ? » mais
@@ -776,24 +776,24 @@ def indices_en_peril(conn, aujourdhui: date | None = None) -> list[dict]:
     archivage en panne depuis trois jours n'est pas grave ; le même en panne
     depuis quatre-vingts jours détruit de la donnée à la prochaine rotation.
     """
-    if not config.ARCHIVAGE_ENABLED:
+    if not config.ARCHIVING_ENABLED:
         return []
-    ref = aujourdhui or datetime.now(timezone.utc).date()
-    seuil = config.RETENTION_INDEX_JOURS - config.ARCHIVE_MARGE_JOURS
-    deja = {(r["index_base"], r["periode"]) for r in conn.execute(
+    ref = today or datetime.now(timezone.utc).date()
+    threshold = config.RETENTION_INDEX_DAYS - config.ARCHIVE_MARGIN_DAYS
+    already = {(r["index_base"], r["periode"]) for r in conn.execute(
         "SELECT index_base, periode FROM archives_s3 WHERE format_version=%s",
         (config.ARCHIVE_FORMAT_VERSION,)).fetchall()}
-    peril = []
-    for i in indices_dates():
-        age = (ref - i["jour"]).days
-        if age < seuil or (i["base"], i["mois"]) in deja:
+    risk = []
+    for i in dated_indices():
+        age = (ref - i["day"]).days
+        if age < threshold or (i["base"], i["mois"]) in already:
             continue
-        peril.append({**i, "age_jours": age,
-                      "supprime_dans": config.RETENTION_INDEX_JOURS - age})
-    return sorted(peril, key=lambda i: i["supprime_dans"])
+        risk.append({**i, "age_jours": age,
+                      "supprime_dans": config.RETENTION_INDEX_DAYS - age})
+    return sorted(risk, key=lambda i: i["supprime_dans"])
 
 
-def proteger(indices: list[str]) -> int:
+def protect(indices: list[str]) -> int:
     """Retire ces index de la politique ISM pour empêcher leur suppression.
 
     Suspendre la POSE de la politique ne protégerait rien : elle est déjà
@@ -825,7 +825,7 @@ def proteger(indices: list[str]) -> int:
 # Drill de restauration
 # --------------------------------------------------------------------------
 
-def _drill_une(s3, ligne: dict, complet: bool = True) -> dict:
+def _drill_une(s3, line: dict, full: bool = True) -> dict:
     """Retélécharge une archive, la déchiffre et compare ce qu'elle contient.
 
     Trois vérifications qui ne disent pas la même chose, dans cet ordre :
@@ -844,83 +844,83 @@ def _drill_une(s3, ligne: dict, complet: bool = True) -> dict:
     try:
         local = tmp / "objet"
         try:
-            s3.download_file(config.ARCHIVE_S3_BUCKET, ligne["cle"], str(local))
+            s3.download_file(config.ARCHIVE_S3_BUCKET, line["key"], str(local))
         except Exception as e:                                    # noqa: BLE001
             return {"etat": "absent", "detail": str(e)}
-        if _sha256_fichier(local) != ligne["sha256_chiffre"]:
+        if _sha256_file(local) != line["sha256_encrypted"]:
             return {"etat": "sha256-divergent",
                     "detail": "l'objet stocké diffère de ce qui a été écrit"}
-        if not complet:
+        if not full:
             return {"etat": "ok", "complet": False}
 
-        dechiffre = subprocess.run(
+        decrypted = subprocess.run(
             f"age -d -i {config.ARCHIVE_AGE_KEYFILE!r} {str(local)!r} "
             "| zstd -d -c", shell=True, capture_output=True)
-        if dechiffre.returncode:
+        if decrypted.returncode:
             return {"etat": "erreur: déchiffrement",
-                    "detail": dechiffre.stderr.decode(errors="replace")[:500]}
-        clair = dechiffre.stdout
-        if hashlib.sha256(clair).hexdigest() != ligne["sha256_clair"]:
+                    "detail": decrypted.stderr.decode(errors="replace")[:500]}
+        plain = decrypted.stdout
+        if hashlib.sha256(plain).hexdigest() != line["sha256_plain"]:
             return {"etat": "sha256-divergent",
                     "detail": "le clair déchiffré diffère de l'archivé"}
-        lignes = clair.count(b"\n")
-        if lignes != ligne["documents"]:
+        lines = plain.count(b"\n")
+        if lines != line["documents"]:
             return {"etat": "documents-divergents",
-                    "detail": f"{lignes} lignes, {ligne['documents']} attendus"}
+                    "detail": f"{lines} lignes, {line['documents']} attendus"}
         return {"etat": "ok", "complet": True}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def drill(conn, s3, lot: int | None = None,
-          complet: bool | None = None) -> list[dict]:
+def drill(conn, s3, batch: drill_full | None = None,
+          full: bool | None = None) -> list[dict]:
     """Vérifie les archives vérifiées le moins récemment.
 
     Sélection par `verifie_a NULLS FIRST` : déterministe, et chaque archive
     finit par passer. Un tirage au sort laisserait durablement des trous.
     """
-    n = config.ARCHIVE_DRILL_LOT if lot is None else lot
-    entier = config.ARCHIVE_DRILL_COMPLET if complet is None else complet
-    lignes = conn.execute(
+    n = config.ARCHIVE_DRILL_BATCH if batch is None else batch
+    drill_full = config.ARCHIVE_DRILL_FULL if full is None else full
+    lines = conn.execute(
         "SELECT * FROM archives_s3 WHERE format_version=%s "
-        " ORDER BY verifie_a NULLS FIRST, archivee_a LIMIT %s",
+        " ORDER BY verified_at NULLS FIRST, archived_at LIMIT %s",
         (config.ARCHIVE_FORMAT_VERSION, n)).fetchall()
-    bilan = []
-    for ligne in lignes:
+    summary = []
+    for line in lines:
         try:
-            r = _drill_une(s3, ligne, entier)
+            r = _drill_une(s3, line, drill_full)
         except Exception as e:                                    # noqa: BLE001
             r = {"etat": f"erreur: {e}"[:200]}
         conn.execute(
-            "UPDATE archives_s3 SET verifie_a=now(), verif_etat=%s, "
-            " verif_complet=%s WHERE id=%s",
-            (r["etat"], bool(r.get("complet")), ligne["id"]))
+            "UPDATE archives_s3 SET verified_at=now(), verify_state=%s, "
+            " verify_full=%s WHERE id=%s",
+            (r["etat"], bool(r.get("complet")), line["id"]))
         conn.commit()
         if r["etat"] == "ok":
-            log.info("drill %s/%s : OK%s", ligne["index_base"],
-                     ligne["periode"], " (complet)" if r.get("complet") else "")
+            log.info("drill %s/%s : OK%s", line["index_base"],
+                     line["periode"], " (complet)" if r.get("complet") else "")
         else:
             log.error("DRILL EN ÉCHEC %s/%s : %s — %s. L'archive de ce mois "
                       "n'est pas fiable ; la donnée d'origine est probablement "
-                      "déjà purgée de l'indexer.", ligne["index_base"],
-                      ligne["periode"], r["etat"], r.get("detail", ""))
-        bilan.append({"index_base": ligne["index_base"],
-                      "periode": ligne["periode"], **r})
-    return bilan
+                      "déjà purgée de l'indexer.", line["index_base"],
+                      line["periode"], r["etat"], r.get("detail", ""))
+        summary.append({"index_base": line["index_base"],
+                      "periode": line["periode"], **r})
+    return summary
 
 
 # --------------------------------------------------------------------------
 # Anomalies remontées au watchdog
 # --------------------------------------------------------------------------
 
-def _mois_entre(debut: str, fin: str) -> list[str]:
-    a, m = (int(x) for x in debut.split("-"))
-    af, mf = (int(x) for x in fin.split("-"))
-    sortie = []
+def _months_between(start: str, end: str) -> list[str]:
+    a, m = (int(x) for x in start.split("-"))
+    af, mf = (int(x) for x in end.split("-"))
+    output = []
     while (a, m) <= (af, mf):
-        sortie.append(f"{a:04d}-{m:02d}")
+        output.append(f"{a:04d}-{m:02d}")
         a, m = (a + 1, 1) if m == 12 else (a, m + 1)
-    return sortie
+    return output
 
 
 def anomalies(conn) -> list[dict]:
@@ -935,33 +935,33 @@ def anomalies(conn) -> list[dict]:
     - une archive n'a pas été relue depuis trop longtemps (Medium) ;
     - un drill a échoué (High).
     """
-    if not config.ARCHIVAGE_ENABLED:
+    if not config.ARCHIVING_ENABLED:
         return []
-    sortie = []
+    output = []
 
     try:
-        peril = indices_en_peril(conn)
+        risk = indices_at_risk(conn)
     except Exception as e:                                        # noqa: BLE001
         log.warning("péril d'archivage incalculable : %s", e)
-        peril = []
-    if peril:
+        risk = []
+    if risk:
         detail = "\n".join(
             f"  {i['index']:<40} {i['documents']:>9} docs  "
             f"supprimé dans {i['supprime_dans']} j"
-            for i in peril[:15])
-        sortie.append(_anomalie(
+            for i in risk[:15])
+        output.append(_anomaly(
             "peril",
-            f"[ARCHIVAGE] {len(peril)} index vont être purgés sans copie",
+            f"[ARCHIVAGE] {len(risk)} index vont être purgés sans copie",
             "\n".join([
                 "DONNÉE SUR LE POINT D'ÊTRE PERDUE",
                 "",
-                f"{len(peril)} index datés entrent dans les "
-                f"{config.ARCHIVE_MARGE_JOURS} jours qui précèdent leur "
+                f"{len(risk)} index datés entrent dans les "
+                f"{config.ARCHIVE_MARGIN_DAYS} jours qui précèdent leur "
                 f"suppression par la politique ISM "
-                f"(RETENTION_INDEX_JOURS={config.RETENTION_INDEX_JOURS}) et "
+                f"(RETENTION_INDEX_JOURS={config.RETENTION_INDEX_DAYS}) et "
                 "aucune archive S3 ne les couvre.",
                 "", detail,
-                "" if len(peril) <= 15 else f"  … et {len(peril) - 15} autres.",
+                "" if len(risk) <= 15 else f"  … et {len(risk) - 15} autres.",
                 "",
                 "Ce qui a été fait automatiquement : ces index ont été DÉTACHÉS "
                 "de la politique « aura-retention ». Ils ne seront pas "
@@ -979,26 +979,26 @@ def anomalies(conn) -> list[dict]:
                 "Une fois l'archivage reparti, le rattachement à la politique "
                 "ISM se refait tout seul au passage suivant de la rétention.",
             ]),
-            "High", len(peril)))
+            "High", len(risk)))
 
-    lignes = conn.execute(
-        "SELECT index_base, periode, verifie_a, verif_etat FROM archives_s3 "
+    lines = conn.execute(
+        "SELECT index_base, periode, verified_at, verify_state FROM archives_s3 "
         " WHERE format_version=%s ORDER BY index_base, periode",
         (config.ARCHIVE_FORMAT_VERSION,)).fetchall()
 
     # Trous dans une série : un mois absent ENTRE deux mois présents. Borné aux
     # séries déjà commencées — un index set créé le mois dernier n'a pas de
     # trou, il a juste un passé qui n'existe pas.
-    par_base: dict[str, list[str]] = {}
-    for l in lignes:
-        par_base.setdefault(l["index_base"], []).append(l["periode"])
-    trous = {b: [m for m in _mois_entre(min(p), max(p)) if m not in set(p)]
-             for b, p in par_base.items()}
-    trous = {b: m for b, m in trous.items() if m}
-    if trous:
-        sortie.append(_anomalie(
+    by_base: dict[str, list[str]] = {}
+    for l in lines:
+        by_base.setdefault(l["index_base"], []).append(l["periode"])
+    gaps = {b: [m for m in _months_between(min(p), max(p)) if m not in set(p)]
+             for b, p in by_base.items()}
+    gaps = {b: m for b, m in gaps.items() if m}
+    if gaps:
+        output.append(_anomaly(
             "trou",
-            f"[ARCHIVAGE] {sum(len(m) for m in trous.values())} mois manquant(s) "
+            f"[ARCHIVAGE] {sum(len(m) for m in gaps.values())} mois manquant(s) "
             "dans les séries d'archives",
             "\n".join([
                 "TROU DANS LA COUVERTURE D'ARCHIVAGE",
@@ -1008,28 +1008,28 @@ def anomalies(conn) -> list[dict]:
                 "nulle part, et rien ne l'avait signalé au moment où elle "
                 "partait.",
                 "",
-                *(f"  {b} : {', '.join(m)}" for b, m in sorted(trous.items())),
+                *(f"  {b} : {', '.join(m)}" for b, m in sorted(gaps.items())),
                 "",
                 "Il n'y a rien à réparer ici — c'est un constat, à consigner. "
                 "L'action utile est de comprendre POURQUOI l'archivage était "
                 "muet sur cette période et de vérifier que le garde-fou de "
                 "péril fonctionne aujourd'hui.",
             ]),
-            "Medium", sum(len(m) for m in trous.values())))
+            "Medium", sum(len(m) for m in gaps.values())))
 
-    echecs = [l for l in lignes if l["verif_etat"] and l["verif_etat"] != "ok"]
-    if echecs:
-        sortie.append(_anomalie(
+    failures = [l for l in lines if l["verify_state"] and l["verify_state"] != "ok"]
+    if failures:
+        output.append(_anomaly(
             "drill",
-            f"[ARCHIVAGE] {len(echecs)} archive(s) en échec de vérification",
+            f"[ARCHIVAGE] {len(failures)} archive(s) en échec de vérification",
             "\n".join([
                 "ARCHIVE NON FIABLE",
                 "",
                 "Le drill de restauration a relu ces archives et n'a pas "
                 "retrouvé ce qui avait été écrit :",
                 "",
-                *(f"  {l['index_base']}/{l['periode']} : {l['verif_etat']}"
-                  for l in echecs[:20]),
+                *(f"  {l['index_base']}/{l['periode']} : {l['verify_state']}"
+                  for l in failures[:20]),
                 "",
                 "Une archive qui ne se relit pas n'est pas une archive. La "
                 "donnée d'origine est très probablement déjà purgée de "
@@ -1041,44 +1041,44 @@ def anomalies(conn) -> list[dict]:
                 "`sha256-divergent` : l'objet stocké diffère de ce qui a été "
                 "écrit. Corruption ou réécriture par un tiers.",
             ]),
-            "High", len(echecs)))
+            "High", len(failures)))
 
-    limite = datetime.now(timezone.utc) - timedelta(
-        days=config.ARCHIVE_DRILL_JOURS)
-    vieilles = [l for l in lignes
-                if l["verifie_a"] is None or l["verifie_a"] < limite]
+    limit = datetime.now(timezone.utc) - timedelta(
+        days=config.ARCHIVE_DRILL_DAYS)
+    old = [l for l in lines
+                if l["verified_at"] is None or l["verified_at"] < limit]
     # Une archive du mois en cours n'a pas encore eu son tour : on ne compte
     # comme « en retard » que ce qui a dépassé la fenêtre de drill.
-    if len(vieilles) > config.ARCHIVE_DRILL_LOT:
-        sortie.append(_anomalie(
+    if len(old) > config.ARCHIVE_DRILL_BATCH:
+        output.append(_anomaly(
             "drill-en-retard",
-            f"[ARCHIVAGE] {len(vieilles)} archive(s) non vérifiées depuis plus "
-            f"de {config.ARCHIVE_DRILL_JOURS} jours",
+            f"[ARCHIVAGE] {len(old)} archive(s) non vérifiées depuis plus "
+            f"de {config.ARCHIVE_DRILL_DAYS} jours",
             "\n".join([
                 "VÉRIFICATION D'ARCHIVES EN RETARD",
                 "",
-                f"{len(vieilles)} archives n'ont pas été relues depuis "
-                f"{config.ARCHIVE_DRILL_JOURS} jours (ou jamais). Une archive "
+                f"{len(old)} archives n'ont pas été relues depuis "
+                f"{config.ARCHIVE_DRILL_DAYS} jours (ou jamais). Une archive "
                 "non testée est une croyance, pas une copie.",
                 "",
                 f"Le service `soc-agent-archive` en vérifie "
-                f"{config.ARCHIVE_DRILL_LOT} par passage. Ce retard signifie "
+                f"{config.ARCHIVE_DRILL_BATCH} par passage. Ce retard signifie "
                 "soit que le service ne tourne pas, soit que le lot est trop "
                 "petit pour le nombre d'archives (augmenter "
                 "ARCHIVE_DRILL_LOT).",
             ]),
-            "Medium", len(vieilles)))
-    return sortie
+            "Medium", len(old)))
+    return output
 
 
-def _anomalie(suffixe: str, titre: str, note: str, severite: str,
+def _anomaly(suffix: str, title: str, note: str, severity: str,
               volume: int) -> dict:
     """Format d'un capteur muet, pour traverser la boucle du watchdog sans cas
     particulier — même convention que `routage._anomalie`."""
     maintenant = datetime.now(timezone.utc)
     return {"agent_id": "000", "agent_name": "wazuh.manager",
-            "capteur": f"{PREFIXE_CAPTEUR}{suffixe}", "titre": titre,
-            "note": note, "severite": severite, "volume": volume, "seuil": 0,
+            "sensor": f"{PREFIX_SENSOR}{suffix}", "titre": title,
+            "note": note, "severity": severity, "volume": volume, "seuil": 0,
             "dernier": maintenant, "horizon": maintenant}
 
 
@@ -1086,7 +1086,7 @@ def _anomalie(suffixe: str, titre: str, note: str, severite: str,
 # Préflight
 # --------------------------------------------------------------------------
 
-def verifier_cle() -> dict:
+def check_key() -> dict:
     """Aller-retour RÉEL de chiffrement sur un témoin, avant de compter sur la clé.
 
     Chiffrer puis redéchiffrer trois octets coûte quelques millisecondes et
@@ -1095,38 +1095,38 @@ def verifier_cle() -> dict:
     fichier, une identité tronquée à la copie, un `age` absent — tout ça passe
     les contrôles de `config` et se voit ici.
     """
-    _verifier_outils()
-    bilan = {"keyfile": config.ARCHIVE_AGE_KEYFILE,
-             "destinataires": destinataires()}
+    _check_tools()
+    summary = {"keyfile": config.ARCHIVE_AGE_KEYFILE,
+             "recipients": recipients()}
     tmp = Path(tempfile.mkdtemp(prefix="aura-clecheck-",
                                dir=config.ARCHIVE_TMP_DIR))
     try:
-        temoin, chiffre = b"aura\n", tmp / "t.age"
+        witness, chiffre = b"aura\n", tmp / "t.age"
         recipients: list[str] = []
-        for r in bilan["destinataires"]:
+        for r in summary["recipients"]:
             recipients += ["-r", r]
         c = subprocess.run(["age", *recipients, "-o", str(chiffre)],
-                           input=temoin, capture_output=True)
+                           input=witness, capture_output=True)
         if c.returncode:
             raise RuntimeError("chiffrement du témoin en échec : "
                                + c.stderr.decode(errors="replace")[:300])
         d = subprocess.run(
             ["age", "-d", "-i", config.ARCHIVE_AGE_KEYFILE, str(chiffre)],
             capture_output=True)
-        if d.returncode or d.stdout != temoin:
+        if d.returncode or d.stdout != witness:
             raise RuntimeError(
                 "la clé ne redéchiffre PAS ce qu'elle a chiffré : "
                 + d.stderr.decode(errors="replace")[:300]
                 + " — archiver dans cet état produirait des objets illisibles.")
-        bilan["aller_retour"] = "ok"
-        bilan["secours"] = (config.ARCHIVE_AGE_RECIPIENTS_EXTRA
+        summary["aller_retour"] = "ok"
+        summary["secours"] = (config.ARCHIVE_AGE_RECIPIENTS_EXTRA
                             or "AUCUNE — perdre le keyfile perdrait tout")
-        return bilan
+        return summary
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def verifier_bucket() -> dict:
+def check_bucket() -> dict:
     """Préflight à lancer AVANT de compter sur l'archivage.
 
     Vérifie aussi ce qui devrait être ABSENT : le droit de suppression. Une clé
@@ -1134,12 +1134,12 @@ def verifier_bucket() -> dict:
     mois après avoir chiffré le reste.
     """
     s3 = _s3()
-    bilan: dict = {"bucket": config.ARCHIVE_S3_BUCKET,
+    summary: dict = {"bucket": config.ARCHIVE_S3_BUCKET,
                    "endpoint": config.ARCHIVE_S3_ENDPOINT}
     s3.head_bucket(Bucket=config.ARCHIVE_S3_BUCKET)
-    bilan["joignable"] = True
+    summary["joignable"] = True
 
-    for nom, appel in (
+    for name, call in (
             ("versioning", lambda: s3.get_bucket_versioning(
                 Bucket=config.ARCHIVE_S3_BUCKET).get("Status", "Disabled")),
             ("object_lock", lambda: s3.get_object_lock_configuration(
@@ -1151,42 +1151,42 @@ def verifier_bucket() -> dict:
                 for r in s3.get_bucket_lifecycle_configuration(
                     Bucket=config.ARCHIVE_S3_BUCKET).get("Rules", [])])):
         try:
-            bilan[nom] = appel()
+            summary[name] = call()
         except Exception as e:                                    # noqa: BLE001
-            bilan[nom] = f"indéterminé ({type(e).__name__})"
+            summary[name] = f"indéterminé ({type(e).__name__})"
 
-    temoin = "/".join(p for p in (config.ARCHIVE_S3_PREFIX,
+    witness = "/".join(p for p in (config.ARCHIVE_S3_PREFIX,
                                  config.ARCHIVE_FORMAT_VERSION,
                                  "_preflight.txt") if p)
-    s3.put_object(Bucket=config.ARCHIVE_S3_BUCKET, Key=temoin,
+    s3.put_object(Bucket=config.ARCHIVE_S3_BUCKET, Key=witness,
                   Body=b"aura preflight\n")
-    bilan["ecriture"] = "ok"
+    summary["ecriture"] = "ok"
     try:
-        s3.delete_object(Bucket=config.ARCHIVE_S3_BUCKET, Key=temoin)
-        bilan["suppression"] = ("POSSIBLE — la clé porte deleteFiles, ce qui "
+        s3.delete_object(Bucket=config.ARCHIVE_S3_BUCKET, Key=witness)
+        summary["suppression"] = ("POSSIBLE — la clé porte deleteFiles, ce qui "
                                 "n'est pas souhaitable pour une clé de prod")
     except Exception:                                             # noqa: BLE001
-        bilan["suppression"] = "refusée (attendu)"
+        summary["suppression"] = "refusée (attendu)"
 
-    if config.ARCHIVE_OBJECT_LOCK and bilan.get("object_lock") != "Enabled":
-        bilan["alerte"] = ("ARCHIVE_OBJECT_LOCK=true mais le bucket n'a pas "
+    if config.ARCHIVE_OBJECT_LOCK and summary.get("object_lock") != "Enabled":
+        summary["alerte"] = ("ARCHIVE_OBJECT_LOCK=true mais le bucket n'a pas "
                            "Object Lock. La propriété ne se rétro-applique pas "
                            "à un bucket existant : recréer le bucket avec "
                            "Object Lock, ou repasser le réglage à false.")
-    if config.ARCHIVE_OBJECT_LOCK_JOURS < config.ARCHIVE_RETENTION_MOIS * 30:
-        bilan.setdefault("alerte", "")
-        bilan["alerte"] += (" Object Lock plus court que la rétention visée : "
+    if config.ARCHIVE_OBJECT_LOCK_DAYS < config.ARCHIVE_RETENTION_MONTH * 30:
+        summary.setdefault("alerte", "")
+        summary["alerte"] += (" Object Lock plus court que la rétention visée : "
                             "un objet redeviendra supprimable avant la fin des "
-                            f"{config.ARCHIVE_RETENTION_MOIS} mois.")
-    return bilan
+                            f"{config.ARCHIVE_RETENTION_MONTH} mois.")
+    return summary
 
 
 # --------------------------------------------------------------------------
 # Restauration
 # --------------------------------------------------------------------------
 
-def restaurer(s3, index_base: str, periode: str, destination: Path,
-              identite: str | None = None) -> dict:
+def restore(s3, index_base: str, period: str, destination: Path,
+              identity: str | None = None) -> dict:
     """Télécharge et déchiffre une archive sur disque, avec la clé du SOC.
 
     Volontairement séparé de toute réinjection dans l'indexer : décider où
@@ -1198,12 +1198,12 @@ def restaurer(s3, index_base: str, periode: str, destination: Path,
     `identite` permet de passer une clé de SECOURS, pour le cas qui justifie
     qu'elle existe : la clé du SOC est perdue ou l'hôte a été refait.
     """
-    cle_age = identite or config.ARCHIVE_AGE_KEYFILE
-    cle = cle_objet(index_base, periode, SUFFIXE_OBJET)
+    age_key = identity or config.ARCHIVE_AGE_KEYFILE
+    key = object_key(index_base, period, SUFFIX_OBJECT)
     chiffre = destination.with_suffix(destination.suffix + ".age")
-    s3.download_file(config.ARCHIVE_S3_BUCKET, cle, str(chiffre))
+    s3.download_file(config.ARCHIVE_S3_BUCKET, key, str(chiffre))
     r = subprocess.run(
-        f"age -d -i {cle_age!r} {str(chiffre)!r} | zstd -d -o "
+        f"age -d -i {age_key!r} {str(chiffre)!r} | zstd -d -o "
         f"{str(destination)!r} -f",
         shell=True, capture_output=True)
     chiffre.unlink(missing_ok=True)
@@ -1213,26 +1213,26 @@ def restaurer(s3, index_base: str, periode: str, destination: Path,
     # Confronter au manifeste appartient à l'appelant, mais compter les lignes
     # ici évite le contresens le plus courant : croire qu'un fichier obtenu sans
     # erreur est un fichier complet.
-    return {"cle": cle, "fichier": str(destination),
+    return {"key": key, "fichier": str(destination),
             "lignes": sum(1 for _ in destination.open("rb")),
             "octets": destination.stat().st_size}
 
 
 # --------------------------------------------------------------------------
 
-def tourner(dry_run: bool = False) -> dict:
+def run(dry_run: bool = False) -> dict:
     """Un passage : archiver ce qui est clos, puis vérifier quelques archives.
 
     Le drill tourne même si l'archivage n'a rien eu à faire — c'est le cas
     normal la plupart des jours, et c'est justement là qu'on veut savoir si les
     archives des mois passés tiennent encore.
     """
-    if not config.ARCHIVAGE_ENABLED:
+    if not config.ARCHIVING_ENABLED:
         return {"etat": "désactivé"}
-    bilan: dict = {"dry_run": dry_run, "archivees": [], "echecs": []}
+    summary: dict = {"dry_run": dry_run, "archivees": [], "echecs": []}
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         if not conn.execute("SELECT pg_try_advisory_lock(%s)",
-                            (_VERROU_ARCHIVE,)
+                            (_LOCK_ARCHIVE,)
                             ).fetchone()["pg_try_advisory_lock"]:
             log.info("archivage : passage déjà en cours, on saute ce tour")
             return {"etat": "verrouillé"}
@@ -1241,45 +1241,45 @@ def tourner(dry_run: bool = False) -> dict:
             # doit pas s'accumuler d'un jour sur l'autre. Pas en `--plan`, qui
             # doit pouvoir être lancé sans rien modifier nulle part.
             if not dry_run:
-                bilan["menage_local"] = balayer_temporaires()
-            lots = lots_a_archiver(conn)
-            bilan["a_faire"] = [f"{l['index_base']}/{l['periode']}" for l in lots]
+                summary["menage_local"] = sweep_temporary()
+            batches = batches_to_archive(conn)
+            summary["a_faire"] = [f"{l['index_base']}/{l['periode']}" for l in batches]
             if dry_run:
-                bilan["lots"] = lots
-                bilan["peril"] = [i["index"] for i in indices_en_peril(conn)]
-                return bilan
+                summary["lots"] = batches
+                summary["peril"] = [i["index"] for i in indices_at_risk(conn)]
+                return summary
 
             s3 = _s3()
-            bilan["menage_s3"] = avorter_multiparts(s3)
-            for lot in lots:
+            summary["menage_s3"] = abort_multiparts(s3)
+            for batch in batches:
                 try:
-                    bilan["archivees"].append(archiver(conn, s3, lot))
+                    summary["archivees"].append(archive(conn, s3, batch))
                 except Exception as e:                            # noqa: BLE001
                     # Un lot qui échoue ne doit pas emporter les autres : le
                     # mois suivant appartient peut-être à un autre index set,
                     # et refuser de l'archiver ne répare rien.
                     log.error("archivage %s/%s en échec : %s",
-                              lot["index_base"], lot["periode"], e)
-                    bilan["echecs"].append(
-                        {"index_base": lot["index_base"],
-                         "periode": lot["periode"], "erreur": str(e)[:300]})
+                              batch["index_base"], batch["periode"], e)
+                    summary["echecs"].append(
+                        {"index_base": batch["index_base"],
+                         "periode": batch["periode"], "error": str(e)[:300]})
 
-            bilan["drill"] = drill(conn, s3)
-            peril = indices_en_peril(conn)
-            bilan["peril"] = [i["index"] for i in peril]
-            if peril:
+            summary["drill"] = drill(conn, s3)
+            risk = indices_at_risk(conn)
+            summary["peril"] = [i["index"] for i in risk]
+            if risk:
                 try:
-                    bilan["proteges"] = proteger([i["index"] for i in peril])
+                    summary["proteges"] = protect([i["index"] for i in risk])
                 except Exception as e:                            # noqa: BLE001
                     log.error("PROTECTION IMPOSSIBLE (%s) : %d index restent "
                               "candidats à la suppression SANS copie.", e,
-                              len(peril))
+                              len(risk))
         finally:
-            _deverrouiller(conn)
-    return bilan
+            _unlock(conn)
+    return summary
 
 
-def _deverrouiller(conn) -> None:
+def _unlock(conn) -> None:
     """Rend le verrou consultatif SANS masquer l'erreur qui nous amène ici.
 
     Constaté en prod au premier passage : la table `archives_s3` n'existait pas
@@ -1293,11 +1293,11 @@ def _deverrouiller(conn) -> None:
     de session est de toute façon rendu à la fermeture de la connexion, donc
     échouer ici n'a aucune conséquence, alors que masquer la cause en a une.
     """
-    for etape in (conn.rollback,
+    for step in (conn.rollback,
                   lambda: conn.execute("SELECT pg_advisory_unlock(%s)",
-                                       (_VERROU_ARCHIVE,))):
+                                       (_LOCK_ARCHIVE,))):
         try:
-            etape()
+            step()
         except Exception as e:                                    # noqa: BLE001
             log.debug("libération du verrou d'archivage : %s", e)
 
@@ -1323,36 +1323,36 @@ def main() -> None:
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    if not config.ARCHIVAGE_ENABLED:
+    if not config.ARCHIVING_ENABLED:
         print("ARCHIVAGE_ENABLED=false : rien à faire. Cf. docs/ARCHIVAGE.md.")
         return
 
-    if args.verifier:
+    if args.check:
         # La clé d'abord : un bucket parfait ne sert à rien si ce qu'on y écrit
         # est illisible.
-        print(json.dumps({"cle": verifier_cle(), "s3": verifier_bucket()},
+        print(json.dumps({"key": check_key(), "s3": check_bucket()},
                          indent=2, ensure_ascii=False, default=str))
         return
 
-    if args.restaurer:
-        base, _, periode = args.restaurer.rpartition("/")
-        print(json.dumps(restaurer(_s3(), base, periode, Path(args.vers),
-                                   args.identite),
+    if args.restore:
+        base, _, period = args.restore.rpartition("/")
+        print(json.dumps(restore(_s3(), base, period, Path(args.vers),
+                                   args.identity),
                          indent=2, ensure_ascii=False))
         return
 
     if args.drill:
-        if args.identite:
+        if args.identity:
             monkey = config.ARCHIVE_AGE_KEYFILE
-            config.ARCHIVE_AGE_KEYFILE = args.identite
+            config.ARCHIVE_AGE_KEYFILE = args.identity
             log.warning("drill avec la clé de secours %s (au lieu de %s)",
-                        args.identite, monkey)
+                        args.identity, monkey)
         with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-            r = drill(conn, _s3(), args.lot, not args.sans_dechiffrer)
+            r = drill(conn, _s3(), args.batch, not args.without_decrypting)
         print(json.dumps(r, indent=2, ensure_ascii=False))
         return
 
-    print(json.dumps(tourner(args.plan), indent=2, ensure_ascii=False,
+    print(json.dumps(run(args.plan), indent=2, ensure_ascii=False,
                      default=str))
 
 

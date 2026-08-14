@@ -55,12 +55,12 @@ log = logging.getLogger("watchdog")
 
 # availability:outage — une panne de capteur est une perte de disponibilité de
 # la détection, pas une intrusion.
-CLASSIF_PANNE = 25
+CLASSIF_OUTAGE = 25
 
 # Ce que la panne de chaque capteur rend inerte. Sert au dossier : un analyste
 # qui lit « suricata muet » doit savoir CE QU'IL NE VOIT PLUS, sans aller
 # fouiller le ruleset.
-_PORTEE = {
+_SCOPE = {
     "audit": "toute la détection d'exécution Linux (règles 1006xx/1007xx : "
              "reverse shell, rootkit, découverte système, accès /etc/shadow, "
              "exécution depuis un répertoire temporaire)",
@@ -97,7 +97,7 @@ WITH horizon AS (
       FROM alerts
      WHERE ts >= (SELECT h FROM horizon) - (%(ref)s || ' hours')::interval
 )
-SELECT agent_id, agent_name, g AS capteur,
+SELECT agent_id, agent_name, g AS sensor,
        count(*) AS volume, max(ts) AS dernier,
        (SELECT h FROM horizon) AS horizon,
        COALESCE((%(par_capteur)s::jsonb ->> g)::int, %(silence)s) AS seuil
@@ -112,29 +112,29 @@ HAVING count(*) >= %(baseline)s
 """
 
 
-def capteurs_muets(conn) -> list[dict]:
+def silent_sensors(conn) -> list[dict]:
     """Capteurs établis devenus silencieux. Fonction pure (une requête), donc
     testable seule et sans effet de bord."""
     return conn.execute(_SQL, {
-        "ref": config.WATCHDOG_REF_HEURES,
-        "capteurs": list(config.WATCHDOG_CAPTEURS),
+        "ref": config.WATCHDOG_REF_HOURS,
+        "capteurs": list(config.WATCHDOG_SENSORS),
         "baseline": config.WATCHDOG_BASELINE_MIN,
         "silence": config.WATCHDOG_SILENCE_MINUTES,
         # Seuil propre à certains capteurs (sshd et syscheck n'émettent que sur
         # évènement) ; le défaut s'applique aux autres.
-        "par_capteur": json.dumps(config.WATCHDOG_SILENCE_PAR_CAPTEUR),
+        "par_capteur": json.dumps(config.WATCHDOG_SILENCE_PER_SENSOR),
     }).fetchall()
 
 
-def _minutes(depuis, reference=None) -> int:
+def _minutes(since, reference=None) -> int:
     """Minutes écoulées depuis `depuis`, mesurées contre l'horizon d'ingestion
     quand il est fourni — cf. le commentaire de `_SQL`. L'horloge n'est le bon
     repère que pour l'ingestion elle-même."""
-    fin = reference or datetime.now(timezone.utc)
-    return int((fin - depuis).total_seconds() // 60)
+    end = reference or datetime.now(timezone.utc)
+    return int((end - since).total_seconds() // 60)
 
 
-def horizon_ingestion(conn):
+def ingest_horizon(conn):
     """Jusqu'où la base est à jour, et depuis combien de temps elle ne l'est plus.
 
     Le watchdog raisonne sur ce que le pipeline a ingéré ; si l'ingestion cale,
@@ -148,7 +148,7 @@ def horizon_ingestion(conn):
     return h, (_minutes(h) if h else None)
 
 
-def _duree(minutes: int) -> str:
+def _duration(minutes: int) -> str:
     if minutes < 90:
         return f"{minutes} min"
     if minutes < 60 * 48:
@@ -172,32 +172,32 @@ def _duree(minutes: int) -> str:
 # Un disque plein est un ÉTAT à acquitter, pas une investigation à mener — le
 # raisonnement qui a fait choisir l'onglet Alerts pour les pannes de capteur
 # vaut mot pour mot ici.
-CAPTEUR_DISQUE = "disque"
+SENSOR_DISK = "disque"
 
 # Préfixes des pseudo-capteurs posés par `routage.py`. Une source de log qui
 # n'atterrit pas dans son index est un angle mort de la même nature qu'un
 # capteur muet — les alertes existent, mais personne ne les regarde là où elles
 # sont — et se suit donc dans la même table d'état, avec la même clôture
 # automatique.
-PREFIXES_ROUTAGE = ("routage:", "source-muette:")
+PREFIXES_ROUTING = ("routage:", "source-muette:")
 
 # Pseudo-capteurs posés par `archive.py`. Une archive manquante est une perte de
 # visibilité FUTURE : la donnée est là aujourd'hui, elle ne sera plus là quand on
 # la cherchera. Même table d'état, même canal, même clôture automatique — et
 # comme le disque et le routage, ça se mesure contre l'HORLOGE et non contre
 # l'horizon d'ingestion.
-PREFIXE_ARCHIVAGE = "archivage:"
+PREFIX_ARCHIVING = "archivage:"
 
 
-def _est_routage(capteur: str) -> bool:
-    return capteur.startswith(PREFIXES_ROUTAGE)
+def _is_routing(sensor: str) -> bool:
+    return sensor.startswith(PREFIXES_ROUTING)
 
 
-def _est_archivage(capteur: str) -> bool:
-    return capteur.startswith(PREFIXE_ARCHIVAGE)
+def _is_archiving(sensor: str) -> bool:
+    return sensor.startswith(PREFIX_ARCHIVING)
 
 
-def _hors_pipeline(capteur: str) -> bool:
+def _outside_pipeline(sensor: str) -> bool:
     """Ce capteur se mesure-t-il contre l'horloge plutôt que contre l'horizon
     d'ingestion ?
 
@@ -206,65 +206,65 @@ def _hors_pipeline(capteur: str) -> bool:
     Les rapporter à un horizon en retard donnait des durées fausses, voire
     négatives (« saturé pendant -2 min ») dans les alertes de rétablissement.
     """
-    return (capteur == CAPTEUR_DISQUE or _est_routage(capteur)
-            or _est_archivage(capteur))
+    return (sensor == SENSOR_DISK or _is_routing(sensor)
+            or _is_archiving(sensor))
 
 # L'hôte du SOC n'est pas un agent surveillé comme un autre : c'est le manager
 # lui-même. Son id d'agent Wazuh est 000 par construction.
 AGENT_SOC = "000"
 
 
-def disque_sature() -> list[dict]:
+def disk_saturated() -> list[dict]:
     """Le disque du SOC est-il au-delà du seuil ? Zéro ou une entrée.
 
     Rendue au format d'un capteur muet (mêmes clés) pour traverser sans cas
     particulier la boucle d'ouverture/clôture de `surveiller`.
     """
     try:
-        u = shutil.disk_usage(config.DISQUE_SURVEILLE)
+        u = shutil.disk_usage(config.DISK_MONITORED)
     except OSError as e:
-        log.warning("disque %s illisible : %s", config.DISQUE_SURVEILLE, e)
+        log.warning("disque %s illisible : %s", config.DISK_MONITORED, e)
         return []
     pct = round(100 * u.used / u.total)
-    if pct < config.DISQUE_SEUIL_ALERTE:
-        log.debug("disque %s à %d%% (seuil %d%%)", config.DISQUE_SURVEILLE,
-                  pct, config.DISQUE_SEUIL_ALERTE)
+    if pct < config.DISK_THRESHOLD_ALERT:
+        log.debug("disque %s à %d%% (seuil %d%%)", config.DISK_MONITORED,
+                  pct, config.DISK_THRESHOLD_ALERT)
         return []
     maintenant = datetime.now(timezone.utc)
     return [{
         "agent_id": AGENT_SOC,
         "agent_name": socket.gethostname(),
-        "capteur": CAPTEUR_DISQUE,
+        "sensor": SENSOR_DISK,
         # `dernier` et `horizon` valent l'instant de la mesure : un disque plein
         # n'a pas de « dernier événement », il a un état constaté maintenant.
         "dernier": maintenant,
         "horizon": maintenant,
         "volume": pct,
-        "seuil": config.DISQUE_SEUIL_ALERTE,
+        "seuil": config.DISK_THRESHOLD_ALERT,
         "libre_go": u.free / 1073741824,
         "total_go": u.total / 1073741824,
         "pct": pct,
     }]
 
 
-def _note_disque(m: dict, markdown: bool = True) -> str:
+def _disk_note(m: dict, markdown: bool = True) -> str:
     """Diagnostic du disque saturé. Même double rendu que `_note_panne` : les
     notes de case sont en markdown, les descriptions d'alerte en texte brut."""
     t = (lambda s: f"# {s}") if markdown else (lambda s: s.upper())
     g = (lambda s: f"**{s}**") if markdown else (lambda s: str(s))
     c = (lambda s: f"`{s}`") if markdown else (lambda s: str(s))
-    critique = m["pct"] >= config.DISQUE_SEUIL_CRITIQUE
+    critical = m["pct"] >= config.DISK_THRESHOLD_CRITICAL
     return "\n".join([
         t("Disque du SOC saturé"),
         "",
-        f"Le système de fichiers {c(config.DISQUE_SURVEILLE)} de "
+        f"Le système de fichiers {c(config.DISK_MONITORED)} de "
         f"{g(m['agent_name'])} est occupé à {g(str(m['pct']) + ' %')} "
         f"({m['libre_go']:.1f} Go libres sur {m['total_go']:.0f} Go).",
         "",
-        f"  Seuil d'alerte   : {config.DISQUE_SEUIL_ALERTE} %",
-        f"  Seuil critique   : {config.DISQUE_SEUIL_CRITIQUE} %",
+        f"  Seuil d'alerte   : {config.DISK_THRESHOLD_ALERT} %",
+        f"  Seuil critique   : {config.DISK_THRESHOLD_CRITICAL} %",
         f"  Occupation       : {m['pct']} %"
-        + ("  <-- CRITIQUE" if critique else ""),
+        + ("  <-- CRITIQUE" if critical else ""),
         "",
         "Ce qui se produit si le disque se remplit : l'indexer bascule ses "
         "index en lecture seule, Postgres refuse d'écrire, et le pipeline "
@@ -287,12 +287,12 @@ def _note_disque(m: dict, markdown: bool = True) -> str:
         "vieillissement normal ; il ne rattrape pas une boucle d'écriture. Si "
         "le disque monte vite, chercher ce qui ÉCRIT, pas ce qui est vieux.",
         "",
-        _italique("Alerte ouverte par le watchdog AURA. Elle se referme seule "
+        _italic("Alerte ouverte par le watchdog AURA. Elle se referme seule "
                   "dès que l'occupation repasse sous le seuil.", markdown),
     ])
 
 
-def _rendu(m: dict, minutes: int, markdown: bool = True) -> str:
+def _rendered(m: dict, minutes: int, markdown: bool = True) -> str:
     """Le diagnostic d'une entrée, quelle que soit sa nature.
 
     Trois familles cohabitent maintenant dans la même table d'état : les
@@ -304,21 +304,21 @@ def _rendu(m: dict, minutes: int, markdown: bool = True) -> str:
     """
     if m.get("note"):
         return m["note"]
-    if m["capteur"] == CAPTEUR_DISQUE:
-        return _note_disque(m, markdown)
-    return _note_panne(m, minutes, markdown)
+    if m["sensor"] == SENSOR_DISK:
+        return _disk_note(m, markdown)
+    return _outage_note(m, minutes, markdown)
 
 
-def _titre(m: dict) -> str:
+def _title(m: dict) -> str:
     if m.get("titre"):
         return m["titre"]
-    nom = m["agent_name"] or m["agent_id"]
-    if m["capteur"] == CAPTEUR_DISQUE:
-        return f"[DISQUE SATURÉ] {m['pct']} % sur {nom}"
-    return f"[CAPTEUR MUET] {m['capteur']} sur {nom}"
+    name = m["agent_name"] or m["agent_id"]
+    if m["sensor"] == SENSOR_DISK:
+        return f"[DISQUE SATURÉ] {m['pct']} % sur {name}"
+    return f"[CAPTEUR MUET] {m['sensor']} sur {name}"
 
 
-def _note_panne(m: dict, minutes: int, markdown: bool = True) -> str:
+def _outage_note(m: dict, minutes: int, markdown: bool = True) -> str:
     """Le diagnostic de la panne, dans le seul dialecte que la destination sait
     rendre.
 
@@ -332,11 +332,11 @@ def _note_panne(m: dict, minutes: int, markdown: bool = True) -> str:
     D'où deux rendus du MÊME contenu, et pas deux contenus : ce qui doit être
     lu ne dépend pas de l'onglet où on le lit.
     """
-    portee = _PORTEE.get(m["capteur"], "les règles adossées à ce capteur")
+    scope = _SCOPE.get(m["sensor"], "les règles adossées à ce capteur")
     agent = m["agent_name"] or m["agent_id"]
 
-    def t(titre: str, niveau: int = 1) -> str:      # titre
-        return f"{'#' * niveau} {titre}" if markdown else titre.upper()
+    def t(title: str, level: int = 1) -> str:      # titre
+        return f"{'#' * level} {title}" if markdown else title.upper()
 
     def g(txt: str) -> str:                          # emphase
         return f"**{txt}**" if markdown else txt
@@ -345,33 +345,33 @@ def _note_panne(m: dict, minutes: int, markdown: bool = True) -> str:
         return f"`{txt}`" if markdown else txt
 
     faits = [
-        ("Capteur", c(m["capteur"])),
+        ("Capteur", c(m["sensor"])),
         ("Agent", f"{m['agent_name'] or '?'} ({c(m['agent_id'])})"),
         ("Dernier événement", f"{m['dernier']:%Y-%m-%d %H:%M:%S} UTC"),
-        ("Silence", _duree(minutes)),
+        ("Silence", _duration(minutes)),
         ("Seuil de panne", f"{m['seuil']} min"),
         ("Volume de référence",
-         f"{m['volume']} événements sur {config.WATCHDOG_REF_HEURES} h"),
+         f"{m['volume']} événements sur {config.WATCHDOG_REF_HOURS} h"),
     ]
     if markdown:
-        tableau = ["| | |", "|---|---|"] + [f"| {k} | {v} |" for k, v in faits]
+        array = ["| | |", "|---|---|"] + [f"| {k} | {v} |" for k, v in faits]
     else:
         # Alignement à la main : sans tableau, c'est la seule chose qui rend
         # ces six lignes lisibles en un coup d'œil.
         large = max(len(k) for k, _ in faits)
-        tableau = [f"  {k.ljust(large)} : {v}" for k, v in faits]
+        array = [f"  {k.ljust(large)} : {v}" for k, v in faits]
 
     return "\n".join([
         t("Panne de capteur"),
         "",
-        f"Le capteur {g(m['capteur'])} de {g(agent)} (agent {m['agent_id']}) "
-        f"n'émet plus depuis {g(_duree(minutes))}.",
+        f"Le capteur {g(m['sensor'])} de {g(agent)} (agent {m['agent_id']}) "
+        f"n'émet plus depuis {g(_duration(minutes))}.",
         "",
-        *tableau,
+        *array,
         "",
         t("Ce qui n'est plus détecté", 2),
         "",
-        f"Tant que ce capteur est muet, {portee} ne peut plus se déclencher sur "
+        f"Tant que ce capteur est muet, {scope} ne peut plus se déclencher sur "
         "cet hôte. Aucune alerte ne le signalera : une règle de corrélation ne "
         "détecte pas une absence.",
         "",
@@ -390,12 +390,12 @@ def _note_panne(m: dict, minutes: int, markdown: bool = True) -> str:
         "que le manager : ses capteurs d'authentification se taisent par "
         "construction, sans panne réelle.",
         "",
-        _italique("Ouvert automatiquement par le watchdog AURA. Se referme "
+        _italic("Ouvert automatiquement par le watchdog AURA. Se referme "
                   "seul dès que le capteur réémet.", markdown),
     ])
 
 
-def _italique(txt: str, markdown: bool) -> str:
+def _italic(txt: str, markdown: bool) -> str:
     return f"*{txt}*" if markdown else f"-- {txt}"
 
 
@@ -405,29 +405,29 @@ def _italique(txt: str, markdown: bool) -> str:
 #
 # `alert_source` : c'est par là qu'on filtre l'onglet Alerts pour ne voir que
 # la santé des capteurs. Valeur stable, jamais dérivée du capteur.
-SOURCE_ALERTE = "AURA watchdog"
+SOURCE_ALERT = "AURA watchdog"
 
 # Statuts d'alerte IRIS. MÊME PIÈGE que la sévérité des cases (cf. iris.py) :
 # les ids ne suivent aucun ordre logique — relevé sur l'IRIS de prod le
 # 2026-08-13, New=2 mais Unspecified=1, Closed=6, Merged=7, Escalated=8. Toute
 # valeur écrite en dur ici serait juste par hasard, donc on résout par NOM et
 # ce dictionnaire n'est qu'un repli journalisé.
-_STATUTS_REPLI = {"unspecified": 1, "new": 2, "assigned": 3, "in progress": 4,
+_STATUSES_FALLBACK = {"unspecified": 1, "new": 2, "assigned": 3, "in progress": 4,
                   "pending": 5, "closed": 6, "merged": 7, "escalated": 8}
-_STATUTS_ID: dict[str, int] | None = None
+_STATUSES_ID: dict[str, int] | None = None
 
 # Statuts qui signifient qu'un HUMAIN a pris la main : il a jugé que la panne
 # méritait un dossier et l'a escaladée. Le watchdog ne repasse pas derrière lui
 # pour forcer « Closed » au rétablissement — il se contente d'écrire que le
 # capteur réémet. C'est la différence de fond avec le canal `case`, où la
 # clôture automatique écrasait le geste de l'analyste.
-STATUTS_HUMAINS = {"escalated", "merged"}
+STATUSES_HUMAN = {"escalated", "merged"}
 
 # Types d'asset IRIS (`/manage/asset-type/list`, relevé le 2026-08-13). L'asset
 # sert à deux choses : regrouper les alertes d'une même machine, et suivre
 # celle-ci dans le case si l'analyste escalade.
-ASSET_LINUX_SERVEUR, ASSET_FIREWALL = 3, 2
-ASSET_WIN_POSTE, ASSET_WIN_SERVEUR = 9, 10
+ASSET_LINUX_SERVER, ASSET_FIREWALL = 3, 2
+ASSET_WIN_POSTE, ASSET_WIN_SERVER = 9, 10
 
 
 def _type_asset(os_txt: str | None) -> int:
@@ -438,11 +438,11 @@ def _type_asset(os_txt: str | None) -> int:
     if "pfsense" in o or "freebsd" in o or "opnsense" in o:
         return ASSET_FIREWALL
     if "windows" in o:
-        return ASSET_WIN_SERVEUR if "server" in o else ASSET_WIN_POSTE
-    return ASSET_LINUX_SERVEUR
+        return ASSET_WIN_SERVER if "server" in o else ASSET_WIN_POSTE
+    return ASSET_LINUX_SERVER
 
 
-def _alerte():
+def _alert():
     from dfir_iris_client.alert import Alert
     from dfir_iris_client.session import ClientSession
     return Alert(ClientSession(apikey=config.IRIS_API_KEY,
@@ -450,21 +450,21 @@ def _alerte():
                                ssl_verify=config.IRIS_VERIFY_TLS))
 
 
-def _id_statut(alerte, nom: str) -> int:
-    global _STATUTS_ID
-    if _STATUTS_ID is None:
+def _status_id(alert, name: str) -> int:
+    global _STATUSES_ID
+    if _STATUSES_ID is None:
         try:
-            liste = alerte._s.pi_get("/manage/alert-status/list").get_data()
-            _STATUTS_ID = {str(s["status_name"]).lower(): s["status_id"]
-                           for s in liste}
+            items = alert._s.pi_get("/manage/alert-status/list").get_data()
+            _STATUSES_ID = {str(s["status_name"]).lower(): s["status_id"]
+                           for s in items}
         except Exception as e:  # noqa: BLE001
             log.warning("liste des statuts d'alerte IRIS illisible (%s) : "
                         "repli sur les ids par défaut", e)
-            _STATUTS_ID = dict(_STATUTS_REPLI)
-    return _STATUTS_ID.get(nom.lower()) or _STATUTS_REPLI[nom.lower()]
+            _STATUSES_ID = dict(_STATUSES_FALLBACK)
+    return _STATUSES_ID.get(name.lower()) or _STATUSES_FALLBACK[name.lower()]
 
 
-def _severite_panne(capteur: str, m: dict | None = None) -> str:
+def _outage_severity(sensor: str, m: dict | None = None) -> str:
     """Un capteur CONTINU muet est une perte de visibilité immédiate et
     certaine ; un capteur ÉVÉNEMENTIEL, dont le silence est l'état normal, sort
     sur un seuil de plusieurs heures et se trompe plus souvent (cf. le seuil
@@ -473,72 +473,72 @@ def _severite_panne(capteur: str, m: dict | None = None) -> str:
     Le disque suit la même logique : au seuil d'alerte il reste du temps pour
     agir (Medium), au seuil critique il n'y en a plus (High).
     """
-    if (m or {}).get("severite"):
-        return m["severite"]
-    if capteur == CAPTEUR_DISQUE:
-        return ("High" if (m or {}).get("pct", 0) >= config.DISQUE_SEUIL_CRITIQUE
+    if (m or {}).get("severity"):
+        return m["severity"]
+    if sensor == SENSOR_DISK:
+        return ("High" if (m or {}).get("pct", 0) >= config.DISK_THRESHOLD_CRITICAL
                 else "Medium")
-    return ("Medium" if capteur in config.WATCHDOG_SILENCE_PAR_CAPTEUR
+    return ("Medium" if sensor in config.WATCHDOG_SILENCE_PER_SENSOR
             else "High")
 
 
-def _ouvrir_alerte(m: dict, minutes: int) -> int | None:
+def _open_alert(m: dict, minutes: int) -> int | None:
     """Alerte IRIS pour une panne. Best-effort, comme le canal `case`.
 
     Une alerte n'a pas de notes : tout le diagnostic tient dans la description,
     que l'onglet Alerts affiche en TEXTE BRUT (cf. `_note_panne`).
     """
-    alerte = _alerte()
-    nom_agent = m["agent_name"] or m["agent_id"]
-    disque = m["capteur"] == CAPTEUR_DISQUE
-    famille = ("disque-sature" if disque
-               else "archivage" if _est_archivage(m["capteur"])
+    alert = _alert()
+    agent_name = m["agent_name"] or m["agent_id"]
+    disk = m["sensor"] == SENSOR_DISK
+    family = ("disque-sature" if disk
+               else "archivage" if _is_archiving(m["sensor"])
                else "routage" if m.get("note") else "capteur-muet")
-    tags = ["aura", famille, m["capteur"]]
+    tags = ["aura", family, m["sensor"]]
     if m["agent_name"]:
         tags.append(m["agent_name"])
-    r = alerte.add_alert({
-        "alert_title": _titre(m),
-        "alert_description": _rendu(m, minutes, markdown=False),
-        "alert_source": SOURCE_ALERTE,
+    r = alert.add_alert({
+        "alert_title": _title(m),
+        "alert_description": _rendered(m, minutes, markdown=False),
+        "alert_source": SOURCE_ALERT,
         # Ce que le watchdog reconnaît comme « sa » ligne pour ce couple
         # (agent, capteur) : l'idempotence est garantie en base par l'index
         # partiel, cette référence sert à retrouver l'alerte côté IRIS.
-        "alert_source_ref": f"capteur-{m['agent_id']}-{m['capteur']}",
+        "alert_source_ref": f"capteur-{m['agent_id']}-{m['sensor']}",
         # Début RÉEL de la panne (dernier événement vu), pas l'instant de
         # détection : c'est ce que l'analyste doit lire dans la timeline.
         "alert_source_event_time": m["dernier"].strftime("%Y-%m-%dT%H:%M:%S"),
-        "alert_severity_id": _id_severite_alerte(
-            alerte, _severite_panne(m["capteur"], m)),
-        "alert_status_id": _id_statut(alerte, "New"),
+        "alert_severity_id": _alert_severity_id(
+            alert, _outage_severity(m["sensor"], m)),
+        "alert_status_id": _status_id(alert, "New"),
         "alert_customer_id": config.IRIS_CUSTOMER,
-        "alert_classification_id": CLASSIF_PANNE,
+        "alert_classification_id": CLASSIF_OUTAGE,
         "alert_tags": ",".join(tags),
-        "alert_assets": [{"asset_name": nom_agent,
+        "alert_assets": [{"asset_name": agent_name,
                           "asset_type_id": _type_asset(m.get("os"))}],
     })
     if not r.is_success():
-        log.error("alerte panne %s/%s : %s", m["agent_id"], m["capteur"],
+        log.error("alerte panne %s/%s : %s", m["agent_id"], m["sensor"],
                   r.get_msg())
         return None
     return r.get_data()["alert_id"]
 
 
-def _id_severite_alerte(alerte, nom: str) -> int:
+def _alert_severity_id(alert, name: str) -> int:
     """Même échelle que les cases, donc même résolution par nom : `iris.py`
     sait déjà lire `/manage/severities/list` et retomber sur ses ids."""
-    from .iris import _SEVERITES_REPLI, _id_severite
-    return _id_severite(alerte, nom) or _SEVERITES_REPLI[nom.lower()]
+    from .iris import _SEVERITIES_FALLBACK, _severity_id
+    return _severity_id(alert, name) or _SEVERITIES_FALLBACK[name.lower()]
 
 
-def _fermer_alerte(alert_id: int, p: dict, minutes: int) -> None:
+def _close_alert(alert_id: int, p: dict, minutes: int) -> None:
     """Rétablissement : on complète la description et on referme.
 
     Sauf si un humain a escaladé l'alerte — dans ce cas le dossier qu'il a
     ouvert lui appartient, on l'informe sans toucher au statut.
     """
-    alerte = _alerte()
-    lu = alerte.get_alert(alert_id)
+    alert = _alert()
+    lu = alert.get_alert(alert_id)
     if not lu.is_success():
         # Alerte supprimée à la main, par exemple. On ne peut plus rien écrire
         # dessus, mais la panne est bien rétablie : ne pas propager l'échec.
@@ -546,31 +546,31 @@ def _fermer_alerte(alert_id: int, p: dict, minutes: int) -> None:
                     "mise à jour IRIS", alert_id, lu.get_msg())
         return
     data = lu.get_data()
-    statut = str((data.get("status") or {}).get("status_name") or "").lower()
+    status = str((data.get("status") or {}).get("status_name") or "").lower()
     # Texte brut, comme la description d'ouverture : l'onglet Alerts ne rend
     # pas le markdown.
-    if _est_routage(p["capteur"]):
-        entete = [
+    if _is_routing(p["sensor"]):
+        header = [
             "ROUTAGE RÉTABLI",
             "",
-            f"L'anomalie de routage {p['capteur']} n'est plus constatée : la "
+            f"L'anomalie de routage {p['sensor']} n'est plus constatée : la "
             "source est routée vers son index, ou elle a cessé d'émettre.",
             "",
-            f"  Anomalie détectée le : {p['detectee_a']:%Y-%m-%d %H:%M} UTC",
-            f"  Durée                : {_duree(minutes)}",
+            f"  Anomalie détectée le : {p['detected_at']:%Y-%m-%d %H:%M} UTC",
+            f"  Durée                : {_duration(minutes)}",
             "",
             "Vérifier que la résolution vient bien d'une correction du routage "
             "et non de la disparition de la source : une source qui se tait "
             "referme cette alerte sans que rien n'ait été réparé.",
         ]
-    elif _est_archivage(p["capteur"]):
-        entete = [
+    elif _is_archiving(p["sensor"]):
+        header = [
             "ARCHIVAGE RÉTABLI",
             "",
-            f"L'anomalie d'archivage {p['capteur']} n'est plus constatée.",
+            f"L'anomalie d'archivage {p['sensor']} n'est plus constatée.",
             "",
-            f"  Anomalie détectée le : {p['detectee_a']:%Y-%m-%d %H:%M} UTC",
-            f"  Durée                : {_duree(minutes)}",
+            f"  Anomalie détectée le : {p['detected_at']:%Y-%m-%d %H:%M} UTC",
+            f"  Durée                : {_duration(minutes)}",
             "",
             "Attention au sens de cette clôture selon l'anomalie : un péril de "
             "purge se referme parce que la copie EXISTE désormais, mais un trou "
@@ -578,17 +578,17 @@ def _fermer_alerte(alert_id: int, p: dict, minutes: int) -> None:
             "quitté la fenêtre de rétention des archives. Dans le second cas "
             "rien n'a été réparé — la donnée manquante manque toujours.",
         ]
-    elif p["capteur"] == CAPTEUR_DISQUE:
-        entete = [
+    elif p["sensor"] == SENSOR_DISK:
+        header = [
             "DISQUE REVENU SOUS LE SEUIL",
             "",
-            f"L'occupation de {config.DISQUE_SURVEILLE} sur "
+            f"L'occupation de {config.DISK_MONITORED} sur "
             f"{p['agent_name'] or p['agent_id']} est repassée sous "
-            f"{config.DISQUE_SEUIL_ALERTE} %.",
+            f"{config.DISK_THRESHOLD_ALERT} %.",
             "",
-            f"  Saturation détectée le : {p['detectee_a']:%Y-%m-%d %H:%M} UTC",
+            f"  Saturation détectée le : {p['detected_at']:%Y-%m-%d %H:%M} UTC",
             f"  Occupation au pic      : {p['volume_ref']} %",
-            f"  Durée de la saturation : {_duree(minutes)}",
+            f"  Durée de la saturation : {_duration(minutes)}",
             "",
             "Vérifier que la place a été rendue par un ménage VOLONTAIRE et "
             "non par une purge subie (index supprimés par l'ISM, rotation "
@@ -596,87 +596,87 @@ def _fermer_alerte(alert_id: int, p: dict, minutes: int) -> None:
             "est toujours là et reviendra.",
         ]
     else:
-        entete = [
+        header = [
             "CAPTEUR RÉTABLI",
             "",
-            f"Le capteur {p['capteur']} de {p['agent_name'] or p['agent_id']} "
+            f"Le capteur {p['sensor']} de {p['agent_name'] or p['agent_id']} "
             "réémet.",
             "",
-            f"  Panne détectée le       : {p['detectee_a']:%Y-%m-%d %H:%M} UTC",
+            f"  Panne détectée le       : {p['detected_at']:%Y-%m-%d %H:%M} UTC",
             f"  Dernier événement avant : "
-            f"{p['dernier_event']:%Y-%m-%d %H:%M} UTC",
-            f"  Durée totale du silence : {_duree(minutes)}",
+            f"{p['last_event']:%Y-%m-%d %H:%M} UTC",
+            f"  Durée totale du silence : {_duration(minutes)}",
             "",
             "Les événements de la période de silence sont définitivement "
             "perdus si le capteur ne tamponnait pas : ce qui s'est produit sur "
             "cet hôte pendant la panne n'a jamais été analysé.",
         ]
-    corps = "\n".join([
+    body = "\n".join([
         data.get("alert_description") or "",
         "",
         "-" * 60,
         "",
-        *entete,
+        *header,
         "",
     ])
-    maj = {"alert_description": corps}
-    if statut in STATUTS_HUMAINS:
+    update = {"alert_description": body}
+    if status in STATUSES_HUMAN:
         log.info("alerte %s en statut « %s » : rétablissement noté, statut "
-                 "laissé à l'analyste", alert_id, statut)
-        maj["alert_description"] = corps + (
+                 "laissé à l'analyste", alert_id, status)
+        update["alert_description"] = body + (
             "-- Rétablissement constaté par le watchdog AURA. Le statut de "
             "cette alerte est laissé tel quel : elle a été escaladée.")
     else:
-        maj["alert_status_id"] = _id_statut(alerte, "Closed")
-        maj["alert_description"] = corps + (
+        update["alert_status_id"] = _status_id(alert, "Closed")
+        update["alert_description"] = body + (
             "-- Clôturée automatiquement par le watchdog AURA.")
-    r = alerte.update_alert(alert_id, maj)
+    r = alert.update_alert(alert_id, update)
     if not r.is_success():
         # Remonté à l'appelant : la panne reste OUVERTE en base et sera
         # retentée, exactement comme pour un case (cf. surveiller).
         raise RuntimeError(f"update_alert {alert_id} : {r.get_msg()}")
 
 
-def _ouvrir_case(m: dict, minutes: int) -> int | None:
+def _open_case(m: dict, minutes: int) -> int | None:
     """Case IRIS pour une panne. Best-effort : un IRIS injoignable ne doit pas
     empêcher d'enregistrer la panne en base ni de la journaliser."""
-    from .iris import _client, _poser_note, _taguer
-    nom = _titre(m)
-    desc = (f"Le capteur {m['capteur']} de l'agent {m['agent_id']} "
-            f"({m['agent_name'] or '?'}) n'émet plus depuis {_duree(minutes)} "
+    from .iris import _client, _set_note, _tag
+    name = _title(m)
+    desc = (f"Le capteur {m['sensor']} de l'agent {m['agent_id']} "
+            f"({m['agent_name'] or '?'}) n'émet plus depuis {_duration(minutes)} "
             f"(dernier événement {m['dernier']:%Y-%m-%d %H:%M} UTC, seuil "
             f"{m['seuil']} min). La détection adossée à ce capteur est inerte.")
     case = _client()
     r = case.add_case(
-        case_name=nom,
+        case_name=name,
         case_description=desc,
         case_customer=config.IRIS_CUSTOMER,
-        case_classification=CLASSIF_PANNE,
-        soc_id=f"Aura-SOC-capteur-{m['agent_id']}-{m['capteur']}",
+        case_classification=CLASSIF_OUTAGE,
+        soc_id=f"Aura-SOC-capteur-{m['agent_id']}-{m['sensor']}",
     )
     if not r.is_success():
-        log.error("case panne %s/%s : %s", m["agent_id"], m["capteur"],
+        log.error("case panne %s/%s : %s", m["agent_id"], m["sensor"],
                   r.get_msg())
         return None
     case_id = r.get_data()["case_id"]
-    _taguer(case, case_id, m["agent_name"])
-    _poser_note(case, case_id, "Détail de la panne", _rendu(m, minutes))
+    _tag(case, case_id, m["agent_name"])
+    _set_note(case, case_id, "Détail de la panne", _rendered(m, minutes))
     return case_id
 
 
-def _fermer_case(case_id: int, p: dict, minutes: int) -> None:
+def _close_case(case_id: int, p: dict, minutes: int) -> None:
     """Note de rétablissement puis clôture. Best-effort, comme l'ouverture."""
-    from .iris import _client, _poser_note
+    from .iris import _client, _set_note
     case = _client()
-    _poser_note(case, case_id, "Rétablissement", "\n".join([
+    _set_note(case, case_id, "Rétablissement", "\n".join([
         "# Capteur rétabli",
         "",
-        f"Le capteur **{p['capteur']}** de **{p['agent_name'] or p['agent_id']}** "
+        f"Le capteur **{p['sensor']}** de **{p['agent_name'] or p['agent_id']}** "
         "réémet.",
         "",
-        f"- Panne détectée le {p['detectee_a']:%Y-%m-%d %H:%M} UTC",
-        f"- Dernier événement avant la panne : {p['dernier_event']:%Y-%m-%d %H:%M} UTC",
-        f"- Durée totale du silence : {_duree(minutes)}",
+        f"- Panne détectée le {p['detected_at']:%Y-%m-%d %H:%M} UTC",
+        f"- Dernier événement avant la panne : {p['last_event']:%Y-%m-%d %H:%M} UTC",
+        f"- Durée totale du silence : {_duration(minutes)}",
         "",
         "**Les événements de la période de silence sont définitivement perdus** "
         "si le capteur ne tamponnait pas : ce qui s'est produit sur cet hôte "
@@ -687,7 +687,7 @@ def _fermer_case(case_id: int, p: dict, minutes: int) -> None:
     case.close_case(case_id)
 
 
-def _routage() -> list[dict]:
+def _routing() -> list[dict]:
     """Passage du contrôle de routage, rendu au format des capteurs muets.
 
     Le contrôle est actif : il crée les index sets manquants au passage (cf.
@@ -698,24 +698,24 @@ def _routage() -> list[dict]:
     Best-effort assumé : un indexer qui ne répond pas ne doit pas empêcher la
     surveillance des capteurs, qui est le cœur du watchdog.
     """
-    if not config.ROUTAGE_ACTIF:
+    if not config.ROUTING_ACTIVE:
         return []
     try:
-        from . import routage
-        rapport = routage.reconcilier()
+        from . import routing
+        report = routing.reconcile()
     except Exception as e:                                    # noqa: BLE001
         log.warning("contrôle de routage impossible : %s", e)
         return []
-    for base in rapport.get("creees") or []:
+    for base in report.get("creees") or []:
         log.error("INDEX SET CRÉÉ : %s — une source de log nouvelle a son "
                   "index, son mapping, sa rétention et son index pattern.",
                   base)
-    if rapport.get("pipeline"):
-        log.warning("pipeline d'ingest : %s", rapport["pipeline"])
-    return rapport.get("anomalies") or []
+    if report.get("pipeline"):
+        log.warning("pipeline d'ingest : %s", report["pipeline"])
+    return report.get("anomalies") or []
 
 
-def _archivage(conn) -> list[dict]:
+def _archiving(conn) -> list[dict]:
     """État de l'archivage à froid, rendu au format des capteurs muets.
 
     LECTURE SEULE, contrairement à `_routage()` : l'archivage lui-même est fait
@@ -727,7 +727,7 @@ def _archivage(conn) -> list[dict]:
     lui-même : de la donnée qui va être purgée sans copie, un mois manquant au
     milieu d'une série, une archive qui ne se relit plus.
     """
-    if not config.ARCHIVAGE_ENABLED:
+    if not config.ARCHIVING_ENABLED:
         return []
     try:
         from . import archive
@@ -740,25 +740,25 @@ def _archivage(conn) -> list[dict]:
         return []
 
 
-def surveiller() -> dict:
+def monitor() -> dict:
     """Un passage complet : détecter, ouvrir, fermer. Renvoie le compte rendu.
 
     Idempotent par construction — l'index unique partiel de `capteur_pannes`
     interdit deux pannes ouvertes pour le même (agent, capteur), donc deux
     passages concurrents ne peuvent pas ouvrir deux cases.
     """
-    ouvertes, fermees = [], []
-    canal = config.WATCHDOG_IRIS_CANAL
+    opened, closed = [], []
+    channel = config.WATCHDOG_IRIS_CHANNEL
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-        horizon, retard = horizon_ingestion(conn)
+        horizon, lag = ingest_horizon(conn)
         # Ingestion à l'arrêt : tous les capteurs vont paraître muets au même
         # instant. Ce n'est pas une panne de capteur, c'est une panne du
         # pipeline — on le dit et on ne fabrique pas six dossiers pour un seul
         # problème.
-        if retard is not None and retard > config.WATCHDOG_RETARD_INGEST_MAX:
+        if lag is not None and lag > config.WATCHDOG_LAG_INGEST_MAX:
             log.error("INGESTION EN RETARD de %s (horizon %s) — surveillance "
                       "des capteurs suspendue : tout paraîtrait muet.",
-                      _duree(retard), horizon)
+                      _duration(lag), horizon)
             # Le disque, lui, reste surveillé : il ne se déduit pas des alertes
             # ingérées, et une ingestion à l'arrêt est précisément ce que
             # produit un disque plein. S'en taire ici, c'est se taire au seul
@@ -767,95 +767,95 @@ def surveiller() -> dict:
             # état ne se déduit pas des alertes ingérées, et une purge ISM
             # continue de tourner pendant que l'ingestion est à l'arrêt. Se
             # taire ici, c'est laisser partir de la donnée sans copie.
-            muets = disque_sature() + _archivage(conn)
+            silent = disk_saturated() + _archiving(conn)
             ingest_ok = False
         else:
             ingest_ok = True
             # Le disque du SOC entre dans la même liste que les capteurs muets :
             # même état, même canal, même clôture automatique (cf. disque_sature).
-            muets = (capteurs_muets(conn) + disque_sature() + _routage()
-                     + _archivage(conn))
-        vus = {(m["agent_id"], m["capteur"]) for m in muets}
+            silent = (silent_sensors(conn) + disk_saturated() + _routing()
+                     + _archiving(conn))
+        seen = {(m["agent_id"], m["sensor"]) for m in silent}
         # OS connu de la CMDB, pour typer l'asset IRIS. Une seule requête, et
         # son absence n'empêche rien : `_type_asset` a un défaut.
         oses = {a["agent_id"]: a["os"] for a in conn.execute(
             "SELECT agent_id, os FROM assets").fetchall()}
 
-        for m in muets:
+        for m in silent:
             minutes = _minutes(m["dernier"], m["horizon"])
-            if _est_routage(m["capteur"]):
+            if _is_routing(m["sensor"]):
                 log.warning("ANOMALIE DE ROUTAGE : %s", m["titre"])
-            elif _est_archivage(m["capteur"]):
+            elif _is_archiving(m["sensor"]):
                 log.error("ARCHIVAGE : %s", m["titre"])
-            elif m["capteur"] == CAPTEUR_DISQUE:
+            elif m["sensor"] == SENSOR_DISK:
                 log.error(
                     "DISQUE SATURÉ : %s à %d%% sur %s (%.1f Go libres, seuil "
                     "%d%%). Un disque plein arrête l'ingestion sans qu'aucune "
-                    "alerte ne le dise.", config.DISQUE_SURVEILLE, m["pct"],
+                    "alerte ne le dise.", config.DISK_MONITORED, m["pct"],
                     m["agent_name"], m["libre_go"], m["seuil"])
             else:
                 log.warning(
                     "CAPTEUR MUET : '%s' sur %s (agent %s) — %d events de "
                     "référence, rien depuis %s (%s). Angle mort : les règles "
                     "adossées à ce capteur sont inertes.",
-                    m["capteur"], m["agent_name"] or "?", m["agent_id"],
-                    m["volume"], m["dernier"], _duree(minutes))
+                    m["sensor"], m["agent_name"] or "?", m["agent_id"],
+                    m["volume"], m["dernier"], _duration(minutes))
             r = conn.execute(
-                """INSERT INTO capteur_pannes
-                       (agent_id, agent_name, capteur, dernier_event,
-                        volume_ref, seuil_minutes)
+                """INSERT INTO sensor_outages
+                       (agent_id, agent_name, sensor, last_event,
+                        volume_ref, threshold_minutes)
                    VALUES (%s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (agent_id, capteur) WHERE statut = 'ouverte'
+                   ON CONFLICT (agent_id, sensor) WHERE status = 'ouverte'
                    DO NOTHING
                    RETURNING id""",
-                (m["agent_id"], m["agent_name"], m["capteur"], m["dernier"],
+                (m["agent_id"], m["agent_name"], m["sensor"], m["dernier"],
                  m["volume"], m["seuil"])).fetchone()
             conn.commit()
             if not r:
                 continue  # panne déjà ouverte : rien à refaire
-            trace_id, colonne = None, None
-            if canal != "off":
-                colonne = ("iris_alert_id" if canal == "alert"
+            trace_id, column = None, None
+            if channel != "off":
+                column = ("iris_alert_id" if channel == "alert"
                            else "iris_case_id")
                 try:
-                    trace_id = (_ouvrir_alerte({**m, "os": oses.get(m["agent_id"])},
+                    trace_id = (_open_alert({**m, "os": oses.get(m["agent_id"])},
                                                minutes)
-                                if canal == "alert"
-                                else _ouvrir_case(m, minutes))
+                                if channel == "alert"
+                                else _open_case(m, minutes))
                 except Exception as e:  # noqa: BLE001 — IRIS ne bloque pas
                     log.warning("trace IRIS (%s) non créée (%s/%s) : %s",
-                                canal, m["agent_id"], m["capteur"], e)
+                                channel, m["agent_id"], m["sensor"], e)
             if trace_id:
                 conn.execute(
-                    f"UPDATE capteur_pannes SET {colonne}=%s WHERE id=%s",
+                    f"UPDATE capteur_pannes SET {column}=%s WHERE id=%s",
                     (trace_id, r["id"]))
                 conn.commit()
             log.error("PANNE OUVERTE : %s sur %s — %s IRIS %s",
-                      m["capteur"], m["agent_name"] or m["agent_id"], canal,
+                      m["sensor"], m["agent_name"] or m["agent_id"], channel,
                       trace_id or "non créée")
-            ouvertes.append({**m, "iris_case_id": trace_id if canal == "case"
+            opened.append({**m, "iris_case_id": trace_id if channel == "case"
                              else None,
-                             "iris_alert_id": trace_id if canal == "alert"
+                             "iris_alert_id": trace_id if channel == "alert"
                              else None})
 
         for p in conn.execute(
-                "SELECT * FROM capteur_pannes WHERE statut='ouverte'").fetchall():
-            if (p["agent_id"], p["capteur"]) in vus:
+                "SELECT * FROM sensor_outages WHERE status='ouverte'").fetchall():
+            if (p["agent_id"], p["sensor"]) in seen:
                 continue
             # Ingestion en retard : `capteurs_muets` n'a pas tourné, donc
             # l'absence d'un capteur de `vus` ne prouve RIEN. Le refermer ici
             # annoncerait un rétablissement qu'on n'a pas constaté. Seul le
             # disque, mesuré hors pipeline, peut se refermer dans cet état.
-            if not ingest_ok and not (p["capteur"] == CAPTEUR_DISQUE
-                                      or _est_archivage(p["capteur"])):
+            if not ingest_ok and not (p["sensor"] == SENSOR_DISK
+                                      or _is_archiving(p["sensor"])):
                 continue
-            hors_horizon = _hors_pipeline(p["capteur"])
+            outside_horizon = _outside_pipeline(p["sensor"])
             # Le disque se mesure contre l'HORLOGE, pas contre l'horizon
             # d'ingestion : il ne se déduit pas des alertes ingérées. Mesurer sa
             # saturation contre un horizon en retard donnait une durée négative
             # (« -2 min ») dans l'alerte de rétablissement.
-            minutes = _minutes(p["dernier_event"],
-                               None if hors_horizon else horizon)
+            minutes = _minutes(p["last_event"],
+                               None if outside_horizon else horizon)
             # On ferme dans le canal où la panne a été OUVERTE, lu sur la ligne
             # et jamais sur la configuration courante : basculer `case` ->
             # `alert` ne doit pas abandonner les cases déjà ouverts.
@@ -864,12 +864,12 @@ def surveiller() -> dict:
             # IRIS est indisponible, et échouer ici bloquerait le passage en
             # « rétablie » pour toujours.
             try:
-                if canal == "off":
+                if channel == "off":
                     pass
                 elif p["iris_alert_id"]:
-                    _fermer_alerte(p["iris_alert_id"], p, minutes)
+                    _close_alert(p["iris_alert_id"], p, minutes)
                 elif p["iris_case_id"]:
-                    _fermer_case(p["iris_case_id"], p, minutes)
+                    _close_case(p["iris_case_id"], p, minutes)
             except Exception as e:  # noqa: BLE001
                 # On laisse la panne OUVERTE en base pour retenter au tour
                 # suivant. La marquer rétablie ici alors que le dossier
@@ -881,50 +881,50 @@ def surveiller() -> dict:
                             e, p["id"])
                 continue
             conn.execute(
-                "UPDATE capteur_pannes SET statut='retablie', retablie_a=now() "
+                "UPDATE sensor_outages SET status='retablie', recovered_at=now() "
                 "WHERE id=%s", (p["id"],))
             conn.commit()
-            if _est_routage(p["capteur"]):
+            if _is_routing(p["sensor"]):
                 log.info("ROUTAGE RÉTABLI : %s (anomalie ouverte pendant %s)",
-                         p["capteur"], _duree(minutes))
-            elif _est_archivage(p["capteur"]):
+                         p["sensor"], _duration(minutes))
+            elif _is_archiving(p["sensor"]):
                 log.info("ARCHIVAGE RÉTABLI : %s (anomalie ouverte pendant %s)",
-                         p["capteur"], _duree(minutes))
-            elif p["capteur"] == CAPTEUR_DISQUE:
+                         p["sensor"], _duration(minutes))
+            elif p["sensor"] == SENSOR_DISK:
                 log.info("DISQUE REVENU SOUS LE SEUIL : %s sur %s (saturé "
-                         "pendant %s, pic à %d%%)", config.DISQUE_SURVEILLE,
-                         p["agent_name"] or p["agent_id"], _duree(minutes),
+                         "pendant %s, pic à %d%%)", config.DISK_MONITORED,
+                         p["agent_name"] or p["agent_id"], _duration(minutes),
                          p["volume_ref"])
             else:
                 log.info("CAPTEUR RÉTABLI : %s sur %s (silence %s)",
-                         p["capteur"], p["agent_name"] or p["agent_id"],
-                         _duree(minutes))
-            fermees.append(p)
+                         p["sensor"], p["agent_name"] or p["agent_id"],
+                         _duration(minutes))
+            closed.append(p)
 
-    return {"muets": muets, "ouvertes": ouvertes, "fermees": fermees,
-            **({} if ingest_ok else {"retard_ingest": retard})}
+    return {"muets": silent, "ouvertes": opened, "fermees": closed,
+            **({} if ingest_ok else {"retard_ingest": lag})}
 
 
-def verifier() -> list[dict]:
+def check() -> list[dict]:
     """Appelée par le cycle. Lecture seule + log : la gestion d'état et les
     cases IRIS appartiennent au service dédié (`--surveiller`), qui tourne à sa
     propre cadence — un capteur muet doit être vu en minutes, pas au rythme du
     cycle de triage."""
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-        muets = capteurs_muets(conn)
-    for m in muets:
+        silent = silent_sensors(conn)
+    for m in silent:
         log.warning(
             "CAPTEUR MUET : '%s' sur %s (agent %s) — %d events de référence, "
             "rien depuis %s. Angle mort : les règles adossées à ce capteur sont "
-            "inertes.", m["capteur"], m["agent_name"] or "?", m["agent_id"],
+            "inertes.", m["sensor"], m["agent_name"] or "?", m["agent_id"],
             m["volume"], m["dernier"])
     # Le disque est mesuré ici aussi : le cycle tourne toutes les 5 minutes et
     # c'est LUI qui s'arrêtera en premier si le disque se remplit. Lecture
     # seule, comme le reste de `verifier` — l'alerte appartient à `surveiller`.
-    for d in disque_sature():
+    for d in disk_saturated():
         log.error("DISQUE SATURÉ : %s à %d%% (%.1f Go libres, seuil %d%%)",
-                  config.DISQUE_SURVEILLE, d["pct"], d["libre_go"], d["seuil"])
-    return muets
+                  config.DISK_MONITORED, d["pct"], d["libre_go"], d["seuil"])
+    return silent
 
 
 def main() -> None:
@@ -934,20 +934,20 @@ def main() -> None:
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
-    if args.surveiller:
-        r = surveiller()
+    if args.monitor:
+        r = monitor()
         print(f"{len(r['muets'])} capteur(s) muet(s), "
               f"{len(r['ouvertes'])} panne(s) ouverte(s), "
               f"{len(r['fermees'])} rétablie(s)")
         return
 
-    muets = verifier()
-    if not muets:
+    silent = check()
+    if not silent:
         print("Aucun capteur muet.")
         return
-    print(f"{len(muets)} capteur(s) muet(s) :")
-    for m in muets:
-        print(f"  {m['agent_name'] or '?':<20} {m['capteur']:<14} "
+    print(f"{len(silent)} capteur(s) muet(s) :")
+    for m in silent:
+        print(f"  {m['agent_name'] or '?':<20} {m['sensor']:<14} "
               f"muet depuis {m['dernier']:%Y-%m-%d %H:%M} "
               f"({m['volume']} events de référence, seuil {m['seuil']} min)")
 

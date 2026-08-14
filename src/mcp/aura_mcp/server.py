@@ -39,7 +39,7 @@ Les garde-fous d'AURA (agents protégés, comptes système, plancher de clôture
 sont appliqués côté serveur et ne sont pas contournables par un argument.
 """
 
-serveur = MCPServer(
+server = MCPServer(
     name="aura",
     title="AURA — XDR autonome",
     version="1.0.0",
@@ -47,33 +47,33 @@ serveur = MCPServer(
 )
 
 
-def enregistrer(fn, **kw) -> None:
+def register(fn, **kw) -> None:
     """Ajoute un outil au serveur, en exigeant qu'il ait déclaré son scope."""
-    if not getattr(fn, "scope_requis", None):
+    if not getattr(fn, "required_scope", None):
         raise RuntimeError(
             f"L'outil {fn.__name__} n'a pas de @auth.exige — refus "
             f"d'enregistrement. Un outil sans scope est accessible à tout "
             f"jeton valide, y compris en lecture seule.")
-    serveur.tool(**kw)(fn)
+    server.tool(**kw)(fn)
 
 
-def construire():
+def build():
     """L'application ASGI complète, prête pour uvicorn."""
-    from . import outils  # noqa: F401  (l'import enregistre les outils)
+    from . import tools  # noqa: F401  (l'import enregistre les outils)
 
-    app = serveur.streamable_http_app(
+    app = server.streamable_http_app(
         streamable_http_path=config.PATH,
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
-            allowed_hosts=config.HOTES,
-            allowed_origins=config.ORIGINES,
+            allowed_hosts=config.HOSTS,
+            allowed_origins=config.ORIGINS,
         ),
         host=config.HOST,
     )
-    return auth.Authentification(app)
+    return auth.Authentication(app)
 
 
-@serveur.custom_route("/health", methods=["GET"])
-async def sante(_request):
+@server.custom_route("/health", methods=["GET"])
+async def health(_request):
     """Healthcheck du conteneur. Ne dit rien de plus que « vivant »."""
     return JSONResponse({"status": "ok", "service": "aura-mcp"})

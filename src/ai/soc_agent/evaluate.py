@@ -26,17 +26,17 @@ from . import config
 # En dessous, un taux de justesse n'a pas de sens statistique. Le seuil est
 # arbitraire mais explicite : mieux vaut refuser de conclure que produire un
 # « 100 % » calculé sur quatre incidents.
-MINIMUM_UTILE = 30
+MINIMUM_USEFUL = 30
 
 # Dernier triage par incident : les passages précédents reflètent des prompts
 # abandonnés.
-DERNIERS = """
+LAST = """
     SELECT DISTINCT ON (incident_id) *
       FROM triages ORDER BY incident_id, created_at DESC
 """
 
 
-def rapport() -> dict:
+def report() -> dict:
     """Cohérence et justesse du triage, en données brutes.
 
     Clés toujours présentes : `n_triages`, `coherence`, `justesse`. `coherence`
@@ -48,51 +48,51 @@ def rapport() -> dict:
         if not n_triages:
             return {"n_triages": 0, "coherence": None, "justesse": None}
 
-        lignes = conn.execute(DERNIERS).fetchall()
-        incoherents = [r for r in lignes if r["incoherences"]]
+        lines = conn.execute(LAST).fetchall()
+        inconsistent = [r for r in lines if r["inconsistencies"]]
         coherence = {
-            "n_derniers_triages": len(lignes),
-            "n_incoherents": len(incoherents),
-            "part_incoherents_pct": 100 * len(incoherents) / len(lignes),
+            "n_derniers_triages": len(lines),
+            "n_incoherents": len(inconsistent),
+            "part_incoherents_pct": 100 * len(inconsistent) / len(lines),
             "incoherents": [
-                {"incident_id": r["incident_id"], "motifs": r["incoherences"]}
-                for r in incoherents
+                {"incident_id": r["incident_id"], "patterns": r["inconsistencies"]}
+                for r in inconsistent
             ],
             "modeles": [
-                {"modele": m["modele"], "n": m["n"],
+                {"model": m["model"], "n": m["n"],
                  "duree_moyenne_s": float(m["s"]),
                  "prompt_tokens_moyen": float(m["tok"])}
                 for m in conn.execute(
                     f"SELECT modele, count(*) n, avg(duree_ms)/1000 s, "
-                    f"avg(prompt_tokens) tok FROM ({DERNIERS}) d GROUP BY modele")
+                    f"avg(prompt_tokens) tok FROM ({LAST}) d GROUP BY modele")
             ],
         }
 
-        apparies = conn.execute(f"""
+        matched = conn.execute(f"""
             SELECT d.incident_id, d.verdict AS modele, d.actions AS act_modele,
                    l.verdict AS humain, l.actions AS act_humain, l.origine
-              FROM ({DERNIERS}) d
+              FROM ({LAST}) d
               JOIN labels l ON l.incident_id = d.incident_id
         """).fetchall()
         n_incidents = conn.execute(
             "SELECT count(*) n FROM incidents").fetchone()["n"]
 
-    if not apparies:
+    if not matched:
         return {"n_triages": n_triages, "coherence": coherence,
                 "justesse": {"n_labellises": 0, "n_incidents": n_incidents,
                              "taux_pct": None, "desaccords": [],
                              "tp_classes_fp": 0, "conclusion": "sans_label"}}
 
-    justes = [r for r in apparies if r["modele"] == r["humain"]]
-    taux = len(justes) / len(apparies)
+    fair = [r for r in matched if r["model"] == r["humain"]]
+    rate = len(fair) / len(matched)
     # Un faux positif classé vrai positif fait perdre du temps ; l'inverse
     # laisse passer une intrusion. Les deux erreurs n'ont pas le même coût.
-    manques = [r for r in apparies
-               if r["humain"] == "true_positive" and r["modele"] == "false_positive"]
+    gaps = [r for r in matched
+               if r["humain"] == "true_positive" and r["model"] == "false_positive"]
 
-    if len(apparies) < MINIMUM_UTILE:
+    if len(matched) < MINIMUM_USEFUL:
         conclusion = "echantillon_insuffisant"
-    elif taux < 0.9:
+    elif rate < 0.9:
         conclusion = "shadow"
     else:
         conclusion = "automatisable"
@@ -101,17 +101,17 @@ def rapport() -> dict:
         "n_triages": n_triages,
         "coherence": coherence,
         "justesse": {
-            "n_labellises": len(apparies),
+            "n_labellises": len(matched),
             "n_incidents": n_incidents,
-            "n_corrects": len(justes),
-            "taux_pct": 100 * taux,
-            "minimum_utile": MINIMUM_UTILE,
+            "n_corrects": len(fair),
+            "taux_pct": 100 * rate,
+            "minimum_utile": MINIMUM_USEFUL,
             "desaccords": [
-                {"incident_id": r["incident_id"], "modele": r["modele"],
+                {"incident_id": r["incident_id"], "model": r["model"],
                  "humain": r["humain"]}
-                for r in apparies if r["modele"] != r["humain"]
+                for r in matched if r["model"] != r["humain"]
             ],
-            "tp_classes_fp": len(manques),
+            "tp_classes_fp": len(gaps),
             "conclusion": conclusion,
         },
     }
@@ -131,7 +131,7 @@ CONCLUSIONS = {
 }
 
 
-def afficher(r: dict) -> None:
+def show(r: dict) -> None:
     if not r["n_triages"]:
         print("Aucun triage enregistré — lancer soc_agent.triage.")
         return
@@ -144,10 +144,10 @@ def afficher(r: dict) -> None:
     print(f"  Sorties incohérentes           : {c['n_incoherents']} "
           f"({c['part_incoherents_pct']:.0f} %)")
     for i in c["incoherents"]:
-        print(f"    #{i['incident_id']} : {'; '.join(i['motifs'])}")
+        print(f"    #{i['incident_id']} : {'; '.join(i['patterns'])}")
     print()
     for m in c["modeles"]:
-        print(f"  {m['modele']} : {m['n']} triages, "
+        print(f"  {m['model']} : {m['n']} triages, "
               f"{m['duree_moyenne_s']:.1f} s en moyenne, "
               f"{m['prompt_tokens_moyen']:.0f} tokens de prompt")
 
@@ -172,7 +172,7 @@ def afficher(r: dict) -> None:
     if j["desaccords"]:
         print("\n  Désaccords :")
         for d in j["desaccords"]:
-            print(f"    #{d['incident_id']} : modèle {d['modele']}, "
+            print(f"    #{d['incident_id']} : modèle {d['model']}, "
                   f"humain {d['humain']}")
     if j["tp_classes_fp"]:
         print(f"\n  /!\\ {j['tp_classes_fp']} vrai(s) positif(s) classé(s) faux "
@@ -183,7 +183,7 @@ def afficher(r: dict) -> None:
 
 
 def main() -> None:
-    afficher(rapport())
+    show(report())
 
 
 if __name__ == "__main__":

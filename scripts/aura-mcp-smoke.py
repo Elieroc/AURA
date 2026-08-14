@@ -24,15 +24,15 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 
-async def executer(url: str, jeton: str, outil: str | None,
+async def run(url: str, token: str, tool: str | None,
                    arguments: dict) -> int:
     # Le SDK 2.0 ne prend plus de `headers=` : l'authentification passe par le
     # client HTTP qu'on lui fournit.
-    entetes = {"Authorization": f"Bearer {jeton}"}
-    async with httpx2.AsyncClient(headers=entetes, timeout=60) as http:
+    headers = {"Authorization": f"Bearer {token}"}
+    async with httpx2.AsyncClient(headers=headers, timeout=60) as http:
         async with streamable_http_client(url, http_client=http) as (
-                lire, ecrire):
-            async with ClientSession(lire, ecrire) as session:
+                read, write):
+            async with ClientSession(read, write) as session:
                 init = await session.initialize()
                 print(f"connecté : {init.server_info.name} "
                       f"{init.server_info.version}")
@@ -42,17 +42,17 @@ async def executer(url: str, jeton: str, outil: str | None,
                 for t in catalogue.tools:
                     print(f"  - {t.name}")
 
-                if not outil:
+                if not tool:
                     return 0
 
-                print(f"\nappel {outil}("
+                print(f"\nappel {tool}("
                       f"{json.dumps(arguments, ensure_ascii=False)})")
-                resultat = await session.call_tool(outil, arguments)
-                if resultat.is_error:
+                result = await session.call_tool(tool, arguments)
+                if result.is_error:
                     print("ÉCHEC :", file=sys.stderr)
-                for bloc in resultat.content:
+                for bloc in result.content:
                     print(getattr(bloc, "text", bloc))
-                return 1 if resultat.is_error else 0
+                return 1 if result.is_error else 0
 
 
 def main() -> None:
@@ -66,12 +66,12 @@ def main() -> None:
     ap.add_argument("--args", default="{}", help="arguments JSON de l'outil")
     args = ap.parse_args()
 
-    if not args.jeton:
+    if not args.token:
         sys.exit("Jeton requis : --jeton ou AURA_MCP_TOKEN. En émettre un :\n"
                  "  python3 scripts/aura-mcp-token.py --sujet smoke "
                  "--scope aura:read")
 
-    sys.exit(asyncio.run(executer(args.url, args.jeton, args.outil,
+    sys.exit(asyncio.run(run(args.url, args.token, args.tool,
                                   json.loads(args.args))))
 
 

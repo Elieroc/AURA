@@ -34,7 +34,7 @@ import re
 
 # Comptes génériques : rôles, pas des personnes. On les GARDE — « root » ou
 # « administrator » porte le signal de privilège, et n'identifie personne.
-COMPTES_GENERIQUES = {"root", "administrator", "admin", "system", "guest",
+GENERIC_ACCOUNTS = {"root", "administrator", "admin", "system", "guest",
                       "-", "n/a", "none", "localsystem", "networkservice"}
 
 # Traits UEBA dont la valeur est un ATTRIBUT et non un identifiant : elle porte
@@ -42,7 +42,7 @@ COMPTES_GENERIQUES = {"root", "administrator", "admin", "system", "guest",
 # un actif client, et sort donc verbatim. Tout trait absent de cette liste est
 # pseudonymisé — y compris un trait ajouté plus tard dans ueba.py (cf. la
 # branche par défaut dans `anonymiser`).
-TRAITS_UEBA_ATTRIBUTS = {"pays", "heure", "dst_port", "rule_id", "chaine_mitre"}
+UEBA_TRAIT_ATTRIBUTES = {"pays", "heure", "dst_port", "rule_id", "chaine_mitre"}
 
 _HASH = re.compile(r"^[A-Fa-f0-9]{32,64}$")
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -55,10 +55,10 @@ _WINPATH = re.compile(r"[A-Za-z]:\\[\w.\-\\]+")
 # Extension jusqu'à 12 caractères : couvre les extensions de ransomware
 # (.lockbit, .encrypted, .cryptolocker), qui portent un signal fort.
 _EXT = re.compile(r"(\.[A-Za-z0-9]{1,12})$")
-_JETON = re.compile(r"<([A-Z]+)_(\d+)>")
+_TOKEN = re.compile(r"<([A-Z]+)_(\d+)>")
 
 
-def _est_interne(ip: str) -> bool:
+def _is_internal(ip: str) -> bool:
     """IP privée / loopback / lien-local / réservée / CGNAT → actif interne."""
     try:
         return not ipaddress.ip_address(ip).is_global
@@ -66,7 +66,7 @@ def _est_interne(ip: str) -> bool:
         return False
 
 
-class Anonymiseur:
+class Anonymizer:
     """Attribue des jetons stables et réversibles.
 
     Amorcé avec une correspondance existante (jeton→valeur), il réutilise les
@@ -74,25 +74,25 @@ class Anonymiseur:
     pseudonymes, condition de la comparabilité entre passages.
     """
 
-    def __init__(self, map_existante: dict | None = None):
-        self._t2v: dict[str, str] = dict(map_existante or {})
+    def __init__(self, existing_map: dict | None = None):
+        self._t2v: dict[str, str] = dict(existing_map or {})
         self._v2t: dict[str, str] = {v: t for t, v in self._t2v.items()}
-        self._compteurs: dict[str, int] = {}
+        self._counters: dict[str, int] = {}
         for t in self._t2v:
-            m = _JETON.match(t)
+            m = _TOKEN.match(t)
             if m:
                 p, n = m.group(1), int(m.group(2))
-                self._compteurs[p] = max(self._compteurs.get(p, 0), n)
+                self._counters[p] = max(self._counters.get(p, 0), n)
 
-    def jeton(self, valeur: str, prefixe: str) -> str:
-        valeur = str(valeur)
-        if valeur in self._v2t:
-            return self._v2t[valeur]
-        n = self._compteurs.get(prefixe, 0) + 1
-        self._compteurs[prefixe] = n
-        t = f"<{prefixe}_{n}>"
-        self._t2v[t] = valeur
-        self._v2t[valeur] = t
+    def token(self, value: str, prefix: str) -> str:
+        value = str(value)
+        if value in self._v2t:
+            return self._v2t[value]
+        n = self._counters.get(prefix, 0) + 1
+        self._counters[prefix] = n
+        t = f"<{prefix}_{n}>"
+        self._t2v[t] = value
+        self._v2t[value] = t
         return t
 
     @property
@@ -101,7 +101,7 @@ class Anonymiseur:
 
     # --- transformations par type ------------------------------------------
 
-    def ip(self, valeur: str) -> str:
+    def ip(self, value: str) -> str:
         """IP interne → jeton ; IP publique (IOC attaquant) → clair.
 
         Une valeur qui n'est PAS une IP est masquée, pas laissée passer :
@@ -110,28 +110,28 @@ class Anonymiseur:
         inattendue — on ne sait pas ce qu'elle porte, donc on la traite comme
         sensible. Fail-closed, comme le reste du module.
         """
-        v = str(valeur)
+        v = str(value)
         try:
             publique = ipaddress.ip_address(v).is_global
         except ValueError:
-            return self.jeton(v, "DIVERS")
-        return v if publique else self.jeton(v, "IP")
+            return self.token(v, "DIVERS")
+        return v if publique else self.token(v, "IP")
 
-    def compte(self, valeur: str) -> str:
-        if str(valeur).strip().lower() in COMPTES_GENERIQUES:
-            return valeur
-        return self.jeton(valeur, "COMPTE")
+    def account(self, value: str) -> str:
+        if str(value).strip().lower() in GENERIC_ACCOUNTS:
+            return value
+        return self.token(value, "COMPTE")
 
-    def objet(self, valeur: str) -> str:
+    def object(self, value: str) -> str:
         """Fichier/processus/hash concerné (champ `entity`)."""
-        v = str(valeur)
+        v = str(value)
         if _HASH.match(v):
             return v  # hash malware = IOC externe, gardé en clair
         if "/" in v or "\\" in v:
-            return self.chemin(v)
-        return self.jeton(v, "OBJET")
+            return self.path(v)
+        return self.token(v, "OBJET")
 
-    def chemin(self, p: str) -> str:
+    def path(self, p: str) -> str:
         """Garde la catégorie (1er segment) et l'extension, tokenise le milieu.
 
         `/home/jdupont/rapport.xlsx` → `/home/<FICHIER_1>.xlsx`. La catégorie
@@ -142,25 +142,25 @@ class Anonymiseur:
         """
         segs = [s for s in re.split(r"[\\/]", p) if s]
         if not segs:
-            return self.jeton(p, "FICHIER")
+            return self.token(p, "FICHIER")
         drive = re.match(r"^[A-Za-z]:$", segs[0])
         cat = segs[0]
-        reste = "/".join(segs[1:]) if not drive else "\\".join(segs[1:])
-        if not reste:  # chemin à un seul segment (p.ex. « procès.exe »)
+        remains = "/".join(segs[1:]) if not drive else "\\".join(segs[1:])
+        if not remains:  # chemin à un seul segment (p.ex. « procès.exe »)
             m = _EXT.search(cat)
             ext = m.group(1) if m else ""
-            milieu = cat[: -len(ext)] if ext else cat
-            return f"{self.jeton(milieu, 'FICHIER')}{ext}"
-        m = _EXT.search(reste)
+            middle = cat[: -len(ext)] if ext else cat
+            return f"{self.token(middle, 'FICHIER')}{ext}"
+        m = _EXT.search(remains)
         ext = m.group(1) if m else ""
-        milieu = reste[: -len(ext)] if ext else reste
-        tok = self.jeton(milieu, "FICHIER")
+        middle = remains[: -len(ext)] if ext else remains
+        tok = self.token(middle, "FICHIER")
         if drive:
             return f"{cat}\\{tok}{ext}"
-        prefixe = "/" if p.startswith("/") else ""
-        return f"{prefixe}{cat}/{tok}{ext}"
+        prefix = "/" if p.startswith("/") else ""
+        return f"{prefix}{cat}/{tok}{ext}"
 
-    def texte_libre(self, texte: str, interdits: list[str]) -> str:
+    def free_text(self, text: str, forbidden: list[str]) -> str:
         """Nettoie un champ libre (rule_desc) : remplace les valeurs internes
         déjà connues par leur jeton, puis les e-mails et IP privées résiduels.
 
@@ -169,19 +169,19 @@ class Anonymiseur:
         qui, isolés, ne seraient pas dans `interdits`. Les traiter d'abord évite
         de laisser fuiter ces identifiants noyés dans un `rule_desc`.
         """
-        out = texte
-        out = _WINPATH.sub(lambda m: self.chemin(m.group(0)), out)
-        out = _UNIXPATH.sub(lambda m: self.chemin(m.group(0)), out)
+        out = text
+        out = _WINPATH.sub(lambda m: self.path(m.group(0)), out)
+        out = _UNIXPATH.sub(lambda m: self.path(m.group(0)), out)
         # Puis les identifiants connus, du plus long au plus court (évite les
         # remplacements partiels). Uniquement des jetons dont la valeur est la
         # chaîne entière (hôte, compte, IP) : jamais les jetons de fichier,
         # dont la valeur est un milieu de chemin — cela casserait la réhydratation.
-        for v in sorted(interdits, key=len, reverse=True):
+        for v in sorted(forbidden, key=len, reverse=True):
             if v and v in out:
-                out = out.replace(v, self._v2t.get(v, self.jeton(v, "DIVERS")))
-        out = _EMAIL.sub(lambda m: self.jeton(m.group(0), "EMAIL"), out)
+                out = out.replace(v, self._v2t.get(v, self.token(v, "DIVERS")))
+        out = _EMAIL.sub(lambda m: self.token(m.group(0), "EMAIL"), out)
         out = _IPV4.sub(
-            lambda m: self.jeton(m.group(0), "IP") if _est_interne(m.group(0))
+            lambda m: self.token(m.group(0), "IP") if _is_internal(m.group(0))
             else m.group(0), out)
         return out
 
@@ -191,8 +191,8 @@ def _raw_dict(raw) -> dict:
     return raw if isinstance(raw, dict) else json.loads(raw)
 
 
-def anonymiser(anon: Anonymiseur, incident: dict,
-               alertes: list[dict]) -> tuple[dict, list[dict], list[str]]:
+def anonymize(anon: Anonymizer, incident: dict,
+               alerts: list[dict]) -> tuple[dict, list[dict], list[str]]:
     """Copies pseudonymisées de (incident, alertes) + valeurs interdites.
 
     Ne touche QUE les champs que render.py consomme. Les originaux (en base)
@@ -200,49 +200,49 @@ def anonymiser(anon: Anonymiseur, incident: dict,
     d'envoi au LLM.
     """
     inc = copy.deepcopy(incident)
-    interdits: set[str] = set()
+    forbidden: set[str] = set()
 
     if inc.get("agent_name"):
-        interdits.add(str(inc["agent_name"]))
-        inc["agent_name"] = anon.jeton(inc["agent_name"], "HOTE")
+        forbidden.add(str(inc["agent_name"]))
+        inc["agent_name"] = anon.token(inc["agent_name"], "HOTE")
 
-    alertes2 = []
-    for a in alertes:
+    alerts2 = []
+    for a in alerts:
         b = copy.deepcopy(a)
 
         if b.get("srcip"):
-            if _est_interne(str(b["srcip"])):
-                interdits.add(str(b["srcip"]))
+            if _is_internal(str(b["srcip"])):
+                forbidden.add(str(b["srcip"]))
             b["srcip"] = anon.ip(str(b["srcip"]))
 
         if b.get("srcuser") and str(b["srcuser"]).strip().lower() \
-                not in COMPTES_GENERIQUES:
-            interdits.add(str(b["srcuser"]))
-            b["srcuser"] = anon.compte(str(b["srcuser"]))
+                not in GENERIC_ACCOUNTS:
+            forbidden.add(str(b["srcuser"]))
+            b["srcuser"] = anon.account(str(b["srcuser"]))
 
         if b.get("entity"):
-            b["entity"] = anon.objet(str(b["entity"]))
+            b["entity"] = anon.object(str(b["entity"]))
 
         # raw : uniquement les champs d'identifiant lus par _enrichissement.
         raw = _raw_dict(b.get("raw") or {})
         data = raw.get("data", {})
         abuse = data.get("abuseipdb")
         if isinstance(abuse, dict) and abuse.get("srcip"):
-            if _est_interne(str(abuse["srcip"])):
-                interdits.add(str(abuse["srcip"]))
+            if _is_internal(str(abuse["srcip"])):
+                forbidden.add(str(abuse["srcip"]))
             abuse["srcip"] = anon.ip(str(abuse["srcip"]))
         vt = data.get("virustotal")
         if isinstance(vt, dict) and isinstance(vt.get("source"), dict):
             f = vt["source"].get("file")
             if f:
-                interdits.add(str(f))
-                vt["source"]["file"] = anon.objet(str(f))
+                forbidden.add(str(f))
+                vt["source"]["file"] = anon.object(str(f))
         geo = raw.get("GeoLocation")
         if isinstance(geo, dict):
             geo.pop("city_name", None)  # ville : trop fine, droppée
         b["raw"] = raw
 
-        alertes2.append(b)
+        alerts2.append(b)
 
     # Motifs UEBA : ils portent des VALEURS BRUTES tirées des logs (chemin de
     # binaire, compte, IP), donc de la PII et des actifs client. Sans cette
@@ -251,24 +251,24 @@ def anonymiser(anon: Anonymiseur, incident: dict,
     # triage. On pseudonymise par TYPE, avec la même méthode que le champ
     # correspondant : un chemin garde sa catégorie et son extension, une IP
     # publique reste en clair (IOC), un compte générique aussi.
-    motifs = inc.get("ueba_motifs")
-    if isinstance(motifs, list):
+    patterns = inc.get("ueba_patterns")
+    if isinstance(patterns, list):
         propres = []
-        for m in motifs:
+        for m in patterns:
             m = dict(m)
-            v = m.get("valeur")
+            v = m.get("value")
             if v:
                 v = str(v)
                 trait = m.get("trait")
                 if trait == "compte":
-                    if v.strip().lower() not in COMPTES_GENERIQUES:
-                        interdits.add(v)
-                    m["valeur"] = anon.compte(v)
+                    if v.strip().lower() not in GENERIC_ACCOUNTS:
+                        forbidden.add(v)
+                    m["value"] = anon.account(v)
                 elif trait == "srcip":
-                    if _est_interne(v):
-                        interdits.add(v)
-                    m["valeur"] = anon.ip(v)
-                elif trait not in TRAITS_UEBA_ATTRIBUTS:
+                    if _is_internal(v):
+                        forbidden.add(v)
+                    m["value"] = anon.ip(v)
+                elif trait not in UEBA_TRAIT_ATTRIBUTES:
                     # Tout le reste passe par `objet` — y compris un trait que
                     # ce module ne connaît pas encore. Liste d'EXCLUSION et non
                     # d'inclusion, délibérément : avec une liste d'inclusion,
@@ -277,27 +277,27 @@ def anonymiser(anon: Anonymiseur, incident: dict,
                     # `fichier` a été ajouté après, et `verifier_fuite` a refusé
                     # l'incident (fail-closed), ce qui aurait silencieusement
                     # privé de triage tout ce que le moteur remonte.
-                    m["valeur"] = anon.objet(v)
+                    m["value"] = anon.object(v)
             propres.append(m)
-        inc["ueba_motifs"] = propres
+        inc["ueba_patterns"] = propres
 
     # Passe texte libre sur rule_desc, avec les identifiants collectés.
-    liste_interdits = sorted(interdits)
+    forbidden_list = sorted(forbidden)
     # Les notes ("inédit ici, vu sur 2 autres hôtes") sont générées par nous,
     # mais rien n'y interdit un identifiant repris d'un log : on les passe au
     # même filtre que les descriptions de règle.
-    for m in (inc.get("ueba_motifs") or []):
+    for m in (inc.get("ueba_patterns") or []):
         if m.get("note"):
-            m["note"] = anon.texte_libre(str(m["note"]), liste_interdits)
-    for b in alertes2:
+            m["note"] = anon.free_text(str(m["note"]), forbidden_list)
+    for b in alerts2:
         if b.get("rule_desc"):
-            b["rule_desc"] = anon.texte_libre(str(b["rule_desc"]),
-                                              liste_interdits)
+            b["rule_desc"] = anon.free_text(str(b["rule_desc"]),
+                                              forbidden_list)
 
-    return inc, alertes2, liste_interdits
+    return inc, alerts2, forbidden_list
 
 
-def rehydrater(texte: str | None, mapping: dict[str, str]) -> str | None:
+def rehydrate(text: str | None, mapping: dict[str, str]) -> str | None:
     """Remplace les jetons par les vraies valeurs (pour l'affichage analyste).
 
     Du jeton le plus long au plus court : `<FICHIER_11>` avant `<FICHIER_1>`
@@ -312,38 +312,38 @@ def rehydrater(texte: str | None, mapping: dict[str, str]) -> str | None:
     forgé par ce module (préfixe fixe + compteur) : trop spécifique pour
     matcher un mot du texte par accident, donc sûr en repli.
     """
-    if not texte:
-        return texte
+    if not text:
+        return text
     for token in sorted(mapping, key=len, reverse=True):
-        texte = texte.replace(token, mapping[token])
+        text = text.replace(token, mapping[token])
     for token in sorted(mapping, key=len, reverse=True):
         if token.startswith("<") and token.endswith(">"):
-            texte = texte.replace(token[1:-1], mapping[token])
-    return texte
+            text = text.replace(token[1:-1], mapping[token])
+    return text
 
 
-class FuiteError(RuntimeError):
+class LeakError(RuntimeError):
     """Un identifiant interne a survécu à la pseudonymisation."""
 
 
-def verifier_fuite(texte: str, interdits: list[str]) -> None:
+def check_leak(text: str, forbidden: list[str]) -> None:
     """Garde-fou fail-closed avant l'envoi cloud.
 
     Lève si une valeur interne connue, un e-mail ou une IP privée subsiste.
     Les IP publiques sont tolérées (IOC externe gardé en clair, par choix).
     """
-    presents = [v for v in interdits if v and v in texte]
+    presents = [v for v in forbidden if v and v in text]
     if presents:
-        raise FuiteError(
+        raise LeakError(
             f"identifiant(s) interne(s) non pseudonymisé(s) : {presents}")
-    if _EMAIL.search(texte):
-        raise FuiteError("e-mail résiduel dans le texte envoyé au cloud")
-    for m in _IPV4.findall(texte):
-        if _est_interne(m):
-            raise FuiteError(f"IP privée résiduelle : {m}")
+    if _EMAIL.search(text):
+        raise LeakError("e-mail résiduel dans le texte envoyé au cloud")
+    for m in _IPV4.findall(text):
+        if _is_internal(m):
+            raise LeakError(f"IP privée résiduelle : {m}")
     # Un chemin de fichier résiduel : les jetons `<FICHIER_n>` ne matchent pas
     # (« < » hors classe), donc tout match est un vrai chemin non pseudonymisé.
     for regex in (_UNIXPATH, _WINPATH):
-        m = regex.search(texte)
+        m = regex.search(text)
         if m:
-            raise FuiteError(f"chemin résiduel non pseudonymisé : {m.group(0)}")
+            raise LeakError(f"chemin résiduel non pseudonymisé : {m.group(0)}")

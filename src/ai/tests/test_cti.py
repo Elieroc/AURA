@@ -30,18 +30,18 @@ from soc_agent import cti
 # Le script d'intégration vit hors du paquet (il tourne sur le manager, avec
 # l'interpréteur embarqué de Wazuh). Chargé par son chemin, comme le fait
 # wazuh-integratord.
-CHEMIN_INTEGRATION = (Path(__file__).resolve().parents[2]
+PATH_INTEGRATION = (Path(__file__).resolve().parents[2]
                       / "wazuh" / "integrations" / "custom-misp.py")
 
 
-def _charger_integration():
-    spec = importlib.util.spec_from_file_location("custom_misp", CHEMIN_INTEGRATION)
+def _load_integration():
+    spec = importlib.util.spec_from_file_location("custom_misp", PATH_INTEGRATION)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-integration = _charger_integration()
+integration = _load_integration()
 
 
 # --- Normalisation ----------------------------------------------------------
@@ -65,111 +65,111 @@ CAS = [
 ]
 
 
-@pytest.mark.parametrize("type_cache,brut,attendu", CAS)
-def test_normalisation(type_cache, brut, attendu):
-    assert cti.normaliser(type_cache, brut) == attendu
+@pytest.mark.parametrize("type_cache,raw,expected", CAS)
+def test_normalisation(type_cache, raw, expected):
+    assert cti.normalize(type_cache, raw) == expected
 
 
-@pytest.mark.parametrize("type_cache,brut,attendu", CAS)
-def test_normalisation_identique_cote_wazuh(type_cache, brut, attendu):
+@pytest.mark.parametrize("type_cache,raw,expected", CAS)
+def test_normalisation_identique_cote_wazuh(type_cache, raw, expected):
     # Deux implémentations, un seul comportement attendu. Si ce test tombe,
     # le cache est écrit dans une forme que la détection ne cherche pas : elle
     # ne matchera plus rien, sans la moindre erreur.
-    assert integration.normaliser(type_cache, brut) == attendu
+    assert integration.normalize(type_cache, raw) == expected
 
 
 def test_url_sans_schema_jamais_indexee():
     # Une URL réduite à son chemin est le piège classique : les logs Apache
     # décodés par Wazuh ne portent que ça, et tous les hôtes du monde
     # partagent /index.php.
-    assert cti.normaliser("url", "evil.example.com/payload") is None
+    assert cti.normalize("url", "evil.example.com/payload") is None
 
 
 # --- Cache ------------------------------------------------------------------
 
-def _ioc(valeur, type_="ip", source="ThreatFox", confiance=cti.CONFIANCE_CUREE,
-         menace=2, tags=""):
-    return {"valeur": valeur, "type": type_, "source": source,
+def _ioc(value, type_="ip", source="ThreatFox", confidence=cti.CONFIDENCE_CURATED,
+         threat=2, tags=""):
+    return {"value": value, "type": type_, "source": source,
             "categorie": "Network activity", "evenement": "Campagne X",
-            "event_id": "42", "tags": tags, "niveau_menace": menace,
-            "confiance": confiance}
+            "event_id": "42", "tags": tags, "niveau_menace": threat,
+            "confiance": confidence}
 
 
 def test_ecriture_et_lecture_du_cache(tmp_path):
-    chemin = str(tmp_path / "ioc.db")
-    compte = cti.ecrire_cache([_ioc("1.2.3.4"),
-                               _ioc("5.6.7.8", confiance=cti.CONFIANCE_MASSE)],
-                              chemin)
-    assert compte == {cti.CONFIANCE_CUREE: 1, cti.CONFIANCE_MASSE: 1}
-    trouve = cti.interroger("1.2.3.4", chemin)
-    assert trouve and trouve[0]["source"] == "ThreatFox"
-    assert cti.interroger("9.9.9.9", chemin) == []
+    path = str(tmp_path / "ioc.db")
+    account = cti.write_cache([_ioc("1.2.3.4"),
+                               _ioc("5.6.7.8", confidence=cti.CONFIDENCE_BULK)],
+                              path)
+    assert account == {cti.CONFIDENCE_CURATED: 1, cti.CONFIDENCE_BULK: 1}
+    found = cti.query("1.2.3.4", path)
+    assert found and found[0]["source"] == "ThreatFox"
+    assert cti.query("9.9.9.9", path) == []
 
 
 def test_meme_ioc_de_deux_sources_le_cure_dabord(tmp_path):
-    chemin = str(tmp_path / "ioc.db")
-    cti.ecrire_cache([
-        _ioc("1.2.3.4", source="data-shield", confiance=cti.CONFIANCE_MASSE, menace=4),
-        _ioc("1.2.3.4", source="CERT-FR", confiance=cti.CONFIANCE_CUREE, menace=1),
-    ], chemin)
-    resultats = cti.interroger("1.2.3.4", chemin)
+    path = str(tmp_path / "ioc.db")
+    cti.write_cache([
+        _ioc("1.2.3.4", source="data-shield", confidence=cti.CONFIDENCE_BULK, threat=4),
+        _ioc("1.2.3.4", source="CERT-FR", confidence=cti.CONFIDENCE_CURATED, threat=1),
+    ], path)
+    results = cti.query("1.2.3.4", path)
     # Les deux sont conservées — l'analyste veut savoir que l'IP est aussi sur
     # une liste de masse — mais c'est le renseignement curé qui décide du
     # niveau de l'alerte, donc il doit sortir en tête.
-    assert [r["source"] for r in resultats] == ["CERT-FR", "data-shield"]
+    assert [r["source"] for r in results] == ["CERT-FR", "data-shield"]
 
 
 def test_ioc_retire_du_feed_disparait_du_cache(tmp_path):
-    chemin = str(tmp_path / "ioc.db")
-    cti.ecrire_cache([_ioc("1.2.3.4"), _ioc("5.6.7.8")], chemin)
-    cti.ecrire_cache([_ioc("1.2.3.4")], chemin)
-    assert cti.interroger("5.6.7.8", chemin) == []
+    path = str(tmp_path / "ioc.db")
+    cti.write_cache([_ioc("1.2.3.4"), _ioc("5.6.7.8")], path)
+    cti.write_cache([_ioc("1.2.3.4")], path)
+    assert cti.query("5.6.7.8", path) == []
 
 
 def test_echec_de_synchronisation_laisse_le_cache_precedent(tmp_path):
-    chemin = str(tmp_path / "ioc.db")
-    cti.ecrire_cache([_ioc("1.2.3.4")], chemin)
+    path = str(tmp_path / "ioc.db")
+    cti.write_cache([_ioc("1.2.3.4")], path)
 
     def source_qui_casse():
         yield _ioc("5.6.7.8")
         raise RuntimeError("feed interrompu")
 
     with pytest.raises(RuntimeError):
-        cti.ecrire_cache(source_qui_casse(), chemin)
+        cti.write_cache(source_qui_casse(), path)
 
     # Le remplacement est atomique : une synchronisation ratée ne doit ni
     # vider le cache, ni le laisser à moitié écrit. Mieux vaut un
     # renseignement d'hier que pas de renseignement du tout.
-    assert cti.interroger("1.2.3.4", chemin)
+    assert cti.query("1.2.3.4", path)
     assert not [f for f in os.listdir(tmp_path) if f.startswith(".ioc-")]
 
 
 def test_etat_signale_la_peremption(tmp_path, monkeypatch):
-    chemin = str(tmp_path / "ioc.db")
-    cti.ecrire_cache([_ioc("1.2.3.4")], chemin)
-    assert cti.etat(chemin)["perime"] is False
+    path = str(tmp_path / "ioc.db")
+    cti.write_cache([_ioc("1.2.3.4")], path)
+    assert cti.state(path)["perime"] is False
 
-    vieux = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
-    conn = sqlite3.connect(chemin)
-    conn.execute("UPDATE meta SET valeur = ? WHERE cle = 'synchronise_a'", (vieux,))
+    old = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE meta SET value = ? WHERE key = 'synchronise_a'", (old,))
     conn.commit()
     conn.close()
-    assert cti.etat(chemin)["perime"] is True
+    assert cti.state(path)["perime"] is True
 
 
 # --- Extraction MISP --------------------------------------------------------
 
-def _fausse_reponse(attributs):
+def _fake_response(attributes):
     """Deux pages : le lot demandé, puis vide (fin de pagination)."""
-    pages = [{"response": {"Attribute": attributs}}, {"response": {"Attribute": []}}]
+    pages = [{"response": {"Attribute": attributes}}, {"response": {"Attribute": []}}]
 
-    def _misp(methode, chemin, corps=None):
+    def _misp(method, path, body=None):
         return pages.pop(0) if pages else {"response": {"Attribute": []}}
     return _misp
 
 
 def test_attributs_misp_ignore_les_types_sans_equivalent(monkeypatch):
-    monkeypatch.setattr(cti, "_misp", _fausse_reponse([
+    monkeypatch.setattr(cti, "_misp", _fake_response([
         {"type": "ip-dst", "value": "1.2.3.4", "category": "Network activity",
          "event_id": "7", "Event": {"info": "Campagne", "threat_level_id": "1",
                                     "Orgc": {"name": "CERT-FR"}}},
@@ -177,16 +177,16 @@ def test_attributs_misp_ignore_les_types_sans_equivalent(monkeypatch):
         # gonflerait le cache sans jamais matcher.
         {"type": "regkey", "value": "HKLM\\Run\\evil", "Event": {}},
     ]))
-    iocs = list(cti.attributs_misp())
-    assert [(i["valeur"], i["type"], i["source"]) for i in iocs] == [
+    iocs = list(cti.misp_attributes())
+    assert [(i["value"], i["type"], i["source"]) for i in iocs] == [
         ("1.2.3.4", "ip", "CERT-FR")]
-    assert iocs[0]["confiance"] == cti.CONFIANCE_CUREE
+    assert iocs[0]["confiance"] == cti.CONFIDENCE_CURATED
 
 
-def _attribut(type_misp, valeur, date_evenement):
-    return {"type": type_misp, "value": valeur, "category": "Network activity",
+def _attribute(type_misp, value, event_date):
+    return {"type": type_misp, "value": value, "category": "Network activity",
             "event_id": "7", "Event": {"info": "Rapport", "threat_level_id": "2",
-                                       "date": date_evenement,
+                                       "date": event_date,
                                        "Orgc": {"name": "CIRCL"}}}
 
 
@@ -195,83 +195,83 @@ def test_ip_dun_vieux_rapport_ecartee_mais_pas_son_hash(monkeypatch):
     # qu'un feed vient d'importer passe, y compris des IP de rapports de 2015.
     # Les garder, c'est alerter au niveau 12-14 sur l'hébergeur mutualisé qui a
     # récupéré l'adresse depuis. Un hash, lui, ne périme jamais.
-    monkeypatch.setattr(cti, "_misp", _fausse_reponse([
-        _attribut("ip-dst", "107.6.172.54", "2015-09-01"),
-        _attribut("md5", "d41d8cd98f00b204e9800998ecf8427e", "2015-09-01"),
-        _attribut("domain", "evil.example.com", "2015-09-01"),
-        _attribut("ip-dst", "23.45.67.89", "2026-08-01"),
+    monkeypatch.setattr(cti, "_misp", _fake_response([
+        _attribute("ip-dst", "107.6.172.54", "2015-09-01"),
+        _attribute("md5", "d41d8cd98f00b204e9800998ecf8427e", "2015-09-01"),
+        _attribute("domain", "evil.example.com", "2015-09-01"),
+        _attribute("ip-dst", "23.45.67.89", "2026-08-01"),
     ]))
-    valeurs = {i["valeur"] for i in cti.attributs_misp()}
-    assert valeurs == {"d41d8cd98f00b204e9800998ecf8427e", "evil.example.com",
+    values = {i["value"] for i in cti.misp_attributes()}
+    assert values == {"d41d8cd98f00b204e9800998ecf8427e", "evil.example.com",
                        "23.45.67.89"}
 
 
 def test_ip_sans_date_devenement_conservee(monkeypatch):
     # Sans date, on ne sait pas : jeter serait perdre du renseignement valide
     # sur une simple lacune de métadonnée.
-    monkeypatch.setattr(cti, "_misp", _fausse_reponse([
-        _attribut("ip-dst", "23.45.67.89", "")]))
-    assert [i["valeur"] for i in cti.attributs_misp()] == ["23.45.67.89"]
+    monkeypatch.setattr(cti, "_misp", _fake_response([
+        _attribute("ip-dst", "23.45.67.89", "")]))
+    assert [i["value"] for i in cti.misp_attributes()] == ["23.45.67.89"]
 
 
 def test_peremption_ip_desactivable(monkeypatch):
-    monkeypatch.setattr(cti.config, "CTI_IP_MAX_JOURS", 0)
-    monkeypatch.setattr(cti, "_misp", _fausse_reponse([
-        _attribut("ip-dst", "107.6.172.54", "2015-09-01")]))
-    assert [i["valeur"] for i in cti.attributs_misp()] == ["107.6.172.54"]
+    monkeypatch.setattr(cti.config, "CTI_IP_MAX_DAYS", 0)
+    monkeypatch.setattr(cti, "_misp", _fake_response([
+        _attribute("ip-dst", "107.6.172.54", "2015-09-01")]))
+    assert [i["value"] for i in cti.misp_attributes()] == ["107.6.172.54"]
 
 
 def test_extraction_misp_demande_bien_les_indicateurs_de_detection(monkeypatch):
-    vus = {}
+    seen = {}
 
-    def _misp(methode, chemin, corps=None):
-        vus.update(corps or {})
+    def _misp(method, path, body=None):
+        seen.update(body or {})
         return {"response": {"Attribute": []}}
 
     monkeypatch.setattr(cti, "_misp", _misp)
-    list(cti.attributs_misp())
+    list(cti.misp_attributes())
     # to_ids : MISP contient beaucoup d'attributs de CONTEXTE (sinkholes, IP
     # citées en exemple) que leurs auteurs marquent explicitement comme non
     # destinés à la détection. Les ingérer fabrique des faux positifs signés
     # « CERT-FR », les plus coûteux à réfuter.
-    assert vus["to_ids"] == 1
-    assert vus["published"] == 1
-    assert vus["enforceWarninglist"] == 1
+    assert seen["to_ids"] == 1
+    assert seen["published"] == 1
+    assert seen["enforceWarninglist"] == 1
 
 
 # --- Blocklists -------------------------------------------------------------
 
-class _Reponse:
-    def __init__(self, texte):
-        self.text = texte
+class _Response:
+    def __init__(self, text):
+        self.text = text
 
     def raise_for_status(self):
         pass
 
 
 def test_blocklist_ignore_commentaires_et_lignes_vides(monkeypatch):
-    monkeypatch.setattr(cti.requests, "get", lambda *a, **k: _Reponse(
+    monkeypatch.setattr(cti.requests, "get", lambda *a, **k: _Response(
         "# entête du fournisseur\n\n1.2.3.4\n5.6.7.8 # commentaire en fin\n"
         "; autre style\npas-une-ip\n"))
     catalogue = {"misp_feeds": [], "blocklists": [
-        {"nom": "test", "type": "ip", "urls": ["https://exemple/liste.txt"],
+        {"name": "test", "type": "ip", "urls": ["https://exemple/liste.txt"],
          "tags": ["cti:test"]}]}
     iocs = list(cti.blocklists(catalogue))
-    assert [i["valeur"] for i in iocs] == ["1.2.3.4", "5.6.7.8"]
+    assert [i["value"] for i in iocs] == ["1.2.3.4", "5.6.7.8"]
     # Une liste de masse ne qualifie rien : elle ne doit jamais faire d'incident.
-    assert all(i["confiance"] == cti.CONFIANCE_MASSE for i in iocs)
+    assert all(i["confiance"] == cti.CONFIDENCE_BULK for i in iocs)
 
 
 def test_blocklist_injoignable_ne_fait_pas_echouer_les_autres(monkeypatch):
     def _get(url, **kwargs):
         if "morte" in url:
             raise cti.requests.ConnectionError("injoignable")
-        return _Reponse("1.2.3.4\n")
+        return _Response("1.2.3.4\n")
 
     monkeypatch.setattr(cti.requests, "get", _get)
     catalogue = {"misp_feeds": [], "blocklists": [
-        {"nom": "morte", "type": "ip", "urls": ["https://morte/liste.txt"]},
-        {"nom": "vivante", "type": "ip", "urls": ["https://vivante/liste.txt"]}]}
+        {"name": "morte", "type": "ip", "urls": ["https://morte/liste.txt"]},
+        {"name": "vivante", "type": "ip", "urls": ["https://vivante/liste.txt"]}]}
     # Le cache est reconstruit en entier à chaque passe : laisser une source
     # morte tout interrompre reviendrait à perdre TOUTE la CTI pour un feed.
     assert [i["source"] for i in cti.blocklists(catalogue)] == ["vivante"]
@@ -282,36 +282,36 @@ def test_bootstrap_reconnait_un_feed_preinstalle_par_misp(monkeypatch):
     # un slash final. Sans normalisation, le bootstrap crée un DOUBLON : les
     # deux exemplaires activés, MISP tire le même feed deux fois et double les
     # événements. Constaté en prod le 2026-08-12.
-    appels = []
+    calls = []
 
-    def _misp(methode, chemin, corps=None):
-        appels.append((methode, chemin))
-        if chemin == "/feeds/index":
+    def _misp(method, path, body=None):
+        calls.append((method, path))
+        if path == "/feeds/index":
             return [{"Feed": {"id": "1", "url": "https://www.circl.lu/doc/misp/feed-osint",
                               "enabled": True, "caching_enabled": True}}]
         return {}
 
     monkeypatch.setattr(cti, "_misp", _misp)
-    catalogue = {"misp_feeds": [{"nom": "CIRCL OSINT Feed", "format": "misp",
+    catalogue = {"misp_feeds": [{"name": "CIRCL OSINT Feed", "format": "misp",
                                  "url": "https://www.circl.lu/doc/misp/feed-osint/"}],
                  "blocklists": []}
     resume = cti.bootstrap_feeds(catalogue=catalogue)
     assert resume["crees"] == []
-    assert not any(chemin == "/feeds/add" for _, chemin in appels)
+    assert not any(path == "/feeds/add" for _, path in calls)
 
 
 def test_rafraichissement_utilise_le_bon_endpoint(monkeypatch):
     # /feeds/fetchFromFeed/{id} attend un identifiant numérique et répond 404
     # sur « all » — mesuré en prod. Seul cacheFeeds accepte une portée nommée.
-    appels = []
+    calls = []
     monkeypatch.setattr(cti, "_misp",
-                        lambda m, c, corps=None: appels.append(c))
-    cti.rafraichir_feeds()
-    assert appels == ["/feeds/fetchFromAllFeeds", "/feeds/cacheFeeds/all"]
+                        lambda m, c, body=None: calls.append(c))
+    cti.refresh_feeds()
+    assert calls == ["/feeds/fetchFromAllFeeds", "/feeds/cacheFeeds/all"]
 
 
 def test_catalogue_livre_est_coherent():
-    catalogue = cti.charger_catalogue()
+    catalogue = cti.load_catalog()
     assert catalogue["misp_feeds"] and catalogue["blocklists"]
     for feed in catalogue["misp_feeds"]:
         assert feed["url"].startswith("https://")
@@ -326,118 +326,118 @@ def test_catalogue_livre_est_coherent():
 
 # --- Intégration Wazuh ------------------------------------------------------
 
-def _alerte(**donnees):
+def _alert(**data):
     base = {"rule": {"id": "5710", "description": "sshd: failed login"},
             "agent": {"id": "003", "name": "web01"}, "data": {}}
-    base["data"].update(donnees.pop("data", {}))
-    base.update(donnees)
+    base["data"].update(data.pop("data", {}))
+    base.update(data)
     return base
 
 
 def test_extraction_des_candidats_par_direction():
-    trouves = integration.candidats(_alerte(data={
+    found = integration.candidates(_alert(data={
         "srcip": "185.220.101.1", "dstip": "23.45.67.89"}))
-    par_valeur = {v: (t, champ, direction) for t, v, champ, direction in trouves}
-    assert par_valeur["185.220.101.1"][2] == "inbound"
-    assert par_valeur["23.45.67.89"][2] == "outbound"
+    by_value = {v: (t, field, direction) for t, v, field, direction in found}
+    assert by_value["185.220.101.1"][2] == "inbound"
+    assert by_value["23.45.67.89"][2] == "outbound"
 
 
 def test_ip_privee_jamais_cherchee():
     # Une IP privée ne peut pas être un IOC public. La chercher, c'est risquer
     # de matcher une de nos machines parce qu'un feed a publié du 192.168.x —
     # ça arrive.
-    trouves = integration.candidats(_alerte(data={
+    found = integration.candidates(_alert(data={
         "srcip": "192.168.1.10", "dstip": "172.20.0.5"}))
-    assert trouves == []
+    assert found == []
 
 
 def test_url_recollee_depuis_hote_et_chemin():
-    trouves = integration.candidats(_alerte(data={
+    found = integration.candidates(_alert(data={
         "http": {"hostname": "evil.example.com", "url": "/payload.bin"}}))
-    urls = {v for t, v, _, _ in trouves if t == "url"}
+    urls = {v for t, v, _, _ in found if t == "url"}
     assert "http://evil.example.com/payload.bin" in urls
     assert "https://evil.example.com/payload.bin" in urls
 
 
 def test_empreintes_sysmon_extraites_du_champ_agrege():
-    trouves = integration.candidats({"rule": {"id": "61603"}, "data": {"win": {
+    found = integration.candidates({"rule": {"id": "61603"}, "data": {"win": {
         "eventdata": {"hashes": "SHA1=DA39A3EE5E6B4B0D3255BFEF95601890AFD80709,"
                                 "MD5=D41D8CD98F00B204E9800998ECF8427E"}}}})
-    hashes = {v for t, v, _, _ in trouves if t == "hash"}
+    hashes = {v for t, v, _, _ in found if t == "hash"}
     assert hashes == {"da39a3ee5e6b4b0d3255bfef95601890afd80709",
                       "d41d8cd98f00b204e9800998ecf8427e"}
 
 
 def test_hash_du_fim_extrait():
-    trouves = integration.candidats({
+    found = integration.candidates({
         "rule": {"id": "550"},
         "syscheck": {"sha256_after": "a" * 64}})
-    assert ("hash", "a" * 64, "syscheck.sha256_after", "artifact") in trouves
+    assert ("hash", "a" * 64, "syscheck.sha256_after", "artifact") in found
 
 
-def _lancer(monkeypatch, tmp_path, alerte, iocs=(), age_heures=1.0):
+def _launch(monkeypatch, tmp_path, alert, iocs=(), age_hours=1.0):
     """Exécute l'intégration sur une alerte, rend les événements réinjectés."""
-    chemin = str(tmp_path / "ioc.db")
-    cti.ecrire_cache(list(iocs), chemin)
-    if age_heures != 1.0:
-        conn = sqlite3.connect(chemin)
-        conn.execute("UPDATE meta SET valeur = ? WHERE cle = 'synchronise_a'",
+    path = str(tmp_path / "ioc.db")
+    cti.write_cache(list(iocs), path)
+    if age_hours != 1.0:
+        conn = sqlite3.connect(path)
+        conn.execute("UPDATE meta SET value = ? WHERE key = 'synchronise_a'",
                      ((datetime.now(timezone.utc)
-                       - timedelta(hours=age_heures)).isoformat(),))
+                       - timedelta(hours=age_hours)).isoformat(),))
         conn.commit()
         conn.close()
-    monkeypatch.setattr(integration, "CACHE", chemin)
-    monkeypatch.setattr(integration, "TEMOIN_PEREMPTION",
-                        str(tmp_path / "temoin"))
+    monkeypatch.setattr(integration, "CACHE", path)
+    monkeypatch.setattr(integration, "EXPIRY_WITNESS",
+                        str(tmp_path / "witness"))
 
-    envoyes = []
-    monkeypatch.setattr(integration, "envoyer", envoyes.append)
+    sent = []
+    monkeypatch.setattr(integration, "send", sent.append)
 
-    fichier = tmp_path / "alerte.json"
-    fichier.write_text(json.dumps(alerte))
-    monkeypatch.setattr(integration.sys, "argv", ["custom-misp", str(fichier)])
+    file = tmp_path / "alerte.json"
+    file.write_text(json.dumps(alert))
+    monkeypatch.setattr(integration.sys, "argv", ["custom-misp", str(file)])
     integration.main()
-    return envoyes
+    return sent
 
 
 def test_pas_de_boucle_sur_nos_propres_alertes(monkeypatch, tmp_path):
     # Une alerte 100952 porte le même IOC que celle qui l'a produite : la
     # retraiter réinjecterait un événement, qui rematcherait, indéfiniment — et
     # la boucle serait alimentée par le trafic normal du parc.
-    alerte = _alerte(rule={"id": "100952", "description": "CTI - outbound"},
+    alert = _alert(rule={"id": "100952", "description": "CTI - outbound"},
                      data={"srcip": "185.220.101.1"})
-    assert _lancer(monkeypatch, tmp_path, alerte,
+    assert _launch(monkeypatch, tmp_path, alert,
                    [_ioc("185.220.101.1")]) == []
 
 
 def test_pas_de_retraitement_dune_alerte_denrichissement(monkeypatch, tmp_path):
-    alerte = _alerte(rule={"id": "100622", "description": "AbuseIPDB"},
+    alert = _alert(rule={"id": "100622", "description": "AbuseIPDB"},
                      data={"integration": "custom-abuseipdb",
                            "srcip": "185.220.101.1"})
-    assert _lancer(monkeypatch, tmp_path, alerte,
+    assert _launch(monkeypatch, tmp_path, alert,
                    [_ioc("185.220.101.1")]) == []
 
 
 def test_evenement_enrichi_sur_correspondance(monkeypatch, tmp_path):
-    alerte = _alerte(data={"srcip": "185.220.101.1"})
-    envoyes = _lancer(monkeypatch, tmp_path, alerte, [_ioc("185.220.101.1")])
-    assert len(envoyes) == 1
-    misp = envoyes[0]["misp"]
-    assert envoyes[0]["integration"] == "custom-misp"
+    alert = _alert(data={"srcip": "185.220.101.1"})
+    sent = _launch(monkeypatch, tmp_path, alert, [_ioc("185.220.101.1")])
+    assert len(sent) == 1
+    misp = sent[0]["misp"]
+    assert sent[0]["integration"] == "custom-misp"
     assert (misp["ioc"], misp["direction"], misp["confidence"]) == (
         "185.220.101.1", "inbound", "curated")
     assert misp["source_alert_rule_id"] == "5710"
     assert misp["agent"] == "web01"
     # srcip à la racine : c'est ce qui fait géolocaliser l'IOC par le pipeline
     # d'ingest de l'indexer, comme pour custom-abuseipdb.
-    assert envoyes[0]["srcip"] == "185.220.101.1"
+    assert sent[0]["srcip"] == "185.220.101.1"
 
 
 def test_liens_misp_poses_dans_levenement(monkeypatch, tmp_path):
     monkeypatch.setattr(cti.config, "MISP_BASE_URL", "https://misp.example.fr")
-    envoyes = _lancer(monkeypatch, tmp_path, _alerte(data={"srcip": "185.220.101.1"}),
+    sent = _launch(monkeypatch, tmp_path, _alert(data={"srcip": "185.220.101.1"}),
                       [_ioc("185.220.101.1")])
-    misp = envoyes[0]["misp"]
+    misp = sent[0]["misp"]
     # Le lien vient de l'URL PUBLIQUE, pas de l'adresse d'appel du client : un
     # lien vers la loopback n'est cliquable que depuis le manager.
     assert misp["event_url"] == "https://misp.example.fr/events/view/42"
@@ -447,11 +447,11 @@ def test_liens_misp_poses_dans_levenement(monkeypatch, tmp_path):
 
 def test_ioc_de_masse_na_pas_devenement_mais_garde_un_lien(monkeypatch, tmp_path):
     monkeypatch.setattr(cti.config, "MISP_BASE_URL", "https://misp.example.fr")
-    ioc = _ioc("1.1.1.2", source="data-shield", confiance=cti.CONFIANCE_MASSE)
+    ioc = _ioc("1.1.1.2", source="data-shield", confidence=cti.CONFIDENCE_BULK)
     ioc["event_id"] = ""     # les blocklists vivent en cache Redis, sans événement
-    envoyes = _lancer(monkeypatch, tmp_path,
-                      _alerte(data={"srcip": "1.1.1.2"}), [ioc])
-    misp = envoyes[0]["misp"]
+    sent = _launch(monkeypatch, tmp_path,
+                      _alert(data={"srcip": "1.1.1.2"}), [ioc])
+    misp = sent[0]["misp"]
     assert misp["event_url"] == ""
     # Sans ce lien de recherche, l'analyste n'aurait aucun point d'entrée dans
     # MISP pour la moitié la plus volumineuse du renseignement.
@@ -461,22 +461,22 @@ def test_ioc_de_masse_na_pas_devenement_mais_garde_un_lien(monkeypatch, tmp_path
 def test_cache_sans_url_publique_ne_casse_pas_lenrichissement(monkeypatch, tmp_path):
     # Cache écrit par une version antérieure : pas de meta base_url. La
     # détection doit continuer, sans liens — pas planter.
-    chemin = str(tmp_path / "ioc.db")
-    cti.ecrire_cache([_ioc("185.220.101.1")], chemin)
-    conn = sqlite3.connect(chemin)
-    conn.execute("DELETE FROM meta WHERE cle = 'base_url'")
+    path = str(tmp_path / "ioc.db")
+    cti.write_cache([_ioc("185.220.101.1")], path)
+    conn = sqlite3.connect(path)
+    conn.execute("DELETE FROM meta WHERE key = 'base_url'")
     conn.commit()
     conn.close()
-    monkeypatch.setattr(integration, "CACHE", chemin)
-    monkeypatch.setattr(integration, "TEMOIN_PEREMPTION", str(tmp_path / "temoin"))
-    envoyes = []
-    monkeypatch.setattr(integration, "envoyer", envoyes.append)
-    fichier = tmp_path / "alerte.json"
-    fichier.write_text(json.dumps(_alerte(data={"srcip": "185.220.101.1"})))
-    monkeypatch.setattr(integration.sys, "argv", ["custom-misp", str(fichier)])
+    monkeypatch.setattr(integration, "CACHE", path)
+    monkeypatch.setattr(integration, "EXPIRY_WITNESS", str(tmp_path / "witness"))
+    sent = []
+    monkeypatch.setattr(integration, "send", sent.append)
+    file = tmp_path / "alerte.json"
+    file.write_text(json.dumps(_alert(data={"srcip": "185.220.101.1"})))
+    monkeypatch.setattr(integration.sys, "argv", ["custom-misp", str(file)])
     integration.main()
-    assert envoyes[0]["misp"]["ioc"] == "185.220.101.1"
-    assert envoyes[0]["misp"]["event_url"] == ""
+    assert sent[0]["misp"]["ioc"] == "185.220.101.1"
+    assert sent[0]["misp"]["event_url"] == ""
 
 
 def test_tous_les_champs_enrichis_sont_en_anglais(monkeypatch, tmp_path):
@@ -484,9 +484,9 @@ def test_tous_les_champs_enrichis_sont_en_anglais(monkeypatch, tmp_path):
     # côté des champs natifs de Wazuh. Ce test fige le contrat : les règles
     # 100951-100956 matchent dessus, les renommer sans les suivre rend les
     # règles muettes sans la moindre erreur.
-    envoyes = _lancer(monkeypatch, tmp_path, _alerte(data={"srcip": "185.220.101.1"}),
+    sent = _launch(monkeypatch, tmp_path, _alert(data={"srcip": "185.220.101.1"}),
                       [_ioc("185.220.101.1")])
-    assert set(envoyes[0]["misp"]) == {
+    assert set(sent[0]["misp"]) == {
         "ioc", "ioc_type", "field", "direction", "source", "confidence",
         "category", "event_info", "event_id", "event_url", "search_url",
         "tags", "threat_level", "match_count", "source_alert_rule_id",
@@ -494,47 +494,47 @@ def test_tous_les_champs_enrichis_sont_en_anglais(monkeypatch, tmp_path):
 
 
 def test_sans_correspondance_aucun_evenement(monkeypatch, tmp_path):
-    alerte = _alerte(data={"srcip": "185.220.101.1"})
-    assert _lancer(monkeypatch, tmp_path, alerte, [_ioc("9.9.9.9")]) == []
+    alert = _alert(data={"srcip": "185.220.101.1"})
+    assert _launch(monkeypatch, tmp_path, alert, [_ioc("9.9.9.9")]) == []
 
 
 def test_le_sortant_cure_prime_sur_lentrant_de_masse(monkeypatch, tmp_path):
     # Une même alerte porte souvent les deux : une IP source de scanner (bruit)
     # et une IP destination de C2 (incident). Un seul événement est réinjecté,
     # il doit porter le second.
-    alerte = _alerte(data={"srcip": "1.1.1.2", "dstip": "23.45.67.89"})
-    envoyes = _lancer(monkeypatch, tmp_path, alerte, [
-        _ioc("1.1.1.2", source="data-shield", confiance=cti.CONFIANCE_MASSE),
-        _ioc("23.45.67.89", source="ThreatFox", confiance=cti.CONFIANCE_CUREE),
+    alert = _alert(data={"srcip": "1.1.1.2", "dstip": "23.45.67.89"})
+    sent = _launch(monkeypatch, tmp_path, alert, [
+        _ioc("1.1.1.2", source="data-shield", confidence=cti.CONFIDENCE_BULK),
+        _ioc("23.45.67.89", source="ThreatFox", confidence=cti.CONFIDENCE_CURATED),
     ])
-    assert envoyes[0]["misp"]["ioc"] == "23.45.67.89"
-    assert envoyes[0]["misp"]["direction"] == "outbound"
-    assert envoyes[0]["misp"]["match_count"] == "2"
+    assert sent[0]["misp"]["ioc"] == "23.45.67.89"
+    assert sent[0]["misp"]["direction"] == "outbound"
+    assert sent[0]["misp"]["match_count"] == "2"
 
 
 def test_cache_perime_signale_une_seule_fois(monkeypatch, tmp_path):
-    alerte = _alerte(data={"srcip": "185.220.101.1"})
-    envoyes = _lancer(monkeypatch, tmp_path, alerte, [_ioc("9.9.9.9")],
-                      age_heures=72)
-    assert len(envoyes) == 1 and "error" in envoyes[0]["misp"]
+    alert = _alert(data={"srcip": "185.220.101.1"})
+    sent = _launch(monkeypatch, tmp_path, alert, [_ioc("9.9.9.9")],
+                      age_hours=72)
+    assert len(sent) == 1 and "error" in sent[0]["misp"]
 
     # Second passage immédiat : le témoin doit museler le rappel, sinon le SOC
     # se noie sous son propre voyant de panne — une alerte par alerte traitée.
-    envoyes = _lancer(monkeypatch, tmp_path, alerte, [_ioc("9.9.9.9")],
-                      age_heures=72)
-    assert envoyes == []
+    sent = _launch(monkeypatch, tmp_path, alert, [_ioc("9.9.9.9")],
+                      age_hours=72)
+    assert sent == []
 
 
 def test_cache_absent_signale_sans_planter(monkeypatch, tmp_path):
     monkeypatch.setattr(integration, "CACHE", str(tmp_path / "absent.db"))
-    monkeypatch.setattr(integration, "TEMOIN_PEREMPTION", str(tmp_path / "temoin"))
-    envoyes = []
-    monkeypatch.setattr(integration, "envoyer", envoyes.append)
-    fichier = tmp_path / "alerte.json"
-    fichier.write_text(json.dumps(_alerte(data={"srcip": "185.220.101.1"})))
-    monkeypatch.setattr(integration.sys, "argv", ["custom-misp", str(fichier)])
+    monkeypatch.setattr(integration, "EXPIRY_WITNESS", str(tmp_path / "witness"))
+    sent = []
+    monkeypatch.setattr(integration, "send", sent.append)
+    file = tmp_path / "alerte.json"
+    file.write_text(json.dumps(_alert(data={"srcip": "185.220.101.1"})))
+    monkeypatch.setattr(integration.sys, "argv", ["custom-misp", str(file)])
     integration.main()
-    assert len(envoyes) == 1 and "error" in envoyes[0]["misp"]
+    assert len(sent) == 1 and "error" in sent[0]["misp"]
 
 
 # --- Confiance d'après les tags ---------------------------------------------
@@ -545,14 +545,14 @@ def test_automate_non_supervise_traite_comme_de_la_masse():
     # tous avec to_ids=1. En `curated`, ils matchaient aux niveaux 12 à 14 —
     # donc un incident et un triage LLM par match, sur ce qui est par
     # construction une blocklist. La taxonomie MISP l'annonce elle-même.
-    assert cti._confiance([cti.TAG_NON_SUPERVISE, "tlp:clear"]) == cti.CONFIANCE_MASSE
+    assert cti._confidence([cti.TAG_NON_SUPERVISED, "tlp:clear"]) == cti.CONFIDENCE_BULK
 
 
 def test_extraction_aura_reste_distincte_du_cure():
-    assert cti._confiance([cti.TAG_EXTRACTION]) == cti.CONFIANCE_EXTRAITE
-    assert cti._confiance(["tlp:clear", "type:OSINT"]) == cti.CONFIANCE_CUREE
+    assert cti._confidence([cti.TAG_EXTRACTION]) == cti.CONFIDENCE_EXTRACTED
+    assert cti._confidence(["tlp:clear", "type:OSINT"]) == cti.CONFIDENCE_CURATED
 
 
 def test_le_plus_prudent_gagne_si_les_deux_tags_sont_presents():
-    assert cti._confiance([cti.TAG_EXTRACTION,
-                           cti.TAG_NON_SUPERVISE]) == cti.CONFIANCE_MASSE
+    assert cti._confidence([cti.TAG_EXTRACTION,
+                           cti.TAG_NON_SUPERVISED]) == cti.CONFIDENCE_BULK

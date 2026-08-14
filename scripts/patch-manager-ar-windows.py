@@ -12,7 +12,7 @@ import shutil
 import sys
 import time
 
-CHEMIN = sys.argv[1] if len(sys.argv) > 1 else \
+PATH = sys.argv[1] if len(sys.argv) > 1 else \
     "/opt/AURA/src/wazuh/config/wazuh_cluster/wazuh_manager.conf"
 
 ACTIONS = [
@@ -22,7 +22,7 @@ ACTIONS = [
     "ad-add-group-member",
 ]
 
-ENTETE = """
+HEADER = """
   <!--
     ===== Active response Windows / Active Directory =====
 
@@ -65,37 +65,37 @@ AR = """  <active-response>
 
 """
 
-src = open(CHEMIN, encoding="utf-8").read()
+src = open(PATH, encoding="utf-8").read()
 if "win-kill-process" in src:
     print("deja present, rien a faire")
     sys.exit(0)
 
 # Ancre 1 : juste apres le bloc <command> de host-allow.
-ancre_cmd = """  <command>
+cmd_anchor = """  <command>
     <name>host-allow</name>
     <executable>host-allow.sh</executable>
     <timeout_allowed>no</timeout_allowed>
   </command>
 """
-if ancre_cmd not in src:
+if cmd_anchor not in src:
     sys.exit("ancre <command> host-allow introuvable - fichier inattendu")
 src = src.replace(
-    ancre_cmd,
-    ancre_cmd + ENTETE + "".join(CMD.format(n=n) for n in ACTIONS), 1)
+    cmd_anchor,
+    cmd_anchor + HEADER + "".join(CMD.format(n=n) for n in ACTIONS), 1)
 
 # Ancre 2 : juste apres le bloc <active-response> de host-allow.
-ancre_ar = """  <active-response>
+ar_anchor = """  <active-response>
     <disabled>no</disabled>
     <command>host-allow</command>
     <location>local</location>
     <rules_id>999999</rules_id>
   </active-response>
 """
-if ancre_ar not in src:
+if ar_anchor not in src:
     sys.exit("ancre <active-response> host-allow introuvable - fichier inattendu")
 src = src.replace(
-    ancre_ar,
-    ancre_ar + "\n  <!-- Windows / AD. Meme regle inexistante 999999 : aucun "
+    ar_anchor,
+    ar_anchor + "\n  <!-- Windows / AD. Meme regle inexistante 999999 : aucun "
     "declenchement\n       automatique, seul l'appel API (soc-agent, MCP) "
     "execute l'action. -->\n"
     + "".join(AR.format(n=n) for n in ACTIONS), 1)
@@ -108,13 +108,13 @@ src = src.replace(
 import re
 import xml.etree.ElementTree as ET
 
-sans_commentaires = re.sub(r"<!--.*?-->", "", src, flags=re.DOTALL)
+without_comments = re.sub(r"<!--.*?-->", "", src, flags=re.DOTALL)
 try:
-    ET.fromstring("<root>" + sans_commentaires + "</root>")
+    ET.fromstring("<root>" + without_comments + "</root>")
 except ET.ParseError as e:
     sys.exit(f"XML invalide apres insertion, rien ecrit : {e}")
 
-shutil.copy2(CHEMIN, f"{CHEMIN}.bak.{int(time.time())}")
-open(CHEMIN, "w", encoding="utf-8").write(src)
+shutil.copy2(PATH, f"{PATH}.bak.{int(time.time())}")
+open(PATH, "w", encoding="utf-8").write(src)
 print(f"{len(ACTIONS)} commandes + {len(ACTIONS)} active-response inserees, "
       "structure XML validee")

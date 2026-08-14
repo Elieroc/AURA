@@ -25,9 +25,9 @@ from . import config
 log = logging.getLogger(__name__)
 
 
-def _enregistrer(usage: str, modele: str, max_tokens: int, duree_ms: int,
-                 metriques: dict | None, incident_id: int | None,
-                 erreur: str | None) -> None:
+def _record(usage: str, modele: str, max_tokens: int, duration_ms: int,
+                 metrics: dict | None, incident_id: int | None,
+                 error: str | None) -> None:
     """Trace l'appel dans `llm_calls`. N'échoue JAMAIS vers l'appelant.
 
     Point de passage unique : instrumenter ici plutôt que chez chaque appelant
@@ -39,17 +39,17 @@ def _enregistrer(usage: str, modele: str, max_tokens: int, duree_ms: int,
     """
     try:
         import psycopg
-        m = metriques or {}
+        m = metrics or {}
         with psycopg.connect(config.PG_DSN) as conn:
             conn.execute(
-                "INSERT INTO llm_calls (usage, modele, prompt_tokens, "
+                "INSERT INTO llm_calls (usage, model, prompt_tokens, "
                 "completion_tokens, cache_hit_tokens, cache_miss_tokens, "
                 "max_tokens, duree_ms, incident_id, ok, erreur) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (usage, m.get("modele") or modele, m.get("prompt_tokens"),
+                (usage, m.get("model") or modele, m.get("prompt_tokens"),
                  m.get("completion_tokens"), m.get("cache_hit_tokens"),
-                 m.get("cache_miss_tokens"), max_tokens, duree_ms,
-                 incident_id, erreur is None, erreur))
+                 m.get("cache_miss_tokens"), max_tokens, duration_ms,
+                 incident_id, error is None, error))
             conn.commit()
     except Exception as e:                                   # noqa: BLE001
         log.debug("métrique LLM non enregistrée : %s", e)
@@ -59,10 +59,10 @@ def _enregistrer(usage: str, modele: str, max_tokens: int, duree_ms: int,
 # exactement ce que produit un modèle qui recopie un chemin Windows dans sa
 # justification : `C:\Windows\System32` sort tel quel, et `\W` n'est pas un
 # échappement légal.
-_ANTISLASH_NU = re.compile(r'\\(?!["\\/bfnrtu])')
+_BARE_BACKSLASH = re.compile(r'\\(?!["\\/bfnrtu])')
 
 
-def _charger_json(contenu: str) -> dict:
+def _load_json(content: str) -> dict:
     """Parse la réponse du modèle, en réparant les antislashs non échappés.
 
     `response_format=json_object` était réputé garantir un JSON valide. C'est
@@ -77,15 +77,15 @@ def _charger_json(contenu: str) -> dict:
     vraie panne d'API remonte toujours.
     """
     try:
-        return json.loads(contenu)
+        return json.loads(content)
     except json.JSONDecodeError:
-        repare = _ANTISLASH_NU.sub(r"\\\\", contenu)
-        obj = json.loads(repare)   # échoue encore -> vraie sortie inexploitable
+        repaired = _BARE_BACKSLASH.sub(r"\\\\", content)
+        obj = json.loads(repaired)   # échoue encore -> vraie sortie inexploitable
         log.warning("JSON du modèle réparé (antislashs non échappés)")
         return obj
 
 
-def completion(systeme: str, utilisateur: str, usage: str,
+def completion(system: str, user: str, usage: str,
                max_tokens: int = 500, temperature: float = 0.2,
                incident_id: int | None = None) -> tuple[dict, dict]:
     """Retourne (objet JSON parsé, métriques).
@@ -103,28 +103,28 @@ def completion(systeme: str, utilisateur: str, usage: str,
     consommation atterrit dans un bucket « inconnu » du dashboard — ce qui est
     exactement arrivé. Sans défaut, l'oubli est une TypeError au premier appel.
     """
-    debut = time.monotonic()
+    start = time.monotonic()
     try:
-        return _completion(systeme, utilisateur, max_tokens, temperature,
-                           usage, incident_id, debut)
+        return _completion(system, user, max_tokens, temperature,
+                           usage, incident_id, start)
     except Exception as e:                                   # noqa: BLE001
-        _enregistrer(usage, config.DEEPSEEK_MODEL, max_tokens,
-                     int((time.monotonic() - debut) * 1000), None,
+        _record(usage, config.DEEPSEEK_MODEL, max_tokens,
+                     int((time.monotonic() - start) * 1000), None,
                      incident_id, f"{type(e).__name__}: {e}"[:500])
         raise
 
 
-def _completion(systeme: str, utilisateur: str, max_tokens: int,
+def _completion(system: str, user: str, max_tokens: int,
                 temperature: float, usage: str, incident_id: int | None,
-                debut: float) -> tuple[dict, dict]:
+                start: float) -> tuple[dict, dict]:
     rep = requests.post(
         f"{config.DEEPSEEK_URL}/chat/completions",
         headers={"Authorization": f"Bearer {config.DEEPSEEK_API_KEY}"},
         json={
             "model": config.DEEPSEEK_MODEL,
             "messages": [
-                {"role": "system", "content": systeme},
-                {"role": "user", "content": utilisateur},
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
             ],
             "response_format": {"type": "json_object"},
             "max_tokens": max_tokens,
@@ -141,32 +141,32 @@ def _completion(systeme: str, utilisateur: str, max_tokens: int,
         timeout=(config.LLM_TIMEOUT_CONNECT_S, config.LLM_TIMEOUT_READ_S),
     )
     rep.raise_for_status()
-    corps = rep.json()
-    duree_ms = int((time.monotonic() - debut) * 1000)
+    body = rep.json()
+    duration_ms = int((time.monotonic() - start) * 1000)
 
-    choix = corps["choices"][0]
-    contenu = choix["message"].get("content") or ""
+    choice = body["choices"][0]
+    content = choice["message"].get("content") or ""
     # Modèles raisonnants (deepseek-v4-*) : le raisonnement est décompté de
     # max_tokens. S'il l'épuise, finish_reason=length et content est VIDE — le
     # verdict n'a jamais été écrit. Erreur explicite plutôt qu'un JSONDecodeError
     # opaque : la correction est d'augmenter TRIAGE_MAX_TOKENS.
-    if not contenu.strip():
+    if not content.strip():
         raise RuntimeError(
-            f"réponse sans content (finish_reason={choix.get('finish_reason')}, "
+            f"réponse sans content (finish_reason={choice.get('finish_reason')}, "
             f"reasoning épuisant max_tokens={max_tokens} ?) — augmenter le budget")
 
-    obj = _charger_json(contenu)
-    conso = corps.get("usage", {})
+    obj = _load_json(content)
+    consumption = body.get("usage", {})
     # DeepSeek ventile l'entrée entre cache hit et cache miss, et le hit est
     # facturé 50x moins cher. Sans cette ventilation, le coût est surestimé :
     # le prompt système est constant d'un incident à l'autre, donc il est
     # presque toujours servi par le cache.
-    metriques = {"duree_ms": duree_ms,
-                 "prompt_tokens": conso.get("prompt_tokens"),
-                 "completion_tokens": conso.get("completion_tokens"),
-                 "cache_hit_tokens": conso.get("prompt_cache_hit_tokens"),
-                 "cache_miss_tokens": conso.get("prompt_cache_miss_tokens"),
-                 "modele": corps.get("model", config.DEEPSEEK_MODEL)}
-    _enregistrer(usage, config.DEEPSEEK_MODEL, max_tokens, duree_ms,
-                 metriques, incident_id, None)
-    return obj, metriques
+    metrics = {"duration_ms": duration_ms,
+                 "prompt_tokens": consumption.get("prompt_tokens"),
+                 "completion_tokens": consumption.get("completion_tokens"),
+                 "cache_hit_tokens": consumption.get("prompt_cache_hit_tokens"),
+                 "cache_miss_tokens": consumption.get("prompt_cache_miss_tokens"),
+                 "model": body.get("model", config.DEEPSEEK_MODEL)}
+    _record(usage, config.DEEPSEEK_MODEL, max_tokens, duration_ms,
+                 metrics, incident_id, None)
+    return obj, metrics

@@ -43,7 +43,7 @@ _RE_SHA1 = re.compile(r"^[0-9a-f]{40}$")
 _RE_MD5 = re.compile(r"^[0-9a-f]{32}$")
 
 
-def _chemin(data: dict, raw: dict) -> str:
+def _path(data: dict, raw: dict) -> str:
     """Chemin de l'exécutable concerné (pour la portée « déposé hors système »)."""
     win = (data.get("win") or {}).get("eventdata") or {}
     audit = data.get("audit") or {}
@@ -59,39 +59,39 @@ def _hash(data: dict, raw: dict) -> str | None:
     Sources : Sysmon `data.win.eventdata.hashes`, FIM `syscheck.*_after`,
     intégration VT `data.virustotal.source.*`.
     """
-    trouves: dict[str, str] = {}
+    found: dict[str, str] = {}
 
     win = (data.get("win") or {}).get("eventdata") or {}
     for algo, val in _RE_HASH_KV.findall(str(win.get("hashes") or "")):
-        trouves[algo.lower()] = val.lower()
+        found[algo.lower()] = val.lower()
 
     sc = raw.get("syscheck") or {}
     for algo in ("sha256", "sha1", "md5"):
         v = sc.get(f"{algo}_after") or sc.get(algo)
         if v:
-            trouves.setdefault(algo, str(v).lower())
+            found.setdefault(algo, str(v).lower())
 
     vt = (data.get("virustotal") or {}).get("source") or {}
     for algo in ("sha256", "sha1", "md5"):
         if vt.get(algo):
-            trouves.setdefault(algo, str(vt[algo]).lower())
+            found.setdefault(algo, str(vt[algo]).lower())
 
     for algo, rx in (("sha256", _RE_SHA256), ("sha1", _RE_SHA1), ("md5", _RE_MD5)):
-        h = trouves.get(algo)
+        h = found.get(algo)
         if h and rx.match(h):
             return h
     return None
 
 
-def _hors_systeme(chemin: str) -> bool:
+def _outside_system(path: str) -> bool:
     """Vrai si l'exécutable N'EST PAS dans un répertoire système (donc filtrable)."""
     # L'eventchannel Windows double les backslashes (C:\\\\Windows\\\\...):
     # les replier vers un seul, sinon le prefixe systeme ne matche jamais
     # et un LOLBin propre de System32 (net1.exe...) est suppresse a tort.
-    p = chemin.lower().replace("\\\\", "\\")
+    p = path.lower().replace("\\\\", "\\")
     if not p:
         return False
-    return not p.startswith(config.VT_DIRS_SYSTEME)
+    return not p.startswith(config.VT_DIRS_SYSTEM)
 
 
 def _verdict(stats: dict, total: int) -> str:
@@ -104,7 +104,7 @@ def _verdict(stats: dict, total: int) -> str:
     return "unknown"
 
 
-def _lire_cache(conn, h: str) -> dict | None:
+def _read_cache(conn, h: str) -> dict | None:
     row = conn.execute(
         "SELECT * FROM vt_file_reputation WHERE sha256 = %s", (h,)).fetchone()
     if not row:
@@ -115,7 +115,7 @@ def _lire_cache(conn, h: str) -> dict | None:
     return row
 
 
-def _interroger_vt(h: str) -> dict | None:
+def _query_vt(h: str) -> dict | None:
     """Appel réseau VT. None si on doit réessayer plus tard (429/erreur réseau)."""
     try:
         r = requests.get(
@@ -147,7 +147,7 @@ def _interroger_vt(h: str) -> dict | None:
     }
 
 
-def _ecrire_cache(conn, h: str, rep: dict) -> None:
+def _write_cache(conn, h: str, rep: dict) -> None:
     conn.execute(
         """INSERT INTO vt_file_reputation
              (sha256, malicious, suspicious, harmless, undetected, total,
@@ -162,7 +162,7 @@ def _ecrire_cache(conn, h: str, rep: dict) -> None:
          rep["undetected"], rep["total"], rep["verdict"], rep["permalink"]))
 
 
-def filtrer(conn: psycopg.Connection | None = None) -> int:
+def filter(conn: psycopg.Connection | None = None) -> int:
     """Marque `suppressed` les alertes portant un exécutable jugé légitime par VT.
 
     Retourne le nombre d'alertes suppressées. Sans clé VT, ne fait rien.
@@ -171,37 +171,37 @@ def filtrer(conn: psycopg.Connection | None = None) -> int:
         return 0
     if conn is None:
         with psycopg.connect(config.PG_DSN, row_factory=dict_row) as c:
-            return filtrer(c)
+            return filter(c)
 
     # Candidates : non corrélées, non suppressées, niveau significatif.
-    lignes = conn.execute(
+    lines = conn.execute(
         """SELECT id, rule_level, raw FROM alerts
             WHERE incident_id IS NULL AND NOT suppressed AND rule_level >= %s
             ORDER BY ts DESC""",
         (config.VT_EXE_MIN_LEVEL,)).fetchall()
 
     # hash -> [ids d'alertes], en ne gardant que les exécutables hors système.
-    par_hash: dict[str, list[str]] = {}
-    for r in lignes:
+    by_hash: dict[str, list[str]] = {}
+    for r in lines:
         raw = r["raw"]
         data = raw.get("data") or {}
         h = _hash(data, raw)
         if not h:
             continue
-        if not _hors_systeme(_chemin(data, raw)):
+        if not _outside_system(_path(data, raw)):
             continue
-        par_hash.setdefault(h, []).append(r["id"])
-    if not par_hash:
+        by_hash.setdefault(h, []).append(r["id"])
+    if not by_hash:
         return 0
 
-    appels = 0
+    calls = 0
     suppressed = 0
-    for h, ids in par_hash.items():
-        rep = _lire_cache(conn, h)
+    for h, ids in by_hash.items():
+        rep = _read_cache(conn, h)
         if rep is None:
-            if appels >= config.VT_MAX_LOOKUPS:
+            if calls >= config.VT_MAX_LOOKUPS:
                 continue                 # plafond réseau atteint, au prochain cycle
-            if appels:
+            if calls:
                 # Rendre la transaction AVANT de dormir. `_lire_cache` en a
                 # ouvert une, et psycopg ne la referme pas tout seul : sans ce
                 # commit, la session reste « idle in transaction » pendant toute
@@ -211,21 +211,21 @@ def filtrer(conn: psycopg.Connection | None = None) -> int:
                 # l'arrêt et fait échouer un ALTER TABLE de migration.
                 conn.commit()
                 time.sleep(16)           # API publique : 4 req/min
-            rep = _interroger_vt(h)
-            appels += 1
+            rep = _query_vt(h)
+            calls += 1
             if rep is None:
                 break                    # 429 / réseau : on arrête proprement
-            _ecrire_cache(conn, h, rep)
+            _write_cache(conn, h, rep)
             conn.commit()
 
         if rep["verdict"] != "legit":
             continue
-        raison = (f"vt_legit_exe: 0/{rep['total']} moteurs positifs "
+        reason = (f"vt_legit_exe: 0/{rep['total']} moteurs positifs "
                   f"(harmless={rep['harmless']}) {rep.get('permalink') or ''}").strip()
         n = conn.execute(
             """UPDATE alerts SET suppressed = true, suppress_reason = %s
                 WHERE id = ANY(%s) AND NOT suppressed AND incident_id IS NULL""",
-            (raison, ids)).rowcount
+            (reason, ids)).rowcount
         conn.commit()
         if n:
             suppressed += n
@@ -233,10 +233,10 @@ def filtrer(conn: psycopg.Connection | None = None) -> int:
                      n, h[:12], rep["total"])
     if suppressed:
         log.info("VT : %d alerte(s) écartée(s) (exécutables légitimes), "
-                 "%d appel(s) réseau", suppressed, appels)
+                 "%d appel(s) réseau", suppressed, calls)
     return suppressed
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    print(f"{filtrer()} alerte(s) suppressée(s)")
+    print(f"{filter()} alerte(s) suppressée(s)")

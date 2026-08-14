@@ -440,7 +440,7 @@ Conséquences pratiques :
   panne se referme dans le canal où elle a été **ouverte** : basculer la
   configuration n'abandonne pas les cases déjà ouverts.
 
-### Routage des sources de log (`soc_agent.routage`)
+### Routage des sources de log (`soc_agent.routing`)
 
 Même famille de problème que le capteur muet, à l'autre bout de la chaîne : une
 source de log qui n'a pas d'index dédié n'émet aucune erreur, ses alertes se

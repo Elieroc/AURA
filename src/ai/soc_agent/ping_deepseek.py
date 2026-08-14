@@ -26,16 +26,16 @@ MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 
 
 def main() -> int:
-    cle = os.environ.get("DEEPSEEK_API_KEY")
-    if not cle:
+    key = os.environ.get("DEEPSEEK_API_KEY")
+    if not key:
         print("DEEPSEEK_API_KEY absente de l'environnement.", file=sys.stderr)
         return 2
 
-    debut = time.monotonic()
+    start = time.monotonic()
     try:
         rep = requests.post(
             f"{BASE_URL}/chat/completions",
-            headers={"Authorization": f"Bearer {cle}"},
+            headers={"Authorization": f"Bearer {key}"},
             json={
                 "model": MODEL,
                 "messages": [
@@ -51,17 +51,17 @@ def main() -> int:
         print(f"Échec réseau : {e}", file=sys.stderr)
         return 1
 
-    duree_ms = int((time.monotonic() - debut) * 1000)
+    duration_ms = int((time.monotonic() - start) * 1000)
 
     if rep.status_code != 200:
         print(f"HTTP {rep.status_code} : {rep.text[:300]}", file=sys.stderr)
         return 1
 
-    corps = rep.json()
-    contenu = corps["choices"][0]["message"]["content"]
-    usage = corps.get("usage", {})
-    print(f"OK  modèle={corps.get('model', '?')}  latence={duree_ms} ms")
-    print(f"    réponse={contenu!r}")
+    body = rep.json()
+    content = body["choices"][0]["message"]["content"]
+    usage = body.get("usage", {})
+    print(f"OK  modèle={body.get('model', '?')}  latence={duration_ms} ms")
+    print(f"    réponse={content!r}")
     print(f"    tokens: prompt={usage.get('prompt_tokens')} "
           f"completion={usage.get('completion_tokens')}")
     return 0

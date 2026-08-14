@@ -21,14 +21,14 @@ désactiver. « Restaure-moi tout pour voir » est refusé par le code.
 from soc_agent import config as soc_config
 from soc_agent import hunting
 
-from .. import auth, sortie
-from ..db import lecture as base
-from ..serveur import enregistrer
+from .. import auth, output
+from ..db import read as base
+from ..server import register
 
 
-@auth.exige("aura:read")
+@auth.require("aura:read")
 def aura_archives_list(index_set: str | None = None,
-                       limite: int | None = None,
+                       limit: int | None = None,
                        offset: int | None = None) -> dict:
     """Les archives froides disponibles, avec leur état de vérification.
 
@@ -51,26 +51,26 @@ def aura_archives_list(index_set: str | None = None,
         limite: lignes par page.
         offset: décalage de pagination.
     """
-    limite, offset = sortie.bornes(limite, offset)
+    limit, offset = output.bounds(limit, offset)
     where = ("WHERE format_version = %(fv)s "
              "  AND (%(base)s::text IS NULL OR index_base = %(base)s)")
     params = {"fv": soc_config.ARCHIVE_FORMAT_VERSION, "base": index_set,
-              "limite": limite, "offset": offset}
+              "limite": limit, "offset": offset}
     with base() as conn:
         total = conn.execute(
             f"SELECT count(*) AS n FROM archives_s3 {where}",
             params).fetchone()["n"]
-        lignes = conn.execute(
+        lines = conn.execute(
             f"""SELECT index_base, periode, documents, octets_clair,
                        octets_objet, indices, archivee_a, verifie_a,
                        verif_etat, verif_complet, object_lock_jusqu_a
                   FROM archives_s3 {where}
                  ORDER BY index_base, periode DESC
                  LIMIT %(limite)s OFFSET %(offset)s""", params).fetchall()
-    return sortie.page([dict(l) for l in lignes], total, limite, offset)
+    return output.page([dict(l) for l in lines], total, limit, offset)
 
 
-@auth.exige("aura:read")
+@auth.require("aura:read")
 def aura_hunting_state() -> dict:
     """Ce qui occupe l'espace de hunting, et ce qu'il reste avant les plafonds.
 
@@ -83,12 +83,12 @@ def aura_hunting_state() -> dict:
     Les index listés sont des COPIES : les supprimer ne perd rien, l'archive S3
     reste. Ils sont purgés seuls au bout de `retention_jours`.
     """
-    return sortie.jsonifiable(hunting.etat())
+    return output.jsonifiable(hunting.state())
 
 
-@auth.exige("aura:write")
-def aura_hunting_restore(index_set: str, periode: str,
-                         appliquer: bool = False) -> dict:
+@auth.require("aura:write")
+def aura_hunting_restore(index_set: str, period: str,
+                         apply: bool = False) -> dict:
     """Remet une archive froide dans `wazuh-hunting-*` pour l'analyser.
 
     Télécharge l'objet S3, le déchiffre avec la clé du SOC, et réinjecte les
@@ -119,11 +119,11 @@ def aura_hunting_restore(index_set: str, periode: str,
         appliquer: exécuter réellement. `False` rend le plan et le verdict des
             garde-fous.
     """
-    return sortie.jsonifiable(hunting.restaurer(index_set, periode, appliquer))
+    return output.jsonifiable(hunting.restore(index_set, period, apply))
 
 
-@auth.exige("aura:write")
-def aura_hunting_purge(index: str, confirmer: bool = False) -> dict:
+@auth.require("aura:write")
+def aura_hunting_purge(index: str, confirm: bool = False) -> dict:
     """Supprime un index de hunting pour rendre de la place.
 
     Sans danger par construction : l'outil REFUSE tout nom qui ne commence pas
@@ -135,10 +135,10 @@ def aura_hunting_purge(index: str, confirmer: bool = False) -> dict:
         index: nom complet de l'index (`wazuh-hunting-firewall-2026-03`).
         confirmer: exécuter. `False` rend ce qui serait supprimé.
     """
-    return sortie.jsonifiable(hunting.purger(index, confirmer))
+    return output.jsonifiable(hunting.purge(index, confirm))
 
 
-enregistrer(aura_archives_list)
-enregistrer(aura_hunting_state)
-enregistrer(aura_hunting_restore)
-enregistrer(aura_hunting_purge)
+register(aura_archives_list)
+register(aura_hunting_state)
+register(aura_hunting_restore)
+register(aura_hunting_purge)

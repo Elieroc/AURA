@@ -11,10 +11,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
-def _requis(nom: str) -> str:
-    val = os.environ.get(nom)
+def _required(name: str) -> str:
+    val = os.environ.get(name)
     if not val:
-        sys.exit(f"Variable d'environnement manquante : {nom} (cf. ai/.env.example)")
+        sys.exit(f"Variable d'environnement manquante : {name} (cf. ai/.env.example)")
     return val
 
 
@@ -26,7 +26,7 @@ def _requis(nom: str) -> str:
 # verrait des alertes sans géoloc.
 INDEXER_URL = os.environ.get("INDEXER_URL", "https://127.0.0.1:9200")
 INDEXER_USER = os.environ.get("INDEXER_USER", "admin")
-INDEXER_PASSWORD = _requis("INDEXER_PASSWORD")
+INDEXER_PASSWORD = _required("INDEXER_PASSWORD")
 
 # Certificats auto-signés générés par la stack Wazuh. À passer à true (avec
 # INDEXER_CA) dès que l'indexer n'est plus sur la loopback.
@@ -58,7 +58,7 @@ PG_DSN = os.environ.get(
     "PG_DSN",
     "postgresql://{u}:{p}@127.0.0.1:{port}/{db}".format(
         u=os.environ.get("PGUSER", "socagent"),
-        p=_requis("PGPASSWORD"),
+        p=_required("PGPASSWORD"),
         port=os.environ.get("PGPORT", "5433"),
         db=os.environ.get("PGDATABASE", "socagent"),
     ),
@@ -80,7 +80,7 @@ PG_STATEMENT_TIMEOUT_MS = int(
     os.environ.get("PG_STATEMENT_TIMEOUT_MS", "300000"))
 
 
-def _avec_statement_timeout(dsn: str, ms: int) -> str:
+def _with_statement_timeout(dsn: str, ms: int) -> str:
     """Ajoute `options=-c statement_timeout=<ms>` au DSN, sans rien écraser.
 
     Passer par le DSN plutôt que par un `SET` après connexion : il n'existe pas
@@ -97,7 +97,7 @@ def _avec_statement_timeout(dsn: str, ms: int) -> str:
     return f"{dsn} options='{opt}'"
 
 
-PG_DSN = _avec_statement_timeout(PG_DSN, PG_STATEMENT_TIMEOUT_MS)
+PG_DSN = _with_statement_timeout(PG_DSN, PG_STATEMENT_TIMEOUT_MS)
 
 # --- Filtrage ---------------------------------------------------------------
 #
@@ -138,7 +138,7 @@ VT_MIN_ENGINES = int(os.environ.get("VT_MIN_ENGINES", "5"))
 # signé de System32 (powershell.exe, certutil.exe…) est propre pour VT mais peut
 # être détourné (LOLBin) — la détection y est COMPORTEMENTALE, pas sur le fichier.
 # On ne filtre que les exécutables DÉPOSÉS ailleurs (temp, profils, /tmp, /home…).
-VT_DIRS_SYSTEME = tuple(d.lower() for d in os.environ.get(
+VT_DIRS_SYSTEM = tuple(d.lower() for d in os.environ.get(
     "VT_DIRS_SYSTEME",
     r"c:\windows,c:\program files,c:\program files (x86),"
     "/usr/bin,/usr/sbin,/bin,/sbin,/usr/lib,/lib").split(","))
@@ -198,7 +198,7 @@ INGEST_SWEEP_INTERVAL_MINUTES = int(
 # (response_format), pas le respect du schéma ni de l'enum. La
 # barrière est donc dans le code : coercition/validation dans triage.py, en
 # plus des garde-fous déterministes d'actions.py.
-DEEPSEEK_API_KEY = _requis("DEEPSEEK_API_KEY")
+DEEPSEEK_API_KEY = _required("DEEPSEEK_API_KEY")
 # Les modèles v4 raisonnent : les tokens de raisonnement (reasoning_content)
 # sont décomptés de max_tokens AVANT le content. Un budget trop court (l'ancien
 # 400, calé sur le chat non raisonnant) est intégralement consommé par le
@@ -207,7 +207,7 @@ DEEPSEEK_API_KEY = _requis("DEEPSEEK_API_KEY")
 TRIAGE_MAX_TOKENS = int(os.environ.get("TRIAGE_MAX_TOKENS", "6000"))
 # Plafond de taille du PROMPT de triage (entrée). Au-delà, l'incident était
 # ignoré — ce qui faisait taire les plus gros/graves. Relevé à 5000.
-PLAFOND_PROMPT_TOKENS = int(os.environ.get("TRIAGE_PROMPT_MAX_TOKENS", "5000"))
+PROMPT_TOKENS_CAP = int(os.environ.get("TRIAGE_PROMPT_MAX_TOKENS", "5000"))
 # Le rapport TP est un récit markdown multi-sections, plus long que le verdict ;
 # avec le raisonnement en plus, il lui faut davantage de marge encore.
 #
@@ -266,14 +266,14 @@ IRIS_CUSTOMER = int(os.environ.get("IRIS_CUSTOMER", "1"))
 # le début de l'attaque porte la graine, la fin porte l'état courant ; c'est le
 # milieu d'une salve répétitive qui n'apprend rien. `alert_count` reste, lui,
 # le compte RÉEL et n'est jamais tronqué.
-INCIDENT_MAX_ALERTES = int(os.environ.get("INCIDENT_MAX_ALERTES", "2000"))
+INCIDENT_MAX_ALERTS = int(os.environ.get("INCIDENT_MAX_ALERTES", "2000"))
 
 # Nombre maximum de pièces Evidence posées sur un case. Une pièce par alerte est
 # la bonne granularité pour un incident normal (quelques dizaines) ; au-delà,
 # c'est l'onglet Evidence qui devient inexploitable et la base IRIS qui gonfle
 # (le 2026-08-14 : 8,3 Go pour un seul case). Le plafond porte sur le TOTAL du
 # case, cumulé entre deux passages, pas sur la salve.
-EVIDENCE_MAX_PAR_CASE = int(os.environ.get("EVIDENCE_MAX_PAR_CASE", "500"))
+EVIDENCE_MAX_PER_CASE = int(os.environ.get("EVIDENCE_MAX_PAR_CASE", "500"))
 
 # --- Lien pivot vers le dashboard Wazuh -------------------------------------
 #
@@ -302,7 +302,7 @@ WAZUH_DASHBOARD_INDEX_PATTERN = os.environ.get(
 # RFC1918 » à « interne » : un C2 peut lui-même être en RFC1918 (VPN, cloud
 # privé...) — le classer « interne » le blanchirait. Lister explicitement les
 # subnets du parc surveillé ; tout le reste (dont un C2 en RFC1918) est externe.
-RESEAUX_INTERNES = [
+NETWORKS_INTERNAL = [
     r.strip() for r in os.environ.get("RESEAUX_INTERNES", "").split(",")
     if r.strip()]
 
@@ -323,7 +323,7 @@ MITIGATE_EXECUTE = os.environ.get("MITIGATE_EXECUTE", "false").lower() == "true"
 # confirmée par un `ar-result`). Au-delà, on cesse de réémettre : un canal
 # fire-and-forget qui ne confirme jamais ne doit pas être sollicité à chaque
 # cycle indéfiniment. 3 : deux retentatives après le premier essai.
-MITIGATE_MAX_TENTATIVES = int(os.environ.get("MITIGATE_MAX_TENTATIVES", "3"))
+MITIGATE_MAX_ATTEMPTS = int(os.environ.get("MITIGATE_MAX_TENTATIVES", "3"))
 
 # Intervalle minimal (s) entre deux active-responses Wazuh émises. Une rafale
 # d'AR de même commande vers un même agent sature `wazuh-execd`, qui en drope
@@ -362,7 +362,7 @@ ISOLATION_MARKER = os.environ.get("ISOLATION_MARKER", "/var/ossec/isolated")
 #
 # À laisser en tête des garde-fous déterministes : le modèle ne voit qu'un
 # `agent_id` dans son contexte et n'a aucun moyen de savoir lequel porte le SOC.
-AGENTS_PROTEGES = {
+AGENTS_PROTECTED = {
     a.strip() for a in os.environ.get("AGENTS_PROTEGES", "000").split(",")
     if a.strip()}
 
@@ -389,7 +389,7 @@ AGENTS_PROTEGES = {
 #
 # Aucun défaut : à lister explicitement par déploiement (id d'agent Wazuh) via
 # AGENTS_CAPTEURS.
-AGENTS_CAPTEURS = {
+AGENTS_SENSORS = {
     a.strip() for a in os.environ.get("AGENTS_CAPTEURS", "").split(",")
     if a.strip()}
 
@@ -435,7 +435,7 @@ MITIGATE_ISOLATE_ALLOW = [
 # seules (100700 RCE-attempt, 100702 LFI/SQLi) : un scanner qui tape une URL
 # n'est pas une compromission — c'est le cas que le garde-fou d'isolation
 # protège (block_ip suffit). L'ensemble est surchargable par l'env.
-RULES_COMPROMISSION_HOTE = {
+RULES_COMPROMISE_HOST = {
     r.strip() for r in os.environ.get(
         "RULES_COMPROMISSION_HOTE",
         "100701,100710,100750,"          # webshell : commande exécutée
@@ -457,7 +457,7 @@ RULES_COMPROMISSION_HOTE = {
 # c'est le mécanisme d'inventaire natif, il survit à l'ajout d'un agent, et
 # l'opérateur qui enrôle une machine déclare son rôle au même endroit que le
 # reste de sa configuration. Cf. wazuh/README.md pour la création du groupe.
-ISOLATION_GROUPES_INTERDITS = {
+ISOLATION_GROUPS_FORBIDDEN = {
     g.strip().lower()
     for g in os.environ.get("ISOLATION_GROUPES_INTERDITS", "infrastructure").split(",")
     if g.strip()}
@@ -471,7 +471,7 @@ ISOLATION_GROUPES_INTERDITS = {
 # refus est un incident non contenu que l'analyste voit dans le case (l'action
 # bascule en escalate_human) ; le pire cas d'une autorisation par défaut est le
 # pare-feu du site coupé sur une panne d'API.
-ISOLATION_REFUS_SI_ROLE_INCONNU = os.environ.get(
+ISOLATION_REFUSE_IF_ROLE_UNKNOWN = os.environ.get(
     "ISOLATION_REFUS_SI_ROLE_INCONNU", "true").lower() == "true"
 
 
@@ -487,7 +487,7 @@ ISOLATION_REFUS_SI_ROLE_INCONNU = os.environ.get(
 # Le rôle est porté par les groupes Wazuh (mécanisme d'inventaire natif, déjà
 # utilisé par ISOLATION_GROUPES_INTERDITS), préfixés pour ne pas collisionner
 # avec les groupes de configuration : `role-dc`, `role-firewall`…
-CMDB_GROUPE_PREFIXE = os.environ.get("CMDB_GROUPE_PREFIXE", "role-")
+CMDB_GROUP_PREFIX = os.environ.get("CMDB_GROUPE_PREFIXE", "role-")
 
 # Rôle -> priorité (1 = le plus critique). Le classement suit ce qu'on perd si
 # la machine tombe :
@@ -498,7 +498,7 @@ CMDB_GROUPE_PREFIXE = os.environ.get("CMDB_GROUPE_PREFIXE", "role-")
 #  P2 — service exposé ou porteur de données : pivot classique d'une intrusion.
 #  P3 — serveur interne sans exposition ni donnée sensible.
 #  P4 — poste client, lab, machine éphémère, et tout rôle non déclaré.
-PRIORITE_ROLES: dict[str, int] = {
+PRIORITY_ROLES: dict[str, int] = {
     "dc": 1, "firewall": 1, "soc": 1, "hypervisor": 1, "pki": 1, "backup": 1,
     "web": 2, "db": 2, "mail": 2, "proxy": 2, "dns": 2, "vpn": 2,
     "fileserver": 2,
@@ -506,13 +506,13 @@ PRIORITE_ROLES: dict[str, int] = {
     "endpoint": 4, "lab": 4,
 }
 # Surcharge/ajout par déploiement : PRIORITE_ROLES="nas=1,jellyfin=3".
-for _paire in os.environ.get("PRIORITE_ROLES", "").split(","):
-    if "=" in _paire:
-        _role, _p = _paire.split("=", 1)
+for _pair in os.environ.get("PRIORITE_ROLES", "").split(","):
+    if "=" in _pair:
+        _role, _p = _pair.split("=", 1)
         try:
-            PRIORITE_ROLES[_role.strip().lower()] = int(_p)
+            PRIORITY_ROLES[_role.strip().lower()] = int(_p)
         except ValueError:
-            sys.exit(f"PRIORITE_ROLES : priorité invalide dans « {_paire} »")
+            sys.exit(f"PRIORITE_ROLES : priorité invalide dans « {_pair} »")
 
 # Priorité d'une machine dont le rôle n'est PAS déclaré (aucun groupe `role-`,
 # agent absent de la CMDB, API injoignable). P4 : décision opérateur — un asset
@@ -522,14 +522,14 @@ for _paire in os.environ.get("PRIORITE_ROLES", "").split(","):
 # comme un poste jetable. C'est pourquoi la source de la priorité est TRACÉE
 # (`assets.priorite_source = 'defaut'`) et remontée par le rapport de couverture
 # — la dette d'inventaire doit être visible, pas devinée.
-PRIORITE_DEFAUT = int(os.environ.get("PRIORITE_DEFAUT", "4"))
+DEFAULT_PRIORITY = int(os.environ.get("PRIORITE_DEFAUT", "4"))
 
 # Décalage appliqué au niveau Wazuh pour obtenir la sévérité EFFECTIVE de
 # l'incident, par priorité (P1..P4). `max_level` n'est jamais modifié : il
 # décrit ce que la règle a vu, et tout le reste du pipeline (corrélation, UEBA,
 # RULES_COMPROMISSION_HOTE) s'appuie dessus. La sévérité est une seconde
 # grandeur, qui ajoute « sur quoi ».
-SEVERITE_BONUS_PRIORITE = {
+SEVERITY_BONUS_PRIORITY = {
     p + 1: int(v) for p, v in enumerate(
         os.environ.get("SEVERITE_BONUS_PRIORITE", "2,1,0,-1").split(","))}
 
@@ -537,7 +537,7 @@ SEVERITE_BONUS_PRIORITE = {
 # PAR PRIORITÉ (cf. actions.appliquer_garde_fous). Sur un asset P1, on ne laisse
 # pas le modèle refermer un incident de niveau 12 : le coût d'un faux négatif y
 # est sans commune mesure avec celui d'un case à lire.
-CLOTURE_INTERDITE_PAR_PRIORITE = {
+CLOSURE_FORBIDDEN_BY_PRIORITY = {
     p + 1: int(v) for p, v in enumerate(
         os.environ.get("CLOTURE_INTERDITE_PAR_PRIORITE", "12,13,14,14").split(","))}
 
@@ -546,7 +546,7 @@ CLOTURE_INTERDITE_PAR_PRIORITE = {
 # asset P1, mais les alertes qu'il REMONTE parlent des postes du LAN. Sans ce
 # rabattement, chaque scan vu par l'IDS deviendrait un incident P1 et noierait la
 # file — la priorisation dégraderait le tri au lieu de l'améliorer.
-PRIORITE_CAPTEUR = int(os.environ.get("PRIORITE_CAPTEUR", "3"))
+PRIORITY_SENSOR = int(os.environ.get("PRIORITE_CAPTEUR", "3"))
 
 
 # --- Corrélation ------------------------------------------------------------
@@ -573,7 +573,7 @@ MAX_INCIDENT_HOURS = int(os.environ.get("MAX_INCIDENT_HOURS", "6"))
 # MAX_INCIDENT_HOURS car une campagne s'étale sur des jours ; le risque de
 # sur-fusion est borné par l'exigence d'un marqueur d'attaquant partagé (jamais
 # une IP interne ni une entité générique). 0 désactive la fusion campagne.
-CAMPAGNE_GAP_HOURS = int(os.environ.get("CAMPAGNE_GAP_HOURS", "48"))
+CAMPAIGN_GAP_HOURS = int(os.environ.get("CAMPAGNE_GAP_HOURS", "48"))
 
 # Durée de vie du RE-TRIAGE automatique d'un incident (correctif #4, explosion
 # de tokens du 2026-07-30). Passé ce délai depuis `first_seen`, un incident déjà
@@ -592,10 +592,10 @@ INCIDENT_REFRESH_TTL_HOURS = int(
 # Groupes de règles surveillés : leur silence rend inertes des pans entiers du
 # ruleset (audit -> 1006xx/1007xx ; suricata -> détection réseau ; sshd/pam ->
 # brute-force). Ajout facile d'un groupe applicatif si besoin.
-WATCHDOG_CAPTEURS = tuple(os.environ.get(
+WATCHDOG_SENSORS = tuple(os.environ.get(
     "WATCHDOG_CAPTEURS", "audit,suricata,sshd,syscheck").split(","))
 # Fenêtre de référence : sur combien d'heures un capteur est jugé « établi ».
-WATCHDOG_REF_HEURES = int(os.environ.get("WATCHDOG_REF_HEURES", "168"))  # 7 j
+WATCHDOG_REF_HOURS = int(os.environ.get("WATCHDOG_REF_HEURES", "168"))  # 7 j
 # Volume minimal sur la fenêtre de référence pour ne pas alerter sur un capteur
 # anecdotique (un unique event isolé n'est pas une base).
 WATCHDOG_BASELINE_MIN = int(os.environ.get("WATCHDOG_BASELINE_MIN", "20"))
@@ -650,7 +650,7 @@ WATCHDOG_SILENCE_MINUTES = int(os.environ.get("WATCHDOG_SILENCE_MINUTES", "10"))
 # 1440 min (24 h) : au-delà, même une machine oubliée aurait dû voir passer une
 # session ou un scan. Un lecteur journald réellement figé finit donc par sortir,
 # sans noyer l'analyste d'ici là.
-WATCHDOG_SILENCE_PAR_CAPTEUR = {
+WATCHDOG_SILENCE_PER_SENSOR = {
     "syscheck": int(os.environ.get("WATCHDOG_SILENCE_SYSCHECK", "4320")),
     "sshd": int(os.environ.get("WATCHDOG_SILENCE_SSHD", "1440")),
 }
@@ -674,12 +674,12 @@ WATCHDOG_SILENCE_PAR_CAPTEUR = {
 #
 # `case` reste disponible, et les pannes ouvertes AVANT une bascule se ferment
 # dans leur canal d'origine (cf. watchdog.surveiller).
-WATCHDOG_IRIS_CANAL = os.environ.get("WATCHDOG_IRIS_CANAL", "alert").lower()
+WATCHDOG_IRIS_CHANNEL = os.environ.get("WATCHDOG_IRIS_CANAL", "alert").lower()
 # Rétrocompatibilité : `WATCHDOG_CASE_IRIS=false` coupait toute trace IRIS.
 if os.environ.get("WATCHDOG_CASE_IRIS", "true").lower() != "true":
-    WATCHDOG_IRIS_CANAL = "off"
-if WATCHDOG_IRIS_CANAL not in ("alert", "case", "off"):
-    WATCHDOG_IRIS_CANAL = "alert"
+    WATCHDOG_IRIS_CHANNEL = "off"
+if WATCHDOG_IRIS_CHANNEL not in ("alert", "case", "off"):
+    WATCHDOG_IRIS_CHANNEL = "alert"
 
 # Retard d'ingestion au-delà duquel le watchdog se tait plutôt que de crier.
 #
@@ -691,7 +691,7 @@ if WATCHDOG_IRIS_CANAL not in ("alert", "case", "off"):
 #
 # 30 min = six cycles d'ingestion (300 s) : au-delà, ce n'est plus un cycle qui
 # a pris du retard.
-WATCHDOG_RETARD_INGEST_MAX = int(
+WATCHDOG_LAG_INGEST_MAX = int(
     os.environ.get("WATCHDOG_RETARD_INGEST_MAX", "30"))
 
 # --- Routage des sources de log (routage.py) --------------------------------
@@ -701,34 +701,34 @@ WATCHDOG_RETARD_INGEST_MAX = int(
 # actif de la liste INDEXER_ALERT_INDICES ci-dessus : tenir cette liste à la
 # main a déjà rendu l'IA aveugle deux fois (wazuh-linux/web, puis yara et
 # firewall). Ce qui est vérifié à chaque passage ne peut plus être oublié.
-ROUTAGE_ACTIF = os.environ.get("ROUTAGE_ACTIF", "true").lower() == "true"
+ROUTING_ACTIVE = os.environ.get("ROUTAGE_ACTIF", "true").lower() == "true"
 
 # Auto-application des index sets. `false` = les sources sont détectées,
 # nommées et proposées (alerte IRIS), mais rien n'est écrit côté indexer :
 # c'est le mode d'observation à tenir quelques jours après un déploiement.
-ROUTAGE_APPLIQUER = os.environ.get("ROUTAGE_APPLIQUER", "true").lower() == "true"
+ROUTING_APPLY = os.environ.get("ROUTAGE_APPLIQUER", "true").lower() == "true"
 
 # Le pipeline d'ingest visé. Nom imposé par filebeat (module wazuh), pas par
 # nous : c'est celui que le manager repousse à chaque démarrage.
-ROUTAGE_PIPELINE = os.environ.get(
+ROUTING_PIPELINE = os.environ.get(
     "ROUTAGE_PIPELINE", "filebeat-7.10.2-wazuh-alerts-pipeline")
 
 # Fenêtre d'observation des sources. 24 h : assez large pour qu'une source
 # quotidienne (sauvegarde nocturne, rapport journalier) soit vue, assez courte
 # pour que l'agrégation reste gratuite.
-ROUTAGE_FENETRE_HEURES = int(os.environ.get("ROUTAGE_FENETRE_HEURES", "24"))
+ROUTING_WINDOW_HOURS = int(os.environ.get("ROUTAGE_FENETRE_HEURES", "24"))
 
 # Volume minimum pour CRÉER un index set. Une source qui a produit trois lignes
 # hier n'est pas une source, c'est un accident — et un index set créé pour rien
 # reste ensuite dans le template, dans l'ISM et dans le pattern combiné du
 # dashboard, où un pattern vide casse Global (cf. create_index_patterns.py).
-ROUTAGE_BASELINE_MIN = int(os.environ.get("ROUTAGE_BASELINE_MIN", "20"))
+ROUTING_BASELINE_MIN = int(os.environ.get("ROUTAGE_BASELINE_MIN", "20"))
 
 # Volume minimum pour signaler une DÉRIVE (source connue qui n'atterrit plus
 # où elle devrait). Plus bas que la création : constater qu'une route existante
 # ne fonctionne plus n'engage aucune écriture, et c'est le symptôme d'un
 # pipeline écrasé — on veut le voir tôt.
-ROUTAGE_DERIVE_MIN = int(os.environ.get("ROUTAGE_DERIVE_MIN", "5"))
+ROUTING_DRIFT_MIN = int(os.environ.get("ROUTAGE_DERIVE_MIN", "5"))
 
 # Silence au-delà duquel une source ÉTABLIE est déclarée muette. Mesuré sur
 # l'indexer, donc contre l'horloge (contrairement aux capteurs du watchdog, qui
@@ -738,17 +738,17 @@ ROUTAGE_DERIVE_MIN = int(os.environ.get("ROUTAGE_DERIVE_MIN", "5"))
 # proxy peut ne rien logger d'alertable pendant une nuit entière. C'est ce
 # seuil qui aurait signalé wazuh-proxy, wazuh-jellyfin et wazuh-dns, morts
 # depuis le 2026-07-30 sans que rien ne le dise.
-ROUTAGE_SILENCE_HEURES = int(os.environ.get("ROUTAGE_SILENCE_HEURES", "48"))
+ROUTING_SILENCE_HOURS = int(os.environ.get("ROUTAGE_SILENCE_HEURES", "48"))
 
 # Plafond de créations automatiques par 24 h. Un plafond bas est délibéré :
 # créer un index set touche le pipeline d'ingest de TOUT le SOC. Si dix sources
 # nouvelles apparaissent le même jour, ce n'est pas dix index sets qu'il faut,
 # c'est un humain qui regarde ce qui vient de changer dans le SI.
-ROUTAGE_MAX_NOUVEAUX_PAR_JOUR = int(
+ROUTING_MAX_NEW_PER_DAY = int(
     os.environ.get("ROUTAGE_MAX_NOUVEAUX_PAR_JOUR", "2"))
 
 # Index par défaut de Wazuh : une source qui atterrit là n'est routée par rien.
-ROUTAGE_INDEX_DEFAUT = os.environ.get("ROUTAGE_INDEX_DEFAUT", "wazuh-alerts-4.x")
+ROUTING_DEFAULT_INDEX = os.environ.get("ROUTAGE_INDEX_DEFAUT", "wazuh-alerts-4.x")
 
 # OpenSearch Dashboards, pour créer l'index pattern d'un nouvel index set. Sans
 # lui l'index existe et se remplit, mais reste invisible dans Discover — le
@@ -781,7 +781,7 @@ METRICS_INDEX_PREFIX = os.environ.get("METRICS_INDEX_PREFIX", "wazuh-ai")
 # Fenêtre réexportée à chaque passage. Largement supérieure à la cadence du job
 # (5 min) : l'export étant idempotent (_id déterministe), un recouvrement large
 # rattrape gratuitement une panne d'indexer de quelques heures.
-METRICS_FENETRE = os.environ.get("METRICS_FENETRE", "6h")
+METRICS_WINDOW = os.environ.get("METRICS_FENETRE", "6h")
 
 # Tarifs du modèle, en USD par million de tokens. Valeurs publiées pour
 # deepseek-v4-flash (relevées le 2026-07-29) :
@@ -799,11 +799,11 @@ METRICS_FENETRE = os.environ.get("METRICS_FENETRE", "6h")
 # l'entrée est mise en cache. On lit la ventilation renvoyée par l'API quand
 # elle est disponible ; sinon on compte TOUT en cache miss, ce qui majore le
 # coût (une estimation haute vaut mieux qu'une basse).
-LLM_COUT_USD_PAR_MTOKEN_IN = float(
+LLM_COST_USD_PER_MTOKEN_IN = float(
     os.environ.get("LLM_COUT_USD_PAR_MTOKEN_IN", "0.14"))
-LLM_COUT_USD_PAR_MTOKEN_IN_CACHE = float(
+LLM_COST_USD_PER_MTOKEN_IN_CACHE = float(
     os.environ.get("LLM_COUT_USD_PAR_MTOKEN_IN_CACHE", "0.0028"))
-LLM_COUT_USD_PAR_MTOKEN_OUT = float(
+LLM_COST_USD_PER_MTOKEN_OUT = float(
     os.environ.get("LLM_COUT_USD_PAR_MTOKEN_OUT", "0.28"))
 
 # --- VOC : gestion des vulnérabilités (vulns.py) ----------------------------
@@ -826,7 +826,7 @@ VOC_INDEX_PREFIX = os.environ.get("VOC_INDEX_PREFIX", "wazuh-voc")
 # dominé par le bruit de fond des distributions (2 500 CVE ouvertes sur un Debian
 # à jour, en écrasante majorité Low/Medium sans exploit connu) et classerait les
 # machines par nombre de paquets installés.
-VULN_POIDS_SEVERITE = {
+VULN_WEIGHT_SEVERITY = {
     "critical": 10.0, "high": 4.0, "medium": 1.0, "low": 0.2,
     # Sévérité absente du feed (334 par hôte Debian mesurées le 2026-08-12) :
     # ni ignorée — c'est une CVE réelle — ni traitée comme grave.
@@ -837,7 +837,7 @@ VULN_POIDS_SEVERITE = {
 # `SEVERITE_BONUS_PRIORITE` sur les incidents : une CVE critique sur le
 # contrôleur de domaine et la même sur un poste de lab ne sont pas le même
 # problème, et un VOC qui les compte pareil fait patcher dans le désordre.
-VOC_FACTEUR_PRIORITE = {
+VOC_FACTOR_PRIORITY = {
     p + 1: float(v) for p, v in enumerate(
         os.environ.get("VOC_FACTEUR_PRIORITE", "4,2,1,0.5").split(","))}
 
@@ -846,22 +846,22 @@ VOC_FACTEUR_PRIORITE = {
 # (« une critical sur le DC se traite dans la semaine ») et se règlent par
 # déploiement. Leur seule fonction est de rendre le retard MESURABLE — sans
 # échéance, « vulnérabilité ouverte depuis 210 jours » n'est qu'un nombre.
-VOC_SLA_JOURS = {
+VOC_SLA_DAYS = {
     "critical": [7, 14, 30, 60],
     "high": [15, 30, 60, 90],
     "medium": [30, 60, 90, 180],
     "low": [90, 180, 365, 365],
 }
-for _ligne in os.environ.get("VOC_SLA_JOURS", "").split(";"):
-    if ":" in _ligne:
-        _sev, _jours = _ligne.split(":", 1)
+for _line in os.environ.get("VOC_SLA_JOURS", "").split(";"):
+    if ":" in _line:
+        _sev, _days = _line.split(":", 1)
         try:
-            _v = [int(j) for j in _jours.split(",")]
+            _v = [int(j) for j in _days.split(",")]
         except ValueError:
-            sys.exit(f"VOC_SLA_JOURS : valeur non entière dans « {_ligne} »")
+            sys.exit(f"VOC_SLA_JOURS : valeur non entière dans « {_line} »")
         if len(_v) != 4:
-            sys.exit(f"VOC_SLA_JOURS : 4 valeurs (P1..P4) attendues dans « {_ligne} »")
-        VOC_SLA_JOURS[_sev.strip().lower()] = _v
+            sys.exit(f"VOC_SLA_JOURS : 4 valeurs (P1..P4) attendues dans « {_line} »")
+        VOC_SLA_DAYS[_sev.strip().lower()] = _v
 
 # Charge pondérée qui vaut 100/100 dans le score d'exposition. Le score est
 # log-compressé : la charge va de quelques unités (serveur tenu à jour) à
@@ -875,7 +875,7 @@ VOC_CHARGE_MAX = float(os.environ.get("VOC_CHARGE_MAX", "20000"))
 # document par document dans l'index VOC. Les Low/Medium ouvertes se comptent par
 # milliers et n'ont pas de valeur d'action individuelle : elles restent dans les
 # agrégats, pas dans la table « à traiter ».
-VOC_SEVERITES_DETAIL = {
+VOC_SEVERITIES_DETAIL = {
     s.strip().lower() for s in
     os.environ.get("VOC_SEVERITES_DETAIL", "critical,high").split(",")
     if s.strip()}
@@ -883,7 +883,7 @@ VOC_SEVERITES_DETAIL = {
 # Nombre de CVE listées nommément dans la section « Exposition aux
 # vulnérabilités » d'un case IRIS. Au-delà, la note devient un catalogue que
 # personne ne lit et le rapport généré déborde.
-VOC_MAX_CVE_RAPPORT = int(os.environ.get("VOC_MAX_CVE_RAPPORT", "10"))
+VOC_MAX_CVE_REPORT = int(os.environ.get("VOC_MAX_CVE_RAPPORT", "10"))
 
 # --- Réglage automatique des règles Wazuh (rule_tuning.py) ------------------
 #
@@ -905,27 +905,27 @@ RULE_TUNING_ID_MAX = int(os.environ.get("RULE_TUNING_ID_MAX", "101999"))
 # supprimer (0) : l'alerte reste consultable et auditable, elle passe seulement
 # sous MIN_LEVEL, donc n'ouvre plus d'incident. C'est ce qui distingue
 # « calmer une règle » de « l'invalider ».
-RULE_TUNING_NIVEAU = int(os.environ.get("RULE_TUNING_NIVEAU", "5"))
+RULE_TUNING_LEVEL = int(os.environ.get("RULE_TUNING_NIVEAU", "5"))
 
 # La suppression totale (niveau 0) fait disparaître l'évènement des alertes :
 # plus rien à relire le jour où la signature exonérée s'avère être une vraie
 # attaque. Verrouillée derrière un drapeau explicite.
-RULE_TUNING_AUTORISE_NIVEAU_0 = os.environ.get(
+RULE_TUNING_ALLOWED_LEVEL_0 = os.environ.get(
     "RULE_TUNING_AUTORISE_NIVEAU_0", "false").lower() == "true"
 
 # Plafond de règles générées. Au-delà, ce n'est plus du réglage fin : c'est un
 # ruleset qui ne correspond pas à l'environnement, et ça se traite à la main.
-RULE_TUNING_MAX_REGLES = int(os.environ.get("RULE_TUNING_MAX_REGLES", "50"))
+RULE_TUNING_MAX_RULES = int(os.environ.get("RULE_TUNING_MAX_REGLES", "50"))
 
 # Alertes examinées pour trouver un contre-exemple (un évènement de la même
 # règle parente NON couvert par l'exception). Sans contre-exemple, la règle
 # n'est pas déployée : on ne peut pas prouver qu'elle n'invalide pas la parente.
-RULE_TUNING_CANDIDATS_CONTRE_EXEMPLE = int(
+RULE_TUNING_COUNTER_EXAMPLE_CANDIDATES = int(
     os.environ.get("RULE_TUNING_CANDIDATS_CONTRE_EXEMPLE", "200"))
 
 # Redémarrage du manager (seule façon de charger un changement de règle) :
 # nombre de sondages de 5 s avant de conclure à l'échec et de tout retirer.
-RULE_TUNING_ATTENTE_ESSAIS = int(os.environ.get("RULE_TUNING_ATTENTE_ESSAIS", "24"))
+RULE_TUNING_WAIT_ATTEMPTS = int(os.environ.get("RULE_TUNING_ATTENTE_ESSAIS", "24"))
 
 # Niveau Wazuh à partir duquel on ne whitelist JAMAIS automatiquement, même sur
 # des FP répétés. Même logique que le garde-fou de clôture : une règle qui tire
@@ -973,8 +973,8 @@ UEBA_ENABLED = os.environ.get("UEBA_ENABLED", "true").lower() == "true"
 # tout y est inédit — scorer enverrait l'intégralité du parc au LLM. On observe
 # d'abord, on juge ensuite. Même philosophie que le mode training, et les deux
 # se cumulent bien : la fenêtre de training amorce gratuitement la baseline.
-UEBA_MATURITE_JOURS = int(os.environ.get("UEBA_MATURITE_JOURS", "7"))
-UEBA_MATURITE_MIN_OBS = int(os.environ.get("UEBA_MATURITE_MIN_OBS", "200"))
+UEBA_MATURITY_DAYS = int(os.environ.get("UEBA_MATURITE_JOURS", "7"))
+UEBA_MATURITY_MIN_OBS = int(os.environ.get("UEBA_MATURITE_MIN_OBS", "200"))
 
 # Bits attribués à une valeur JAMAIS vue dans un profil mûr. 12 bits = « une
 # chance sur 4096 », l'ordre de grandeur d'un événement réellement inédit.
@@ -984,12 +984,12 @@ UEBA_FIRSTSEEN_BITS = float(os.environ.get("UEBA_FIRSTSEEN_BITS", "12"))
 # AILLEURS (déploiement d'admin, mise à jour, outil métier) : son score est
 # alors écrasé. Principal anti-faux-positif du module — sans lui, chaque
 # nouveau binaire poussé sur le parc ouvrirait un incident par machine.
-UEBA_FLOTTE_BANAL = int(os.environ.get("UEBA_FLOTTE_BANAL", "3"))
+UEBA_FLEET_COMMON = int(os.environ.get("UEBA_FLOTTE_BANAL", "3"))
 
 # Nombre de jours DISTINCTS au-delà duquel une valeur est une habitude et cesse
 # d'être scorée. En jours et non en occurrences : 500 exécutions en un seul jour
 # est un incident, 5 exécutions sur 5 jours est une routine.
-UEBA_JOURS_HABITUEL = int(os.environ.get("UEBA_JOURS_HABITUEL", "5"))
+UEBA_DAYS_USUAL = int(os.environ.get("UEBA_JOURS_HABITUEL", "5"))
 
 # Garde-fou de CARDINALITÉ. Un trait dont presque chaque observation apporte une
 # valeur neuve (chemins horodatés, archives LVM rotatives, GUID, identifiants de
@@ -1006,49 +1006,49 @@ UEBA_JOURS_HABITUEL = int(os.environ.get("UEBA_JOURS_HABITUEL", "5"))
 # Le seuil de 0,25 n'est pas choisi au jugé : mesuré sur le parc réel, le trait
 # pathologique (archives LVM) est à 0,481 et le suivant à 0,056 — un ordre de
 # grandeur d'écart. 0,25 tombe au milieu du fossé, donc loin des deux.
-UEBA_CARDINALITE_MAX = float(os.environ.get("UEBA_CARDINALITE_MAX", "0.25"))
-UEBA_CARDINALITE_MIN_OBS = int(os.environ.get("UEBA_CARDINALITE_MIN_OBS", "200"))
+UEBA_CARDINALITY_MAX = float(os.environ.get("UEBA_CARDINALITE_MAX", "0.25"))
+UEBA_CARDINALITY_MIN_OBS = int(os.environ.get("UEBA_CARDINALITE_MIN_OBS", "200"))
 
 # Plancher de rareté : en dessous, le trait n'est pas retenu comme motif. Évite
 # d'empiler des dixièmes de bit qui finiraient par franchir le seuil sans qu'un
 # seul élément soit anormal.
-UEBA_BITS_MIN_RARETE = float(os.environ.get("UEBA_BITS_MIN_RARETE", "4"))
+UEBA_BITS_MIN_RARITY = float(os.environ.get("UEBA_BITS_MIN_RARETE", "4"))
 
 # Plafonds de saturation. Sans eux, une seule valeur répétée mille fois écrase
 # tout le reste et le score cesse de décrire l'incident.
 UEBA_CAP_TRAIT = float(os.environ.get("UEBA_CAP_TRAIT", "14"))
-UEBA_CAP_ALERTE = float(os.environ.get("UEBA_CAP_ALERTE", "20"))
+UEBA_CAP_ALERT = float(os.environ.get("UEBA_CAP_ALERTE", "20"))
 
 # Fenêtre de regroupement des alertes basses d'un même agent en un « signal ».
 # Plus large que CORRELATION_GAP_MINUTES : une intrusion discrète est lente, et
 # ici on ne cherche pas un point commun nommable mais une CONCENTRATION.
-UEBA_FENETRE_MINUTES = int(os.environ.get("UEBA_FENETRE_MINUTES", "60"))
+UEBA_WINDOW_MINUTES = int(os.environ.get("UEBA_FENETRE_MINUTES", "60"))
 
 # Durée totale maximale d'un signal. Le chaînage est de proche en proche : sans
 # ce plafond, un hôte qui émet une alerte toutes les 50 minutes agglomère sa
 # journée entière en un seul signal — le score enfle par accumulation et non par
 # anomalie. Équivalent de MAX_INCIDENT_HOURS pour la corrélation.
-UEBA_SIGNAL_MAX_HEURES = int(os.environ.get("UEBA_SIGNAL_MAX_HEURES", "6"))
+UEBA_SIGNAL_MAX_HOURS = int(os.environ.get("UEBA_SIGNAL_MAX_HEURES", "6"))
 
 # Chaîne MITRE. Le simple « 3 tactiques distinctes » remonte surtout Discovery
 # x3 (un admin qui inventorie sa machine) : les tactiques sont donc PONDÉRÉES
 # (credential-access = 5, discovery = 1) et un bonus s'ajoute quand elles
 # PROGRESSENT dans l'ordre de la kill chain.
-UEBA_MIN_TACTIQUES = int(os.environ.get("UEBA_MIN_TACTIQUES", "3"))
-UEBA_BONUS_ORDRE = float(os.environ.get("UEBA_BONUS_ORDRE", "3"))
+UEBA_MIN_TACTICS = int(os.environ.get("UEBA_MIN_TACTIQUES", "3"))
+UEBA_BONUS_ORDER = float(os.environ.get("UEBA_BONUS_ORDRE", "3"))
 
 # Score minimal pour qu'un signal puisse être promu. Se calibre sur des données
 # réelles SANS consommer de token : `python -m soc_agent.ueba --simulation`
 # enregistre les signaux et leurs scores sans rien promouvoir.
-UEBA_SCORE_PLANCHER = float(os.environ.get("UEBA_SCORE_PLANCHER", "35"))
+UEBA_SCORE_FLOOR = float(os.environ.get("UEBA_SCORE_PLANCHER", "35"))
 
 # LE garde-fou de coût. Un seuil de score seul ne borne rien : le volume varie
 # d'un facteur dix entre une journée calme et une campagne. Le budget, lui, est
 # un nombre qu'on décide. Un signal non promu n'est pas perdu — il est réévalué
 # au cycle suivant, et son score aura grossi s'il continue.
 # 20 promotions/jour ~ 20 triages LLM/jour ajoutés au coût existant.
-UEBA_BUDGET_JOUR = int(os.environ.get("UEBA_BUDGET_JOUR", "20"))
-UEBA_BUDGET_PAR_CYCLE = int(os.environ.get("UEBA_BUDGET_PAR_CYCLE", "2"))
+UEBA_BUDGET_PER_DAY = int(os.environ.get("UEBA_BUDGET_JOUR", "20"))
+UEBA_BUDGET_PER_CYCLE = int(os.environ.get("UEBA_BUDGET_PAR_CYCLE", "2"))
 
 # Âge au-delà duquel une alerte basse n'est plus candidate à un signal : elle a
 # eu ses chances, la reprendre indéfiniment ferait grossir le lot sans fin.
@@ -1056,13 +1056,13 @@ UEBA_RETENTION_HOURS = int(os.environ.get("UEBA_RETENTION_HOURS", "24"))
 
 # Taille du lot d'observation par passage. Le tout premier passage doit avaler
 # l'historique déjà en base ; les suivants ne voient que le delta du cycle.
-UEBA_LOT = int(os.environ.get("UEBA_LOT", "20000"))
+UEBA_BATCH = int(os.environ.get("UEBA_LOT", "20000"))
 
 # Mémoire de la baseline. Un profil qui ne vieillit jamais fige le comportement
 # d'il y a six mois : un serveur réinstallé resterait « normal » sur ses anciens
 # binaires. Les observations plus vieilles sont supprimées et les profils
 # recalculés sur ce qui reste.
-UEBA_MEMOIRE_JOURS = int(os.environ.get("UEBA_MEMOIRE_JOURS", "90"))
+UEBA_MEMORY_DAYS = int(os.environ.get("UEBA_MEMOIRE_JOURS", "90"))
 
 # Remédiation autonome sur un incident issu d'un signal UEBA.
 #
@@ -1106,7 +1106,7 @@ CTI_CACHE = os.environ.get("CTI_CACHE", "/var/lib/aura-cti/ioc.db")
 # Catalogue des feeds. Fichier plutôt que variables d'environnement : une
 # entrée porte une URL, un format, des tags et un commentaire — illisible en
 # .env, et c'est de la configuration de contenu, pas de déploiement.
-CTI_CATALOGUE = os.environ.get(
+CTI_CATALOG = os.environ.get(
     "CTI_CATALOGUE", str(Path(__file__).parent / "cti_feeds.yaml"))
 
 # Profondeur de l'extraction MISP, au sens du paramètre `last` de son API.
@@ -1117,7 +1117,7 @@ CTI_CATALOGUE = os.environ.get(
 # filtre presque rien. Son vrai rôle est d'éviter de retirer sans arrêt le
 # corpus entier ; la fraîcheur du renseignement, elle, est traitée par
 # CTI_IP_MAX_JOURS ci-dessous.
-CTI_FENETRE = os.environ.get("CTI_FENETRE", "90d")
+CTI_WINDOW = os.environ.get("CTI_FENETRE", "90d")
 
 # Âge maximum, en jours, de l'ÉVÉNEMENT d'origine pour qu'une IP soit retenue.
 # 0 désactive le filtre.
@@ -1130,7 +1130,7 @@ CTI_FENETRE = os.environ.get("CTI_FENETRE", "90d")
 #
 # Ne s'applique QU'AUX IP : une empreinte de fichier ne périme jamais (le
 # fichier est le même), et un domaine reste rattaché à qui l'a déposé.
-CTI_IP_MAX_JOURS = int(os.environ.get("CTI_IP_MAX_JOURS", "365"))
+CTI_IP_MAX_DAYS = int(os.environ.get("CTI_IP_MAX_JOURS", "365"))
 
 # Types d'attributs MISP retenus. Tout le reste (fichiers, clés de registre,
 # mutex, adresses mail...) n'a pas de champ correspondant dans une alerte Wazuh
@@ -1147,30 +1147,30 @@ CTI_MAX_IOC = int(os.environ.get("CTI_MAX_IOC", "1000000"))
 # Âge à partir duquel le cache est déclaré périmé (règle 100956). 24 h : les
 # feeds les plus rapides tournent en 6 h, donc quatre cycles manqués. En
 # dessous, on alerterait sur un simple retard de job.
-CTI_PEREMPTION_HEURES = int(os.environ.get("CTI_PEREMPTION_HEURES", "24"))
+CTI_EXPIRY_HOURS = int(os.environ.get("CTI_PEREMPTION_HEURES", "24"))
 
 
 # --- Infrastructure du SOC lui-même ----------------------------------------
 #
 # Défini en fin de fichier : dépend des URL déclarées plus haut.
 
-def _hote_url(url: str) -> str | None:
+def _host_url(url: str) -> str | None:
     """Hôte d'une URL de configuration, uniquement si c'est une IP littérale.
 
     Un nom DNS ne sert à rien ici : la comparaison se fera contre l'IP telle
     qu'elle apparaît dans une alerte.
     """
     try:
-        hote = urlparse(url or "").hostname
+        host = urlparse(url or "").hostname
     except ValueError:
         return None
-    if not hote:
+    if not host:
         return None
     try:
-        ipaddress.ip_address(hote)
+        ipaddress.ip_address(host)
     except ValueError:
         return None
-    return hote
+    return host
 
 
 # IP de l'infrastructure du SOC : manager Wazuh, indexer, IRIS, Shuffle.
@@ -1194,8 +1194,8 @@ def _hote_url(url: str) -> str | None:
 #  - SOC_INFRA_IPS, pour le reste : VIP, seconde interface du manager,
 #    collecteur tiers.
 SOC_INFRA_IPS = {
-    ip for ip in (_hote_url(INDEXER_URL), _hote_url(IRIS_URL),
-                  _hote_url(SHUFFLE_URL), _hote_url(WAZUH_API_URL)) if ip
+    ip for ip in (_host_url(INDEXER_URL), _host_url(IRIS_URL),
+                  _host_url(SHUFFLE_URL), _host_url(WAZUH_API_URL)) if ip
 } | set(MITIGATE_ISOLATE_ALLOW) | {
     ip.strip() for ip in os.environ.get("SOC_INFRA_IPS", "").split(",")
     if ip.strip()}
@@ -1212,17 +1212,17 @@ SOC_INFRA_IPS = {
 # Âge au-delà duquel une alerte est supprimée de Postgres. Les alertes d'un
 # incident encore actif sont épargnées quel que soit leur âge (cf.
 # retention.PURGE_ALERTES) : un dossier ouvert ne se vide pas tout seul.
-RETENTION_ALERTES_JOURS = int(os.environ.get("RETENTION_ALERTES_JOURS", "90"))
+RETENTION_ALERTS_DAYS = int(os.environ.get("RETENTION_ALERTES_JOURS", "90"))
 
 # Âge au-delà duquel un index DATÉ de l'indexer est supprimé par la politique
 # ISM. Vaut pour les alertes comme pour les séries du VOC ; `wazuh-voc-vulns`,
 # index d'état non daté, en est exclu par construction.
-RETENTION_INDEX_JOURS = int(os.environ.get("RETENTION_INDEX_JOURS", "90"))
+RETENTION_INDEX_DAYS = int(os.environ.get("RETENTION_INDEX_JOURS", "90"))
 
 # Âge minimum d'un résidu de mise à jour du feed CVE avant suppression. En
 # HEURES, et large : c'est ce qui garantit qu'on ne supprime pas les fichiers
 # d'une mise à jour en cours (elles durent des minutes).
-RETENTION_VD_TMP_HEURES = int(os.environ.get("RETENTION_VD_TMP_HEURES", "12"))
+RETENTION_VD_TMP_HOURS = int(os.environ.get("RETENTION_VD_TMP_HEURES", "12"))
 
 # Répertoire `queue` du manager Wazuh, tel que monté dans le conteneur de
 # rétention. C'est le seul volume Wazuh qu'il touche, et en écriture — d'où un
@@ -1267,7 +1267,7 @@ HUNTING_INDEX_BASE = os.environ.get("HUNTING_INDEX_BASE", "wazuh-hunting")
 # est une COPIE d'une archive qui, elle, vit douze mois. La perdre ne perd rien,
 # et laisser traîner des restaurations est le moyen le plus simple de remplir le
 # disque du SOC.
-HUNTING_RETENTION_JOURS = int(os.environ.get("HUNTING_RETENTION_JOURS", "30"))
+HUNTING_RETENTION_DAYS = int(os.environ.get("HUNTING_RETENTION_JOURS", "30"))
 
 # Garde-fous de la restauration. Ils existent parce que cet espace est
 # accessible par le serveur MCP, donc par un agent IA : « restaure-moi tout pour
@@ -1275,13 +1275,13 @@ HUNTING_RETENTION_JOURS = int(os.environ.get("HUNTING_RETENTION_JOURS", "30"))
 # disque plein arrête TOUT le SOC (cf. docs/RETENTION.md).
 HUNTING_MAX_DOCS = int(os.environ.get("HUNTING_MAX_DOCS", "2000000"))
 HUNTING_MAX_INDICES = int(os.environ.get("HUNTING_MAX_INDICES", "10"))
-HUNTING_MAX_OCTETS = int(float(
+HUNTING_MAX_BYTES = int(float(
     os.environ.get("HUNTING_MAX_GO", "10")) * 1073741824)
 
 # Taille des lots `_bulk` de la réinjection. 2 000 documents d'alerte font une
 # requête de ~6 Mo : au-delà, l'indexer rejette ou met la pression sur son heap
 # sans que la réinjection aille plus vite.
-HUNTING_BULK_TAILLE = int(os.environ.get("HUNTING_BULK_TAILLE", "2000"))
+HUNTING_BULK_SIZE = int(os.environ.get("HUNTING_BULK_TAILLE", "2000"))
 
 # --- Archivage à froid vers S3 (cf. archive.py, docs/ARCHIVAGE.md) -----------
 #
@@ -1306,10 +1306,10 @@ HUNTING_BULK_TAILLE = int(os.environ.get("HUNTING_BULK_TAILLE", "2000"))
 #    vit en Postgres, jamais dans le système distant — même leçon que les pièces
 #    Evidence d'IRIS, qui se reposaient en boucle parce que la liste des « déjà
 #    posées » était demandée à IRIS et retombait à vide sur échec.
-ARCHIVAGE_ENABLED = os.environ.get("ARCHIVAGE_ENABLED", "false").lower() == "true"
+ARCHIVING_ENABLED = os.environ.get("ARCHIVAGE_ENABLED", "false").lower() == "true"
 
 
-def _archive_requis(nom: str) -> str:
+def _archive_required(name: str) -> str:
     """Requis SEULEMENT si l'archivage est actif.
 
     `config` est importé par les onze conteneurs du pipeline : un `_requis`
@@ -1318,7 +1318,7 @@ def _archive_requis(nom: str) -> str:
     identifiant manquant DOIT arrêter le démarrage — un archivage qui échoue en
     silence est pire que pas d'archivage : il fait croire que la copie existe.
     """
-    return _requis(nom) if ARCHIVAGE_ENABLED else os.environ.get(nom, "")
+    return _required(name) if ARCHIVING_ENABLED else os.environ.get(name, "")
 
 
 # Version du FORMAT d'archive, portée par le préfixe des clés S3. Le jour où le
@@ -1334,9 +1334,9 @@ ARCHIVE_FORMAT_VERSION = os.environ.get("ARCHIVE_FORMAT_VERSION", "v1")
 ARCHIVE_S3_ENDPOINT = os.environ.get(
     "ARCHIVE_S3_ENDPOINT", "https://s3.eu-central-003.backblazeb2.com")
 ARCHIVE_S3_REGION = os.environ.get("ARCHIVE_S3_REGION", "eu-central-003")
-ARCHIVE_S3_BUCKET = _archive_requis("ARCHIVE_S3_BUCKET")
-ARCHIVE_S3_KEY_ID = _archive_requis("ARCHIVE_S3_KEY_ID")
-ARCHIVE_S3_APP_KEY = _archive_requis("ARCHIVE_S3_APP_KEY")
+ARCHIVE_S3_BUCKET = _archive_required("ARCHIVE_S3_BUCKET")
+ARCHIVE_S3_KEY_ID = _archive_required("ARCHIVE_S3_KEY_ID")
+ARCHIVE_S3_APP_KEY = _archive_required("ARCHIVE_S3_APP_KEY")
 
 # Préfixe racine facultatif, si le bucket est partagé avec autre chose. Vide par
 # défaut : un bucket DÉDIÉ à l'archivage est le bon réglage, il permet de scoper
@@ -1371,7 +1371,7 @@ ARCHIVE_AGE_RECIPIENTS_EXTRA = [
     r.strip() for r in
     os.environ.get("ARCHIVE_AGE_RECIPIENTS_EXTRA", "").split(",") if r.strip()]
 
-if ARCHIVAGE_ENABLED:
+if ARCHIVING_ENABLED:
     _kf = Path(ARCHIVE_AGE_KEYFILE)
     if not _kf.is_file():
         sys.exit(
@@ -1380,10 +1380,10 @@ if ARCHIVAGE_ENABLED:
             "`age-keygen -o /etc/aura/keys/aura-archive-age.key` puis vérifier "
             "que ARCHIVE_KEY_DIR_HOST est monté (cf. docs/ARCHIVAGE.md).")
     try:
-        _contenu = _kf.read_text(encoding="utf-8", errors="replace")
+        _content = _kf.read_text(encoding="utf-8", errors="replace")
     except OSError as _e:
         sys.exit(f"ARCHIVE_AGE_KEYFILE illisible ({ARCHIVE_AGE_KEYFILE}) : {_e}")
-    if "AGE-SECRET-KEY-1" not in _contenu:
+    if "AGE-SECRET-KEY-1" not in _content:
         sys.exit(
             f"ARCHIVE_AGE_KEYFILE ({ARCHIVE_AGE_KEYFILE}) ne contient pas de clé "
             "age (« AGE-SECRET-KEY-1… »). Ne pas y mettre une clé PUBLIQUE : ce "
@@ -1408,11 +1408,11 @@ if ARCHIVAGE_ENABLED:
               "les archives — personne ne les récupère, ni Backblaze ni nous. "
               "Sauvegarder ce fichier hors ligne, ou ajouter une clé de secours.",
               file=sys.stderr)
-    _mauvais = [r for r in ARCHIVE_AGE_RECIPIENTS_EXTRA
+    _bad = [r for r in ARCHIVE_AGE_RECIPIENTS_EXTRA
                 if not (r.startswith("age1") and len(r) >= 58)]
-    if _mauvais:
+    if _bad:
         sys.exit(f"ARCHIVE_AGE_RECIPIENTS_EXTRA : valeur(s) invalide(s) "
-                 f"{_mauvais}. Attendu une clé PUBLIQUE age (« age1… », 62 "
+                 f"{_bad}. Attendu une clé PUBLIQUE age (« age1… », 62 "
                  "caractères), pas un chemin de fichier ni une clé privée.")
 
 # Object Lock (WORM). C'est ce qui distingue un archivage d'une sauvegarde :
@@ -1427,10 +1427,10 @@ ARCHIVE_OBJECT_LOCK = os.environ.get(
     "ARCHIVE_OBJECT_LOCK", "false").lower() == "true"
 ARCHIVE_OBJECT_LOCK_MODE = os.environ.get(
     "ARCHIVE_OBJECT_LOCK_MODE", "COMPLIANCE").upper()
-ARCHIVE_OBJECT_LOCK_JOURS = int(
+ARCHIVE_OBJECT_LOCK_DAYS = int(
     os.environ.get("ARCHIVE_OBJECT_LOCK_JOURS", "365"))
 
-if ARCHIVAGE_ENABLED and ARCHIVE_OBJECT_LOCK_MODE not in ("COMPLIANCE", "GOVERNANCE"):
+if ARCHIVING_ENABLED and ARCHIVE_OBJECT_LOCK_MODE not in ("COMPLIANCE", "GOVERNANCE"):
     sys.exit("ARCHIVE_OBJECT_LOCK_MODE doit valoir COMPLIANCE ou GOVERNANCE, "
              f"pas « {ARCHIVE_OBJECT_LOCK_MODE} ».")
 
@@ -1445,7 +1445,7 @@ if ARCHIVAGE_ENABLED and ARCHIVE_OBJECT_LOCK_MODE not in ("COMPLIANCE", "GOVERNA
 # `wazuh-monitoring-*` et `wazuh-statistics-*` (datés à la semaine, télémétrie
 # interne de Wazuh). Le mois se lit dans le NOM de l'index, jamais dans un
 # `@timestamp` : pas de fuseau horaire dans l'équation.
-ARCHIVE_INDEX_MOTIFS = os.environ.get("ARCHIVE_INDEX_MOTIFS", "wazuh-*")
+ARCHIVE_INDEX_PATTERNS = os.environ.get("ARCHIVE_INDEX_MOTIFS", "wazuh-*")
 
 # Exclusions supplémentaires, en motifs glob sur le nom d'index complet.
 #
@@ -1455,7 +1455,7 @@ ARCHIVE_INDEX_MOTIFS = os.environ.get("ARCHIVE_INDEX_MOTIFS", "wazuh-*")
 # même donnée pendant douze mois. Le nom des index de hunting n'est déjà pas daté
 # au jour, donc ils sont exclus par la forme ; cette ligne est la seconde
 # barrière, celle qui tient même si le nommage change.
-ARCHIVE_INDEX_EXCLUS = [
+ARCHIVE_INDEX_EXCLUDED = [
     m.strip() for m in os.environ.get("ARCHIVE_INDEX_EXCLUS", "").split(",")
     if m.strip()] + [f"{HUNTING_INDEX_BASE}-*"]
 
@@ -1464,26 +1464,26 @@ ARCHIVE_INDEX_EXCLUS = [
 # répare pas, et l'économie porterait sur quelques gigaoctets par an — l'ordre
 # de grandeur du prix d'un café. À ne remplir que si la volumétrie devient un
 # vrai problème, et à documenter dans le manifeste (ce que fait `champs_exclus`).
-ARCHIVE_CHAMPS_EXCLUS = [
+ARCHIVE_FIELDS_EXCLUDED = [
     c.strip() for c in os.environ.get("ARCHIVE_CHAMPS_EXCLUS", "").split(",")
     if c.strip()]
 
 # Niveau zstd. 19 est le meilleur compromis sur du JSON d'alerte (~20-30x) ;
 # au-delà (`--ultra`) le gain est marginal et la mémoire explose.
-ARCHIVE_ZSTD_NIVEAU = int(os.environ.get("ARCHIVE_ZSTD_NIVEAU", "19"))
+ARCHIVE_ZSTD_LEVEL = int(os.environ.get("ARCHIVE_ZSTD_NIVEAU", "19"))
 
 # Délai de grâce après la fin du mois avant de l'archiver. Ce n'est pas de la
 # prudence décorative : le rattrapage des alertes indexées en retard
 # (cf. INGEST_RATTRAPAGE_*) et un index créé à cheval sur minuit peuvent encore
 # écrire dans le mois écoulé. Archiver trop tôt fige une copie incomplète.
-ARCHIVE_DELAI_JOURS = int(os.environ.get("ARCHIVE_DELAI_JOURS", "2"))
+ARCHIVE_DELAY_DAYS = int(os.environ.get("ARCHIVE_DELAI_JOURS", "2"))
 
 # Rétention des archives, en mois. Sert de référence au manifeste et à la
 # vérification d'écart : la suppression elle-même appartient à la RÈGLE DE CYCLE
 # DE VIE du bucket, pas à ce code. Un cron qui meurt ne doit pas faire grossir
 # la facture indéfiniment, et le code n'a pas le droit de supprimer (la clé
 # applicative de prod ne porte pas `deleteFiles`).
-ARCHIVE_RETENTION_MOIS = int(os.environ.get("ARCHIVE_RETENTION_MOIS", "12"))
+ARCHIVE_RETENTION_MONTH = int(os.environ.get("ARCHIVE_RETENTION_MOIS", "12"))
 
 # Marge de sécurité entre archivage et purge ISM, en jours. Un index qui entre
 # dans cette marge sans archive confirmée est RETIRÉ de la politique ISM par
@@ -1491,12 +1491,12 @@ ARCHIVE_RETENTION_MOIS = int(os.environ.get("ARCHIVE_RETENTION_MOIS", "12"))
 # copie existe. C'est le seul mécanisme qui empêche pour de vrai la perte —
 # suspendre la pose de la politique ne suffirait pas, elle est déjà attachée aux
 # index et continuerait de les supprimer.
-ARCHIVE_MARGE_JOURS = int(os.environ.get("ARCHIVE_MARGE_JOURS", "7"))
+ARCHIVE_MARGIN_DAYS = int(os.environ.get("ARCHIVE_MARGE_JOURS", "7"))
 
 # Taille de page de l'export (PIT + search_after). 5 000 documents d'alerte
 # Wazuh pèsent ~15 Mo en JSON : monter beaucoup plus fait grossir la réponse de
 # l'indexer sans accélérer l'export.
-ARCHIVE_TAILLE_LOT = int(os.environ.get("ARCHIVE_TAILLE_LOT", "5000"))
+ARCHIVE_SIZE_BATCH = int(os.environ.get("ARCHIVE_TAILLE_LOT", "5000"))
 
 # Drill de restauration. À chaque passage, les N archives vérifiées le moins
 # récemment sont retéléchargées, leur SHA-256 recalculé, puis DÉCHIFFRÉES et
@@ -1509,9 +1509,9 @@ ARCHIVE_TAILLE_LOT = int(os.environ.get("ARCHIVE_TAILLE_LOT", "5000"))
 #
 # COMPLET=false s'arrête au SHA-256 de l'objet. Utile transitoirement (clé
 # momentanément absente) pour ne pas déclarer en échec ce qu'on n'a pas su lire.
-ARCHIVE_DRILL_LOT = int(os.environ.get("ARCHIVE_DRILL_LOT", "3"))
-ARCHIVE_DRILL_JOURS = int(os.environ.get("ARCHIVE_DRILL_JOURS", "90"))
-ARCHIVE_DRILL_COMPLET = os.environ.get(
+ARCHIVE_DRILL_BATCH = int(os.environ.get("ARCHIVE_DRILL_LOT", "3"))
+ARCHIVE_DRILL_DAYS = int(os.environ.get("ARCHIVE_DRILL_JOURS", "90"))
+ARCHIVE_DRILL_FULL = os.environ.get(
     "ARCHIVE_DRILL_COMPLET", "true").lower() == "true"
 
 # Répertoire de travail. L'archive y est écrite DÉJÀ CHIFFRÉE — le clair ne
@@ -1525,8 +1525,8 @@ ARCHIVE_TMP_DIR = os.environ.get("ARCHIVE_TMP_DIR", "/tmp")
 # Six gigaoctets par jour partaient sans que rien ne le dise. Un SOC qui ne
 # surveille pas son propre disque s'arrête en silence : indexer en lecture
 # seule, Postgres qui refuse d'écrire, plus une alerte ne rentre.
-DISQUE_SURVEILLE = os.environ.get("DISQUE_SURVEILLE", "/")
+DISK_MONITORED = os.environ.get("DISQUE_SURVEILLE", "/")
 # Seuils d'occupation, en pourcentage. `alerte` ouvre une alerte IRIS Medium,
 # `critique` la passe en High — même canal, même cycle de vie.
-DISQUE_SEUIL_ALERTE = int(os.environ.get("DISQUE_SEUIL_ALERTE", "80"))
-DISQUE_SEUIL_CRITIQUE = int(os.environ.get("DISQUE_SEUIL_CRITIQUE", "90"))
+DISK_THRESHOLD_ALERT = int(os.environ.get("DISQUE_SEUIL_ALERTE", "80"))
+DISK_THRESHOLD_CRITICAL = int(os.environ.get("DISQUE_SEUIL_CRITIQUE", "90"))

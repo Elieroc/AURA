@@ -47,7 +47,7 @@ from . import config
 requests.packages.urllib3.disable_warnings()
 
 
-def _index_du_jour(ts: datetime) -> str:
+def _index_of_day(ts: datetime) -> str:
     """`wazuh-ai-YYYY.MM.DD` — même convention de découpage que Wazuh.
 
     Un index par jour : la rétention se gère en supprimant des index entiers,
@@ -56,7 +56,7 @@ def _index_du_jour(ts: datetime) -> str:
     return f"{config.METRICS_INDEX_PREFIX}-{ts.astimezone(timezone.utc):%Y.%m.%d}"
 
 
-def _cout(prompt_tokens, completion_tokens, cache_hit, cache_miss) -> float:
+def _cost(prompt_tokens, completion_tokens, cache_hit, cache_miss) -> float:
     """Coût ESTIMÉ en USD, à partir des tarifs publics (cf. config).
 
     Approximation assumée : les tarifs viennent de la grille publiée, pas d'une
@@ -71,10 +71,10 @@ def _cout(prompt_tokens, completion_tokens, cache_hit, cache_miss) -> float:
         hit, miss = cache_hit or 0, cache_miss or 0
     else:
         hit, miss = 0, prompt_tokens or 0
-    entree = (miss / 1_000_000 * config.LLM_COUT_USD_PAR_MTOKEN_IN
-              + hit / 1_000_000 * config.LLM_COUT_USD_PAR_MTOKEN_IN_CACHE)
-    sortie = (completion_tokens or 0) / 1_000_000 * config.LLM_COUT_USD_PAR_MTOKEN_OUT
-    return round(entree + sortie, 8)
+    entry = (miss / 1_000_000 * config.LLM_COST_USD_PER_MTOKEN_IN
+              + hit / 1_000_000 * config.LLM_COST_USD_PER_MTOKEN_IN_CACHE)
+    output = (completion_tokens or 0) / 1_000_000 * config.LLM_COST_USD_PER_MTOKEN_OUT
+    return round(entry + output, 8)
 
 
 def _doc_llm(l: dict) -> dict:
@@ -85,7 +85,7 @@ def _doc_llm(l: dict) -> dict:
         "event_type": "llm_call",
         "ai": {
             "usage": l["usage"],
-            "model": l["modele"],
+            "model": l["model"],
             "prompt_tokens": pt,
             "completion_tokens": ct,
             # Total précalculé : une somme d'agrégation sur deux champs
@@ -94,11 +94,11 @@ def _doc_llm(l: dict) -> dict:
             "cache_hit_tokens": l["cache_hit_tokens"],
             "cache_miss_tokens": l["cache_miss_tokens"],
             "max_tokens": l["max_tokens"],
-            "duration_ms": l["duree_ms"],
-            "cost_usd": _cout(pt, ct, l["cache_hit_tokens"],
+            "duration_ms": l["duration_ms"],
+            "cost_usd": _cost(pt, ct, l["cache_hit_tokens"],
                               l["cache_miss_tokens"]),
             "ok": l["ok"],
-            "error": l["erreur"],
+            "error": l["error"],
         },
         "incident": {"id": l["incident_id"]},
     }
@@ -111,9 +111,9 @@ def _doc_triage(t: dict) -> dict:
         "event_type": "triage",
         "ai": {
             "usage": "triage",
-            "model": t["modele"],
+            "model": t["model"],
             "prompt_tokens": t["prompt_tokens"],
-            "duration_ms": t["duree_ms"],
+            "duration_ms": t["duration_ms"],
             "prompt_sha": t["prompt_sha"],
             "mode": t["mode"],
         },
@@ -125,12 +125,12 @@ def _doc_triage(t: dict) -> dict:
             "action_count": len(t["actions"] or []),
             # Trois indicateurs de qualité mesurables SANS jeu labellisé : un
             # taux qui monte signale un prompt dégradé ou une attaque.
-            "incoherences": t["incoherences"] or [],
-            "incoherence_count": len(t["incoherences"] or []),
-            "garde_fous": t["garde_fous"] or [],
-            "garde_fou_count": len(t["garde_fous"] or []),
-            "injection_motifs": t["injection_motifs"] or [],
-            "injection_detected": bool(t["injection_motifs"]),
+            "inconsistencies": t["inconsistencies"] or [],
+            "incoherence_count": len(t["inconsistencies"] or []),
+            "guardrails": t["guardrails"] or [],
+            "garde_fou_count": len(t["guardrails"] or []),
+            "injection_patterns": t["injection_patterns"] or [],
+            "injection_detected": bool(t["injection_patterns"]),
         },
         "incident": {
             "id": t["incident_id"],
@@ -151,7 +151,7 @@ def _doc_triage(t: dict) -> dict:
 # 'refusé_agent', 'annulé', et 'émis' — une action émise sans compte rendu
 # d'agent n'est PAS une preuve de remédiation (cf. le rapport du 2026-08-02 qui
 # annonçait 26 quarantaines réussies, toutes refusées en réalité).
-STATUTS_REMEDIES = ("exécuté", "confirmé", "sans_effet")
+REMEDIED_STATUSES = ("exécuté", "confirmé", "sans_effet")
 
 # `created_at OR une remédiation dans la fenêtre` : le MTTR d'un incident arrive
 # APRÈS sa détection, parfois des heures plus tard. Sans la seconde branche, le
@@ -164,22 +164,22 @@ SQL_KPI = f"""
              WHERE t.incident_id = i.id) AS triage_at,
            (SELECT min(m.executed_at) FROM mitigations m
              WHERE m.incident_id = i.id
-               AND m.statut IN {STATUTS_REMEDIES}) AS remedie_at
+               AND m.statut IN {REMEDIED_STATUSES}) AS remedie_at
       FROM incidents i
      WHERE i.created_at >= %(debut)s
         OR EXISTS (SELECT 1 FROM mitigations m
                     WHERE m.incident_id = i.id
-                      AND m.statut IN {STATUTS_REMEDIES}
+                      AND m.statut IN {REMEDIED_STATUSES}
                       AND m.executed_at >= %(debut)s)
      ORDER BY i.id
 """
 
 
-def _minutes(fin, debut) -> float | None:
+def _minutes(end, start) -> float | None:
     """Écart en minutes, arrondi à la seconde près. None si la borne manque."""
-    if fin is None or debut is None:
+    if end is None or start is None:
         return None
-    return round((fin - debut).total_seconds() / 60, 4)
+    return round((end - start).total_seconds() / 60, 4)
 
 
 def _doc_kpi(k: dict) -> dict:
@@ -226,8 +226,8 @@ def _doc_kpi(k: dict) -> dict:
             # Priorité de l'asset : un MTTD moyen ne veut rien dire tant qu'il
             # mélange le contrôleur de domaine et les postes de test. C'est le
             # MTTD des P1 qui se défend devant un auditeur.
-            "priorite": k["priorite"],
-            "severite": k["severite"],
+            "priority": k["priority"],
+            "severity": k["severity"],
         },
     }
 
@@ -256,58 +256,58 @@ def _doc_snapshot(conn, maintenant: datetime) -> dict:
             # confondre est ce qui a permis au rapport du 2026-08-02 d'annoncer
             # 26 quarantaines réussies qui avaient toutes été refusées.
             "mitigations_sent": un(
-                "SELECT count(*) AS n FROM mitigations WHERE statut = 'émis'"),
+                "SELECT count(*) AS n FROM mitigations WHERE status = 'émis'"),
             "mitigations_confirmed": un(
-                "SELECT count(*) AS n FROM mitigations WHERE statut = 'confirmé'"),
+                "SELECT count(*) AS n FROM mitigations WHERE status = 'confirmé'"),
             "mitigations_refused": un(
                 "SELECT count(*) AS n FROM mitigations "
-                "WHERE statut = 'refusé_agent'"),
+                "WHERE status = 'refusé_agent'"),
             "labels_total": un("SELECT count(*) AS n FROM labels"),
         },
     }
 
 
-def _bulk(lignes: list[str]) -> tuple[int, list[str]]:
+def _bulk(lines: list[str]) -> tuple[int, list[str]]:
     """Envoi bulk à l'indexer. Retourne (nombre écrit, erreurs)."""
-    if not lignes:
+    if not lines:
         return 0, []
     r = requests.post(
         f"{config.INDEXER_URL}/_bulk",
         auth=(config.INDEXER_USER, config.INDEXER_PASSWORD),
         headers={"Content-Type": "application/x-ndjson"},
-        data="".join(lignes).encode("utf-8"),
+        data="".join(lines).encode("utf-8"),
         verify=config.INDEXER_CA or config.INDEXER_VERIFY_TLS,
         timeout=60)
     r.raise_for_status()
-    corps = r.json()
-    erreurs = []
-    if corps.get("errors"):
-        for item in corps.get("items", []):
+    body = r.json()
+    errors = []
+    if body.get("errors"):
+        for item in body.get("items", []):
             info = next(iter(item.values()))
             if info.get("error"):
-                erreurs.append(json.dumps(info["error"])[:300])
-    return len(corps.get("items", [])) - len(erreurs), erreurs
+                errors.append(json.dumps(info["error"])[:300])
+    return len(body.get("items", [])) - len(errors), errors
 
 
-def _ligne(index: str, doc_id: str, doc: dict) -> list[str]:
+def _line(index: str, doc_id: str, doc: dict) -> list[str]:
     return [json.dumps({"index": {"_index": index, "_id": doc_id}}) + "\n",
             json.dumps(doc, default=str) + "\n"]
 
 
-def exporter(depuis: str, simulation: bool) -> dict:
+def export(since: str, simulation: bool) -> dict:
     """Exporte la fenêtre demandée. Retourne un résumé."""
-    unite = {"m": "minutes", "h": "hours", "d": "days"}[depuis[-1]]
-    delta = timedelta(**{unite: int(depuis[:-1])})
-    debut = datetime.now(timezone.utc) - delta
+    unit = {"m": "minutes", "h": "hours", "d": "days"}[since[-1]]
+    delta = timedelta(**{unit: int(since[:-1])})
+    start = datetime.now(timezone.utc) - delta
     maintenant = datetime.now(timezone.utc)
 
-    lignes: list[str] = []
+    lines: list[str] = []
     resume = {"llm_call": 0, "triage": 0, "incident_kpi": 0, "snapshot": 0}
 
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
         for l in conn.execute(
-                "SELECT * FROM llm_calls WHERE ts >= %s ORDER BY ts", (debut,)):
-            lignes += _ligne(_index_du_jour(l["ts"]), f"llm-{l['id']}", _doc_llm(l))
+                "SELECT * FROM llm_calls WHERE ts >= %s ORDER BY ts", (start,)):
+            lines += _line(_index_of_day(l["ts"]), f"llm-{l['id']}", _doc_llm(l))
             resume["llm_call"] += 1
 
         # Jointure sur incidents : un verdict sans le contexte de son incident
@@ -315,13 +315,13 @@ def exporter(depuis: str, simulation: bool) -> dict:
         for t in conn.execute("""
                 SELECT t.*, i.agent_name, i.max_level, i.alert_count
                   FROM triages t JOIN incidents i ON i.id = t.incident_id
-                 WHERE t.created_at >= %s ORDER BY t.created_at""", (debut,)):
-            lignes += _ligne(_index_du_jour(t["created_at"]),
+                 WHERE t.created_at >= %s ORDER BY t.created_at""", (start,)):
+            lines += _line(_index_of_day(t["created_at"]),
                              f"triage-{t['id']}", _doc_triage(t))
             resume["triage"] += 1
 
-        for k in conn.execute(SQL_KPI, {"debut": debut}):
-            lignes += _ligne(_index_du_jour(k["created_at"]),
+        for k in conn.execute(SQL_KPI, {"start_ts": start}):
+            lines += _line(_index_of_day(k["created_at"]),
                              f"kpi-{k['id']}", _doc_kpi(k))
             resume["incident_kpi"] += 1
 
@@ -329,18 +329,18 @@ def exporter(depuis: str, simulation: bool) -> dict:
 
     # _id horodaté à la minute : un run par 5 min ne réécrit pas le précédent,
     # et deux runs rapprochés (relance manuelle) n'en créent pas deux.
-    lignes += _ligne(_index_du_jour(maintenant),
+    lines += _line(_index_of_day(maintenant),
                      f"snapshot-{maintenant:%Y%m%d%H%M}", snap)
     resume["snapshot"] = 1
 
     if simulation:
-        for l in lignes:
+        for l in lines:
             print(l, end="")
         return resume
 
-    ecrits, erreurs = _bulk(lignes)
-    resume["ecrits"] = ecrits
-    resume["erreurs"] = erreurs
+    written, errors = _bulk(lines)
+    resume["ecrits"] = written
+    resume["erreurs"] = errors
     return resume
 
 
@@ -348,13 +348,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--depuis", default=config.METRICS_FENETRE,
+    ap.add_argument("--depuis", default=config.METRICS_WINDOW,
                     help="fenêtre réexportée (ex. 2h, 30d). Idempotent : "
                          "réexporter ne duplique rien.")
     ap.add_argument("--simulation", action="store_true")
     args = ap.parse_args()
 
-    r = exporter(args.depuis, args.simulation)
+    r = export(args.since, args.simulation)
     if args.simulation:
         return
     print(f"  {r['ecrits']} document(s) indexés "

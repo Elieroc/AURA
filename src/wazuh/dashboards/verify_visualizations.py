@@ -35,13 +35,13 @@ def curl(url, data=None, headers=None):
 
 
 patterns = {}
-champs_connus = {}
+known_fields = {}
 found = curl(f"{DASH}/api/saved_objects/_find?type=index-pattern&per_page=100")
 for o in found.get("saved_objects", []):
     patterns[o["id"]] = o["attributes"]["title"]
     # La liste de champs telle que le dashboard la voit. C'est elle que
     # consulte la visualisation a l'ouverture, pas le mapping OpenSearch.
-    champs_connus[o["id"]] = {
+    known_fields[o["id"]] = {
         f.get("name") for f in json.loads(o["attributes"].get("fields") or "[]")}
 
 vis = curl(f"{DASH}/api/saved_objects/_find?type=visualization&per_page=100")
@@ -65,8 +65,8 @@ for o in vis.get("saved_objects", []):
             body = {"size": 0, "aggs": {"t": {"geohash_grid": {"field": field, "precision": 2}}}}
         else:
             body = {"size": 0, "aggs": {"t": {"terms": {"field": field, "size": 3}}}}
-        connus = champs_connus.get(idx_ref) or set()
-        if connus and field not in connus:
+        known = known_fields.get(idx_ref) or set()
+        if known and field not in known:
             print(f"KO  {vid:32s} {atype:16s} {field:45s} "
                   f"absent de la liste de champs de l'index pattern {idx_ref}")
             bad += 1

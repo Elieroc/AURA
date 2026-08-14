@@ -37,13 +37,13 @@ IRIS_TOKEN = os.environ.get("AURA_MCP_IRIS_TOKEN", "")
 # Plafond de la réponse d'un outil relayé, plus large que celui d'un champ
 # d'alerte : ces réponses sont des inventaires (agents, vulnérabilités), pas
 # des fragments de journal.
-PLAFOND_RELAI = int(os.environ.get("AURA_MCP_RELAI_MAX", "12000"))
+RELAY_CAP = int(os.environ.get("AURA_MCP_RELAI_MAX", "12000"))
 
 # --- Ce que l'on relaie ---------------------------------------------------
 # Liste d'AUTORISATION, jamais d'interdiction : un outil ajouté en amont par
 # une montée de version n'apparaît pas tout seul chez les clients. Un nouvel
 # outil d'action qui passerait par une liste noire oubliée, si.
-WAZUH_AUTORISES = {
+WAZUH_ALLOWED = {
     # État du parc — ce que la base AURA ne sait pas dire
     "get_wazuh_agents", "get_wazuh_running_agents", "check_agent_health",
     "get_agent_configuration", "get_agent_ports", "get_agent_processes",
@@ -63,7 +63,7 @@ WAZUH_AUTORISES = {
     "validate_wazuh_connection",
 }
 
-IRIS_AUTORISES = {
+IRIS_ALLOWED = {
     "list_cases", "get_case", "add_note", "add_ioc", "add_asset", "add_task",
     "add_event", "list_ioc_types", "list_severities",
 }
@@ -71,7 +71,7 @@ IRIS_AUTORISES = {
 # Masqués explicitement, pour que la raison soit lisible dans le code et non
 # seulement dans l'absence d'une entrée. Ce sont les outils qui agiraient sur
 # la production en court-circuitant la politique d'AURA.
-WAZUH_MASQUES = {
+WAZUH_MASKED = {
     "wazuh_active_response", "wazuh_isolate_host", "wazuh_unisolate_host",
     "wazuh_check_agent_isolation", "wazuh_block_ip", "wazuh_check_blocked_ip",
     "wazuh_firewall_drop", "wazuh_firewall_allow", "wazuh_host_deny",
@@ -88,7 +88,7 @@ SCOPE_WAZUH = "aura:read"
 SCOPE_IRIS = "aura:write"
 
 
-class Amont:
+class Upstream:
     """Un serveur MCP amont, joint en HTTP streamable.
 
     Une session par appel plutôt qu'une session longue : le relais est un
@@ -97,73 +97,73 @@ class Amont:
     rien.
     """
 
-    def __init__(self, nom: str, url: str, jeton: str, prefixe: str):
-        self.nom = nom
+    def __init__(self, name: str, url: str, token: str, prefix: str):
+        self.name = name
         self.url = url
-        self.jeton = jeton
-        self.prefixe = prefixe
+        self.token = token
+        self.prefix = prefix
 
     async def _session(self):
         import httpx2
         from mcp import ClientSession
         from mcp.client.streamable_http import streamable_http_client
 
-        entetes = {"Authorization": f"Bearer {self.jeton}"} if self.jeton else {}
-        http = httpx2.AsyncClient(headers=entetes, timeout=60)
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        http = httpx2.AsyncClient(headers=headers, timeout=60)
         flux = streamable_http_client(self.url, http_client=http)
         return http, flux, ClientSession
 
-    async def outils(self) -> list:
+    async def tools(self) -> list:
         """Inventaire de l'amont. Liste vide s'il est injoignable."""
         try:
             http, flux, ClientSession = await self._session()
-            async with http, flux as (lire, ecrire):
-                async with ClientSession(lire, ecrire) as session:
+            async with http, flux as (read, write):
+                async with ClientSession(read, write) as session:
                     await session.initialize()
                     return list((await session.list_tools()).tools)
         except Exception as e:  # noqa: BLE001
             log.warning("serveur MCP %s injoignable (%s) : ses outils ne "
-                        "seront pas relayés", self.nom, e)
+                        "seront pas relayés", self.name, e)
             return []
 
-    async def appeler(self, outil: str, arguments: dict) -> dict:
+    async def call(self, tool: str, arguments: dict) -> dict:
         http, flux, ClientSession = await self._session()
-        async with http, flux as (lire, ecrire):
-            async with ClientSession(lire, ecrire) as session:
+        async with http, flux as (read, write):
+            async with ClientSession(read, write) as session:
                 await session.initialize()
-                resultat = await session.call_tool(outil, arguments)
-                textes = [getattr(b, "text", str(b)) for b in resultat.content]
+                result = await session.call_tool(tool, arguments)
+                texts = [getattr(b, "text", str(b)) for b in result.content]
                 # Borné comme tout le reste : un `get_wazuh_agents` sur un parc
                 # de 16 machines rend déjà 8 Ko de JSON. Relayer sans limite
                 # annulerait la raison d'être du gateway — le budget de
                 # contexte du client.
-                from . import sortie
-                return {"amont": self.nom, "outil": outil,
-                        "erreur": resultat.is_error,
-                        "resultat": sortie.borner("\n".join(textes),
-                                                  PLAFOND_RELAI)}
+                from . import output
+                return {"amont": self.name, "outil": tool,
+                        "error": result.is_error,
+                        "resultat": output.bound("\n".join(texts),
+                                                  RELAY_CAP)}
 
 
-def amonts() -> list[Amont]:
+def upstreams() -> items[Upstream]:
     """Les serveurs amont configurés. Vide = gateway désactivé."""
-    liste = []
+    items = []
     if WAZUH_URL:
-        liste.append(Amont("wazuh", WAZUH_URL, WAZUH_TOKEN, "wazuh_"))
+        items.append(Upstream("wazuh", WAZUH_URL, WAZUH_TOKEN, "wazuh_"))
     if IRIS_URL:
-        liste.append(Amont("iris", IRIS_URL, IRIS_TOKEN, "iris_"))
-    return liste
+        items.append(Upstream("iris", IRIS_URL, IRIS_TOKEN, "iris_"))
+    return items
 
 
-def autorise(amont: Amont, nom: str) -> bool:
+def allowed(upstream: Upstream, name: str) -> bool:
     """Cet outil amont doit-il être relayé ?
 
     Le nom est comparé nu ET préfixé : les serveurs amont ne nomment pas leurs
     outils de la même façon (`get_wazuh_agents` chez l'un, `wazuh_block_ip`
     chez l'autre pour la même famille).
     """
-    if amont.nom == "wazuh":
-        if nom in WAZUH_MASQUES or nom.replace("wazuh_", "") in {
-                m.replace("wazuh_", "") for m in WAZUH_MASQUES}:
+    if upstream.name == "wazuh":
+        if name in WAZUH_MASKED or name.replace("wazuh_", "") in {
+                m.replace("wazuh_", "") for m in WAZUH_MASKED}:
             return False
-        return nom in WAZUH_AUTORISES
-    return nom in IRIS_AUTORISES
+        return name in WAZUH_ALLOWED
+    return name in IRIS_ALLOWED

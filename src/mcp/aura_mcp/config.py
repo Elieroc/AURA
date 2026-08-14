@@ -38,16 +38,16 @@ if not SECRET:
 # Fail-closed : un jeton sans claim `scope` n'obtient rien du tout (le MCP
 # Wazuh amont accorde la lecture par défaut ; ici même la lecture expose des
 # journaux d'incidents, donc on n'accorde rien implicitement).
-LECTURE = "aura:read"
-ECRITURE = "aura:write"
+READ = "aura:read"
+WRITE = "aura:write"
 ADMIN = "aura:admin"
 
 # Ordre d'inclusion : admin implique write, write implique read. Un jeton
 # d'admin n'a donc pas à lister les trois.
-IMPLIQUE = {
-    ADMIN: {ADMIN, ECRITURE, LECTURE},
-    ECRITURE: {ECRITURE, LECTURE},
-    LECTURE: {LECTURE},
+IMPLIES = {
+    ADMIN: {ADMIN, WRITE, READ},
+    WRITE: {WRITE, READ},
+    READ: {READ},
 }
 
 # --- Anti-rebinding DNS ---------------------------------------------------
@@ -55,29 +55,29 @@ IMPLIQUE = {
 # client qui appelle http://127.0.0.1:3100/mcp envoie `127.0.0.1:3100`, que
 # « 127.0.0.1 » seul ne couvre pas (421 Misdirected Request, sans indice côté
 # client). On génère donc les deux formes pour chaque nom.
-def _avec_port(noms: list[str]) -> list[str]:
-    return [f"{n}:{PORT}" for n in noms]
+def _with_port(names: list[str]) -> list[str]:
+    return [f"{n}:{PORT}" for n in names]
 
 
-_NOMS = [n.strip() for n in os.environ.get(
+_NAMES = [n.strip() for n in os.environ.get(
     "AURA_MCP_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if n.strip()]
-HOTES = _NOMS + _avec_port(_NOMS)
+HOSTS = _NAMES + _with_port(_NAMES)
 
-_ORIGINES = [o.strip() for o in os.environ.get(
+_ORIGINS = [o.strip() for o in os.environ.get(
     "AURA_MCP_ALLOWED_ORIGINS",
     "http://localhost,http://127.0.0.1").split(",") if o.strip()]
-ORIGINES = _ORIGINES + [f"{o}:{PORT}" for o in _ORIGINES]
+ORIGINS = _ORIGINS + [f"{o}:{PORT}" for o in _ORIGINS]
 
 # --- Limitation de débit --------------------------------------------------
 # Par IP source, fenêtre glissante d'une minute. Ne protège pas d'un client
 # légitime bavard : protège du bouclage d'un agent IA qui rappelle le même
 # outil en rafale (vu sur d'autres MCP : 200 appels/min sur un timeout).
-DEBIT_MAX = int(os.environ.get("AURA_MCP_RATE_LIMIT", "120"))
+MAX_RATE = int(os.environ.get("AURA_MCP_RATE_LIMIT", "120"))
 
 # --- Plafonds de réponse --------------------------------------------------
 # Une réponse d'outil part dans le contexte d'un LLM. Un `full_log` de 200 Ko
 # ou 5 000 alertes ne l'aident pas, ils l'étouffent. Ces bornes sont dures :
 # un outil qui doit rendre plus rend une page et le dit.
-PAGE_MAX = int(os.environ.get("AURA_MCP_PAGE_MAX", "100"))
-PAGE_DEFAUT = int(os.environ.get("AURA_MCP_PAGE_DEFAUT", "25"))
-TEXTE_MAX = int(os.environ.get("AURA_MCP_TEXTE_MAX", "4000"))
+MAX_PAGE = int(os.environ.get("AURA_MCP_PAGE_MAX", "100"))
+DEFAULT_PAGE = int(os.environ.get("AURA_MCP_PAGE_DEFAUT", "25"))
+MAX_TEXT = int(os.environ.get("AURA_MCP_TEXTE_MAX", "4000"))

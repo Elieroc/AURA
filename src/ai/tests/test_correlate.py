@@ -10,13 +10,13 @@ le plus cher, et elle doit rester vérifiable sans infrastructure.
 
 from datetime import datetime, timedelta, timezone
 
-from soc_agent.correlate import (_graine_valide, _grouper, _signal_decisif,
-                                 point_commun)
+from soc_agent.correlate import (_is_valid_seed, _group, _signal_decisive,
+                                 common_ground)
 
 T0 = datetime(2026, 7, 22, 10, 0, tzinfo=timezone.utc)
 
 
-def alerte(minutes=0, agent="001", rule="100670", level=15,
+def alert(minutes=0, agent="001", rule="100670", level=15,
            groups=("ransomware",), tactics=("Impact",), srcip=None,
            srcuser=None, entity=None):
     return {
@@ -31,19 +31,19 @@ def alerte(minutes=0, agent="001", rule="100670", level=15,
 
 def test_rafale_meme_tactique_donne_un_incident():
     """Les 25 alertes canari du ransomware sont un incident, pas 25."""
-    alertes = [alerte(minutes=i, entity=f"/data/f{i}.docx") for i in range(25)]
-    assert len(_grouper(alertes)) == 1
+    alerts = [alert(minutes=i, entity=f"/data/f{i}.docx") for i in range(25)]
+    assert len(_group(alerts)) == 1
 
 
 def test_agents_differents_jamais_fusionnes():
-    alertes = [alerte(agent="001"), alerte(minutes=1, agent="002")]
-    assert len(_grouper(alertes)) == 2
+    alerts = [alert(agent="001"), alert(minutes=1, agent="002")]
+    assert len(_group(alerts)) == 2
 
 
 def test_lien_faible_hors_fenetre_separe():
     """Même tactique mais 45 min plus tard : deux incidents (fenêtre 30 min)."""
-    alertes = [alerte(minutes=0), alerte(minutes=45)]
-    assert len(_grouper(alertes)) == 2
+    alerts = [alert(minutes=0), alert(minutes=45)]
+    assert len(_group(alerts)) == 2
 
 
 def test_lien_fort_survit_a_une_fenetre_large():
@@ -52,13 +52,13 @@ def test_lien_fort_survit_a_une_fenetre_large():
     C'est le cas réel qui a motivé la fenêtre à deux vitesses — trois alertes
     AbuseIPDB de 185.220.101.34 réparties sur l'après-midi.
     """
-    alertes = [
-        alerte(minutes=0, rule="100622", tactics=(), groups=("abuseipdb",),
+    alerts = [
+        alert(minutes=0, rule="100622", tactics=(), groups=("abuseipdb",),
                srcip="185.220.101.34"),
-        alerte(minutes=68, rule="100622", tactics=(), groups=("abuseipdb",),
+        alert(minutes=68, rule="100622", tactics=(), groups=("abuseipdb",),
                srcip="185.220.101.34"),
     ]
-    assert len(_grouper(alertes)) == 1
+    assert len(_group(alerts)) == 1
 
 
 def test_alerte_etrangere_intercalee_ne_coupe_pas_l_incident():
@@ -68,84 +68,84 @@ def test_alerte_etrangere_intercalee_ne_coupe_pas_l_incident():
     refermait le premier et les deux alertes de la même IP finissaient
     séparées.
     """
-    alertes = [
-        alerte(minutes=0, rule="100622", tactics=(), groups=("abuseipdb",),
+    alerts = [
+        alert(minutes=0, rule="100622", tactics=(), groups=("abuseipdb",),
                srcip="1.2.3.4"),
-        alerte(minutes=1, rule="87105", tactics=("Execution",),
+        alert(minutes=1, rule="87105", tactics=("Execution",),
                groups=("virustotal",), entity="/tmp/eicar.com"),
-        alerte(minutes=40, rule="100622", tactics=(), groups=("abuseipdb",),
+        alert(minutes=40, rule="100622", tactics=(), groups=("abuseipdb",),
                srcip="1.2.3.4"),
     ]
-    groupes = _grouper(alertes)
-    assert len(groupes) == 2
-    assert sorted(len(g) for g in groupes) == [1, 2]
+    groups = _group(alerts)
+    assert len(groups) == 2
+    assert sorted(len(g) for g in groups) == [1, 2]
 
 
 def test_ip_differentes_restent_separees():
-    alertes = [
-        alerte(minutes=0, rule="100622", tactics=(), groups=("abuseipdb",),
+    alerts = [
+        alert(minutes=0, rule="100622", tactics=(), groups=("abuseipdb",),
                srcip="1.2.3.4"),
-        alerte(minutes=5, rule="100622", tactics=(), groups=("abuseipdb",),
+        alert(minutes=5, rule="100622", tactics=(), groups=("abuseipdb",),
                srcip="9.9.9.9"),
     ]
     # Le groupe « abuseipdb » n'est pas générique : il les relie malgré tout,
     # ce qui est voulu — deux IP signalées coup sur coup relèvent du même
     # sujet. Le test fige ce comportement pour qu'un changement soit délibéré.
-    assert len(_grouper(alertes)) == 1
+    assert len(_group(alerts)) == 1
 
 
 def test_groupes_generiques_ne_relient_rien():
     """`syscheck` ou `pci_dss` sont sur la moitié des règles."""
-    a = alerte(rule="550", groups=("syscheck", "pci_dss"), tactics=())
-    b = alerte(minutes=5, rule="554", groups=("syscheck", "gdpr"), tactics=())
-    assert point_commun(a, b) is None
-    assert len(_grouper([a, b])) == 2
+    a = alert(rule="550", groups=("syscheck", "pci_dss"), tactics=())
+    b = alert(minutes=5, rule="554", groups=("syscheck", "gdpr"), tactics=())
+    assert common_ground(a, b) is None
+    assert len(_group([a, b])) == 2
 
 
 def test_duree_maximale_coupe_le_chainage():
     """Une alerte toutes les 10 min pendant 10 h ne fait pas un incident de 10 h."""
-    alertes = [alerte(minutes=10 * i) for i in range(60)]
-    groupes = _grouper(alertes)
-    assert len(groupes) > 1
-    for g in groupes:
+    alerts = [alert(minutes=10 * i) for i in range(60)]
+    groups = _group(alerts)
+    assert len(groups) > 1
+    for g in groups:
         assert g[-1]["ts"] - g[0]["ts"] <= timedelta(hours=6)
 
 
 def test_lien_fort_prioritaire_sur_lien_faible():
-    a = alerte(srcip="1.2.3.4")
-    b = alerte(minutes=1, srcip="1.2.3.4")
-    assert point_commun(a, b) == ("même IP source", True)
+    a = alert(srcip="1.2.3.4")
+    b = alert(minutes=1, srcip="1.2.3.4")
+    assert common_ground(a, b) == ("même IP source", True)
 
 
 # --- Filtrage des graines : le bruit structurel n'ouvre pas d'incident -------
 
 def test_graine_bruit_sca_refusee():
     """Un check de conformité CIS/SCA ne fonde jamais un case, même remonté."""
-    a = alerte(rule="19001", level=12, groups=("sca",), tactics=(),
+    a = alert(rule="19001", level=12, groups=("sca",), tactics=(),
                entity=None)
     a["rule_desc"] = "CIS Debian benchmark: ensure X"
-    assert _graine_valide(a) is False
+    assert _is_valid_seed(a) is False
 
 
 def test_graine_bruit_statut_agent_refusee():
-    a = alerte(rule="503", level=12, groups=("ossec",), tactics=())
+    a = alert(rule="503", level=12, groups=("ossec",), tactics=())
     a["rule_desc"] = "Wazuh agent stopped."
-    assert _graine_valide(a) is False
+    assert _is_valid_seed(a) is False
 
 
 def test_graine_bruit_login_reussi_refusee():
-    a = alerte(rule="5715", level=12, groups=("authentication_success",),
+    a = alert(rule="5715", level=12, groups=("authentication_success",),
                tactics=())
     a["rule_desc"] = "sshd: authentication success."
-    assert _graine_valide(a) is False
+    assert _is_valid_seed(a) is False
 
 
 def test_graine_intrusion_reelle_acceptee():
     """Un vrai signal d'intrusion (reverse shell) reste une graine valide."""
-    a = alerte(rule="100721", level=12, groups=("attack",),
+    a = alert(rule="100721", level=12, groups=("attack",),
                tactics=("Execution",))
     a["rule_desc"] = "Reverse shell probable : /dev/tcp"
-    assert _graine_valide(a) is True
+    assert _is_valid_seed(a) is True
 
 
 # --- correctif #2 : needs_refresh ne repart que sur un signal décisif --------
@@ -153,31 +153,31 @@ def test_graine_intrusion_reelle_acceptee():
 def test_signal_repetition_de_bruit_ne_declenche_pas():
     """Une salve qui répète des règles déjà présentes, sans hausse de niveau,
     n'est PAS un signal décisif : pas de re-triage + rapport (boucle tokens)."""
-    anciennes = {"100670", "100710"}
-    nouvelles = [alerte(rule="100670", level=12, groups=("attack",))]
-    assert _signal_decisif(anciennes, nouvelles, ancien_max=15) is False
+    old = {"100670", "100710"}
+    new = [alert(rule="100670", level=12, groups=("attack",))]
+    assert _signal_decisive(old, new, max_old=15) is False
 
 
 def test_signal_bruit_structurel_meme_regle_inedite_ne_declenche_pas():
     """Une règle inédite MAIS structurelle (rootcheck/SCA/statut d'agent, ex.
     100801 auditd absent) n'ouvre pas un refresh : ce n'est pas une graine."""
-    a = alerte(rule="510", level=12, groups=("rootcheck",), tactics=())
+    a = alert(rule="510", level=12, groups=("rootcheck",), tactics=())
     a["rule_desc"] = "Host-based anomaly detection event (rootcheck)."
-    assert _signal_decisif({"100670"}, [a], ancien_max=15) is False
+    assert _signal_decisive({"100670"}, [a], max_old=15) is False
 
 
 def test_signal_regle_inedite_reelle_declenche():
     """Une règle d'intrusion inédite (non structurelle) = signal décisif."""
-    a = alerte(rule="100721", level=12, groups=("attack",),
+    a = alert(rule="100721", level=12, groups=("attack",),
                tactics=("Execution",))
     a["rule_desc"] = "Reverse shell probable : /dev/tcp"
-    assert _signal_decisif({"100670"}, [a], ancien_max=15) is True
+    assert _signal_decisive({"100670"}, [a], max_old=15) is True
 
 
 def test_signal_hausse_de_niveau_declenche():
     """Une escalade de sévérité rouvre toujours un refresh, même règle connue."""
-    nouvelles = [alerte(rule="100670", level=14, groups=("attack",))]
-    assert _signal_decisif({"100670"}, nouvelles, ancien_max=12) is True
+    new = [alert(rule="100670", level=14, groups=("attack",))]
+    assert _signal_decisive({"100670"}, new, max_old=12) is True
 
 
 def test_signal_ueba_reste_un_seul_incident():
@@ -193,7 +193,7 @@ def test_signal_ueba_reste_un_seul_incident():
     t0 = datetime(2026, 8, 7, 6, 0, tzinfo=timezone.utc)
     # Rien de commun entre elles hors le signal : règles, objets et comptes
     # tous différents, et un écart supérieur à la fenêtre faible (30 min).
-    alertes = [{
+    alerts = [{
         "id": str(i), "ts": t0 + timedelta(minutes=45 * i), "agent_id": "014",
         "agent_name": "winsrv", "rule_id": f"9{i}000", "rule_level": 3,
         "rule_desc": "x", "rule_groups": [f"g{i}"], "mitre_tactics": [],
@@ -201,10 +201,10 @@ def test_signal_ueba_reste_un_seul_incident():
         "audit_uid": None, "ueba_seed": True, "ueba_signal_id": 42,
     } for i in range(6)]
 
-    assert len(correlate._grouper(alertes)) == 1
+    assert len(correlate._group(alerts)) == 1
 
     # Sans le lien de signal, les mêmes alertes se seraient bien émiettées :
     # c'est ce lien qui les tient, pas une coïncidence de la fixture.
-    for a in alertes:
+    for a in alerts:
         a["ueba_signal_id"] = None
-    assert len(correlate._grouper(alertes)) > 1
+    assert len(correlate._group(alerts)) > 1

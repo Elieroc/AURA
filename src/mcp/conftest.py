@@ -11,7 +11,7 @@ Le bouchon est posé en `setdefault` : un environnement réellement configuré
 garde toujours la main. Il ne vaut évidemment que pour les tests — aucun de ceux
 qui l'utilisent ne signe ni ne vérifie un jeton contre un secret réel.
 
-`soc_agent` est importé par `aura_mcp.db` et `aura_mcp.outils` : ses propres
+`soc_agent` est importé par `aura_mcp.db` et `aura_mcp.tools` : ses propres
 variables requises sont bouchonnées ici aussi, pour la même raison.
 """
 
@@ -21,15 +21,15 @@ import sys
 
 # aura_mcp importe soc_agent (config de la base, garde-fous). Les deux paquets
 # vivent dans des répertoires frères, non installés.
-RACINE = pathlib.Path(__file__).resolve().parent
-for chemin in (RACINE, RACINE.parent / "ai"):
-    if str(chemin) not in sys.path:
-        sys.path.insert(0, str(chemin))
+ROOT = pathlib.Path(__file__).resolve().parent
+for path in (ROOT, ROOT.parent / "ai"):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
-for nom, bouchon in (
+for name, stub in (
     ("AURA_MCP_SECRET", "bouchon-de-test"),
     ("INDEXER_PASSWORD", "bouchon-de-test"),
     ("PGPASSWORD", "bouchon-de-test"),
     ("DEEPSEEK_API_KEY", "bouchon-de-test"),
 ):
-    os.environ.setdefault(nom, bouchon)
+    os.environ.setdefault(name, stub)

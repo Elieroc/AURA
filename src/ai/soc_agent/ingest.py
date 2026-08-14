@@ -17,7 +17,7 @@ import psycopg
 import requests
 import urllib3
 
-from . import config, noise, routage
+from . import config, noise, routing
 
 # --- Attribution conteneur LXC (auditd de l'hôte Proxmox) --------------------
 # L'agent pve (009) capte l'execve de TOUS les conteneurs LXC (noyau partagé) ;
@@ -26,21 +26,21 @@ from . import config, noise, routage
 # conteneur quand il en a un (jellyfin -> 005) : la corrélation se fait par
 # conteneur (agent_id est la clé) et la remédiation vise le bon hôte. Sinon on
 # garde pve et on note le conteneur dans la colonne `container` pour la lisibilité.
-_HOTE_AUDITD = {"pve", "009"}
+_HOST_AUDITD = {"pve", "009"}
 _CT_IGNORE = {"", "host", "unknown"}
 _LXC_CT = re.compile(r"lxc_ct=([A-Za-z0-9_.-]+)")
 _AGENTS: dict[str, str] = {}   # nom de conteneur -> agent_id Wazuh propre
 
 
-def _charger_agents(conn) -> None:
+def _load_agents(conn) -> None:
     """Carte nom d'agent -> id, pour réattribuer un conteneur à son propre agent.
     Rechargée à chaque run d'ingestion (agents stables, requête triviale)."""
     _AGENTS.clear()
-    for nom, aid in conn.execute(
+    for name, aid in conn.execute(
             "SELECT DISTINCT agent_name, agent_id FROM alerts "
             "WHERE agent_name IS NOT NULL"):
-        if nom and nom not in _HOTE_AUDITD:
-            _AGENTS.setdefault(nom, aid)
+        if name and name not in _HOST_AUDITD:
+            _AGENTS.setdefault(name, aid)
 
 # L'indexer utilise les certificats auto-signés de la stack Wazuh, sur la
 # loopback. L'avertissement urllib3 noierait la sortie à chaque lot ; la
@@ -49,40 +49,40 @@ if not config.INDEXER_VERIFY_TLS:
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
-def _liste(valeur) -> list[str]:
+def _list(value) -> list[str]:
     """Wazuh rend tantôt une chaîne, tantôt une liste, tantôt rien."""
-    if valeur is None:
+    if value is None:
         return []
-    if isinstance(valeur, list):
-        return [str(v) for v in valeur]
-    return [str(valeur)]
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    return [str(value)]
 
 
-def _premier(src: dict, chemins: list[tuple]) -> str | None:
+def _first(src: dict, paths: list[tuple]) -> str | None:
     """Première valeur non vide parmi plusieurs emplacements possibles.
 
     Wazuh et ses intégrations rangent la même information à des endroits
     différents selon le décodeur qui a traité l'événement.
     """
-    for chemin in chemins:
-        noeud = src
-        for cle in chemin:
-            noeud = noeud.get(cle) if isinstance(noeud, dict) else None
-            if noeud is None:
+    for path in paths:
+        node = src
+        for key in path:
+            node = node.get(key) if isinstance(node, dict) else None
+            if node is None:
                 break
-        if isinstance(noeud, str) and noeud:
-            return noeud
+        if isinstance(node, str) and node:
+            return node
     return None
 
 
-def _entite(src: dict) -> str | None:
+def _entity(src: dict) -> str | None:
     """Objet concerné par l'alerte, pour rapprocher des règles différentes.
 
     Une même intrusion déclenche des règles distinctes qui pointent le même
     fichier ou le même processus ; c'est ce point commun qui permet de les
     recoller en un incident.
     """
-    return _premier(src, [
+    return _first(src, [
         ("syscheck", "path"),
         ("data", "virustotal", "source", "file"),
         ("data", "audit", "exe"),
@@ -91,13 +91,13 @@ def _entite(src: dict) -> str | None:
     ])
 
 
-def _aplatir(src: dict, filtre: noise.NoiseFilter) -> dict:
+def _flatten(src: dict, noise_filter: noise.NoiseFilter) -> dict:
     """Document indexer -> ligne de la table alerts."""
-    regle = src.get("rule", {})
+    rule = src.get("rule", {})
     agent = src.get("agent", {})
     data = src.get("data", {})
-    mitre = regle.get("mitre", {})
-    raison = filtre.raison_suppression(src)
+    mitre = rule.get("mitre", {})
+    reason = noise_filter.deletion_reason(src)
 
     # Attribution conteneur : si l'émetteur est l'hôte auditd (pve) et que le
     # conteneur d'origine est résolu, on réattribue à son agent propre quand il
@@ -109,12 +109,12 @@ def _aplatir(src: dict, filtre: noise.NoiseFilter) -> dict:
     if not lxc:
         m = _LXC_CT.search(src.get("full_log") or "")
         lxc = m.group(1) if m else ""
-    if lxc not in _CT_IGNORE and (agent_name in _HOTE_AUDITD
-                                  or agent_id in _HOTE_AUDITD):
+    if lxc not in _CT_IGNORE and (agent_name in _HOST_AUDITD
+                                  or agent_id in _HOST_AUDITD):
         container = lxc
-        propre = _AGENTS.get(lxc)
-        if propre:
-            agent_id, agent_name = propre, lxc
+        own = _AGENTS.get(lxc)
+        if own:
+            agent_id, agent_name = own, lxc
 
     return {
         "id": src["id"],
@@ -122,13 +122,13 @@ def _aplatir(src: dict, filtre: noise.NoiseFilter) -> dict:
         "agent_id": agent_id,
         "agent_name": agent_name,
         "container": container,
-        "rule_id": str(regle.get("id", "?")),
-        "rule_level": int(regle.get("level", 0)),
-        "rule_desc": regle.get("description"),
-        "rule_groups": _liste(regle.get("groups")),
-        "mitre_ids": _liste(mitre.get("id")),
-        "mitre_tactics": _liste(mitre.get("tactic")),
-        "srcip": _premier(src, [
+        "rule_id": str(rule.get("id", "?")),
+        "rule_level": int(rule.get("level", 0)),
+        "rule_desc": rule.get("description"),
+        "rule_groups": _list(rule.get("groups")),
+        "mitre_ids": _list(mitre.get("id")),
+        "mitre_tactics": _list(mitre.get("tactic")),
+        "srcip": _first(src, [
             ("data", "srcip"),
             # Les intégrations rangent l'IP sous leur propre clé. Sans cette
             # entrée, les alertes AbuseIPDB — celles qui portent justement la
@@ -137,12 +137,12 @@ def _aplatir(src: dict, filtre: noise.NoiseFilter) -> dict:
             ("data", "virustotal", "source", "srcip"),
             ("GeoLocation", "ip"),
         ]),
-        "srcuser": _premier(src, [
+        "srcuser": _first(src, [
             ("data", "srcuser"),
             ("data", "dstuser"),
             ("data", "win", "eventdata", "targetUserName"),
         ]),
-        "entity": _entite(src),
+        "entity": _entity(src),
         # UID auditd de l'événement. Sert à la corrélation : les actions de
         # l'attaquant (et de ses descendants privesc par SUID, qui gardent
         # l'uid réel) partagent cet uid, ce qui distingue son activité du bruit
@@ -150,11 +150,11 @@ def _aplatir(src: dict, filtre: noise.NoiseFilter) -> dict:
         "audit_uid": (data.get("audit", {}) or {}).get("uid"),
         # Suppression post-retrieval du noise filter : l'alerte est ingérée
         # mais marquée, pour rester relisible tout en sortant de la corrélation.
-        "suppress_reason": raison,
+        "suppress_reason": reason,
         # Booléen dérivé calculé en Python : le passer en SQL via
         # `%(...)s IS NOT NULL` rendait le type du paramètre indéterminable
         # pour Postgres quand la raison est NULL (AmbiguousParameter).
-        "suppressed": raison is not None,
+        "suppressed": reason is not None,
         "raw": json.dumps(src),
     }
 
@@ -172,38 +172,38 @@ ON CONFLICT (id) DO NOTHING
 """
 
 
-def _lot(depuis: str | None, apres: tuple | None, taille: int,
-         filtre: noise.NoiseFilter) -> list[dict]:
+def _batch(since: str | None, after: tuple | None, size: int,
+         noise_filter: noise.NoiseFilter) -> list[dict]:
     """Un lot d'alertes, trié par (timestamp, id) pour une reprise fiable."""
-    requete: dict = {"bool": {"filter": [], "must_not": []}}
+    query: dict = {"bool": {"filter": [], "must_not": []}}
     if config.INGEST_MIN_LEVEL > 0:
-        requete["bool"]["filter"].append(
+        query["bool"]["filter"].append(
             {"range": {"rule.level": {"gte": config.INGEST_MIN_LEVEL}}})
-    if depuis:
-        requete["bool"]["filter"].append(
-            {"range": {"@timestamp": {"gte": f"now-{depuis}"}}})
+    if since:
+        query["bool"]["filter"].append(
+            {"range": {"@timestamp": {"gte": f"now-{since}"}}})
     # Bouclier d'ingestion : le bruit certain (query_level: true) est écarté
     # côté indexer, il n'entre jamais en base.
-    requete["bool"]["must_not"] = filtre.clauses_must_not()
-    if not requete["bool"]["filter"] and not requete["bool"]["must_not"]:
-        requete = {"match_all": {}}
+    query["bool"]["must_not"] = noise_filter.clauses_must_not()
+    if not query["bool"]["filter"] and not query["bool"]["must_not"]:
+        query = {"match_all": {}}
 
-    corps = {
-        "size": taille,
-        "query": requete,
+    body = {
+        "size": size,
+        "query": query,
         # search_after impose un tri total ; le tri sur le seul @timestamp ne
         # l'est pas, plusieurs alertes partageant la même milliseconde.
         "sort": [{"@timestamp": "asc"}, {"id": "asc"}],
     }
-    if apres:
-        corps["search_after"] = list(apres)
+    if after:
+        body["search_after"] = list(after)
 
     rep = requests.post(
         # Liste statique UNION les index sets créés depuis par routage.py :
         # un index créé sans être ajouté ici est un capteur que l'IA ne voit
         # pas, en silence (cf. routage.indices_lus).
-        f"{config.INDEXER_URL}/{routage.indices_lus()}/_search",
-        json=corps,
+        f"{config.INDEXER_URL}/{routing.read_indices()}/_search",
+        json=body,
         auth=(config.INDEXER_USER, config.INDEXER_PASSWORD),
         verify=config.INDEXER_CA if config.INDEXER_VERIFY_TLS else False,
         timeout=60,
@@ -212,7 +212,7 @@ def _lot(depuis: str | None, apres: tuple | None, taille: int,
     return rep.json()["hits"]["hits"]
 
 
-MAJ_CURSEUR = """
+UPDATE_CURSOR = """
 INSERT INTO ingest_cursor (id, last_ts, last_alert_id, updated_at)
 VALUES (true, %s, %s, now())
 ON CONFLICT (id) DO UPDATE
@@ -221,50 +221,50 @@ ON CONFLICT (id) DO UPDATE
       updated_at = now()
 """
 
-MAJ_SWEEP = """
+UPDATE_SWEEP = """
 INSERT INTO ingest_cursor (id, last_sweep_at) VALUES (true, now())
 ON CONFLICT (id) DO UPDATE SET last_sweep_at = now()
 """
 
 
-def _parcourir(conn, filtre: noise.NoiseFilter, depuis: str | None,
-               apres: tuple | None, taille_lot: int, *,
-               avancer_curseur: bool, etiquette: str) -> tuple[int, int]:
+def _iterate(conn, noise_filter: noise.NoiseFilter, since: str | None,
+               after: tuple | None, batch_size: int, *,
+               advance_cursor: bool, label: str) -> tuple[int, int]:
     """Pagine une fenêtre et insère. Retourne (vues, nouvelles).
 
     `avancer_curseur=False` pour le sweep de rattrapage : il balaye en arrière
     et ne doit surtout pas repositionner le curseur du flux normal.
     """
-    vues = nouvelles = 0
+    seen = new = 0
     while True:
-        hits = _lot(depuis, apres, taille_lot, filtre)
+        hits = _batch(since, after, batch_size, noise_filter)
         if not hits:
             break
 
-        lignes = [_aplatir(h["_source"], filtre) for h in hits]
+        lines = [_flatten(h["_source"], noise_filter) for h in hits]
         with conn.cursor() as cur:
-            cur.executemany(INSERT, lignes)
+            cur.executemany(INSERT, lines)
             # ON CONFLICT DO NOTHING : rowcount ne compte que les vraies
             # insertions, ce qui donne le nombre d'alertes réellement récupérées
             # (utile pour le sweep, où la quasi-totalité du lot est déjà connue).
-            nouvelles += max(cur.rowcount, 0)
-            dernier = hits[-1]
-            if avancer_curseur:
-                cur.execute(MAJ_CURSEUR, (dernier["_source"]["@timestamp"],
-                                          dernier["_source"]["id"]))
+            new += max(cur.rowcount, 0)
+            last = hits[-1]
+            if advance_cursor:
+                cur.execute(UPDATE_CURSOR, (last["_source"]["@timestamp"],
+                                          last["_source"]["id"]))
         conn.commit()
 
-        vues += len(hits)
-        apres = tuple(dernier["sort"])
-        print(f"  {etiquette} : {vues} alertes vues, {nouvelles} nouvelles…",
+        seen += len(hits)
+        after = tuple(last["sort"])
+        print(f"  {label} : {seen} alertes vues, {new} nouvelles…",
               file=sys.stderr)
 
-        if len(hits) < taille_lot:
+        if len(hits) < batch_size:
             break
-    return vues, nouvelles
+    return seen, new
 
 
-def _sweep_du(conn, taille_lot: int, filtre: noise.NoiseFilter) -> int:
+def _sweep_du(conn, batch_size: int, noise_filter: noise.NoiseFilter) -> int:
     """Rebalaye une longue fenêtre pour récupérer les alertes indexées en retard.
 
     Le curseur avance sur `@timestamp`, la date de l'ÉVÉNEMENT, pas celle de son
@@ -280,32 +280,32 @@ def _sweep_du(conn, taille_lot: int, filtre: noise.NoiseFilter) -> int:
     au niveau de volume observé (quelques centaines d'alertes/jour), c'est
     négligeable devant un triage LLM.
     """
-    _, nouvelles = _parcourir(
-        conn, filtre, f"{config.INGEST_SWEEP_HOURS}h", None, taille_lot,
-        avancer_curseur=False, etiquette="rattrapage")
-    conn.execute(MAJ_SWEEP)
+    _, new = _iterate(
+        conn, noise_filter, f"{config.INGEST_SWEEP_HOURS}h", None, batch_size,
+        advance_cursor=False, label="rattrapage")
+    conn.execute(UPDATE_SWEEP)
     conn.commit()
-    return nouvelles
+    return new
 
 
-def ingerer(depuis: str | None, taille_lot: int,
+def ingerer(since: str | None, batch_size: int,
             forcer_sweep: bool = False) -> int:
     total = 0
     with psycopg.connect(config.PG_DSN) as conn:
         # Filtre construit une fois par run, whitelist auto (DB) comprise.
-        filtre = noise.charger_avec_db(conn)
+        noise_filter = noise.load_with_db(conn)
         # Carte conteneur -> agent propre, pour la réattribution des alertes pve.
-        _charger_agents(conn)
+        _load_agents(conn)
 
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT last_ts, last_alert_id, last_sweep_at FROM ingest_cursor")
-            ligne = cur.fetchone()
+            line = cur.fetchone()
 
         # Le curseur prime sur --depuis : une reprise ne doit pas re-balayer
         # une fenêtre déjà traitée.
-        apres = None
-        if ligne and ligne[0]:
+        after = None
+        if line and line[0]:
             # Recul de sécurité : on repart un peu AVANT la position enregistrée.
             # Entre le moment où une alerte est datée et celui où elle devient
             # visible à la recherche, il s'écoule le temps de transit
@@ -315,33 +315,33 @@ def ingerer(depuis: str | None, taille_lot: int,
             #
             # Ne couvre que le skew normal. Un agent déconnecté qui rejoue des
             # heures de logs est rattrapé par le sweep, cf. `_sweep_du`.
-            debut = ligne[0] - timedelta(minutes=config.INGEST_LOOKBACK_MINUTES)
+            start = line[0] - timedelta(minutes=config.INGEST_LOOKBACK_MINUTES)
             # L'id ("" ci-dessous) est le second critère de tri : la chaîne vide
             # précède toutes les autres, donc on n'exclut aucune alerte de la
             # milliseconde de départ.
-            apres = (int(debut.timestamp() * 1000), "")
-            depuis = None
+            after = (int(start.timestamp() * 1000), "")
+            since = None
 
-        vues, _ = _parcourir(conn, filtre, depuis, apres, taille_lot,
-                             avancer_curseur=True, etiquette="ingest")
-        total += vues
+        seen, _ = _iterate(conn, noise_filter, since, after, batch_size,
+                             advance_cursor=True, label="ingest")
+        total += seen
 
         # Sweep de rattrapage, cadencé indépendamment du cycle (qui tourne
         # toutes les 5 min : sweeper à chaque tour serait du gâchis).
-        premier_passage = not (ligne and ligne[0])
-        dernier_sweep = ligne[2] if ligne else None
+        first_pass = not (line and line[0])
+        last_sweep = line[2] if line else None
         du = forcer_sweep or (
-            not premier_passage
-            and (dernier_sweep is None
-                 or (datetime.now(timezone.utc) - dernier_sweep
+            not first_pass
+            and (last_sweep is None
+                 or (datetime.now(timezone.utc) - last_sweep
                      >= timedelta(minutes=config.INGEST_SWEEP_INTERVAL_MINUTES))))
-        if premier_passage and not forcer_sweep:
+        if first_pass and not forcer_sweep:
             # Le tout premier run vient de balayer --depuis (30 j par défaut) :
             # rien à rattraper, on pose juste le jalon.
-            conn.execute(MAJ_SWEEP)
+            conn.execute(UPDATE_SWEEP)
             conn.commit()
         elif du:
-            n = _sweep_du(conn, taille_lot, filtre)
+            n = _sweep_du(conn, batch_size, noise_filter)
             if n:
                 print(f"  rattrapage : {n} alerte(s) indexée(s) en retard "
                       f"récupérée(s)", file=sys.stderr)
@@ -349,7 +349,7 @@ def ingerer(depuis: str | None, taille_lot: int,
     return total
 
 
-def reappliquer_filtre() -> tuple[int, int]:
+def reapply_filter() -> tuple[int, int]:
     """Réévalue la suppression du noise filter sur les alertes déjà en base.
 
     L'ingestion étant idempotente, un filtre modifié ne s'applique pas tout
@@ -358,9 +358,9 @@ def reappliquer_filtre() -> tuple[int, int]:
     brut conservé. Ne touche pas au rattachement : une alerte nouvellement
     supprimée sortira de la corrélation au prochain `correlate --recommencer`.
     """
-    vus = supprimees = 0
+    seen = deleted = 0
     with psycopg.connect(config.PG_DSN, row_factory=psycopg.rows.dict_row) as conn:
-        filtre = noise.charger_avec_db(conn)
+        noise_filter = noise.load_with_db(conn)
         # Par LOTS, jamais la table entière : `raw` est le JSON complet de
         # chaque alerte, et cette requête ne porte aucun filtre — sur la base de
         # prod (plusieurs centaines de milliers d'alertes, cf. alertes.py) elle
@@ -368,20 +368,20 @@ def reappliquer_filtre() -> tuple[int, int]:
         # Les ids seuls sont légers ; le `raw` ne vient qu'au lot courant.
         ids = [r["id"] for r in conn.execute("SELECT id FROM alerts").fetchall()]
         for depart in range(0, len(ids), 2000):
-            lot = ids[depart:depart + 2000]
-            lignes = conn.execute(
-                "SELECT id, raw FROM alerts WHERE id = ANY(%s)", (lot,)).fetchall()
-            for ligne in lignes:
-                vus += 1
-                raison = filtre.raison_suppression(ligne["raw"])
-                if raison:
-                    supprimees += 1
+            batch = ids[depart:depart + 2000]
+            lines = conn.execute(
+                "SELECT id, raw FROM alerts WHERE id = ANY(%s)", (batch,)).fetchall()
+            for line in lines:
+                seen += 1
+                reason = noise_filter.deletion_reason(line["raw"])
+                if reason:
+                    deleted += 1
                 conn.execute(
                     "UPDATE alerts SET suppressed = %s, suppress_reason = %s "
                     "WHERE id = %s",
-                    (raison is not None, raison, ligne["id"]))
+                    (reason is not None, reason, line["id"]))
             conn.commit()
-    return supprimees, vus
+    return deleted, seen
 
 
 def main() -> None:
@@ -401,22 +401,22 @@ def main() -> None:
                          "les alertes indexées en retard (agent reconnecté)")
     args = ap.parse_args()
 
-    if args.reappliquer_filtre:
-        supp, vus = reappliquer_filtre()
-        print(f"Noise filter réappliqué : {supp}/{vus} alertes supprimées.")
+    if args.reapply_filter:
+        supp, seen = reapply_filter()
+        print(f"Noise filter réappliqué : {supp}/{seen} alertes supprimées.")
         print("Lancer `correlate --recommencer` pour recorréler.")
         return
 
-    if args.reinitialiser_curseur:
+    if args.reset_cursor:
         with psycopg.connect(config.PG_DSN) as conn:
             conn.execute("DELETE FROM ingest_cursor")
             conn.commit()
         print("Curseur réinitialisé.")
 
-    debut = datetime.now(timezone.utc)
-    n = ingerer(args.depuis, args.taille_lot, args.rattrapage)
-    duree = (datetime.now(timezone.utc) - debut).total_seconds()
-    print(f"{n} alertes traitées en {duree:.1f} s")
+    start = datetime.now(timezone.utc)
+    n = ingerer(args.since, args.batch_size, args.catchup)
+    duration = (datetime.now(timezone.utc) - start).total_seconds()
+    print(f"{n} alertes traitées en {duration:.1f} s")
 
 
 if __name__ == "__main__":

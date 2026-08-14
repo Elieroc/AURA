@@ -15,34 +15,34 @@ Il ne porte que sur les actions du MODÈLE. Celles déduites du verdict
 construction.
 """
 
-from .actions import ACTIONS_A_FORT_IMPACT
+from .actions import HIGH_IMPACT_ACTIONS
 
 
-def verifier(verdict: str, actions_modele: list[str]) -> list[str]:
+def check(verdict: str, actions_modele: list[str]) -> list[str]:
     """Liste des incohérences constatées. Vide = sortie cohérente."""
-    problemes: list[str] = []
-    jeu = set(actions_modele)
+    issues: list[str] = []
+    proposed = set(actions_modele)
 
     if verdict == "false_positive":
         # Si l'activité est légitime, il n'y a rien à couper. Proposer une
         # remédiation contredit le verdict.
-        fort = jeu & ACTIONS_A_FORT_IMPACT
-        if fort:
-            problemes.append(
-                "false_positive propose " + ", ".join(sorted(fort)))
+        high = proposed & HIGH_IMPACT_ACTIONS
+        if high:
+            issues.append(
+                "false_positive propose " + ", ".join(sorted(high)))
 
     if verdict == "needs_investigation":
         # Sur un simple doute, on ne coupe rien de façon irréversible : couper
         # (isolation, kill, désactivation, blocage) sans certitude est incohérent.
-        fort = jeu & ACTIONS_A_FORT_IMPACT
-        if fort:
-            problemes.append(
+        high = proposed & HIGH_IMPACT_ACTIONS
+        if high:
+            issues.append(
                 "needs_investigation coupe sans certitude : "
-                + ", ".join(sorted(fort)))
+                + ", ".join(sorted(high)))
 
-    if verdict == "true_positive" and not jeu:
+    if verdict == "true_positive" and not proposed:
         # Légitime pour un vrai positif sans suite possible, mais assez rare
         # pour mériter d'être compté.
-        problemes.append("true_positive sans aucune action")
+        issues.append("true_positive sans aucune action")
 
-    return problemes
+    return issues

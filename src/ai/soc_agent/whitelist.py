@@ -29,18 +29,18 @@ import psycopg
 from psycopg.rows import dict_row, tuple_row
 
 from . import config
-from .noise import _valeur_champ
+from .noise import _value_field
 
 # Champs candidats d'une signature de whitelist. Volontairement restreint :
 # - rule_id situe la détection ;
 # - src_user / command / file discriminent l'activité précise.
 # dst_user et agent_name sont exclus : trop larges (dst root, ou tout un hôte).
-CHAMPS_DISCRIMINANTS = ("src_user", "command", "file")
-CHAMPS_SIGNATURE = ("rule_id",) + CHAMPS_DISCRIMINANTS
+DISCRIMINANT_FIELDS = ("src_user", "command", "file")
+FIELDS_SIGNATURE = ("rule_id",) + DISCRIMINANT_FIELDS
 
 
-def _signature(alertes_raw: Iterable[dict],
-               discriminants: tuple[str, ...] = CHAMPS_DISCRIMINANTS) -> dict | None:
+def _signature(raw_alerts: Iterable[dict],
+               discriminant: tuple[str, ...] = DISCRIMINANT_FIELDS) -> dict | None:
     """Signature d'un incident : champs constants sur toutes ses alertes.
 
     Un champ n'entre dans la signature que s'il a une seule valeur non nulle,
@@ -63,41 +63,41 @@ def _signature(alertes_raw: Iterable[dict],
     produirait une exception de whitelist plus large que l'incident observé.
     La borne est sur la mémoire retenue, jamais sur ce qui est examiné.
     """
-    champs = ("rule_id",) + tuple(discriminants)
-    valeurs: dict[str, set] = {c: set() for c in champs}
-    vu = False
-    for a in alertes_raw:
-        vu = True
-        for champ in champs:
-            if len(valeurs[champ]) > 1:
+    fields = ("rule_id",) + tuple(discriminant)
+    values: dict[str, set] = {c: set() for c in fields}
+    seen = False
+    for a in raw_alerts:
+        seen = True
+        for field in fields:
+            if len(values[field]) > 1:
                 continue  # déjà multivalué : la suite ne peut plus rien changer
-            if (v := _valeur_champ(a, champ)) is not None:
-                valeurs[champ].add(v)
-    if not vu:
+            if (v := _value_field(a, field)) is not None:
+                values[field].add(v)
+    if not seen:
         return None
 
-    signature = {c: str(next(iter(s))) for c, s in valeurs.items() if len(s) == 1}
+    signature = {c: str(next(iter(s))) for c, s in values.items() if len(s) == 1}
 
     # Précision : au moins un discriminant, sinon on neutraliserait trop large
     # (rule_id seul = toute la règle).
-    if not any(c in signature for c in discriminants):
+    if not any(c in signature for c in discriminant):
         return None
     return signature
 
 
-def _canonique(signature: dict) -> str:
+def _canonical(signature: dict) -> str:
     return "|".join(f"{k}={signature[k]}" for k in sorted(signature))
 
 
-def _incidents_par_verdict(
+def _incidents_by_verdict(
         conn,
-        discriminants: tuple[str, ...] = CHAMPS_DISCRIMINANTS) -> tuple[dict, set]:
+        discriminant: tuple[str, ...] = DISCRIMINANT_FIELDS) -> tuple[dict, set]:
     """(FP par signature, ensemble des signatures vues en TP).
 
     On ne considère que le DERNIER triage de chaque incident : les passages
     précédents reflètent des prompts abandonnés.
     """
-    lignes = conn.execute("""
+    lines = conn.execute("""
         SELECT DISTINCT ON (t.incident_id)
                t.incident_id, t.verdict, i.max_level, i.status
           FROM triages t
@@ -105,10 +105,10 @@ def _incidents_par_verdict(
          ORDER BY t.incident_id, t.created_at DESC
     """).fetchall()
 
-    fp_par_sig: dict[str, dict] = {}
+    fp_by_sig: dict[str, dict] = {}
     sig_tp: set[str] = set()
 
-    for l in lignes:
+    for l in lines:
         # Curseur SERVEUR (`name=`) : les lignes arrivent par paquets et ne sont
         # jamais toutes en mémoire. Un incident de flood en compte 126 508, dont
         # le `raw` complet — 1 Go matérialisé d'un coup, au-delà de la limite du
@@ -121,33 +121,33 @@ def _incidents_par_verdict(
             cur.itersize = 2000
             cur.execute("SELECT raw FROM alerts WHERE incident_id = %s",
                         (l["incident_id"],))
-            signature = _signature((r[0] for r in cur), discriminants)
+            signature = _signature((r[0] for r in cur), discriminant)
         if signature is None:
             continue
-        canon = _canonique(signature)
+        canon = _canonical(signature)
 
         if l["verdict"] == "true_positive":
             sig_tp.add(canon)
         elif l["verdict"] == "false_positive":
-            e = fp_par_sig.setdefault(canon, {
+            e = fp_by_sig.setdefault(canon, {
                 "signature": signature, "incidents": [], "max_level": 0})
             e["incidents"].append(l["incident_id"])
             e["max_level"] = max(e["max_level"], l["max_level"])
 
-    return fp_par_sig, sig_tp
+    return fp_by_sig, sig_tp
 
 
-def analyser(min_fp: int, simulation: bool) -> list[dict]:
+def analyze(min_fp: int, simulation: bool) -> list[dict]:
     """Crée (ou simule) les exceptions dues. Retourne les décisions."""
     decisions: list[dict] = []
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-        fp_par_sig, sig_tp = _incidents_par_verdict(conn)
-        existantes = {r["signature"] for r in conn.execute(
+        fp_by_sig, sig_tp = _incidents_by_verdict(conn)
+        existing = {r["signature"] for r in conn.execute(
             "SELECT signature FROM whitelist_rules WHERE active").fetchall()}
 
-        for canon, e in sorted(fp_par_sig.items()):
+        for canon, e in sorted(fp_by_sig.items()):
             n = len(e["incidents"])
-            if canon in existantes:
+            if canon in existing:
                 continue
             if canon in sig_tp:
                 decisions.append({"signature": canon, "action": "refusé",
@@ -186,17 +186,17 @@ def analyser(min_fp: int, simulation: bool) -> list[dict]:
     return decisions
 
 
-def signatures_vues_tp(conn) -> set[str]:
+def signatures_seen_tp(conn) -> set[str]:
     """Signatures (forme canonique) vues au moins une fois en true_positive.
 
     Réutilisé par whitelist_task.py : une whitelist demandée manuellement par
     l'analyste obéit au même garde-fou qu'une whitelist automatique — jamais
     sur une signature contredite par un vrai positif.
     """
-    return _incidents_par_verdict(conn)[1]
+    return _incidents_by_verdict(conn)[1]
 
 
-def valider_signature(signature: dict, niveau: int, sig_tp: set[str]) -> str | None:
+def validate_signature(signature: dict, level: int, sig_tp: set[str]) -> str | None:
     """Garde-fous déterministes avant toute création de whitelist_rules.
 
     Retourne la raison de refus, ou None si la signature est acceptable. Le
@@ -204,11 +204,11 @@ def valider_signature(signature: dict, niveau: int, sig_tp: set[str]) -> str | N
     règles que `analyser()` : signature précise, niveau borné, jamais vue en
     true_positive.
     """
-    if not any(c in signature for c in CHAMPS_DISCRIMINANTS):
+    if not any(c in signature for c in DISCRIMINANT_FIELDS):
         return "signature trop large : rule_id seul ne suffit pas"
-    if niveau >= config.WHITELIST_MAX_LEVEL:
-        return f"niveau {niveau} >= {config.WHITELIST_MAX_LEVEL} (whitelist auto interdite)"
-    if _canonique(signature) in sig_tp:
+    if level >= config.WHITELIST_MAX_LEVEL:
+        return f"niveau {level} >= {config.WHITELIST_MAX_LEVEL} (whitelist auto interdite)"
+    if _canonical(signature) in sig_tp:
         return "signature déjà vue en true_positive"
     return None
 
@@ -216,22 +216,22 @@ def valider_signature(signature: dict, niveau: int, sig_tp: set[str]) -> str | N
 def exceptions() -> list[dict]:
     """Les exceptions de whitelist, actives ou révoquées, plus récentes d'abord."""
     with psycopg.connect(config.PG_DSN, row_factory=dict_row) as conn:
-        lignes = conn.execute("""
+        lines = conn.execute("""
             SELECT id, signature, match_all, reason, source, fp_count, active,
                    origin_incidents, iris_task_id, created_at
               FROM whitelist_rules ORDER BY created_at DESC
         """).fetchall()
-    return [dict(r, created_at=r["created_at"].isoformat()) for r in lignes]
+    return [dict(r, created_at=r["created_at"].isoformat()) for r in lines]
 
 
-def lister() -> None:
-    lignes = exceptions()
-    if not lignes:
+def list() -> None:
+    lines = exceptions()
+    if not lines:
         print("Aucune exception de whitelist.")
         return
-    for r in lignes:
-        etat = "actif " if r["active"] else "inactif"
-        print(f"  #{r['id']:<3} [{etat}] {r['source']:<6} "
+    for r in lines:
+        state = "actif " if r["active"] else "inactif"
+        print(f"  #{r['id']:<3} [{state}] {r['source']:<6} "
               f"{r['fp_count']} FP  {json.dumps(r['match_all'], ensure_ascii=False)}")
 
 
@@ -244,19 +244,19 @@ def main() -> None:
     ap.add_argument("--lister", action="store_true")
     args = ap.parse_args()
 
-    if args.lister:
-        lister()
+    if args.list:
+        list()
         return
 
-    decisions = analyser(args.min_fp, args.simulation)
+    decisions = analyze(args.min_fp, args.simulation)
     if not decisions:
         print("Aucun faux positif à examiner.")
         return
 
-    prefixe = "[simulation] " if args.simulation else ""
+    prefix = "[simulation] " if args.simulation else ""
     for d in decisions:
         if d["action"] == "créé":
-            print(f"{prefixe}CRÉÉ   {d['signature']}  ({d['fp']} FP)")
+            print(f"{prefix}CRÉÉ   {d['signature']}  ({d['fp']} FP)")
         elif d["action"] == "en attente":
             print(f"       attente {d['signature']}  ({d['raison']})")
         else:

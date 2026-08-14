@@ -7,7 +7,7 @@ Constaté le 2026-08-11 : ingestion arrêtée 19 min, `ALTER TABLE` en attente.
 """
 
 from soc_agent import config
-from soc_agent.config import _avec_statement_timeout
+from soc_agent.config import _with_statement_timeout
 
 
 def test_dsn_porte_le_statement_timeout():
@@ -17,25 +17,25 @@ def test_dsn_porte_le_statement_timeout():
 
 
 def test_statement_timeout_ajoute_sur_url_et_sur_kv():
-    url = _avec_statement_timeout("postgresql://u:p@h:5433/db", 300000)
+    url = _with_statement_timeout("postgresql://u:p@h:5433/db", 300000)
     assert url.endswith("?options=-c%20statement_timeout%3D300000")
-    avec_query = _avec_statement_timeout("postgresql://u@h/db?sslmode=require",
+    with_query = _with_statement_timeout("postgresql://u@h/db?sslmode=require",
                                          1000)
-    assert "&options=" in avec_query
-    kv = _avec_statement_timeout("host=h dbname=db", 1000)
+    assert "&options=" in with_query
+    kv = _with_statement_timeout("host=h dbname=db", 1000)
     assert kv == "host=h dbname=db options='-c statement_timeout=1000'"
 
 
 def test_statement_timeout_n_ecrase_jamais_une_option_existante():
     """Un déploiement qui passe déjà des options garde les siennes."""
     dsn = "postgresql://u@h/db?options=-c%20search_path%3Dsoc"
-    assert _avec_statement_timeout(dsn, 300000) == dsn
-    assert _avec_statement_timeout("host=h options='-c foo=1'", 5) \
+    assert _with_statement_timeout(dsn, 300000) == dsn
+    assert _with_statement_timeout("host=h options='-c foo=1'", 5) \
         == "host=h options='-c foo=1'"
 
 
 def test_statement_timeout_desactivable():
-    assert _avec_statement_timeout("postgresql://u@h/db", 0) \
+    assert _with_statement_timeout("postgresql://u@h/db", 0) \
         == "postgresql://u@h/db"
 
 

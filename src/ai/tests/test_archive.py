@@ -25,20 +25,20 @@ from soc_agent import archive, config  # noqa: E402
 # Périmètre : ce qui est archivable, et surtout ce qui ne l'est pas
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("nom, base, mois", [
+@pytest.mark.parametrize("name, base, month", [
     ("wazuh-firewall-2026.08.14", "wazuh-firewall", "2026-08"),
     ("wazuh-alerts-4.x-2026.01.01", "wazuh-alerts-4.x", "2026-01"),
     ("wazuh-voc-2026.12.31", "wazuh-voc", "2026-12"),
 ])
-def test_index_date_reconnu(nom, base, mois):
-    m = archive._DATE_INDEX.match(nom)
+def test_index_date_reconnu(name, base, month):
+    m = archive._DATE_INDEX.match(name)
     assert m and m.group("base") == base
-    assert f"{m.group('a')}-{m.group('m')}" == mois
+    assert f"{m.group('a')}-{m.group('m')}" == month
 
 
-@pytest.mark.parametrize("nom", [
+@pytest.mark.parametrize("name", [
     # Index d'ÉTAT, non daté : il porte le cycle de vie des vulnérabilités donc
-    # le MTTR. L'archiver par date effacerait la notion même d'historique de
+    # le MTTR. L'archive by date effacerait la notion même d'historique de
     # dette. Exclu par la FORME du nom, sans liste à tenir à jour.
     "wazuh-voc-vulns",
     # Datés à la SEMAINE par Wazuh, et ce n'est pas de l'alerte.
@@ -49,8 +49,8 @@ def test_index_date_reconnu(nom, base, mois):
     "wazuh-firewall-2026.08",
     ".opendistro-ism-config",
 ])
-def test_index_non_archivable(nom):
-    assert archive._DATE_INDEX.match(nom) is None
+def test_index_non_archivable(name):
+    assert archive._DATE_INDEX.match(name) is None
 
 
 # --------------------------------------------------------------------------
@@ -58,26 +58,26 @@ def test_index_non_archivable(nom):
 # --------------------------------------------------------------------------
 
 def test_mois_en_cours_jamais_archive(monkeypatch):
-    monkeypatch.setattr(config, "ARCHIVE_DELAI_JOURS", 2)
-    assert not archive._mois_clos("2026-08", date(2026, 8, 31))
+    monkeypatch.setattr(config, "ARCHIVE_DELAY_DAYS", 2)
+    assert not archive._closed_months("2026-08", date(2026, 8, 31))
 
 
 def test_mois_clos_attend_le_delai_de_grace(monkeypatch):
     """Le rattrapage des alertes indexées en retard écrit encore dans les index
     de la veille : archiver le 1er au matin fige une copie incomplète, et une
     archive incomplète ne se répare pas — elle se croit complète."""
-    monkeypatch.setattr(config, "ARCHIVE_DELAI_JOURS", 2)
-    assert not archive._mois_clos("2026-08", date(2026, 9, 1))
-    assert not archive._mois_clos("2026-08", date(2026, 9, 2))
-    assert archive._mois_clos("2026-08", date(2026, 9, 3))
+    monkeypatch.setattr(config, "ARCHIVE_DELAY_DAYS", 2)
+    assert not archive._closed_months("2026-08", date(2026, 9, 1))
+    assert not archive._closed_months("2026-08", date(2026, 9, 2))
+    assert archive._closed_months("2026-08", date(2026, 9, 3))
 
 
 def test_bascule_de_decembre():
-    assert archive._premier_du_mois_suivant("2026-12") == date(2027, 1, 1)
+    assert archive._first_of_next_month("2026-12") == date(2027, 1, 1)
 
 
 def test_mois_entre_traverse_l_annee():
-    assert archive._mois_entre("2026-11", "2027-02") == [
+    assert archive._months_between("2026-11", "2027-02") == [
         "2026-11", "2026-12", "2027-01", "2027-02"]
 
 
@@ -91,7 +91,7 @@ def test_cle_index_set_avant_annee(monkeypatch):
     pouvoir cibler un index set."""
     monkeypatch.setattr(config, "ARCHIVE_S3_PREFIX", "")
     monkeypatch.setattr(config, "ARCHIVE_FORMAT_VERSION", "v1")
-    assert archive.cle_objet("wazuh-firewall", "2026-03", "ndjson.zst.age") == (
+    assert archive.object_key("wazuh-firewall", "2026-03", "ndjson.zst.age") == (
         "v1/wazuh-firewall/2026/wazuh-firewall.2026-03.ndjson.zst.age")
 
 
@@ -100,7 +100,7 @@ def test_cle_prefixee_et_versionnee(monkeypatch):
     ne doit ni écraser l'ancien objet ni exiger de le supprimer."""
     monkeypatch.setattr(config, "ARCHIVE_S3_PREFIX", "soc")
     monkeypatch.setattr(config, "ARCHIVE_FORMAT_VERSION", "v2")
-    assert archive.cle_objet("wazuh-web", "2027-01", "manifest.json") == (
+    assert archive.object_key("wazuh-web", "2027-01", "manifest.json") == (
         "soc/v2/wazuh-web/2027/wazuh-web.2027-01.manifest.json")
 
 
@@ -108,71 +108,71 @@ def test_cle_prefixee_et_versionnee(monkeypatch):
 # Chaîne compression + chiffrement, pour de vrai
 # --------------------------------------------------------------------------
 
-_OUTILS = shutil.which("zstd") and shutil.which("age") and shutil.which("age-keygen")
+_TOOLS = shutil.which("zstd") and shutil.which("age") and shutil.which("age-keygen")
 
 
 def _keyfile(tmp_path, monkeypatch):
     """Génère la clé du SOC et la déclare, comme en exploitation."""
-    cle = tmp_path / "aura-archive-age.key"
-    subprocess.run(["age-keygen", "-o", str(cle)], check=True,
+    key = tmp_path / "aura-archive-age.key"
+    subprocess.run(["age-keygen", "-o", str(key)], check=True,
                    capture_output=True)
-    monkeypatch.setattr(config, "ARCHIVE_AGE_KEYFILE", str(cle))
+    monkeypatch.setattr(config, "ARCHIVE_AGE_KEYFILE", str(key))
     monkeypatch.setattr(config, "ARCHIVE_AGE_RECIPIENTS_EXTRA", [])
-    return cle
+    return key
 
 
-@pytest.mark.skipif(not _OUTILS, reason="zstd/age absents de cet environnement")
+@pytest.mark.skipif(not _TOOLS, reason="zstd/age absents de cet environnement")
 def test_cle_publique_derivee_du_keyfile(tmp_path, monkeypatch):
     """La clé publique est DÉRIVÉE du fichier de clé, jamais recopiée dans le
     .env. Ça supprime une classe entière de pannes : un destinataire mal recopié
     produirait des archives que le SOC ne peut pas relire, et personne ne s'en
     apercevrait avant le premier drill."""
-    cle = _keyfile(tmp_path, monkeypatch)
-    attendu = next(l.split(": ")[1].strip() for l in cle.read_text().splitlines()
+    key = _keyfile(tmp_path, monkeypatch)
+    expected = next(l.split(": ")[1].strip() for l in key.read_text().splitlines()
                    if l.startswith("# public key:"))
-    assert archive.cle_publique() == attendu
-    assert archive.destinataires() == [attendu]
+    assert archive.public_key() == expected
+    assert archive.recipients() == [expected]
     # Sans le commentaire, on retombe sur `age-keygen -y` plutôt que d'échouer.
-    cle.write_text(next(l for l in cle.read_text().splitlines()
+    key.write_text(next(l for l in key.read_text().splitlines()
                         if l.startswith("AGE-SECRET-KEY-1")) + "\n")
-    assert archive.cle_publique() == attendu
+    assert archive.public_key() == expected
 
 
-@pytest.mark.skipif(not _OUTILS, reason="zstd/age absents de cet environnement")
+@pytest.mark.skipif(not _TOOLS, reason="zstd/age absents de cet environnement")
 def test_secours_ajoute_aux_destinataires(tmp_path, monkeypatch):
     """Une clé de secours doit s'ajouter, jamais remplacer : le SOC doit rester
     capable de relire ses propres archives."""
     _keyfile(tmp_path, monkeypatch)
-    secours = tmp_path / "secours.key"
-    subprocess.run(["age-keygen", "-o", str(secours)], check=True,
+    backup = tmp_path / "secours.key"
+    subprocess.run(["age-keygen", "-o", str(backup)], check=True,
                    capture_output=True)
-    pub_secours = next(l.split(": ")[1].strip()
-                       for l in secours.read_text().splitlines()
+    backup_pub = next(l.split(": ")[1].strip()
+                       for l in backup.read_text().splitlines()
                        if l.startswith("# public key:"))
-    monkeypatch.setattr(config, "ARCHIVE_AGE_RECIPIENTS_EXTRA", [pub_secours])
-    d = archive.destinataires()
-    assert len(d) == 2 and d[0] == archive.cle_publique() and d[1] == pub_secours
+    monkeypatch.setattr(config, "ARCHIVE_AGE_RECIPIENTS_EXTRA", [backup_pub])
+    d = archive.recipients()
+    assert len(d) == 2 and d[0] == archive.public_key() and d[1] == backup_pub
 
 
-@pytest.mark.skipif(not _OUTILS, reason="zstd/age absents de cet environnement")
+@pytest.mark.skipif(not _TOOLS, reason="zstd/age absents de cet environnement")
 def test_verifier_cle_fait_un_aller_retour_reel(tmp_path, monkeypatch):
     """Le préflight doit REFUSER une clé qui ne redéchiffre pas ce qu'elle
     chiffre — sinon on ne l'apprend qu'à la première restauration."""
     _keyfile(tmp_path, monkeypatch)
     monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
-    assert archive.verifier_cle()["aller_retour"] == "ok"
+    assert archive.check_key()["aller_retour"] == "ok"
     # Clé d'un AUTRE porteur en destinataire exclusif : le SOC ne peut plus lire.
-    autre = tmp_path / "autre.key"
-    subprocess.run(["age-keygen", "-o", str(autre)], check=True,
+    other = tmp_path / "autre.key"
+    subprocess.run(["age-keygen", "-o", str(other)], check=True,
                    capture_output=True)
-    monkeypatch.setattr(archive, "destinataires", lambda: [
-        next(l.split(": ")[1].strip() for l in autre.read_text().splitlines()
+    monkeypatch.setattr(archive, "recipients", lambda: [
+        next(l.split(": ")[1].strip() for l in other.read_text().splitlines()
              if l.startswith("# public key:"))])
     with pytest.raises(RuntimeError, match="ne redéchiffre PAS"):
-        archive.verifier_cle()
+        archive.check_key()
 
 
-@pytest.mark.skipif(not _OUTILS, reason="zstd/age absents de cet environnement")
+@pytest.mark.skipif(not _TOOLS, reason="zstd/age absents de cet environnement")
 def test_export_chiffre_puis_relu(tmp_path, monkeypatch):
     """Le test qui prouve la propriété centrale : ce qui sort de la chaîne se
     redéchiffre à l'identique AVEC LA CLÉ DU SOC, et le SHA-256 annoncé est celui
@@ -180,66 +180,66 @@ def test_export_chiffre_puis_relu(tmp_path, monkeypatch):
 
     Sans ça, on ne saurait qu'à la première restauration réelle — donc trop tard.
     """
-    cle = _keyfile(tmp_path, monkeypatch)
+    key = _keyfile(tmp_path, monkeypatch)
 
     docs = [{"_index": "wazuh-firewall-2026.08.14", "_id": f"i{n}",
              "_source": {"rule": {"level": 12}, "agent": {"id": "001"},
                          "full_log": "accès refusé " * 20}}
             for n in range(500)]
-    attendu = b"".join(
+    expected = b"".join(
         (json.dumps(d, ensure_ascii=False, separators=(",", ":"),
                     sort_keys=True) + "\n").encode() for d in docs)
 
-    monkeypatch.setattr(config, "ARCHIVE_ZSTD_NIVEAU", 3)
+    monkeypatch.setattr(config, "ARCHIVE_ZSTD_LEVEL", 3)
     monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
     # `controle` accepté et RENSEIGNÉ : c'est ce que fait le vrai `pages`, et
     # l'export vérifie désormais le compte annoncé contre le compte écrit.
     monkeypatch.setattr(archive, "pages",
-                        lambda idx, taille=None, controle=None: (
-                            controle.update(attendu=len(docs))
-                            if controle is not None else None,
+                        lambda idx, size=None, control=None: (
+                            control.update(expected=len(docs))
+                            if control is not None else None,
                             iter([docs]))[1])
 
-    objet = tmp_path / "archive.ndjson.zst.age"
-    m = archive.exporter({"indices": ["wazuh-firewall-2026.08.14"],
-                          "octets": 1024}, objet)
+    object_path = tmp_path / "archive.ndjson.zst.age"
+    m = archive.export({"indices": ["wazuh-firewall-2026.08.14"],
+                          "octets": 1024}, object_path)
 
     assert m["documents"] == 500
-    assert m["sha256_clair"] == hashlib.sha256(attendu).hexdigest()
-    assert m["octets_objet"] == objet.stat().st_size
-    assert m["sha256_chiffre"] == archive._sha256_fichier(objet)
+    assert m["sha256_plain"] == hashlib.sha256(expected).hexdigest()
+    assert m["object_bytes"] == object_path.stat().st_size
+    assert m["sha256_encrypted"] == archive._sha256_file(object_path)
     # L'archive doit être nettement plus petite que le clair : si la compression
     # ne mordait pas, c'est que la chaîne ne fait pas ce qu'on croit.
-    assert m["octets_objet"] < m["octets_clair"] / 5
+    assert m["object_bytes"] < m["plain_bytes"] / 5
 
-    relu = subprocess.run(f"age -d -i {str(cle)!r} {str(objet)!r} | zstd -d -c",
+    reread = subprocess.run(f"age -d -i {str(key)!r} {str(object_path)!r} | zstd -d -c",
                           shell=True, capture_output=True, check=True)
-    assert relu.stdout == attendu
+    assert reread.stdout == expected
 
 
-@pytest.mark.skipif(not _OUTILS, reason="zstd/age absents de cet environnement")
+@pytest.mark.skipif(not _TOOLS, reason="zstd/age absents de cet environnement")
 def test_destinataire_invalide_ne_laisse_pas_de_fichier(tmp_path, monkeypatch):
     """Une chaîne en échec ne doit JAMAIS laisser son fichier derrière elle : un
     fichier tronqué qui monte dans S3 se fait passer pour une archive valide
     jusqu'au jour où on en a besoin."""
-    monkeypatch.setattr(archive, "destinataires", lambda: ["age1pasunecle"])
+    monkeypatch.setattr(archive, "recipients", lambda: ["age1pasunecle"])
     monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
     monkeypatch.setattr(archive, "pages",
-                        lambda idx, taille=None, controle=None: iter(
+                        lambda idx, size=None, control=None: iter(
                             [[{"_index": "i", "_id": "1", "_source": {}}]]))
-    objet = tmp_path / "archive.ndjson.zst.age"
+    object_path = tmp_path / "archive.ndjson.zst.age"
     with pytest.raises(RuntimeError):
-        archive.exporter({"indices": ["i"], "octets": 1}, objet)
-    assert not objet.exists()
+        archive.export({"indices": ["i"], "octets": 1}, object_path)
+    assert not object_path.exists()
 
 
 def test_export_refuse_sans_place(tmp_path, monkeypatch):
     """Un disque plein arrête l'ingestion sans qu'aucune alerte ne le dise. Ce
     job de ménage ne doit pas en être la cause."""
     monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
-    libre = shutil.disk_usage(tmp_path).free
+    free = shutil.disk_usage(tmp_path).free
     with pytest.raises(RuntimeError, match="place insuffisante"):
-        archive._place_disponible(libre * 4)
+        archive._free_space(free * 4)
 
 
 # --------------------------------------------------------------------------
@@ -250,17 +250,17 @@ def test_manifeste_porte_de_quoi_relire_sans_le_code(monkeypatch):
     """Le manifeste doit suffire à un humain dans trois ans : la chaîne exacte,
     les destinataires, et l'empreinte du clair qui fait la différence entre une
     sauvegarde et une preuve."""
-    monkeypatch.setattr(archive, "destinataires", lambda: ["age1abc"])
-    monkeypatch.setattr(config, "ARCHIVE_ZSTD_NIVEAU", 19)
-    man = archive.manifeste(
+    monkeypatch.setattr(archive, "recipients", lambda: ["age1abc"])
+    monkeypatch.setattr(config, "ARCHIVE_ZSTD_LEVEL", 19)
+    man = archive.manifest(
         {"index_base": "wazuh-web", "periode": "2026-05",
          "indices": ["wazuh-web-2026.05.01"]},
-        {"documents": 3, "octets_clair": 30, "octets_objet": 10,
-         "sha256_clair": "a" * 64, "sha256_chiffre": "b" * 64},
+        {"documents": 3, "plain_bytes": 30, "object_bytes": 10,
+         "sha256_plain": "a" * 64, "sha256_encrypted": "b" * 64},
         "v1/wazuh-web/2026/wazuh-web.2026-05.ndjson.zst.age")
-    assert man["sha256_clair"] == "a" * 64
+    assert man["sha256_plain"] == "a" * 64
     assert man["destinataires_age"] == ["age1abc"]
-    assert "zstd -19" in man["chaine"] and "age -r age1abc" in man["chaine"]
+    assert "zstd -19" in man["chain"] and "age -r age1abc" in man["chain"]
     assert man["indices"] == ["wazuh-web-2026.05.01"]
     # Sérialisable : il part dans S3 tel quel.
     json.dumps(man)
@@ -278,7 +278,7 @@ def test_object_lock_absent_par_defaut(monkeypatch):
 def test_object_lock_pose_une_echeance(monkeypatch):
     monkeypatch.setattr(config, "ARCHIVE_OBJECT_LOCK", True)
     monkeypatch.setattr(config, "ARCHIVE_OBJECT_LOCK_MODE", "COMPLIANCE")
-    monkeypatch.setattr(config, "ARCHIVE_OBJECT_LOCK_JOURS", 365)
+    monkeypatch.setattr(config, "ARCHIVE_OBJECT_LOCK_DAYS", 365)
     a = archive._args_lock()
     assert a["ObjectLockMode"] == "COMPLIANCE"
     assert (a["ObjectLockRetainUntilDate"].date()
@@ -293,9 +293,9 @@ def test_desactive_ne_touche_a_rien(monkeypatch):
     """ARCHIVAGE_ENABLED=false doit être inerte SANS toucher Postgres : le
     module est importé par le watchdog, qui tourne toutes les deux minutes chez
     tout le monde, y compris chez qui n'archive pas."""
-    monkeypatch.setattr(config, "ARCHIVAGE_ENABLED", False)
-    assert archive.tourner() == {"etat": "désactivé"}
-    assert archive.indices_en_peril(None) == []
+    monkeypatch.setattr(config, "ARCHIVING_ENABLED", False)
+    assert archive.run() == {"etat": "désactivé"}
+    assert archive.indices_at_risk(None) == []
     assert archive.anomalies(None) == []
 
 
@@ -306,163 +306,163 @@ def test_desactive_ne_touche_a_rien(monkeypatch):
 class _Conn:
     """Bouchon minimal : `execute(...).fetchall()`."""
 
-    def __init__(self, lignes):
-        self._lignes = lignes
+    def __init__(self, lines):
+        self._lines = lines
 
     def execute(self, sql, params=None):
         self._sql = sql
         return self
 
     def fetchall(self):
-        return self._lignes
+        return self._lines
 
 
 def test_trou_de_couverture_detecte(monkeypatch):
     """Un mois absent ENTRE deux mois archivés : les index d'origine sont purgés
     depuis longtemps, la donnée n'existe plus nulle part, et rien ne l'avait dit
     au moment où elle partait."""
-    monkeypatch.setattr(config, "ARCHIVAGE_ENABLED", True)
-    monkeypatch.setattr(archive, "indices_en_peril", lambda conn: [])
+    monkeypatch.setattr(config, "ARCHIVING_ENABLED", True)
+    monkeypatch.setattr(archive, "indices_at_risk", lambda conn: [])
     conn = _Conn([
         {"index_base": "wazuh-web", "periode": "2026-01",
-         "verifie_a": None, "verif_etat": "ok"},
+         "verified_at": None, "verify_state": "ok"},
         {"index_base": "wazuh-web", "periode": "2026-03",
-         "verifie_a": None, "verif_etat": "ok"},
+         "verified_at": None, "verify_state": "ok"},
     ])
-    trous = [a for a in archive.anomalies(conn)
-             if a["capteur"].endswith("trou")]
-    assert len(trous) == 1
-    assert "2026-02" in trous[0]["note"]
-    assert trous[0]["severite"] == "Medium"
+    gaps = [a for a in archive.anomalies(conn)
+             if a["sensor"].endswith("trou")]
+    assert len(gaps) == 1
+    assert "2026-02" in gaps[0]["note"]
+    assert gaps[0]["severity"] == "Medium"
 
 
 def test_serie_recente_sans_passe_n_est_pas_un_trou(monkeypatch):
     """Un index set créé le mois dernier n'a pas de trou : il a un passé qui
     n'existe pas. Confondre les deux ouvrirait un dossier à chaque création
     d'index set — et routage.py en crée jusqu'à deux par jour."""
-    monkeypatch.setattr(config, "ARCHIVAGE_ENABLED", True)
-    monkeypatch.setattr(archive, "indices_en_peril", lambda conn: [])
+    monkeypatch.setattr(config, "ARCHIVING_ENABLED", True)
+    monkeypatch.setattr(archive, "indices_at_risk", lambda conn: [])
     conn = _Conn([{"index_base": "wazuh-jellyfin", "periode": "2026-07",
-                   "verifie_a": None, "verif_etat": "ok"}])
+                   "verified_at": None, "verify_state": "ok"}])
     assert not [a for a in archive.anomalies(conn)
-                if a["capteur"].endswith("trou")]
+                if a["sensor"].endswith("trou")]
 
 
 def test_drill_en_echec_remonte_en_high(monkeypatch):
-    monkeypatch.setattr(config, "ARCHIVAGE_ENABLED", True)
-    monkeypatch.setattr(archive, "indices_en_peril", lambda conn: [])
+    monkeypatch.setattr(config, "ARCHIVING_ENABLED", True)
+    monkeypatch.setattr(archive, "indices_at_risk", lambda conn: [])
     conn = _Conn([{"index_base": "wazuh-web", "periode": "2026-01",
-                   "verifie_a": None, "verif_etat": "sha256-divergent"}])
-    echecs = [a for a in archive.anomalies(conn)
-              if a["capteur"].endswith("drill")]
-    assert len(echecs) == 1 and echecs[0]["severite"] == "High"
+                   "verified_at": None, "verify_state": "sha256-divergent"}])
+    failures = [a for a in archive.anomalies(conn)
+              if a["sensor"].endswith("drill")]
+    assert len(failures) == 1 and failures[0]["severity"] == "High"
 
 
 def test_peril_remonte_en_high_avec_le_delai_restant(monkeypatch):
-    monkeypatch.setattr(config, "ARCHIVAGE_ENABLED", True)
-    monkeypatch.setattr(archive, "indices_en_peril", lambda conn: [
+    monkeypatch.setattr(config, "ARCHIVING_ENABLED", True)
+    monkeypatch.setattr(archive, "indices_at_risk", lambda conn: [
         {"index": "wazuh-web-2026.05.02", "documents": 12,
          "age_jours": 85, "supprime_dans": 5}])
     conn = _Conn([])
-    peril = [a for a in archive.anomalies(conn)
-             if a["capteur"].endswith("peril")]
-    assert len(peril) == 1
-    assert peril[0]["severite"] == "High"
-    assert "wazuh-web-2026.05.02" in peril[0]["note"]
-    assert "5 j" in peril[0]["note"]
+    risk = [a for a in archive.anomalies(conn)
+             if a["sensor"].endswith("peril")]
+    assert len(risk) == 1
+    assert risk[0]["severity"] == "High"
+    assert "wazuh-web-2026.05.02" in risk[0]["note"]
+    assert "5 j" in risk[0]["note"]
 
 
 def test_capteurs_prefixes_pour_le_watchdog(monkeypatch):
     """Le watchdog reconnaît ces pseudo-capteurs par leur PRÉFIXE pour les
     mesurer contre l'horloge et non contre l'horizon d'ingestion."""
     from soc_agent import watchdog
-    monkeypatch.setattr(config, "ARCHIVAGE_ENABLED", True)
-    monkeypatch.setattr(archive, "indices_en_peril", lambda conn: [
+    monkeypatch.setattr(config, "ARCHIVING_ENABLED", True)
+    monkeypatch.setattr(archive, "indices_at_risk", lambda conn: [
         {"index": "i-2026.05.02", "documents": 1, "age_jours": 85,
          "supprime_dans": 5}])
     for a in archive.anomalies(_Conn([])):
-        assert a["capteur"].startswith(archive.PREFIXE_CAPTEUR)
-        assert watchdog._est_archivage(a["capteur"])
-        assert watchdog._hors_pipeline(a["capteur"])
+        assert a["sensor"].startswith(archive.PREFIX_SENSOR)
+        assert watchdog._is_archiving(a["sensor"])
+        assert watchdog._outside_pipeline(a["sensor"])
         # `titre`, `note` et `severite` sont ce que le watchdog consomme sans
         # cas particulier (cf. watchdog._rendu / _titre / _severite_panne).
-        assert a["titre"] and a["note"] and a["severite"]
-        assert watchdog._titre(a) == a["titre"]
-        assert watchdog._rendu(a, 0, markdown=False) == a["note"]
-        assert watchdog._severite_panne(a["capteur"], a) == a["severite"]
+        assert a["titre"] and a["note"] and a["severity"]
+        assert watchdog._title(a) == a["titre"]
+        assert watchdog._rendered(a, 0, markdown=False) == a["note"]
+        assert watchdog._outage_severity(a["sensor"], a) == a["severity"]
 
 
 # --------------------------------------------------------------------------
 # Sélection des lots et péril de purge
 # --------------------------------------------------------------------------
 
-def _faux_indices(*specs):
+def _fake_indices(*specs):
     """(index_base, 'AAAA-MM', nb_jours, docs_par_jour) -> liste d'index datés."""
     out = []
-    for base, mois, n, docs in specs:
-        a, m = mois.split("-")
+    for base, month, n, docs in specs:
+        a, m = month.split("-")
         for j in range(1, n + 1):
             out.append({"index": f"{base}-{a}.{m}.{j:02d}", "base": base,
-                        "jour": date(int(a), int(m), j), "mois": mois,
+                        "day": date(int(a), int(m), j), "mois": month,
                         "documents": docs, "octets": docs * 1000})
     return out
 
 
 def test_lots_ignorent_le_mois_en_cours(monkeypatch):
-    monkeypatch.setattr(config, "ARCHIVE_DELAI_JOURS", 2)
-    monkeypatch.setattr(archive, "indices_dates", lambda: _faux_indices(
+    monkeypatch.setattr(config, "ARCHIVE_DELAY_DAYS", 2)
+    monkeypatch.setattr(archive, "dated_indices", lambda: _fake_indices(
         ("wazuh-firewall", "2026-05", 3, 100),
         ("wazuh-firewall", "2026-08", 2, 50),   # mois en cours
         ("wazuh-web", "2026-05", 1, 7)))
-    lots = archive.lots_a_archiver(_Conn([]), date(2026, 8, 14))
-    assert [(l["index_base"], l["periode"]) for l in lots] == [
+    batches = archive.batches_to_archive(_Conn([]), date(2026, 8, 14))
+    assert [(l["index_base"], l["periode"]) for l in batches] == [
         ("wazuh-firewall", "2026-05"), ("wazuh-web", "2026-05")]
     # Les jours du mois sont regroupés en UN lot, documents cumulés.
-    assert lots[0]["documents"] == 300 and len(lots[0]["indices"]) == 3
+    assert batches[0]["documents"] == 300 and len(batches[0]["indices"]) == 3
 
 
 def test_lot_deja_archive_ne_revient_pas(monkeypatch):
     """Sans ça, chaque passage réexporterait et repaierait tout l'historique —
     le bug des pièces Evidence d'IRIS, transposé à S3."""
-    monkeypatch.setattr(config, "ARCHIVE_DELAI_JOURS", 2)
-    monkeypatch.setattr(archive, "indices_dates", lambda: _faux_indices(
+    monkeypatch.setattr(config, "ARCHIVE_DELAY_DAYS", 2)
+    monkeypatch.setattr(archive, "dated_indices", lambda: _fake_indices(
         ("wazuh-firewall", "2026-05", 3, 100),
         ("wazuh-web", "2026-05", 1, 7)))
     conn = _Conn([{"index_base": "wazuh-firewall", "periode": "2026-05"}])
-    lots = archive.lots_a_archiver(conn, date(2026, 8, 14))
-    assert [(l["index_base"], l["periode"]) for l in lots] == [
+    batches = archive.batches_to_archive(conn, date(2026, 8, 14))
+    assert [(l["index_base"], l["periode"]) for l in batches] == [
         ("wazuh-web", "2026-05")]
 
 
 def test_peril_borne_a_la_marge_avant_suppression(monkeypatch):
     """Un index jeune sans archive n'est pas en péril — il a le temps. Confondre
     les deux ouvrirait un dossier High tous les jours, pour rien."""
-    monkeypatch.setattr(config, "ARCHIVAGE_ENABLED", True)
-    monkeypatch.setattr(config, "RETENTION_INDEX_JOURS", 90)
-    monkeypatch.setattr(config, "ARCHIVE_MARGE_JOURS", 7)
-    monkeypatch.setattr(archive, "indices_dates", lambda: _faux_indices(
+    monkeypatch.setattr(config, "ARCHIVING_ENABLED", True)
+    monkeypatch.setattr(config, "RETENTION_INDEX_DAYS", 90)
+    monkeypatch.setattr(config, "ARCHIVE_MARGIN_DAYS", 7)
+    monkeypatch.setattr(archive, "dated_indices", lambda: _fake_indices(
         ("wazuh-web", "2026-05", 1, 7),      # 105 j -> en péril
         ("wazuh-web", "2026-08", 1, 7)))     # 13 j  -> tranquille
-    peril = archive.indices_en_peril(_Conn([]), date(2026, 8, 14))
-    assert [i["index"] for i in peril] == ["wazuh-web-2026.05.01"]
-    assert peril[0]["age_jours"] == 105
+    risk = archive.indices_at_risk(_Conn([]), date(2026, 8, 14))
+    assert [i["index"] for i in risk] == ["wazuh-web-2026.05.01"]
+    assert risk[0]["age_jours"] == 105
 
 
 def test_peril_tombe_quand_l_archive_existe(monkeypatch):
-    monkeypatch.setattr(config, "ARCHIVAGE_ENABLED", True)
-    monkeypatch.setattr(config, "RETENTION_INDEX_JOURS", 90)
-    monkeypatch.setattr(config, "ARCHIVE_MARGE_JOURS", 7)
-    monkeypatch.setattr(archive, "indices_dates", lambda: _faux_indices(
+    monkeypatch.setattr(config, "ARCHIVING_ENABLED", True)
+    monkeypatch.setattr(config, "RETENTION_INDEX_DAYS", 90)
+    monkeypatch.setattr(config, "ARCHIVE_MARGIN_DAYS", 7)
+    monkeypatch.setattr(archive, "dated_indices", lambda: _fake_indices(
         ("wazuh-web", "2026-05", 1, 7)))
     conn = _Conn([{"index_base": "wazuh-web", "periode": "2026-05"}])
-    assert archive.indices_en_peril(conn, date(2026, 8, 14)) == []
+    assert archive.indices_at_risk(conn, date(2026, 8, 14)) == []
 
 
 # --------------------------------------------------------------------------
 # Le verrou ne doit pas masquer l'erreur qui a interrompu le passage
 # --------------------------------------------------------------------------
 
-class _ConnAvortee:
+class _AbortedConn:
     """Connexion dont la transaction est avortée : tout `execute` échoue.
 
     Reproduit l'état réel de Postgres après une requête en erreur — c'est ce que
@@ -470,10 +470,10 @@ class _ConnAvortee:
     """
 
     def __init__(self):
-        self.rollback_appele = False
+        self.rollback_called = False
 
     def execute(self, sql, params=None):
-        if not self.rollback_appele:
+        if not self.rollback_called:
             raise RuntimeError("current transaction is aborted")
 
         class R:
@@ -483,7 +483,7 @@ class _ConnAvortee:
         return R()
 
     def rollback(self):
-        self.rollback_appele = True
+        self.rollback_called = True
 
 
 def test_deverrouillage_ne_masque_pas_la_cause():
@@ -491,30 +491,30 @@ def test_deverrouillage_ne_masque_pas_la_cause():
     seconde exception REMPLACE la première : la trace ne dit plus ce qui
     n'allait pas. Arrivé en prod, où le diagnostic utile (« il manque une
     table ») était devenu invisible sous une erreur de transaction."""
-    conn = _ConnAvortee()
-    archive._deverrouiller(conn)          # ne doit RIEN lever
-    assert conn.rollback_appele, "rollback non tenté avant l'unlock"
+    conn = _AbortedConn()
+    archive._unlock(conn)          # ne doit RIEN lever
+    assert conn.rollback_called, "rollback non tenté avant l'unlock"
 
 
 def test_deverrouillage_survit_a_une_connexion_morte():
     """Un verrou de session est rendu à la fermeture de la connexion : échouer
     ici est sans conséquence, alors que propager l'échec masquerait la cause."""
-    class _Morte:
+    class _Dead:
         def rollback(self):
             raise OSError("connexion fermée")
 
         def execute(self, *a):
             raise OSError("connexion fermée")
 
-    archive._deverrouiller(_Morte())      # ne doit RIEN lever
+    archive._unlock(_Dead())      # ne doit RIEN lever
 
 
 def test_erreur_de_table_absente_remonte_telle_quelle(monkeypatch):
     """Le bout à bout du scénario de prod : ce qui doit sortir de `tourner`,
     c'est la cause réelle, pas l'erreur de transaction du nettoyage."""
-    monkeypatch.setattr(config, "ARCHIVAGE_ENABLED", True)
+    monkeypatch.setattr(config, "ARCHIVING_ENABLED", True)
 
-    class _Conn(_ConnAvortee):
+    class _Conn(_AbortedConn):
         def __enter__(self):
             return self
 
@@ -531,23 +531,23 @@ def test_erreur_de_table_absente_remonte_telle_quelle(monkeypatch):
             return super().execute(sql, params)
 
     monkeypatch.setattr("psycopg.connect", lambda *a, **k: _Conn())
-    monkeypatch.setattr(archive, "lots_a_archiver", lambda conn: (_ for _ in ()).throw(
+    monkeypatch.setattr(archive, "batches_to_archive", lambda conn: (_ for _ in ()).throw(
         RuntimeError('relation "archives_s3" does not exist')))
     with pytest.raises(RuntimeError, match="archives_s3"):
-        archive.tourner()
+        archive.run()
 
 
 # --------------------------------------------------------------------------
 # Intégrité : un export partiel ne doit JAMAIS devenir une archive
 # --------------------------------------------------------------------------
 
-class _Reponse:
-    def __init__(self, corps, ok=True, status=200):
-        self._corps, self.ok, self.status_code = corps, ok, status
-        self.text = json.dumps(corps)
+class _Response:
+    def __init__(self, body, ok=True, status=200):
+        self._body, self.ok, self.status_code = body, ok, status
+        self.text = json.dumps(body)
 
     def json(self):
-        return self._corps
+        return self._body
 
 
 def _page(hits, failed=0, total_shards=3, timed_out=False, total=None,
@@ -576,7 +576,7 @@ def test_shard_en_echec_refuse_des_la_premiere_page(monkeypatch):
     contrôle, l'archive enregistre son propre compte tronqué comme référence et
     tout le reste (manifeste, SHA-256, drill, adoption) est d'accord avec elle."""
     monkeypatch.setattr(archive, "_indexer",
-                        lambda *a, **k: _Reponse(_page([_hit(0)], failed=1)))
+                        lambda *a, **k: _Response(_page([_hit(0)], failed=1)))
     with pytest.raises(RuntimeError, match="export partiel refusé"):
         list(archive.pages(["wazuh-web-2026.03.01"]))
 
@@ -584,18 +584,18 @@ def test_shard_en_echec_refuse_des_la_premiere_page(monkeypatch):
 def test_shard_en_echec_refuse_en_COURS_de_scroll(monkeypatch):
     """Un scroll dure plusieurs minutes : un shard peut tomber APRÈS la première
     page, et la page concernée revient simplement plus courte."""
-    reponses = [_Reponse(_page([_hit(0)], total=2)),
-                _Reponse(_page([_hit(1)], failed=1, total=2))]
+    responses = [_Response(_page([_hit(0)], total=2)),
+                _Response(_page([_hit(1)], failed=1, total=2))]
     monkeypatch.setattr(archive, "_indexer",
-                        lambda *a, **k: reponses.pop(0) if reponses
-                        else _Reponse(_page([])))
+                        lambda *a, **k: responses.pop(0) if responses
+                        else _Response(_page([])))
     with pytest.raises(RuntimeError, match="export partiel refusé"):
         list(archive.pages(["wazuh-web-2026.03.01"]))
 
 
 def test_recherche_expiree_refusee(monkeypatch):
     monkeypatch.setattr(archive, "_indexer",
-                        lambda *a, **k: _Reponse(_page([_hit(0)], timed_out=True)))
+                        lambda *a, **k: _Response(_page([_hit(0)], timed_out=True)))
     with pytest.raises(RuntimeError, match="recherche expirée"):
         list(archive.pages(["wazuh-web-2026.03.01"]))
 
@@ -604,72 +604,72 @@ def test_total_exact_demande_a_l_indexer(monkeypatch):
     """Sans `track_total_hits`, OpenSearch plafonne le total à 10 000 et rend
     `relation: gte` : on prendrait un plafond pour un total, et la vérification
     de complétude validerait n'importe quel export de plus de 10 000 documents."""
-    assert archive._corps_recherche(500)["track_total_hits"] is True
-    controle = {}
-    reponses = [_Reponse(_page([_hit(0)], total=4200)), _Reponse(_page([]))]
+    assert archive._body_search(500)["track_total_hits"] is True
+    control = {}
+    responses = [_Response(_page([_hit(0)], total=4200)), _Response(_page([]))]
     monkeypatch.setattr(archive, "_indexer",
-                        lambda *a, **k: reponses.pop(0) if reponses
-                        else _Reponse(_page([])))
-    list(archive.pages(["wazuh-web-2026.03.01"], controle=controle))
-    assert controle == {"attendu": 4200, "relation": "eq"}
+                        lambda *a, **k: responses.pop(0) if responses
+                        else _Response(_page([])))
+    list(archive.pages(["wazuh-web-2026.03.01"], control=control))
+    assert control == {"attendu": 4200, "relation": "eq"}
 
 
-@pytest.mark.skipif(not _OUTILS, reason="zstd/age absents de cet environnement")
+@pytest.mark.skipif(not _TOOLS, reason="zstd/age absents de cet environnement")
 def test_export_tronque_refuse_et_fichier_supprime(tmp_path, monkeypatch):
     """Le scroll s'arrête avant la fin : moins de documents écrits qu'annoncés.
     L'archive doit être REFUSÉE et le fichier supprimé — c'est exactement le cas
     qui produisait une copie tronquée se croyant complète."""
     _keyfile(tmp_path, monkeypatch)
-    monkeypatch.setattr(config, "ARCHIVE_ZSTD_NIVEAU", 3)
+    monkeypatch.setattr(config, "ARCHIVE_ZSTD_LEVEL", 3)
     monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
 
-    def _pages(indices, taille=None, controle=None):
-        if controle is not None:
-            controle["attendu"] = 1000      # l'indexer en annonce 1000...
+    def _pages(indices, size=None, control=None):
+        if control is not None:
+            control["attendu"] = 1000      # l'indexer en annonce 1000...
         yield [_hit(n) for n in range(10)]  # ...on n'en reçoit que 10
     monkeypatch.setattr(archive, "pages", _pages)
 
-    objet = tmp_path / "a.ndjson.zst.age"
+    object_path = tmp_path / "a.ndjson.zst.age"
     with pytest.raises(RuntimeError, match="export INCOMPLET refusé"):
-        archive.exporter({"indices": ["i"], "octets": 1,
-                          "index_base": "wazuh-web", "periode": "2026-03"}, objet)
-    assert not objet.exists(), "le fichier tronqué a été conservé"
+        archive.export({"indices": ["i"], "octets": 1,
+                          "index_base": "wazuh-web", "periode": "2026-03"}, object_path)
+    assert not object_path.exists(), "le fichier tronqué a été conservé"
 
 
-@pytest.mark.skipif(not _OUTILS, reason="zstd/age absents de cet environnement")
+@pytest.mark.skipif(not _TOOLS, reason="zstd/age absents de cet environnement")
 def test_export_complet_accepte(tmp_path, monkeypatch):
     """Le cas nominal doit continuer de passer : autant de documents qu'annoncé."""
     _keyfile(tmp_path, monkeypatch)
-    monkeypatch.setattr(config, "ARCHIVE_ZSTD_NIVEAU", 3)
+    monkeypatch.setattr(config, "ARCHIVE_ZSTD_LEVEL", 3)
     monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
 
-    def _pages(indices, taille=None, controle=None):
-        if controle is not None:
-            controle["attendu"] = 10
+    def _pages(indices, size=None, control=None):
+        if control is not None:
+            control["attendu"] = 10
         yield [_hit(n) for n in range(10)]
     monkeypatch.setattr(archive, "pages", _pages)
 
-    m = archive.exporter({"indices": ["i"], "octets": 1,
+    m = archive.export({"indices": ["i"], "octets": 1,
                           "index_base": "wazuh-web", "periode": "2026-03"},
                          tmp_path / "a.age")
     assert m["documents"] == 10
 
 
-@pytest.mark.skipif(not _OUTILS, reason="zstd/age absents de cet environnement")
+@pytest.mark.skipif(not _TOOLS, reason="zstd/age absents de cet environnement")
 def test_surplus_accepte_car_sans_perte(tmp_path, monkeypatch):
     """Écrit en PLUS qu'annoncé n'est pas une perte : au pire un doublon. On
     conserve et on journalise, plutôt que de jeter une archive valide."""
     _keyfile(tmp_path, monkeypatch)
-    monkeypatch.setattr(config, "ARCHIVE_ZSTD_NIVEAU", 3)
+    monkeypatch.setattr(config, "ARCHIVE_ZSTD_LEVEL", 3)
     monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
 
-    def _pages(indices, taille=None, controle=None):
-        if controle is not None:
-            controle["attendu"] = 5
+    def _pages(indices, size=None, control=None):
+        if control is not None:
+            control["attendu"] = 5
         yield [_hit(n) for n in range(10)]
     monkeypatch.setattr(archive, "pages", _pages)
 
-    m = archive.exporter({"indices": ["i"], "octets": 1,
+    m = archive.export({"indices": ["i"], "octets": 1,
                           "index_base": "wazuh-web", "periode": "2026-03"},
                          tmp_path / "a.age")
     assert m["documents"] == 10
@@ -682,19 +682,19 @@ def test_surplus_accepte_car_sans_perte(tmp_path, monkeypatch):
 def test_balayage_supprime_les_residus_vieux_pas_les_recents(tmp_path, monkeypatch):
     import os as _os
     monkeypatch.setattr(config, "ARCHIVE_TMP_DIR", str(tmp_path))
-    vieux = tmp_path / "aura-archive-abandonne"
-    vieux.mkdir()
-    (vieux / "objet").write_bytes(b"x" * 4096)
-    _os.utime(vieux, (0, 0))                       # laissé il y a longtemps
+    old = tmp_path / "aura-archive-abandonne"
+    old.mkdir()
+    (old / "objet").write_bytes(b"x" * 4096)
+    _os.utime(old, (0, 0))                       # laissé il y a longtemps
     recent = tmp_path / "aura-drill-en-cours"      # peut appartenir à un drill
     recent.mkdir()
-    etranger = tmp_path / "autre-chose"            # pas à nous
-    etranger.mkdir()
+    foreign = tmp_path / "autre-chose"            # pas à nous
+    foreign.mkdir()
 
-    r = archive.balayer_temporaires(age_heures=2)
+    r = archive.sweep_temporary(age_hours=2)
     assert r["repertoires"] == 1 and r["octets"] >= 4096
-    assert not vieux.exists()
-    assert recent.exists() and etranger.exists()
+    assert not old.exists()
+    assert recent.exists() and foreign.exists()
 
 
 def test_multiparts_inacheves_avortes_sauf_les_recents():
@@ -702,7 +702,7 @@ def test_multiparts_inacheves_avortes_sauf_les_recents():
     dans aucun list_objects. Mais un upload récent peut être en cours."""
     from datetime import timedelta as _td
     maintenant = datetime.now(timezone.utc)
-    avortes = []
+    aborted = []
 
     class _S3:
         @staticmethod
@@ -716,11 +716,11 @@ def test_multiparts_inacheves_avortes_sauf_les_recents():
 
         @staticmethod
         def abort_multipart_upload(Bucket, Key, UploadId):
-            avortes.append(Key)
+            aborted.append(Key)
 
-    r = archive.avorter_multiparts(_S3(), age_heures=24)
+    r = archive.abort_multiparts(_S3(), age_hours=24)
     assert r["avortes"] == ["v1/a.age"] and r["en_cours_ignores"] == 1
-    assert avortes == ["v1/a.age"]
+    assert aborted == ["v1/a.age"]
 
 
 def test_multiparts_non_listables_ne_bloquent_pas():
@@ -731,4 +731,4 @@ def test_multiparts_non_listables_ne_bloquent_pas():
         def list_multipart_uploads(Bucket):
             raise Exception("AccessDenied")
 
-    assert "indéterminé" in archive.avorter_multiparts(_S3())["etat"]
+    assert "indéterminé" in archive.abort_multiparts(_S3())["etat"]

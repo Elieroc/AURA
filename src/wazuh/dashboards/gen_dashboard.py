@@ -941,18 +941,18 @@ objs.append(saved_search("soc-ai-ai-latest", "Derniers appels au modele",
 Q_KPI = "event_type:incident_kpi"
 
 
-def kpi_delai(vid, titre, champ, query, compte_label):
-    return vis(vid, titre, {
-        "title": titre,
+def kpi_delay(vid, title, field, query, account_label):
+    return vis(vid, title, {
+        "title": title,
         "type": "metric",
         "aggs": [
             {"id": "1", "enabled": True, "type": "avg", "schema": "metric",
-             "params": {"field": champ, "customLabel": "Moyenne (min)"}},
+             "params": {"field": field, "customLabel": "Moyenne (min)"}},
             {"id": "2", "enabled": True, "type": "percentiles", "schema": "metric",
-             "params": {"field": champ, "percents": [50],
+             "params": {"field": field, "percents": [50],
                         "customLabel": "Mediane (min)"}},
             {"id": "3", "enabled": True, "type": "count", "schema": "metric",
-             "params": {"customLabel": compte_label}},
+             "params": {"customLabel": account_label}},
         ],
         "params": {"addTooltip": True, "addLegend": False, "type": "metric",
                    "metric": {"percentageMode": False, "useRanges": False,
@@ -965,19 +965,19 @@ def kpi_delai(vid, titre, champ, query, compte_label):
     }, IDX_AI, query=query)
 
 
-objs.append(kpi_delai(
+objs.append(kpi_delay(
     "soc-ai-mttd", "MTTD — delai de detection", "kpi.mttd_minutes",
     Q_KPI, "Incidents detectes"))
 
 # Filtre explicite sur l'existence du delai : la moyenne ignorerait les nuls de
 # toute facon, mais le COMPTE, lui, dirait « 11 incidents » la ou seuls 3 ont
 # ete remedies. Le denominateur affiche doit etre celui de la moyenne affichee.
-objs.append(kpi_delai(
+objs.append(kpi_delay(
     "soc-ai-mttr", "MTTR — delai de remediation", "kpi.mttr_minutes",
     f"{Q_KPI} and kpi.remediated:true", "Incidents remedies"))
 
 
-def compteur(vid, title, label, query="", idx=IDX_ALL, agg=None):
+def counter(vid, title, label, query="", idx=IDX_ALL, agg=None):
     """Grand chiffre unique sur l'index combiné."""
     return vis(vid, title, {
         "title": title,
@@ -996,16 +996,16 @@ def compteur(vid, title, label, query="", idx=IDX_ALL, agg=None):
     }, idx, query=query)
 
 
-objs.append(compteur("soc-ai-actionable-events", "Alertes actionnables (>= Medium)",
+objs.append(counter("soc-ai-actionable-events", "Alertes actionnables (>= Medium)",
                      "Alertes", query=SEV_ACTIONABLE))
 
-objs.append(compteur("soc-ai-highcrit-events", "Alertes High + Critical",
+objs.append(counter("soc-ai-highcrit-events", "Alertes High + Critical",
                      "Alertes", query=SEV_HIGH_CRIT))
 
 # Cardinalite sur agent.name : compte les machines qui ont REELLEMENT emis,
 # pas les agents enroles. Un agent muet (capteur coupe, agent arrete) fait
 # baisser ce chiffre — c'est le but.
-objs.append(compteur("soc-ai-active-agents", "Machines emettrices",
+objs.append(counter("soc-ai-active-agents", "Machines emettrices",
                      "Machines",
                      agg={"type": "cardinality", "params": {"field": "agent.name"}}))
 
@@ -1150,22 +1150,22 @@ Q_WIN_PS = 'rule.groups:*powershell* or data.win.system.eventID:("4103" or "4104
 Q_WIN_AUTH_FAIL = ('rule.groups:(*authentication_failed* or *win_authentication_failed*) or '
                    'data.win.system.eventID:("4625" or "4771" or "4776" or "4740")')
 
-objs.append(compteur("soc-ai-win-total-events", "Evenements Windows",
+objs.append(counter("soc-ai-win-total-events", "Evenements Windows",
                      "Evenements", idx=IDX_WINDOWS))
 
-objs.append(compteur("soc-ai-win-actionable", "Alertes actionnables (>= Medium)",
+objs.append(counter("soc-ai-win-actionable", "Alertes actionnables (>= Medium)",
                      "Alertes", query=SEV_ACTIONABLE, idx=IDX_WINDOWS))
 
 # Cardinalite sur data.win.system.computer et non agent.name : c'est le nom vu
 # DANS l'event, donc le FQDN reel de la machine (WIN-DC.lab.local). Un agent
 # dont l'identite a ete clonee depuis un template emet sous le nom d'agent d'une
 # autre machine — les deux chiffres divergent alors, et c'est le signal.
-objs.append(compteur("soc-ai-win-hosts", "Machines Windows emettrices",
+objs.append(counter("soc-ai-win-hosts", "Machines Windows emettrices",
                      "Machines", idx=IDX_WINDOWS,
                      agg={"type": "cardinality",
                           "params": {"field": "data.win.system.computer"}}))
 
-objs.append(compteur("soc-ai-win-cred-count", "Acces aux identifiants",
+objs.append(counter("soc-ai-win-cred-count", "Acces aux identifiants",
                      "Evenements", query=Q_WIN_CRED, idx=IDX_WINDOWS))
 
 objs.append(vis("soc-ai-win-timeline", "Alertes Windows par severite (timeline)", {
@@ -1508,25 +1508,25 @@ objs.append(dashboard("soc-ai-ai", "AI",
 # exactement les plus vieilles, donc les plus en retard, donc les seules qui
 # comptent pour un VOC. D'ou le time_from a 3 ans sur ce dashboard.
 
-Q_PARC = "event_type:voc_parc"
+Q_FLEET = "event_type:voc_parc"
 Q_ASSET = "event_type:voc_asset"
-Q_VULN_OUVERTE = "event_type:voc_vuln and voc.statut:ouverte"
-Q_VULN_CORRIGEE = "event_type:voc_vuln and voc.resolue:true"
+Q_VULN_OPEN = "event_type:voc_vuln and voc.statut:ouverte"
+Q_VULN_FIXED = "event_type:voc_vuln and voc.resolue:true"
 
 
-def dernier(vid, titre, champ, label, query=Q_PARC, taille=48):
+def last(vid, title, field, label, query=Q_FLEET, size=48):
     """Grand chiffre = DERNIERE valeur relevee, via top_hits.
 
     Pas `max` ni `avg` : ces documents sont des JAUGES, pas des evenements. Un
     `max` sur 30 jours afficherait le pic de dette du mois en le faisant passer
     pour l'etat courant — exactement le contraire de ce qu'un VOC doit montrer.
     """
-    return vis(vid, titre, {
-        "title": titre,
+    return vis(vid, title, {
+        "title": title,
         "type": "metric",
         "aggs": [{"id": "1", "enabled": True, "type": "top_hits",
                   "schema": "metric",
-                  "params": {"field": champ, "aggregate": "concat", "size": 1,
+                  "params": {"field": field, "aggregate": "concat", "size": 1,
                              "sortField": "timestamp", "sortOrder": "desc",
                              "customLabel": label}}],
         "params": {"addTooltip": True, "addLegend": False, "type": "metric",
@@ -1536,17 +1536,17 @@ def dernier(vid, titre, champ, label, query=Q_PARC, taille=48):
                               "labels": {"show": True}, "invertColors": False,
                               "style": {"bgFill": "#000", "bgColor": False,
                                         "labelColor": False, "subText": "",
-                                        "fontSize": taille}}},
+                                        "fontSize": size}}},
     }, IDX_VOC, query=query)
 
 
-objs.append(dernier("soc-ai-voc-ouvertes", "Vulnerabilites ouvertes",
+objs.append(last("soc-ai-voc-ouvertes", "Vulnerabilites ouvertes",
                     "voc.ouvertes", "Ouvertes"))
-objs.append(dernier("soc-ai-voc-critical", "Dont critiques",
+objs.append(last("soc-ai-voc-critical", "Dont critiques",
                     "voc.critical", "Critical"))
-objs.append(dernier("soc-ai-voc-horssla", "Hors delai (SLA depasse)",
+objs.append(last("soc-ai-voc-horssla", "Hors delai (SLA depasse)",
                     "voc.hors_sla_total", "Hors SLA"))
-objs.append(dernier("soc-ai-voc-score-max", "Machine la plus exposee (score)",
+objs.append(last("soc-ai-voc-score-max", "Machine la plus exposee (score)",
                     "voc.score_max", "Score /100"))
 
 # La couverture d'abord, et en premier ecran du dashboard. Une dette qui baisse
@@ -1554,10 +1554,10 @@ objs.append(dernier("soc-ai-voc-score-max", "Machine la plus exposee (score)",
 # ce chiffre a cote du burn-down, rien ne permet de faire la difference. Le VOC
 # de la flotte a deja connu ce type d'angle mort (auditd absent partout, agents
 # clones muets) — la lecon est cablee ici.
-objs.append(dernier("soc-ai-voc-couverture", "Couverture d'inventaire",
-                    "voc.couverture_pct", "% des machines connues", taille=36))
-objs.append(dernier("soc-ai-voc-muettes", "Machines sans inventaire",
-                    "voc.machines_muettes", "Machines", taille=36))
+objs.append(last("soc-ai-voc-couverture", "Couverture d'inventaire",
+                    "voc.couverture_pct", "% des machines connues", size=36))
+objs.append(last("soc-ai-voc-muettes", "Machines sans inventaire",
+                    "voc.machines_muettes", "Machines", size=36))
 
 # Burn-down : la dette par severite dans le temps. `max` par intervalle et non
 # `avg` : plusieurs passages par intervalle relevent la meme jauge, la moyenne
@@ -1603,7 +1603,7 @@ objs.append(vis("soc-ai-voc-burndown", "Dette de vulnerabilites dans le temps", 
                "times": [], "addTimeMarker": False, "labels": {"show": False},
                "thresholdLine": {"show": False, "value": 10, "width": 1,
                                   "style": "full", "color": "#E7664C"}},
-}, IDX_VOC, query=Q_PARC,
+}, IDX_VOC, query=Q_FLEET,
    ui_state={"vis": {"colors": {"Critical": "#BD271E", "High": "#EC7014",
                                 "Medium": "#F5C700", "Low": "#6092C0"}}}))
 
@@ -1628,7 +1628,7 @@ objs.append(vis("soc-ai-voc-flux", "Vulnerabilites apparues / corrigees", {
     "params": {**HIST_PARAMS,
                "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
                               "title": {"text": "Vulnerabilites"}}]},
-}, IDX_VOC, query=Q_PARC,
+}, IDX_VOC, query=Q_FLEET,
    ui_state={"vis": {"colors": {"Apparues": "#E7664C", "Corrigees": "#54B399"}}}))
 
 # MTTR de remediation. `voc.age_jours` porte deux sens selon le statut — age
@@ -1654,7 +1654,7 @@ objs.append(vis("soc-ai-voc-mttr", "Delai moyen de correction", {
                           "style": {"bgFill": "#000", "bgColor": False,
                                     "labelColor": False, "subText": "",
                                     "fontSize": 36}}},
-}, IDX_VOC, query=Q_VULN_CORRIGEE))
+}, IDX_VOC, query=Q_VULN_FIXED))
 
 objs.append(vis("soc-ai-voc-mttr-severite", "Delai de correction par severite", {
     "title": "Delai de correction par severite",
@@ -1687,7 +1687,7 @@ objs.append(vis("soc-ai-voc-mttr-severite", "Delai de correction par severite", 
                "times": [], "addTimeMarker": False, "labels": {},
                "thresholdLine": {"show": False, "value": 10, "width": 1,
                                   "style": "full", "color": "#E7664C"}},
-}, IDX_VOC, query=Q_VULN_CORRIGEE))
+}, IDX_VOC, query=Q_VULN_FIXED))
 
 # Score d'exposition par machine. `max` sur voc.score et non un compte de
 # documents : chaque passage ecrit une ligne par machine, donc un `count` classerait
@@ -1746,7 +1746,7 @@ objs.append(vis("soc-ai-voc-risque-priorite",
     "params": {**HIST_PARAMS,
                "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
                               "title": {"text": "Vulnerabilites ouvertes"}}]},
-}, IDX_VOC, query=Q_VULN_OUVERTE,
+}, IDX_VOC, query=Q_VULN_OPEN,
    ui_state={"vis": {"colors": {"critical": "#BD271E", "high": "#EC7014",
                                 "medium": "#F5C700", "low": "#6092C0"}}}))
 
@@ -1771,7 +1771,7 @@ objs.append(vis("soc-ai-voc-top-paquets", "Paquets porteurs de la dette", {
     "params": {"perPage": 10, "showPartialRows": False,
                "showMetricsAtAllLevels": False, "showTotal": False,
                "totalFunc": "sum", "percentageCol": ""},
-}, IDX_VOC, query=Q_VULN_OUVERTE))
+}, IDX_VOC, query=Q_VULN_OPEN))
 
 # La file d'attente reelle du VOC : ce qui a depasse son delai, trie par retard.
 # Une recherche sauvegardee et non une table d'agregation, pour que l'analyste

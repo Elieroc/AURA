@@ -577,7 +577,7 @@ fichiers : la reprise se fait à l'offset enregistré, et rattraper plusieurs Go
 manager — c'est le scénario du flood Suricata qui avait rendu le SOC aveugle
 26 h.
 
-### Contrôle automatique du routage (`soc_agent.routage`)
+### Contrôle automatique du routage (`soc_agent.routing`)
 
 Le tableau ci-dessus est **vérifié en continu** par le watchdog (toutes les
 2 min), et complété tout seul quand une source de log nouvelle apparaît. Voir
