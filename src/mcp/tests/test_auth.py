@@ -1,8 +1,8 @@
-"""Ce que le serveur MCP ne doit jamais laisser passer.
+"""What the MCP server must never let through.
 
-Ces tests portent sur les invariants d'autorisation, pas sur le comportement
-des outils : un outil qui rend une mauvaise donnée est un bug, un outil
-accessible au mauvais jeton est une porte ouverte sur la production.
+These tests cover the authorization invariants, not the tools' behaviour: a
+tool that returns bad data is a bug, a tool reachable by the wrong token is an
+open door into production.
 """
 
 import pytest
@@ -11,28 +11,28 @@ from aura_mcp import auth, gateway
 
 
 def _scopes(*values):
-    """Installe des scopes pour la durée d'un test."""
+    """Installs scopes for the duration of a test."""
     return auth.SCOPES.set(frozenset(values))
 
 
-def test_defaut_est_le_refus():
-    """Un appel sans jeton n'a aucun droit — pas même la lecture.
+def test_default_is_deny():
+    """A call with no token has no right at all — not even read.
 
-    Le serveur MCP Wazuh amont accorde la lecture par défaut. Ici même la
-    lecture expose des journaux d'incidents : rien n'est implicite.
+    The upstream Wazuh MCP server grants read by default. Here even read
+    exposes incident logs: nothing is implicit.
     """
     assert auth.SCOPES.get() == frozenset()
 
     @auth.require("aura:read")
     def tool():
-        return "atteint"
+        return "reached"
 
     with pytest.raises(auth.Denied):
         tool()
 
 
-def test_admin_implique_write_et_read():
-    """Un jeton d'admin n'a pas à lister les trois scopes."""
+def test_admin_implies_write_and_read():
+    """An admin token does not have to list all three scopes."""
     token = _scopes(*auth.config.IMPLIES["aura:admin"])
     try:
         @auth.require("aura:read")
@@ -49,44 +49,44 @@ def test_admin_implique_write_et_read():
         auth.SCOPES.reset(token)
 
 
-def test_lecture_ne_donne_pas_action():
-    """Le cas qui compte : un jeton de lecture ne doit pas pouvoir isoler."""
+def test_read_does_not_grant_action():
+    """The case that matters: a read token must not be able to isolate."""
     token = _scopes("aura:read")
     try:
         @auth.require("aura:admin")
         def isolate():
-            return "isolé"
+            return "isolated"
 
         with pytest.raises(auth.Denied) as e:
             isolate()
-        # Le message doit nommer le scope manquant : le client est un agent IA
-        # qui doit pouvoir dire à son utilisateur quel jeton demander.
+        # The message must name the missing scope: the client is an AI agent
+        # that must be able to tell its user which token to request.
         assert "aura:admin" in str(e.value)
     finally:
         auth.SCOPES.reset(token)
 
 
-def test_outil_sans_scope_refuse_a_l_enregistrement():
-    """Un outil qui oublie @auth.exige ne doit pas pouvoir être servi."""
+def test_scopeless_tool_refused_at_registration():
+    """A tool that forgets @auth.require must not be servable."""
     from aura_mcp import server
 
     def negligent_tool():
-        return "accessible à tout jeton valide"
+        return "accessible to any valid token"
 
-    with pytest.raises(RuntimeError, match="auth.exige"):
+    with pytest.raises(RuntimeError, match="auth.require"):
         server.register(negligent_tool)
 
 
-def test_scopes_du_jeton_developpe_les_implications():
+def test_token_scopes_expand_the_implications():
     import datetime as dt
 
     import jwt
 
-    maintenant = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.timezone.utc)
     raw = jwt.encode(
         {"sub": "test", "scope": "aura:admin", "iss": auth.config.ISSUER,
-         "aud": auth.config.AUDIENCE, "iat": maintenant,
-         "exp": maintenant + dt.timedelta(minutes=5)},
+         "aud": auth.config.AUDIENCE, "iat": now,
+         "exp": now + dt.timedelta(minutes=5)},
         auth.config.SECRET, algorithm="HS256")
 
     subject, scopes = auth.scopes_of_token(raw)
@@ -94,47 +94,47 @@ def test_scopes_du_jeton_developpe_les_implications():
     assert scopes == frozenset({"aura:admin", "aura:write", "aura:read"})
 
 
-def test_jeton_expire_est_refuse():
+def test_expired_token_refused():
     import datetime as dt
 
     import jwt
 
-    passe = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)
+    past = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)
     raw = jwt.encode(
         {"sub": "test", "scope": "aura:read", "iss": auth.config.ISSUER,
-         "aud": auth.config.AUDIENCE, "iat": passe,
-         "exp": passe + dt.timedelta(minutes=5)},
+         "aud": auth.config.AUDIENCE, "iat": past,
+         "exp": past + dt.timedelta(minutes=5)},
         auth.config.SECRET, algorithm="HS256")
 
     with pytest.raises(jwt.PyJWTError):
         auth.scopes_of_token(raw)
 
 
-# --- Relais ---------------------------------------------------------------
+# --- Relay ------------------------------------------------------------------
 
-def test_active_response_wazuh_toujours_masquee():
-    """Le point non négociable du relais.
+def test_wazuh_active_response_always_masked():
+    """The non-negotiable point of the relay.
 
-    Ces outils parlent à l'API du manager sans rien connaître des agents
-    protégés ni des groupes d'infrastructure. Un client qui les voit peut
-    isoler le pare-feu — et couper le SOC avec.
+    These tools talk to the manager's API with no knowledge at all of the
+    protected agents or the infrastructure groups. A client that sees them can
+    isolate the firewall — and cut off the SOC with it.
     """
     upstream = gateway.Upstream("wazuh", "http://x/mcp", "", "wazuh_")
     for tool in gateway.WAZUH_MASKED:
         assert not gateway.allowed(upstream, tool), tool
 
 
-def test_liste_autorisation_et_non_interdiction():
-    """Un outil inconnu n'est pas relayé.
+def test_allowlist_not_denylist():
+    """An unknown tool is not relayed.
 
-    C'est ce qui fait qu'une montée de version de l'amont ne peut pas exposer
-    d'elle-même un nouvel outil d'action.
+    This is what keeps an upstream version bump from exposing a new action
+    tool on its own.
     """
     upstream = gateway.Upstream("wazuh", "http://x/mcp", "", "wazuh_")
-    assert not gateway.allowed(upstream, "outil_ajoute_par_une_maj")
+    assert not gateway.allowed(upstream, "tool_added_by_an_update")
     assert gateway.allowed(upstream, "get_wazuh_agents")
 
 
-def test_aucun_outil_masque_dans_la_liste_autorisee():
-    """Garde-fou contre une contradiction introduite par distraction."""
+def test_no_masked_tool_in_the_allowlist():
+    """Guardrail against a contradiction introduced by carelessness."""
     assert not (gateway.WAZUH_ALLOWED & gateway.WAZUH_MASKED)
