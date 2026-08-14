@@ -49,6 +49,13 @@ COLONNES_UEBA = ("id, ts, agent_id, agent_name, rule_id, srcip, srcuser, "
                  "entity, raw")
 
 
+def _porte_ts(colonnes: str) -> bool:
+    """La colonne `ts` est-elle déjà projetée ? Comparaison sur les noms
+    découpés, pas une recherche de sous-chaîne : « rule_groups, mitre_tactics »
+    contient « ts » sans porter la colonne."""
+    return "ts" in {c.strip() for c in colonnes.split(",")}
+
+
 def charger_bornees(conn, incident_id: int, colonnes: str,
                     etiquette: str = "") -> list[dict]:
     """Alertes d'un incident, bornées à `config.INCIDENT_MAX_ALERTES`.
@@ -77,19 +84,20 @@ def charger_bornees(conn, incident_id: int, colonnes: str,
                 "(%d plus anciennes + %d plus récentes) — %d non examinée(s)",
                 incident_id, f" ({etiquette})" if etiquette else "",
                 n, plafond, moitie, plafond - moitie, n - plafond)
+    # `ts` doit figurer dans le SELECT des deux branches, puisque l'ORDER BY
+    # final porte dessus — mais SEULEMENT s'il n'y est pas déjà : l'ajouter en
+    # aveugle le projette deux fois et Postgres refuse la requête entière
+    # (« ORDER BY "ts" is ambiguous »). Trois des quatre jeux de colonnes du
+    # pipeline contiennent déjà `ts`, donc le cas nominal est celui-là.
+    projection = colonnes if _porte_ts(colonnes) else f"{colonnes}, ts"
     return conn.execute(
-        # `ts` est ajouté aux colonnes projetées : l'ORDER BY final porte
-        # dessus, et il doit donc figurer dans le SELECT des deux branches de
-        # l'UNION. Les appelants qui ne le demandaient pas reçoivent une clé de
-        # plus, ce qui n'a jamais gêné personne — l'inverse (trier sur une
-        # colonne absente) est une erreur SQL.
-        f"(SELECT {colonnes}, ts FROM alerts WHERE incident_id = %(i)s "
+        f"(SELECT {projection} FROM alerts WHERE incident_id = %(i)s "
         f" ORDER BY ts ASC LIMIT %(debut)s)"
         # UNION ALL, pas UNION : les deux moitiés sont disjointes par
         # construction (on n'entre ici que si n > plafond), et dédupliquer
         # imposerait un tri sur le `raw` jsonb entier de chaque ligne.
         " UNION ALL "
-        f"(SELECT {colonnes}, ts FROM alerts WHERE incident_id = %(i)s "
+        f"(SELECT {projection} FROM alerts WHERE incident_id = %(i)s "
         f" ORDER BY ts DESC LIMIT %(fin)s)"
         " ORDER BY ts",
         {"i": incident_id, "debut": moitie, "fin": plafond - moitie}).fetchall()

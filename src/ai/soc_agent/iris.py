@@ -3012,6 +3012,11 @@ def creer_cases(un_seul: int | None = None) -> list[tuple[int, int, str]]:
                       f"({inc['verdict']})")
             except Exception as e:  # noqa: BLE001
                 log.error("création case incident #%s échouée : %s", inc["id"], e)
+                # Rollback d'abord : si l'échec vient d'une erreur SQL, la
+                # transaction est en échec et l'UPDATE qui suit échouerait à son
+                # tour — l'incident ne serait même pas marqué pour réessai, et
+                # tout le lot suivant tomberait avec lui.
+                conn.rollback()
                 # mark incident so we retry next cycle
                 conn.execute("UPDATE incidents SET status = %s WHERE id = %s",
                            ("case_creation_failed", inc["id"]))
@@ -3029,6 +3034,12 @@ def creer_cases(un_seul: int | None = None) -> list[tuple[int, int, str]]:
                       f"({inc['verdict']}, {inc['alert_count']} alertes)")
             except Exception as e:  # noqa: BLE001
                 log.error("rafraîchissement case incident #%s échoué : %s", inc["id"], e)
+                # Sans ce rollback, une erreur SQL laisse la transaction en
+                # échec et TOUS les incidents suivants meurent en cascade sur
+                # « current transaction is aborted » — un seul incident cassé
+                # emportait la totalité du lot. Vécu le 2026-08-14 : onze
+                # rafraîchissements perdus pour une seule requête fautive.
+                conn.rollback()
     return faits
 
 

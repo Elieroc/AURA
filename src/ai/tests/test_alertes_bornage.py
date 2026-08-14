@@ -52,6 +52,27 @@ def test_au_dela_du_plafond_les_deux_bouts_sont_pris():
     assert params["i"] == 2555
 
 
+def test_ts_non_duplique_quand_les_colonnes_le_portent_deja():
+    """Régression du 2026-08-14 : `ts` ajouté en aveugle aux colonnes le
+    projetait deux fois, et Postgres refusait la requête entière (« ORDER BY
+    "ts" is ambiguous »). Trois des quatre jeux de colonnes contiennent déjà
+    `ts` — c'était donc le cas NOMINAL qui était cassé, et il l'est resté
+    jusqu'à la prod parce que les tests tournaient sur une fausse connexion,
+    qui ne valide aucun SQL."""
+    conn = FauxCurseur(total=99999)
+    alertes.charger_bornees(conn, 7, alertes.COLONNES_TRIAGE)
+    sql = conn.requetes[-1][0]
+    assert ", ts, ts" not in sql and "raw, ts" not in sql
+    assert sql.count("ORDER BY ts") == 3      # ASC, DESC, et le tri final
+
+
+def test_porte_ts_ne_confond_pas_une_sous_chaine():
+    """« rule_groups, mitre_tactics » contient « ts » sans porter la colonne."""
+    assert alertes._porte_ts("id, ts, raw")
+    assert not alertes._porte_ts("rule_groups, mitre_tactics, raw")
+    assert not alertes._porte_ts(alertes.COLONNES_CIBLAGE)
+
+
 def test_ts_est_projete_dans_les_deux_branches():
     """L'ORDER BY final porte sur `ts` : absent du SELECT des deux branches de
     l'UNION, la requête est une erreur SQL — et le bornage ne servirait qu'à
@@ -121,3 +142,41 @@ def test_les_appelants_passent_par_le_module_commun():
                 f"{module.__name__} recharge un incident entier — utiliser "
                 f"soc_agent.alertes.charger_bornees/parcourir. Vu : "
                 f"{' '.join(m.group(0).split())[:120]}")
+
+
+# ---------------------------------------------------------------------------
+# Validation SQL réelle
+# ---------------------------------------------------------------------------
+#
+# Les tests ci-dessus tournent sur une fausse connexion : ils vérifient la
+# FORME de la requête, jamais sa validité. C'est exactement ce qui a laissé
+# passer en prod un `ORDER BY "ts" is ambiguous` — la requête était bien
+# construite, et refusée par Postgres. Celui-ci l'exécute pour de vrai quand une
+# base est joignable, et se saute proprement sinon.
+@pytest.mark.parametrize("nom", ["COLONNES_RAPPORT", "COLONNES_TRIAGE",
+                                 "COLONNES_CIBLAGE", "COLONNES_UEBA"])
+def test_sql_accepte_par_postgres(nom):
+    psycopg = pytest.importorskip("psycopg")
+    try:
+        conn = psycopg.connect(config.PG_DSN, row_factory=psycopg.rows.dict_row,
+                               connect_timeout=3)
+    except Exception:                                          # noqa: BLE001
+        pytest.skip("pas de Postgres joignable")
+    with conn:
+        # Branche NON bornée : incident inexistant, le compte vaut 0.
+        alertes.charger_bornees(conn, -1, getattr(alertes, nom))
+        # Branche BORNÉE : il faut un incident réel dont le compte dépasse le
+        # plafond, sinon c'est encore la première branche qui est exercée — et
+        # c'est justement l'UNION qui était invalide.
+        vrai = conn.execute(
+            "SELECT incident_id FROM alerts WHERE incident_id IS NOT NULL "
+            "GROUP BY incident_id HAVING count(*) >= 2 LIMIT 1").fetchone()
+        if not vrai:
+            pytest.skip("aucun incident de 2 alertes ou plus en base")
+        plafond = config.INCIDENT_MAX_ALERTES
+        try:
+            config.INCIDENT_MAX_ALERTES = 1
+            alertes.charger_bornees(conn, vrai["incident_id"],
+                                    getattr(alertes, nom))
+        finally:
+            config.INCIDENT_MAX_ALERTES = plafond
