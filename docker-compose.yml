@@ -27,6 +27,17 @@ x-soc-agent: &soc-agent
   depends_on:
     soc-agent-db:
       condition: service_healthy
+  # Clé age d'archivage, montée pour TOUS les services de cette ancre — pas
+  # seulement soc-agent-archive. config.py exige ce fichier dès que
+  # ARCHIVAGE_ENABLED=true, quel que soit l'appelant : cycle, metrics, vulns...
+  # importent tous config au chargement du module. Sans ce montage ici, les
+  # onze autres services de l'ancre sortaient en boucle sur
+  # « ARCHIVE_AGE_KEYFILE introuvable » (repéré le 2026-08-17, en panne depuis
+  # le 2026-08-14 — trois services (retention, rule-tuning, cti) redéfinissent
+  # `volumes:` plus bas et doivent donc reprendre cette ligne explicitement :
+  # `<<:` remplace la clé, il ne fusionne pas les listes.
+  volumes:
+    - ${ARCHIVE_KEY_DIR_HOST:-/etc/aura/keys}:/run/secrets:ro
 
 services:
   # ===================== INIT (une passe, avant tout le reste) =====================
@@ -410,6 +421,7 @@ services:
     container_name: soc-agent-rule-tuning
     volumes:
       - ${WAZUH_RULES_DIR:-./src/wazuh/config/wazuh_cluster/rules}:/wazuh-rules
+      - ${ARCHIVE_KEY_DIR_HOST:-/etc/aura/keys}:/run/secrets:ro
     command: sh -c "while true; do python -m soc_agent.rule_tuning; sleep 3600; done"
 
   # Rétention : fait vieillir ce que rien d'autre ne supprime (cf. retention.py,
@@ -436,6 +448,7 @@ services:
       - WAZUH_QUEUE_DIR=/wazuh-queue
     volumes:
       - wazuh_queue:/wazuh-queue
+      - ${ARCHIVE_KEY_DIR_HOST:-/etc/aura/keys}:/run/secrets:ro
     command: sh -c "while true; do python -m soc_agent.retention; sleep 86400; done"
 
   # Archivage à froid vers S3 : la copie qui survit à la purge des 90 jours
@@ -996,6 +1009,7 @@ services:
         condition: service_healthy
     volumes:
       - cti_ioc:/var/lib/aura-cti
+      - ${ARCHIVE_KEY_DIR_HOST:-/etc/aura/keys}:/run/secrets:ro
     command: >
       sh -c "python -m soc_agent.cti --feeds || true;
              while true; do python -m soc_agent.cti; sleep 3600; done"
