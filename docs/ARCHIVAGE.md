@@ -504,6 +504,33 @@ scope `aura:write`. `aura_archives_list` reste l'outil de lecture du
 catalogue (table `archives_s3`), les deux vivent dans
 `aura_mcp/tools/archiving.py`.
 
+## Dashboard
+
+Le catalogue (`archives_s3`) est exporté vers l'indexer par
+`archive_metrics.py` — un document par (index set, mois), dans l'index
+d'état `wazuh-archive-catalog` (pas de suffixe de date, même convention que
+`wazuh-voc-vulns` : rien à purger par date ici). L'export se déclenche à la
+fin de chaque passage d'archivage (`archive.run()`), périodique ou à la
+demande via `aura_archive_create` — donc pas de délai propre, le dashboard
+reflète l'état dès que Postgres change.
+
+Dashboard **Archive** (`src/wazuh/dashboards/gen_dashboard.py`) : nombre
+d'archives, documents et octets totaux, coût mensuel estimé
+(`ARCHIVE_S3_COST_USD_PER_GB_MONTH`, tarif public B2 — sur l'objet CHIFFRÉ
+réellement stocké, pas sur le clair), ratio de compression, état de
+vérification (`archive.verify_state`), croissance du stockage dans le temps
+par index set, et le catalogue complet en table triable. Voir
+`src/wazuh/README.md` pour le déploiement du template d'index
+(`wazuh-archive-template.json`) et de l'index pattern — même piège que
+`wazuh-ai`/`wazuh-voc` : sans le template, les agrégations tombent en
+silence.
+
+Rafraîchir manuellement sans attendre un passage d'archivage :
+
+```bash
+docker compose -p aura exec soc-agent-archive python -m soc_agent.archive_metrics
+```
+
 ## Restaurer
 
 La clé étant sur place, il n'y a rien à monter :

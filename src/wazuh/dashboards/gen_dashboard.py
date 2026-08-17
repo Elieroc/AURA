@@ -21,6 +21,7 @@ IDX_WEB = "wazuh-web-*"
 IDX_YARA = "wazuh-yara-*"
 IDX_AI = "wazuh-ai-*"      # AI metrics produced by ai/soc_agent/metrics.py
 IDX_VOC = "wazuh-voc-*"    # VOC: fleet vulnerabilities, produced by ai/soc_agent/vulns.py
+IDX_ARCHIVE = "wazuh-archive-*"  # Archive catalog, produced by ai/soc_agent/archive_metrics.py
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "soc-ai-dashboards.ndjson")
 
 HIST_PARAMS = {
@@ -1827,6 +1828,149 @@ objs.append(dashboard("soc-ai-voc", "VOC",
     # observation. A short window would hide the oldest vulnerabilities
     # — i.e. the most overdue ones — and the "overdue" panel
     # would show the opposite of the truth.
+    time_from="now-3y"))
+
+# ---------- Visualizations: Archive (wazuh-archive-* index) ----------
+#
+# One document per (index set, month), fed by archive_metrics.py on every
+# archiving pass (periodic or on demand via aura_archive_create) — a state
+# index, not a time series of events: re-exporting overwrites the same
+# document rather than adding one. `@timestamp` is `archived_at`, which never
+# changes once written, so the growth-over-time panel is real history, not an
+# artifact of the export cadence.
+
+objs.append(metric_vis("soc-ai-archive-count", "Archives",
+                       "Index set x month", IDX_ARCHIVE, "",
+                       {"type": "count"}))
+
+objs.append(metric_vis("soc-ai-archive-documents", "Documents archived (total)",
+                       "Documents", IDX_ARCHIVE, "",
+                       {"type": "sum", "params": {"field": "archive.documents"}}))
+
+objs.append(metric_vis("soc-ai-archive-bytes", "Storage used (encrypted, bytes)",
+                       "Bytes", IDX_ARCHIVE, "",
+                       {"type": "sum", "params": {"field": "archive.object_bytes"}}))
+
+# Estimated cost: B2's published rate applied to the encrypted bytes actually
+# stored (config.ARCHIVE_S3_COST_USD_PER_GB_MONTH) — see docs/ARCHIVAGE.md.
+# Not an invoice, same caveat as the AI dashboard's cost panels.
+objs.append(metric_vis("soc-ai-archive-cost", "Estimated cost (USD/month, approx.)",
+                       "USD/month (approx.)", IDX_ARCHIVE, "",
+                       {"type": "sum", "params": {"field": "archive.cost_usd_month"}}))
+
+objs.append(metric_vis("soc-ai-archive-ratio", "Average compression ratio",
+                       "x (plain / encrypted)", IDX_ARCHIVE, "",
+                       {"type": "avg", "params": {"field": "archive.ratio"}}))
+
+# Failures first, on the dashboard's first screen: an archive that doesn't
+# read back is not an archive (see archive.py's drill). `ok` in green, every
+# other state in red — there is no intermediate state worth a distinct color.
+objs.append(vis("soc-ai-archive-verify-state", "Verification state", {
+    "title": "Verification state",
+    "type": "pie",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "count", "schema": "metric",
+         "params": {"customLabel": "Archives"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "archive.verify_state", "size": 10,
+                    "missingBucket": True, "missingBucketLabel": "never verified",
+                    "customLabel": "State"}},
+    ],
+    "params": {"type": "pie", "addTooltip": True, "addLegend": True,
+               "legendPosition": "right", "isDonut": True,
+               "labels": {"show": True, "values": True, "last_level": True,
+                          "truncate": 100}},
+}, IDX_ARCHIVE, ui_state={"vis": {"colors": {"ok": "#54B399"}}}))
+
+# Growth over time, stacked by index set: shows WHICH source is filling the
+# bucket, not just that it's filling. `sum` per interval is correct here
+# (unlike VOC's gauge, which needs `max`): each document is a distinct
+# month's worth of bytes, not a repeated observation of the same state.
+objs.append(vis("soc-ai-archive-growth", "Storage growth over time (by index set)", {
+    "title": "Storage growth over time (by index set)",
+    "type": "histogram",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "sum", "schema": "metric",
+         "params": {"field": "archive.object_bytes", "customLabel": "Bytes"}},
+        {"id": "2", "enabled": True, "type": "date_histogram", "schema": "segment",
+         "params": {"field": "timestamp", "timeRange": {"from": "now-3y", "to": "now"},
+                    "useNormalizedOpenSearchInterval": True, "scaleMetricValues": False,
+                    "interval": "auto", "drop_partials": False, "min_doc_count": 1,
+                    "extended_bounds": {}}},
+        {"id": "3", "enabled": True, "type": "terms", "schema": "group",
+         "params": {**TERMS, "field": "archive.index_set", "size": 15,
+                    "customLabel": "Index set"}},
+    ],
+    "params": {**HIST_PARAMS, "seriesParams": [{**HIST_PARAMS["seriesParams"][0],
+                                                "mode": "stacked"}],
+               "valueAxes": [{**HIST_PARAMS["valueAxes"][0],
+                              "title": {"text": "Bytes (encrypted)"}}]},
+}, IDX_ARCHIVE))
+
+objs.append(vis("soc-ai-archive-by-index-set", "Storage by index set", {
+    "title": "Storage by index set",
+    "type": "horizontal_bar",
+    "aggs": [
+        {"id": "1", "enabled": True, "type": "sum", "schema": "metric",
+         "params": {"field": "archive.object_bytes", "customLabel": "Bytes"}},
+        {"id": "2", "enabled": True, "type": "terms", "schema": "segment",
+         "params": {**TERMS, "field": "archive.index_set", "size": 20,
+                    "customLabel": "Index set"}},
+    ],
+    "params": {"type": "histogram", "grid": {"categoryLines": False},
+               "categoryAxes": [{"id": "CategoryAxis-1", "type": "category",
+                                  "position": "left", "show": True, "style": {},
+                                  "scale": {"type": "linear"},
+                                  "labels": {"show": True, "rotate": 0,
+                                             "filter": False, "truncate": 200},
+                                  "title": {}}],
+               "valueAxes": [{"id": "ValueAxis-1", "name": "BottomAxis-1",
+                               "type": "value", "position": "bottom", "show": True,
+                               "style": {}, "scale": {"type": "linear", "mode": "normal"},
+                               "labels": {"show": True, "rotate": 75, "filter": True,
+                                          "truncate": 100},
+                               "title": {"text": "Bytes (encrypted)"}}],
+               "seriesParams": [{"show": True, "type": "histogram", "mode": "normal",
+                                  "data": {"label": "Bytes", "id": "1"},
+                                  "valueAxis": "ValueAxis-1",
+                                  "drawLinesBetweenPoints": True, "lineWidth": 2,
+                                  "showCircles": True}],
+               "addTooltip": True, "addLegend": False, "legendPosition": "right",
+               "times": [], "addTimeMarker": False, "labels": {},
+               "thresholdLine": {"show": False, "value": 10, "width": 1,
+                                  "style": "full", "color": "#E7664C"}},
+}, IDX_ARCHIVE))
+
+# The catalog itself, one row per archive — the working list: what's
+# restorable, and whether it's still trustworthy (verify_state).
+objs.append(saved_search(
+    "soc-ai-archive-catalog", "Archive catalog",
+    "One line per (index set, month) archived, with its encrypted size, "
+    "estimated monthly cost, and last verification state.",
+    ["archive.index_set", "archive.period", "archive.documents",
+     "archive.object_bytes", "archive.ratio", "archive.cost_usd_month",
+     "archive.verify_state", "archive.verified_at"],
+    IDX_ARCHIVE, sort=[["archive.index_set", "asc"]]))
+
+objs.append(dashboard("soc-ai-archive", "Archive",
+    "Cold archiving to B2 (wazuh-archive-* index, fed by archive_metrics.py "
+    "on every archiving pass — periodic or on demand via aura_archive_create): "
+    "volume, estimated storage cost, verification state, growth by index set, "
+    "and the full catalog. See docs/ARCHIVAGE.md.",
+    [
+        ("soc-ai-archive-count",       0,  0, 10, 10),
+        ("soc-ai-archive-documents",  10,  0, 10, 10),
+        ("soc-ai-archive-bytes",      20,  0, 10, 10),
+        ("soc-ai-archive-cost",       30,  0, 10, 10),
+        ("soc-ai-archive-ratio",      40,  0,  8, 10),
+        ("soc-ai-archive-verify-state", 0, 10, 16, 15),
+        ("soc-ai-archive-by-index-set", 16, 10, 32, 15),
+        ("soc-ai-archive-growth",       0, 25, 48, 16),
+        ("soc-ai-archive-catalog",      0, 41, 48, 20, "search"),
+    ],
+    # Archives are timestamped at archived_at, which can be well over a year
+    # old (ARCHIVE_RETENTION_MONTHS default 12) — a short window would hide
+    # most of the catalog, same reasoning as the VOC dashboard.
     time_from="now-3y"))
 
 with open(OUT, "w") as f:

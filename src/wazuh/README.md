@@ -412,6 +412,20 @@ donc `decoder.name` ne discrimine rien. Ce test est placé **avant** celui de
   `wazuh-voc-vulns`, qui porte un document par vulnérabilité réécrit à chaque
   passage. Ne pas appliquer de politique de rétention par date à ce dernier :
   c'est lui qui porte le cycle de vie, donc le MTTR.
+- **Template d'index `wazuh-archive` — À CRÉER aussi** (dashboard Archive,
+  `src/ai/soc_agent/archive_metrics.py`). Même piège de mapping que les
+  précédents. Contrairement à `wazuh-ai-*`/`wazuh-voc-*`, ce pattern ne couvre
+  qu'un SEUL index d'état (`ARCHIVE_METRICS_INDEX`, `wazuh-archive-catalog` par
+  défaut, pas de suffixe de date) : un document par (index set, mois) archivé,
+  réécrit à chaque passage d'archivage — jamais de politique de rétention par
+  date sur cet index, il n'y a rien à purger.
+  ```bash
+  source .env   # depuis la racine du dépôt
+  curl -sk -u admin:$INDEXER_PASSWORD -X PUT "https://localhost:9200/_template/wazuh-archive" \
+    -H "Content-Type: application/json" -d @src/wazuh/config/wazuh_indexer/wazuh-archive-template.json
+  ```
+  Comme `wazuh-ai-*`/`wazuh-voc-*`, `wazuh-archive-*` reste **hors** de
+  `soc-ai-all-alerts`.
 - **Vérifier les visualisations après chaque import** : `_import` de saved
   objects réussit même quand les champs référencés n'existent pas — la visu
   s'ouvre ensuite sur « No results found » ou une erreur d'agrégation, sans
@@ -419,7 +433,7 @@ donc `decoder.name` ne discrimine rien. Ce test est placé **avant** celui de
   agrégation de chaque visu contre son index pattern et signale les champs
   invalides.
 - Index patterns dashboard : `wazuh-linux-*`, `wazuh-windows-*`, `wazuh-web-*`, `wazuh-firewall-*`,
-  `wazuh-proxy-*`, `wazuh-jellyfin-*`, `wazuh-vpn-*`, `wazuh-dns-*`, plus le pattern combiné `soc-ai-all-alerts`
+  `wazuh-proxy-*`, `wazuh-jellyfin-*`, `wazuh-vpn-*`, `wazuh-dns-*`, `wazuh-archive-*`, plus le pattern combiné `soc-ai-all-alerts`
   (= ceux qui ont réellement des données, cf. piège plus bas) utilisé par l'app Wazuh
   (`pattern:` dans `wazuh_dashboard/wazuh.yml`) et le dashboard custom, pour garder
   une vue globale.

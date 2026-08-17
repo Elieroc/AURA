@@ -50,6 +50,11 @@ SIMPLE_PATTERNS = {
     # as wazuh-ai-* : these are not alerts. Covers both the dated time-series
     # indices and the stable wazuh-voc-vulns index.
     "wazuh-voc-*": "wazuh-voc-*",
+    # Archive catalog (archive_metrics.py, fed from archives_s3 on every
+    # archiving pass). Outside the combined pattern for the same reason as
+    # wazuh-ai-*/wazuh-voc-*: not alerts. A single state index
+    # (ARCHIVE_METRICS_INDEX, no date suffix) matches this wildcard too.
+    "wazuh-archive-*": "wazuh-archive-*",
 }
 
 # Combined pattern candidates — filtered to actual existence before

@@ -72,7 +72,7 @@ import psycopg
 import requests
 from psycopg.rows import dict_row
 
-from . import config
+from . import archive_metrics, config
 
 log = logging.getLogger(__name__)
 
@@ -1313,6 +1313,14 @@ def run(dry_run: bool = False, index_base: str | None = None,
                     log.error("PROTECTION IMPOSSIBLE (%s): %d indices remain "
                               "candidates for deletion WITHOUT a copy.", e,
                               len(risk))
+
+            # Best-effort: the Archive dashboard reading stale data is a
+            # cosmetic problem, failing the pass that just wrote a real
+            # archive to S3 would not be an acceptable trade for it.
+            try:
+                summary["dashboard_export"] = archive_metrics.export(conn)
+            except Exception as e:                                # noqa: BLE001
+                log.warning("archive dashboard export failed: %s", e)
         finally:
             _unlock(conn)
     return summary

@@ -1514,6 +1514,24 @@ ARCHIVE_DRILL_FULL = os.environ.get(
 # full disk stops the whole SOC (see docs/RETENTION.md).
 ARCHIVE_TMP_DIR = os.environ.get("ARCHIVE_TMP_DIR", "/tmp")
 
+# --- Archive dashboard (see archive_metrics.py, docs/ARCHIVAGE.md) ---------
+#
+# The catalog (`archives_s3`) is exported to this fixed-name index (no date
+# suffix, one document per (index set, month)) so it can be read in a Wazuh
+# dashboard next to the alerts. No `-*` date rotation: unlike alerts, an
+# archive doesn't happen every day, and there is nothing to purge — a state
+# index, same convention as `wazuh-voc-vulns`. Its very name keeps it out of
+# `archive.py`'s own scan (`_DATE_INDEX` requires a `-YYYY.MM.DD` suffix).
+ARCHIVE_METRICS_INDEX = os.environ.get(
+    "ARCHIVE_METRICS_INDEX", "wazuh-archive-catalog")
+
+# Backblaze B2's published rate (see docs/ARCHIVAGE.md), USD per GB per month.
+# An estimate, like `LLM_COST_USD_PER_MTOKEN_*`: it prices the ENCRYPTED
+# object actually stored, not the plaintext, and says nothing about egress
+# (free up to 3x the stored volume, so irrelevant to a monthly figure).
+ARCHIVE_S3_COST_USD_PER_GB_MONTH = float(
+    os.environ.get("ARCHIVE_S3_COST_USD_PER_GB_MONTH", "0.00695"))
+
 # --- Disk guardrail (see watchdog.py) ---------------------------------------
 #
 # Six gigabytes a day were going without anything saying so. A SOC that does not
