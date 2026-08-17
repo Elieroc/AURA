@@ -625,6 +625,10 @@ fichier :
   - **Linux** : top règles, top alertes, échecs d'authentification, top agents (index `wazuh-linux-*`)
   - **Web** : top règles/alertes d'attaque, timeline, top URLs ciblées, top IP sources, codes HTTP (index `wazuh-web-*`)
   - **YARA** : fichiers malveillants détectés par Loki/YARITRUST, top machines infectées, timeline par gravité, liste des matches (index `wazuh-yara-*`)
+  - **Archive** : catalogue d'archivage froid — nombre d'archives, documents et
+    octets totaux, coût mensuel estimé, ratio de compression, état de
+    vérification, croissance du stockage par index set, catalogue complet en
+    table (index `wazuh-archive-*`, alimenté par `src/ai/soc_agent/archive_metrics.py`)
 - Import (API saved objects, idempotent) — les index patterns custom **avant**, sinon l'import
   échoue silencieusement sur les visualisations qui les référencent (`soc-ai-all-alerts`,
   `wazuh-linux-*`, `wazuh-web-*` n'existent pas par défaut, contrairement à `wazuh-alerts-*`) :
