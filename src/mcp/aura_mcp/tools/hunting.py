@@ -1,9 +1,10 @@
 """Threat hunting tools: bringing an archive back online to hunt in it.
 
 Alerts leave the indexer after 90 days (retention) and survive twelve
-months in an encrypted S3 archive. These tools are the bridge: list what's
-archived, bring a month back into `wazuh-hunting-*`, hunt in it from
-Discover, then free up the space.
+months in an encrypted S3 archive (catalog and on-demand creation:
+`aura_archives_list` / `aura_archive_create` in `tools/archiving.py`). These
+tools are the bridge: bring a month back into `wazuh-hunting-*`, hunt in it
+from Discover, then free up the space.
 
 What these tools do NOT do, and it's what makes them safe for an
 unsupervised AI agent: **restored data doesn't enter the pipeline.**
@@ -19,56 +20,10 @@ The caps (documents, indices, bytes, disk threshold) live in
 disable them. "Restore everything for me to look" is refused by the code.
 """
 
-from soc_agent import config as soc_config
 from soc_agent import hunting
 
 from .. import auth, output
-from ..db import read as base
 from ..server import register
-
-
-@auth.require("aura:read")
-def aura_archives_list(index_set: str | None = None,
-                       limit: int | None = None,
-                       offset: int | None = None) -> dict:
-    """The cold archives available, with their verification state.
-
-    This is the catalog of what's restorable: one month of one index set
-    per line. The source of truth is Postgres, not S3 — an unresponsive S3
-    must not translate into "there is no archive".
-
-    `verify_state` deserves a look before concluding on a restore:
-
-    - `ok`: the archive was re-downloaded, decrypted, and recounted;
-    - `null`: never verified since it was written;
-    - anything else (`missing`, `sha256-mismatch`, `document-count-mismatch`):
-      the archive isn't reliable, and the original data has very likely
-      already been purged from the indexer. Restoring is still possible and
-      worthwhile to see what's left of it, but don't conclude on a partial
-      copy while believing you hold the truth.
-
-    Args:
-        index_set: filter on an index set (`wazuh-firewall`).
-        limit: lines per page.
-        offset: pagination offset.
-    """
-    limit, offset = output.bounds(limit, offset)
-    where = ("WHERE format_version = %(fv)s "
-             "  AND (%(base)s::text IS NULL OR index_base = %(base)s)")
-    params = {"fv": soc_config.ARCHIVE_FORMAT_VERSION, "base": index_set,
-              "limit": limit, "offset": offset}
-    with base() as conn:
-        total = conn.execute(
-            f"SELECT count(*) AS n FROM archives_s3 {where}",
-            params).fetchone()["n"]
-        lines = conn.execute(
-            f"""SELECT index_base, period, documents, plain_bytes,
-                       object_bytes, indices, archived_at, verified_at,
-                       verify_state, verify_full, object_lock_until
-                  FROM archives_s3 {where}
-                 ORDER BY index_base, period DESC
-                 LIMIT %(limit)s OFFSET %(offset)s""", params).fetchall()
-    return output.page([dict(l) for l in lines], total, limit, offset)
 
 
 @auth.require("aura:read")
@@ -140,7 +95,6 @@ def aura_hunting_purge(index: str, confirm: bool = False) -> dict:
     return output.jsonifiable(hunting.purge(index, confirm))
 
 
-register(aura_archives_list)
 register(aura_hunting_state)
 register(aura_hunting_restore)
 register(aura_hunting_purge)

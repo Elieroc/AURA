@@ -434,6 +434,34 @@ def test_already_archived_batch_does_not_come_back(monkeypatch):
         ("wazuh-web", "2026-05")]
 
 
+def test_batches_scoped_to_one_index_set(monkeypatch):
+    """`index_base` is what an on-demand archive of one index set relies on:
+    the other index sets must not come along for the ride."""
+    monkeypatch.setattr(config, "ARCHIVE_DELAY_DAYS", 2)
+    monkeypatch.setattr(archive, "dated_indices", lambda: _fake_indices(
+        ("wazuh-firewall", "2026-05", 3, 100),
+        ("wazuh-web", "2026-05", 1, 7)))
+    batches = archive.batches_to_archive(_Conn([]), date(2026, 8, 14),
+                                         index_base="wazuh-firewall")
+    assert [(l["index_base"], l["period"]) for l in batches] == [
+        ("wazuh-firewall", "2026-05")]
+
+
+def test_batches_scoped_to_a_period_window(monkeypatch):
+    """`period_from`/`period_to` bound an on-demand archive to a month range,
+    inclusive on both ends."""
+    monkeypatch.setattr(config, "ARCHIVE_DELAY_DAYS", 2)
+    monkeypatch.setattr(archive, "dated_indices", lambda: _fake_indices(
+        ("wazuh-firewall", "2026-03", 1, 10),
+        ("wazuh-firewall", "2026-05", 1, 10),
+        ("wazuh-firewall", "2026-07", 1, 10)))
+    batches = archive.batches_to_archive(_Conn([]), date(2026, 8, 14),
+                                         period_from="2026-04",
+                                         period_to="2026-06")
+    assert [(l["index_base"], l["period"]) for l in batches] == [
+        ("wazuh-firewall", "2026-05")]
+
+
 def test_risk_bounded_to_the_margin_before_deletion(monkeypatch):
     """A young index with no archive is not at risk — it has time. Confusing
     the two would open a High case every day, for nothing."""
@@ -531,7 +559,7 @@ def test_missing_table_error_surfaces_unchanged(monkeypatch):
             return super().execute(sql, params)
 
     monkeypatch.setattr("psycopg.connect", lambda *a, **k: _Conn())
-    monkeypatch.setattr(archive, "batches_to_archive", lambda conn: (_ for _ in ()).throw(
+    monkeypatch.setattr(archive, "batches_to_archive", lambda conn, **kw: (_ for _ in ()).throw(
         RuntimeError('relation "archives_s3" does not exist')))
     with pytest.raises(RuntimeError, match="archives_s3"):
         archive.run()

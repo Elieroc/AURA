@@ -364,10 +364,10 @@ geste trimestriel à ne pas oublier.
 
 ```bash
 docker compose -p aura exec soc-agent-archive \
-  python -m soc_agent.archive --drill --lot 10
+  python -m soc_agent.archive --drill --batch 10
 ```
 
-`ARCHIVE_DRILL_FULL=false` (ou `--sans-dechiffrer`) s'arrête après (2). Utile
+`ARCHIVE_DRILL_FULL=false` (ou `--without-decrypting`) s'arrête après (2). Utile
 transitoirement, si la clé est momentanément indisponible : mieux vaut un contrôle
 partiel qu'un faux échec qui ouvre un dossier `archivage:drill` en High.
 
@@ -378,7 +378,7 @@ d'en avoir besoin :
 docker compose -p aura run --rm \
   -v /media/coffre/aura-archive-secours.key:/tmp/cle:ro \
   soc-agent-archive \
-  python -m soc_agent.archive --drill --identite /tmp/cle --lot 2
+  python -m soc_agent.archive --drill --identity /tmp/cle --batch 2
 ```
 
 ## Mise en service
@@ -445,11 +445,11 @@ Avant de le passer à `true` :
 ### 4. Préflight, puis activation
 
 ```bash
-python -m soc_agent.archive --verifier   # clé, puis bucket/droits/Object Lock
-python -m soc_agent.archive --plan       # ce qui serait archivé, sans rien écrire
+python -m soc_agent.archive --check   # clé, puis bucket/droits/Object Lock
+python -m soc_agent.archive --plan    # ce qui serait archivé, sans rien écrire
 ```
 
-`--verifier` fait deux choses, la clé d'abord — un bucket parfait ne sert à rien si
+`--check` fait deux choses, la clé d'abord — un bucket parfait ne sert à rien si
 ce qu'on y écrit est illisible :
 
 - **aller-retour réel de la clé** : il chiffre un témoin de trois octets et le
@@ -474,17 +474,47 @@ Les identifiants manquants font échouer le **démarrage** dès que
 C'est volontaire : un archivage qui échoue en silence est pire que pas
 d'archivage, il fait croire que la copie existe.
 
+## Archiver à la demande
+
+Le passage périodique (`soc-agent-archive`, quotidien) couvre tous les index
+sets et tous les mois clos. Pour forcer un passage sans attendre cette
+échéance — un index set à archiver avant un changement de rétention, un trou
+`archivage:trou` qui se révèle encore dans `ARCHIVE_DELAY_DAYS`, un drill à
+blanc — le même code accepte un périmètre optionnel :
+
+```bash
+python -m soc_agent.archive --index-set wazuh-firewall           # un index set
+python -m soc_agent.archive --period-from 2026-03 --period-to 2026-06  # une plage
+python -m soc_agent.archive                                      # tout, comme le passage périodique
+```
+
+Ces options **restreignent**, elles n'élargissent jamais ce qui est
+archivable : un mois encore ouvert (`ARCHIVE_DELAY_DAYS`) ou déjà présent dans
+`archives_s3` reste ignoré, à la demande exactement comme dans le passage
+périodique. Il n'y a pas de `--force` — forcer un mois incomplet produirait
+une archive qui se croit complète, exactement le mode de défaillance que tout
+le module est construit pour éviter.
+
+Sans flag (`--plan` ou passage réel), l'appel reste le comportement
+historique.
+
+Le même périmètre est exposé côté MCP par `aura_archive_create`
+(`index_set`, `period_from`, `period_to`, `apply`) — dry-run par défaut,
+scope `aura:write`. `aura_archives_list` reste l'outil de lecture du
+catalogue (table `archives_s3`), les deux vivent dans
+`aura_mcp/tools/archiving.py`.
+
 ## Restaurer
 
 La clé étant sur place, il n'y a rien à monter :
 
 ```bash
 docker compose -p aura run --rm -v /srv/restore:/out soc-agent-archive \
-  python -m soc_agent.archive --restaurer wazuh-firewall/2026-03 \
-    --vers /out/firewall-2026-03.ndjson
+  python -m soc_agent.archive --restore wazuh-firewall/2026-03 \
+    --to /out/firewall-2026-03.ndjson
 ```
 
-`--identite /chemin/cle` permet de passer par la clé de **secours**, pour le cas
+`--identity /chemin/cle` permet de passer par la clé de **secours**, pour le cas
 qui justifie qu'elle existe : la clé du SOC est perdue, ou l'hôte a été refait.
 
 Vérifier l'empreinte contre le manifeste, puis exploiter selon le besoin :
@@ -511,7 +541,7 @@ requêtable dans Discover, et **cloisonné du pipeline** par construction.
 
 ```bash
 docker compose -p aura exec aura-mcp \
-  python -m soc_agent.hunting --restaurer wazuh-firewall/2026-03 --appliquer
+  python -m soc_agent.hunting --restore wazuh-firewall/2026-03 --apply
 ```
 
 C'est aussi ce que fait l'outil MCP `aura_hunting_restore`, dry-run par défaut.

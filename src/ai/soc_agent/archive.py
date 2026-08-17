@@ -163,19 +163,33 @@ def _closed_months(month: str, today: date | None = None) -> bool:
         days=config.ARCHIVE_DELAY_DAYS)
 
 
-def batches_to_archive(conn, today: date | None = None) -> list[dict]:
+def batches_to_archive(conn, today: date | None = None, *,
+                       index_base: str | None = None,
+                       period_from: str | None = None,
+                       period_to: str | None = None) -> list[dict]:
     """Closed (index_base, month) pairs not archived yet.
 
     An EMPTY month still produces an archive (a few hundred bytes). That is
     deliberate: the invariant "every month of every index set has exactly one
     object" is what makes a gap detectable. A month simply absent would be
     indistinguishable from a month lost.
+
+    `index_base`/`period_from`/`period_to` scope an on-demand pass (MCP
+    `aura_archive_create`) to one index set or one period window
+    (`YYYY-MM`, inclusive, lexicographic comparison). Left empty, this is the
+    periodic pass's behaviour: every closed month of every index set.
     """
     already = {(r["index_base"], r["period"]) for r in conn.execute(
         "SELECT index_base, period FROM archives_s3 WHERE format_version=%s",
         (config.ARCHIVE_FORMAT_VERSION,)).fetchall()}
     batches: dict[tuple[str, str], dict] = {}
     for i in dated_indices():
+        if index_base and i["base"] != index_base:
+            continue
+        if period_from and i["month"] < period_from:
+            continue
+        if period_to and i["month"] > period_to:
+            continue
         key = (i["base"], i["month"])
         if key in already or not _closed_months(i["month"], today):
             continue
@@ -975,7 +989,7 @@ def anomalies(conn) -> list[dict]:
                 "Où regarder :",
                 "",
                 "1. `docker logs soc-agent-archive --tail 100` — l'échec y est.",
-                "2. `python -m soc_agent.archive --verifier` — bucket, clé, "
+                "2. `python -m soc_agent.archive --check` — bucket, clé, "
                 "droits, Object Lock.",
                 "3. Cause la plus fréquente : clé applicative B2 expirée ou "
                 "révoquée, ou bucket plein côté quota.",
@@ -1233,12 +1247,22 @@ def restore(s3, index_base: str, period: str, destination: Path,
 
 # --------------------------------------------------------------------------
 
-def run(dry_run: bool = False) -> dict:
+def run(dry_run: bool = False, index_base: str | None = None,
+        period_from: str | None = None, period_to: str | None = None) -> dict:
     """One pass: archive what is closed, then verify a few archives.
 
     The drill runs even when archiving had nothing to do — that is the normal
     case most days, and it is precisely then that we want to know whether the
     archives of past months still hold.
+
+    `index_base`/`period_from`/`period_to` scope the pass to one index set or
+    one period window — this is what backs an on-demand archive (MCP
+    `aura_archive_create`, `--index-set`/`--period-from`/`--period-to` on the
+    CLI). They never widen what gets archived: a month not yet closed
+    (`ARCHIVE_DELAY_DAYS`) or already archived is still skipped, on demand
+    exactly as in the periodic pass. The end-of-pass drill and the
+    at-risk/protect step stay unscoped: they are housekeeping over the whole
+    catalog, not the requested batch.
     """
     if not config.ARCHIVING_ENABLED:
         return {"state": "disabled"}
@@ -1255,7 +1279,9 @@ def run(dry_run: bool = False) -> dict:
             # runnable without modifying anything anywhere.
             if not dry_run:
                 summary["local_cleanup"] = sweep_temporary()
-            batches = batches_to_archive(conn)
+            batches = batches_to_archive(conn, index_base=index_base,
+                                         period_from=period_from,
+                                         period_to=period_to)
             summary["todo"] = [f"{l['index_base']}/{l['period']}" for l in batches]
             if dry_run:
                 summary["batches"] = batches
@@ -1333,6 +1359,13 @@ def main() -> None:
                    help="download and decrypt an archive")
     p.add_argument("--to", default="archive.ndjson",
                    help="output file of --restore")
+    p.add_argument("--index-set", help="scope a pass to one index set "
+                                       "(wazuh-firewall). Without it, every "
+                                       "index set is considered")
+    p.add_argument("--period-from", metavar="YYYY-MM",
+                   help="scope a pass to months >= this one")
+    p.add_argument("--period-to", metavar="YYYY-MM",
+                   help="scope a pass to months <= this one")
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
@@ -1365,8 +1398,9 @@ def main() -> None:
         print(json.dumps(r, indent=2, ensure_ascii=False))
         return
 
-    print(json.dumps(run(args.plan), indent=2, ensure_ascii=False,
-                     default=str))
+    print(json.dumps(run(args.plan, args.index_set, args.period_from,
+                        args.period_to),
+                     indent=2, ensure_ascii=False, default=str))
 
 
 if __name__ == "__main__":

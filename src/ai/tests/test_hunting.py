@@ -200,15 +200,16 @@ def test_mcp_tools_declared_with_their_scope():
     import importlib.util
     if importlib.util.find_spec("mcp") is None:
         pytest.skip("mcp SDK absent from this environment")
-    from aura_mcp.tools import hunting as tools
+    from aura_mcp.tools import archiving, hunting
     expected = {
-        "aura_archives_list": "aura:read",
-        "aura_hunting_state": "aura:read",
-        "aura_hunting_restore": "aura:write",
-        "aura_hunting_purge": "aura:write",
+        (archiving, "aura_archives_list"): "aura:read",
+        (archiving, "aura_archive_create"): "aura:write",
+        (hunting, "aura_hunting_state"): "aura:read",
+        (hunting, "aura_hunting_restore"): "aura:write",
+        (hunting, "aura_hunting_purge"): "aura:write",
     }
-    for name, scope in expected.items():
-        fn = getattr(tools, name)
+    for (module, name), scope in expected.items():
+        fn = getattr(module, name)
         assert getattr(fn, "required_scope", None) == scope, name
 
 
