@@ -28,6 +28,19 @@
 {%- macro cell(v, n=110) -%}
 {{ (v if v else '—') | string | replace('\n', ' ') | replace('\r', ' ') | replace('|', '\\|') | truncate(n, true, '…') }}
 {%- endmacro -%}
+{#- Extrait la justification LLM du corps de tâche posé par
+    soc_agent.mitigate._task_desc (section "## Pourquoi" ... "## Comment
+    annuler"). Pas un champ IRIS séparé : le motif voyage dans
+    task_description depuis toujours, cette macro le ressort pour sa propre
+    colonne au lieu de le laisser noyé dans le "Détail" tronqué à 200 car. -#}
+{%- macro motif(v) -%}
+{%- set txt = (v if v else '') | string -%}
+{%- if '## Pourquoi' in txt -%}
+{{ cell(txt.split('## Pourquoi')[1].split('## Comment annuler')[0].strip(), 200) }}
+{%- else -%}
+—
+{%- endif -%}
+{%- endmacro -%}
 {%- set notes_ia = notes | selectattr('directory') | selectattr('directory.name', 'equalto', 'Analyse IA') | list -%}
 {#- Notes du répertoire « Exposition » : posées par soc_agent.iris._note_exposition,
     calculées en Python depuis l'inventaire de vulnérabilités (aucun LLM). Elles
@@ -140,10 +153,10 @@ _Timeline vide._
 ## 7. Actions et remédiations
 
 {% if tasks -%}
-| Action | Statut | Ouverte le | Clôturée le | Tags | Détail |
-|---|---|---|---|---|---|
+| Action | Statut | Ouverte le | Clôturée le | Tags | Motif | Détail |
+|---|---|---|---|---|---|---|
 {% for t in tasks | sort(attribute='task_open_date') -%}
-| **{{ cell(t.task_title, 60) }}** | {{ cell(t.task_status, 20) }} | {{ dt(t.task_open_date) }} | {{ dt(t.task_close_date) }} | {{ cell(t.task_tags, 30) }} | {{ cell(t.task_description, 200) }} |
+| **{{ cell(t.task_title, 60) }}** | {{ cell(t.task_status, 20) }} | {{ dt(t.task_open_date) }} | {{ dt(t.task_close_date) }} | {{ cell(t.task_tags, 30) }} | {{ motif(t.task_description) }} | {{ cell(t.task_description, 200) }} |
 {% endfor %}
 
 Rappel : les tâches posées par le soc-agent tracent des remédiations **déjà exécutées** automatiquement (XDR autonome). Une tâche passée en `Canceled` déclenche l'annulation de la remédiation correspondante au cycle suivant.
