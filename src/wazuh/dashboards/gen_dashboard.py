@@ -1952,7 +1952,7 @@ objs.append(saved_search(
      "archive.verify_state", "archive.verified_at"],
     IDX_ARCHIVE, sort=[["archive.index_set", "asc"]]))
 
-objs.append(dashboard("soc-ai-archive", "Archive",
+objs.append(dashboard("soc-ai-archive", "Archivage",
     "Cold archiving to B2 (wazuh-archive-* index, fed by archive_metrics.py "
     "on every archiving pass — periodic or on demand via aura_archive_create): "
     "volume, estimated storage cost, verification state, growth by index set, "

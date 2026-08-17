@@ -514,7 +514,7 @@ fin de chaque passage d'archivage (`archive.run()`), périodique ou à la
 demande via `aura_archive_create` — donc pas de délai propre, le dashboard
 reflète l'état dès que Postgres change.
 
-Dashboard **Archive** (`src/wazuh/dashboards/gen_dashboard.py`) : nombre
+Dashboard **Archivage** (`src/wazuh/dashboards/gen_dashboard.py`) : nombre
 d'archives, documents et octets totaux, coût mensuel estimé
 (`ARCHIVE_S3_COST_USD_PER_GB_MONTH`, tarif public B2 — sur l'objet CHIFFRÉ
 réellement stocké, pas sur le clair), ratio de compression, état de

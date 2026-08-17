@@ -412,7 +412,7 @@ donc `decoder.name` ne discrimine rien. Ce test est placé **avant** celui de
   `wazuh-voc-vulns`, qui porte un document par vulnérabilité réécrit à chaque
   passage. Ne pas appliquer de politique de rétention par date à ce dernier :
   c'est lui qui porte le cycle de vie, donc le MTTR.
-- **Template d'index `wazuh-archive` — À CRÉER aussi** (dashboard Archive,
+- **Template d'index `wazuh-archive` — À CRÉER aussi** (dashboard Archivage,
   `src/ai/soc_agent/archive_metrics.py`). Même piège de mapping que les
   précédents. Contrairement à `wazuh-ai-*`/`wazuh-voc-*`, ce pattern ne couvre
   qu'un SEUL index d'état (`ARCHIVE_METRICS_INDEX`, `wazuh-archive-catalog` par
@@ -625,7 +625,7 @@ fichier :
   - **Linux** : top règles, top alertes, échecs d'authentification, top agents (index `wazuh-linux-*`)
   - **Web** : top règles/alertes d'attaque, timeline, top URLs ciblées, top IP sources, codes HTTP (index `wazuh-web-*`)
   - **YARA** : fichiers malveillants détectés par Loki/YARITRUST, top machines infectées, timeline par gravité, liste des matches (index `wazuh-yara-*`)
-  - **Archive** : catalogue d'archivage froid — nombre d'archives, documents et
+  - **Archivage** : catalogue d'archivage froid — nombre d'archives, documents et
     octets totaux, coût mensuel estimé, ratio de compression, état de
     vérification, croissance du stockage par index set, catalogue complet en
     table (index `wazuh-archive-*`, alimenté par `src/ai/soc_agent/archive_metrics.py`)
