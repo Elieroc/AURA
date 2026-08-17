@@ -342,7 +342,7 @@ services:
     <<: *soc-agent
     container_name: soc-agent-watchdog
     command: >
-      sh -c "while true; do python -m soc_agent.watchdog --surveiller; sleep 120; done"
+      sh -c "while true; do python -m soc_agent.watchdog --monitor; sleep 120; done"
 
   # Défait les remédiations dont la tâche IRIS est passée en 'Canceled'.
   # Cadence courte (1 min, comme l'ancien soc-agent-reconcile.timer) : une
@@ -1027,7 +1027,7 @@ services:
   # Cadence 30 min : les flux RSS publient quelques articles par heure, et
   # `--max` borne le nombre d'articles lus par passe, donc le coût par passe.
   # AMORÇAGE OBLIGATOIRE avant le premier démarrage (cf. docs/CTI.md) :
-  #   docker compose run --rm soc-agent-cti-articles python -m soc_agent.cti_articles --amorcage
+  #   docker compose run --rm soc-agent-cti-articles python -m soc_agent.cti_articles --bootstrap
   # sans quoi la première passe tente de traiter toute la bibliographie
   # Malpedia (des dizaines de milliers de rapports).
   soc-agent-cti-articles:
