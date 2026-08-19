@@ -116,6 +116,19 @@ def _flatten(src: dict, noise_filter: noise.NoiseFilter) -> dict:
         if own:
             agent_id, agent_name = own, lxc
 
+    # CTI/MISP reattribution: custom-misp.py re-injects its match as a new
+    # event, which the pipeline re-decodes with the MANAGER's own agent
+    # context (the integration script's log is read locally) — not the agent
+    # whose alert actually matched the IOC. That real agent is the one
+    # custom-misp.py captured into data.misp.agent/agent_id before the
+    # re-injection. Without this, CTI incidents get analyzed and remediated
+    # against the manager instead of the real host (e.g. Suricata/pfsense
+    # read via its own collector agent).
+    misp = data.get("misp") or {}
+    misp_agent_id = misp.get("agent_id") or ""
+    if misp_agent_id and misp_agent_id != agent_id:
+        agent_id, agent_name = misp_agent_id, misp.get("agent") or agent_name
+
     return {
         "id": src["id"],
         "ts": src["@timestamp"],
