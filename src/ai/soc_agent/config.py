@@ -257,6 +257,32 @@ IRIS_VERIFY_TLS = os.environ.get("IRIS_VERIFY_TLS", "false").lower() == "true"
 # IRIS client (the "customer" record) attached to the cases. 1 = default one.
 IRIS_CUSTOMER = int(os.environ.get("IRIS_CUSTOMER", "1"))
 
+# --- Data-leak watch (email breach monitoring, XposedOrNot) -----------------
+#
+# Members of the IRIS group DATA_LEAK_GROUP_NAME with a valid email are
+# checked periodically against XposedOrNot (free, no API key:
+# https://xposedornot.com). The group is created automatically (no
+# permission granted) as soon as this is on, so an analyst always has
+# somewhere to add a user. A NEW breach opens an IRIS case tagged "data-leak"
+# with its own report template — personal exposure of a watched user, not a
+# machine incident, so it must not be confused with the Wazuh pipeline's
+# cases. See data_leak.py.
+DATA_LEAK_MONITORING = os.environ.get(
+    "DATA_LEAK_MONITORING", "false").lower() == "true"
+DATA_LEAK_GROUP_NAME = os.environ.get("DATA_LEAK_GROUP_NAME", "veille-data-leak")
+DATA_LEAK_XON_URL = os.environ.get(
+    "DATA_LEAK_XON_URL", "https://api.xposedornot.com")
+# XposedOrNot's public quota (2 req/s, 25/h, 100/day) is shared with every
+# anonymous caller behind our IP. A miss here only delays the next detection
+# by one pass — nothing is silently lost, the rest is retried next round.
+DATA_LEAK_MAX_LOOKUPS = int(os.environ.get("DATA_LEAK_MAX_LOOKUPS", "20"))
+# Case classification: best-effort like CLASSIF_DEFAULT in iris.py (check
+# /manage/case-classifications/list on this server). 0 = fall back to
+# iris.CLASSIF_DEFAULT; a wrong id files the case elsewhere, it never blocks
+# its creation.
+DATA_LEAK_CLASSIFICATION_ID = int(
+    os.environ.get("DATA_LEAK_CLASSIFICATION_ID", "0")) or None
+
 # Maximum number of alerts LOADED to build a case. A flood incident lines up
 # tens of thousands (on 2026-08-14: 126,508 on a single pfSense incident, 96,804
 # on another): loading them all, `raw` included, blows up the cycle's memory and

@@ -9,6 +9,7 @@ code (`src/ai/soc_agent/iris.py`), il n'en utilise aucun.
 |---|---|---|---|
 | `incident-technique-fr.md` | Investigation | FR | Rapport DFIR complet : synthèse, note d'analyse IA, machines, exposition aux vulnérabilités, IOC, chronologie, remédiations, preuves |
 | `rapport-investigation-fr.docx` | Investigation | FR | Page de garde avec logo AURA·SOC, résumé exécutif, chronologie, analyse technique, IOC, actifs, remédiations, conclusion/recommandations à compléter par l'analyste, annexe preuves |
+| `data-leak-fr.md` | Investigation | FR | Rapport de veille data-leak (cases posés par `soc_agent.data_leak`) : compte exposé, détail des fuites XposedOrNot, IOC email. Volontairement SANS section machines/timeline/exposition — ces cases documentent une personne, pas une machine du parc |
 
 Le second template est un **.docx Word** (pas du Markdown) : IRIS accepte
 `md`, `html`, `doc`, `docx` en pièce de template
@@ -28,6 +29,11 @@ IRIS_API_KEY=<clé d'un compte server_administrator> \
   ../scripts/deploy-report-template.sh incident-technique-fr.md
 # ou, pour le second template (docx) :
   ../scripts/deploy-report-template.sh rapport-investigation-fr.docx "Aura-SOC — Rapport d'investigation d'incident (FR)"
+# ou, pour le rapport de veille data-leak (nom de fichier et description
+# dédiés, sinon le script réutilise ceux du rapport d'incident technique) :
+  FORMAT_NOM="Aura-SOC_veille-data-leak_%code_name%" \
+  DESCRIPTION="Rapport de veille data-leak : compte exposé, détail des fuites XposedOrNot, IOC email." \
+  ../scripts/deploy-report-template.sh data-leak-fr.md "Aura-SOC — Veille data-leak (FR)"
 ```
 
 Le script supprime l'entrée de même nom avant de recréer : IRIS n'a **pas**

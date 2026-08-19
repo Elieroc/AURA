@@ -843,3 +843,18 @@ CREATE INDEX IF NOT EXISTS archives_s3_drill
     ON archives_s3 (verified_at NULLS FIRST);
 CREATE INDEX IF NOT EXISTS archives_s3_coverage
     ON archives_s3 (index_base, period);
+
+-- Data-leak watch: last XposedOrNot check per monitored email (members of the
+-- IRIS group "veille-data-leak", cf. data_leak.py). `signature` is a hash of
+-- the breach names found; a case is (re)opened only when it CHANGES, so an
+-- old, still-present breach is never replayed into a new case every pass.
+CREATE TABLE IF NOT EXISTS data_leak_email_check (
+    email        text PRIMARY KEY,
+    user_login   text NOT NULL DEFAULT '',
+    breaches     jsonb NOT NULL DEFAULT '[]',
+    signature    text NOT NULL DEFAULT '',
+    -- Last IRIS case opened for this email, NULL as long as no breach was
+    -- ever found. Reused on refresh instead of opening a second case.
+    iris_case_id bigint,
+    checked_at   timestamptz NOT NULL DEFAULT now()
+);

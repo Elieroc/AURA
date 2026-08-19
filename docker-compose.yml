@@ -402,6 +402,19 @@ services:
     container_name: soc-agent-vulns
     command: sh -c "while true; do python -m soc_agent.vulns; sleep 3600; done"
 
+  # Veille data-leak : emails des membres du groupe IRIS "veille-data-leak"
+  # vérifiés contre XposedOrNot (cf. data_leak.py). Cadence QUOTIDIENNE : une
+  # fuite ne change pas dans l'heure, et le quota public de XposedOrNot
+  # (100/jour par IP) interdit de toute façon une cadence plus rapprochée.
+  # DATA_LEAK_MONITORING (faux par défaut) évite d'appeler IRIS/XposedOrNot
+  # tant que la fonctionnalité n'est pas activée ; une fois à true, le groupe
+  # IRIS est créé automatiquement s'il n'existe pas encore (cf. data_leak.py:
+  # _ensure_group).
+  soc-agent-data-leak:
+    <<: *soc-agent
+    container_name: soc-agent-data-leak
+    command: sh -c "while true; do python -m soc_agent.data_leak; sleep 86400; done"
+
   # Génère des règles Wazuh d'exception à partir des FP récurrents, pour que le
   # bruit soit écarté DANS le moteur de règles et non après coup par le
   # soc-agent (cf. rule_tuning.py). Seul job à écrire dans le répertoire de
