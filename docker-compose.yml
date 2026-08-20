@@ -24,9 +24,6 @@ x-soc-agent: &soc-agent
   # corrélation sur ~20 000 alertes par passe) ; 1 Go laisse la marge d'un
   # rattrapage après arrêt prolongé, où une seule passe traite tout l'arriéré.
   mem_limit: 1g
-  depends_on:
-    soc-agent-db:
-      condition: service_healthy
   # Clé age d'archivage, montée pour TOUS les services de cette ancre — pas
   # seulement soc-agent-archive. config.py exige ce fichier dès que
   # ARCHIVAGE_ENABLED=true, quel que soit l'appelant : cycle, metrics, vulns...
@@ -36,6 +33,16 @@ x-soc-agent: &soc-agent
   # le 2026-08-14 — trois services (retention, rule-tuning, cti) redéfinissent
   # `volumes:` plus bas et doivent donc reprendre cette ligne explicitement :
   # `<<:` remplace la clé, il ne fusionne pas les listes.
+  #
+  # Même piège pour `depends_on:` — cti et cti-articles le redéfinissent pour
+  # ajouter misp-core/soc-agent-db et doivent donc reprendre soc-agent-migrate
+  # explicitement (cf. leurs blocs plus bas), sinon ils démarrent avant que
+  # schema.sql soit rejoué.
+  depends_on:
+    soc-agent-db:
+      condition: service_healthy
+    soc-agent-migrate:
+      condition: service_completed_successfully
   volumes:
     - ${ARCHIVE_KEY_DIR_HOST:-/etc/aura/keys}:/run/secrets:ro
 
@@ -325,6 +332,37 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Applique schema.sql à chaque `up`, avant tout autre service de l'ancre
+  # soc-agent. schema.sql n'a jamais été idempotent par accident : toutes ses
+  # instructions sont déjà en `IF NOT EXISTS`/`ON CONFLICT DO NOTHING`, écrites
+  # ainsi pour l'exécution manuelle documentée dans src/ai/README.md — ce
+  # service se contente d'automatiser cette même commande. Sans lui, une
+  # release qui ajoute une table (ex. data_leak_email_check, 2026-08-20) reste
+  # invisible tant que personne ne rejoue le psql à la main : le conteneur qui
+  # en dépend tombe alors en erreur au premier accès à la table manquante.
+  # Passe unique (`restart: "no"`) : les 12 services de l'ancre attendent son
+  # succès (`service_completed_successfully`) avant de démarrer.
+  soc-agent-migrate:
+    image: postgres:16-alpine
+    container_name: soc-agent-migrate
+    restart: "no"
+    network_mode: host
+    depends_on:
+      soc-agent-db:
+        condition: service_healthy
+    environment:
+      - PGPASSWORD=${PGPASSWORD:?PGPASSWORD requis, cf. .env.example}
+    volumes:
+      - ./src/ai/soc_agent/schema.sql:/schema.sql:ro
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        psql -v ON_ERROR_STOP=1 -q
+        -h 127.0.0.1 -p "${PGPORT:-5433}"
+        -U "${PGUSER:-socagent}" -d "${PGDATABASE:-socagent}"
+        -f /schema.sql
 
   # ingest -> correlate -> triage -> whitelist auto -> cases IRIS, en une
   # exécution. Cadence identique à l'ancien soc-agent-cycle.timer (5 min).
@@ -1020,6 +1058,10 @@ services:
     depends_on:
       misp-core:
         condition: service_healthy
+      soc-agent-db:
+        condition: service_healthy
+      soc-agent-migrate:
+        condition: service_completed_successfully
     volumes:
       - cti_ioc:/var/lib/aura-cti
       - ${ARCHIVE_KEY_DIR_HOST:-/etc/aura/keys}:/run/secrets:ro
@@ -1049,6 +1091,8 @@ services:
     depends_on:
       soc-agent-db:
         condition: service_healthy
+      soc-agent-migrate:
+        condition: service_completed_successfully
     command: >
       sh -c "while true;
              do python -m soc_agent.cti_articles --max ${CTI_ARTICLES_MAX:-8};
